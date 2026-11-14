@@ -8,6 +8,7 @@ exports_files([
 # The root package also owns docs/, examples/, lean/, scripts/ and tools/
 # (directories without their own BUILD.bazel), which the CLI and its tests read.
 vesper_crate(
+    copy_test_cwd = ["test/resource_oracle42"],
     extra_compile_data = ["//crates/vesper-doc:files"],
     extra_test_data = [
         "//crates/vesper-doc:files",
@@ -63,6 +64,9 @@ vesper_crate(
         "test/replay42_kernel": "long",
         # Fresh model compilation, 285 theorem roots and actual negative controls.
         "test/resource_model42": "long",
+        # Runs the Vesper-source front end on every repository source; about
+        # 2.5 min on a 4-core Linux host, over 300 s on the macOS runner.
+        "test/self_host_front_end": "long",
     },
 )
 # Narrow slices of the root package for members that read them.
