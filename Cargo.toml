@@ -71,6 +71,7 @@ members = [
     "crates/vesper-aura-gtk",
     "crates/vesper-gpu-compute",
     "crates/vesper-ignis-vulkan",
+    "crates/vesper-codegen-verified",
     "crates/vesper-fusion",
     "experiments/native-pulse",
 ]
@@ -144,6 +145,7 @@ default-members = [
     "crates/vesper-aura-gtk",
     "crates/vesper-gpu-compute",
     "crates/vesper-ignis-vulkan",
+    "crates/vesper-codegen-verified",
     "crates/vesper-fusion",
     "experiments/native-pulse",
 ]
