@@ -21,6 +21,7 @@ vesper_crate(
         "test/lean4lean_completion42",
         "test/lean4lean_reconstruction42",
         "test/lean4lean_normalized_completion42",
+        "test/resource_oracle42",
     ],
     extra_compile_data = ["//crates/vesper-doc:files"],
     extra_test_data = [
@@ -157,6 +158,9 @@ vesper_crate(
         "test/replay42_kernel": "long",
         # Fresh model compilation, 285 theorem roots and actual negative controls.
         "test/resource_model42": "long",
+        # Runs the Vesper-source front end on every repository source; about
+        # 2.5 min on a 4-core Linux host, over 300 s on the macOS runner.
+        "test/self_host_front_end": "long",
     },
 )
 # Narrow slices of the root package for members that read them.
