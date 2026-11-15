@@ -121,6 +121,9 @@ pub fn parse_shot_source(source: &str, limits: ShotLimits) -> Result<ShotDocumen
     let mut source_lines = Vec::new();
     let mut callouts = Vec::new();
     let body = source.strip_suffix('\n').unwrap_or(source);
+    // Lexical state carried across lines: directives are recognised only in
+    // code and in real line comments, never inside strings or block comments.
+    let mut lex = LexState::default();
     for (index, raw) in body.split('\n').enumerate() {
         let number = index + 1;
         let raw = raw.strip_suffix('\r').unwrap_or(raw);
@@ -134,8 +137,10 @@ pub fn parse_shot_source(source: &str, limits: ShotLimits) -> Result<ShotDocumen
         if line.chars().count() > limits.max_line_chars {
             return Err(ShotError::Limit("line length"));
         }
+        let at_code = lex.in_code();
+        let comment = lex.scan_line(&line);
         let trimmed = line.trim_start();
-        if trimmed.starts_with("@shot") {
+        if at_code && trimmed.starts_with("@shot") {
             if config.is_some() {
                 return Err(directive(number, "duplicate @shot directive"));
             }
@@ -145,7 +150,7 @@ pub fn parse_shot_source(source: &str, limits: ShotLimits) -> Result<ShotDocumen
             config = Some(parse_header(trimmed, number, limits)?);
             continue;
         }
-        if let Some((caret_byte, kind, rest)) = callout_line(&line) {
+        if let Some((caret_byte, kind, rest)) = comment.and_then(|at| callout_line(&line, at)) {
             let Some(target) = lines.len().checked_sub(1) else {
                 return Err(callout(number, "caret line has no code line above it"));
             };
@@ -163,7 +168,7 @@ pub fn parse_shot_source(source: &str, limits: ShotLimits) -> Result<ShotDocumen
                 display_line: target,
                 column_byte: Some(column_byte),
             });
-        } else if let Some((at, kind, rest)) = trailing_callout(&line) {
+        } else if let Some((at, kind, rest)) = comment.and_then(|at| trailing_callout(&line, at)) {
             if kind == '?' {
                 return Err(callout(
                     number,
@@ -228,12 +233,74 @@ fn expand_tabs(line: &str) -> String {
     out
 }
 
-/// A line that is only a `//  ^?` or `//^!` comment: (byte of `^`, kind, rest).
-fn callout_line(line: &str) -> Option<(usize, char, &str)> {
-    let lead = line.len() - line.trim_start().len();
-    let after = line[lead..].strip_prefix("//")?;
+/// Strings and (nested) block comments open at the end of a line.
+#[derive(Clone, Copy, Debug, Default)]
+struct LexState {
+    in_string: bool,
+    block_depth: usize,
+}
+
+impl LexState {
+    fn in_code(self) -> bool {
+        !self.in_string && self.block_depth == 0
+    }
+
+    /// Advances over one line and returns the byte where a line comment
+    /// starts in code, if any (the rest of the line is that comment).
+    fn scan_line(&mut self, line: &str) -> Option<usize> {
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let pair = bytes.get(i..i + 2);
+            if self.block_depth > 0 {
+                match pair {
+                    Some(b"/*") => {
+                        self.block_depth += 1;
+                        i += 2;
+                    }
+                    Some(b"*/") => {
+                        self.block_depth -= 1;
+                        i += 2;
+                    }
+                    _ => i += 1,
+                }
+            } else if self.in_string {
+                match bytes[i] {
+                    b'\\' => i += 2,
+                    b'"' => {
+                        self.in_string = false;
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            } else {
+                match (bytes[i], pair) {
+                    (_, Some(b"//")) => return Some(i),
+                    (_, Some(b"/*")) => {
+                        self.block_depth = 1;
+                        i += 2;
+                    }
+                    (b'"', _) => {
+                        self.in_string = true;
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+        }
+        None
+    }
+}
+
+/// A line that is only a `//  ^?` or `//^!` comment (the comment starting at
+/// byte `at`): (byte of `^`, kind, rest).
+fn callout_line(line: &str, at: usize) -> Option<(usize, char, &str)> {
+    if !line[..at].trim().is_empty() {
+        return None;
+    }
+    let after = &line[at + 2..];
     let spaces = after.len() - after.trim_start_matches(' ').len();
-    let caret = lead + 2 + spaces;
+    let caret = at + 2 + spaces;
     let rest = &line[caret..];
     let kind = match rest.as_bytes() {
         [b'^', b'?', ..] => '?',
@@ -243,28 +310,14 @@ fn callout_line(line: &str) -> Option<(usize, char, &str)> {
     Some((caret, kind, &rest[2..]))
 }
 
-/// A `code //^! note` comment after code: (byte of `//`, kind, rest). String
-/// literals are skipped so `"//^!"` inside one is code.
-fn trailing_callout(line: &str) -> Option<(usize, char, &str)> {
-    let bytes = line.as_bytes();
-    let mut in_string = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if in_string => i += 1,
-            b'"' => in_string = !in_string,
-            b'/' if !in_string && bytes.get(i + 1) == Some(&b'/') => {
-                return match bytes.get(i + 2..i + 4) {
-                    Some(b"^?") => Some((i, '?', &line[i + 4..])),
-                    Some(b"^!") => Some((i, '!', &line[i + 4..])),
-                    _ => None,
-                };
-            }
-            _ => {}
-        }
-        i += 1;
+/// A `code //^! note` comment after code (the comment starting at byte `at`):
+/// (byte of `//`, kind, rest).
+fn trailing_callout(line: &str, at: usize) -> Option<(usize, char, &str)> {
+    match line.as_bytes().get(at + 2..at + 4) {
+        Some(b"^?") => Some((at, '?', &line[at + 4..])),
+        Some(b"^!") => Some((at, '!', &line[at + 4..])),
+        _ => None,
     }
-    None
 }
 
 fn callout_kind(
@@ -478,6 +531,25 @@ mod tests {
         let doc = parse("let s = \"//^! no\"; // plain\n").unwrap();
         assert_eq!(doc.display, "let s = \"//^! no\"; // plain");
         assert!(doc.callouts.is_empty());
+    }
+
+    #[test]
+    fn block_comments_and_multiline_strings_are_not_directives() {
+        for src in [
+            "fn main() { /* //^! ordinary comment */ }",
+            "fn main() {\n    /* nested /* x */\n    //^! still inside */\n}",
+            "let s = \"a\n//^! in a string\";",
+            "/*\n@shot(dpi = 9)\n*/\nx",
+        ] {
+            let doc = parse(src).unwrap();
+            assert!(doc.callouts.is_empty(), "{src:?}");
+            assert_eq!(doc.config, ShotConfig::default(), "{src:?}");
+            assert_eq!(doc.display, src.trim_end(), "{src:?}");
+        }
+        // After the block comment closes, callouts work again.
+        let doc = parse("/* a */ x //^! note").unwrap();
+        assert_eq!(doc.display, "/* a */ x");
+        assert_eq!(doc.callouts.len(), 1);
     }
 
     #[test]
