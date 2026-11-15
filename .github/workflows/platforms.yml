@@ -42,6 +42,9 @@ jobs:
           - name: macOS (AArch64)
             os: macos-latest
     runs-on: ${{ matrix.os }}
+    # A healthy run takes 17-25 min. Without a limit, a hung test holds the
+    # scarce macOS runner for GitHub's 6 h default (#616).
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
@@ -113,6 +116,10 @@ jobs:
   windows:
     name: Windows (x86_64 MSVC)
     runs-on: windows-latest
+    # A healthy run takes about 70 min, `cargo test` about 60 of them. The
+    # limits make a hung or pathologically slow test fail the required check
+    # within two hours instead of holding the runner for 6 h (#616).
+    timeout-minutes: 130
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -146,6 +153,7 @@ jobs:
       # only user, is ignored on Windows and runs on Linux.
       - run: cargo clippy --workspace --locked --all-targets -- -D warnings
       - run: cargo test --workspace --locked
+        timeout-minutes: 100
         env:
           VESPER_LEAN: lean
       - run: scripts/ci/check-lean-models.sh
