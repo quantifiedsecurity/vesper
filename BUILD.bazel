@@ -18,6 +18,7 @@ vesper_crate(
         "test/lean4lean_comparison42",
         "test/lean4lean_shape42",
         "test/lean4lean_addability42",
+        "test/lean4lean_completion42",
         "test/resource_oracle42",
     ],
     extra_compile_data = ["//crates/vesper-doc:files"],
@@ -41,6 +42,7 @@ vesper_crate(
         "test/self_host_front_end": ["resources:memory:5120", "resources:cpu:4"],
         "test/lean4lean_shape42": ["resources:memory:5120", "resources:cpu:1"],
         "test/lean4lean_addability42": ["resources:memory:5120", "resources:cpu:1"],
+        "test/lean4lean_completion42": ["resources:memory:5120", "resources:cpu:1"],
     },
     # Long, platform-neutral Lean replays run on Linux (BuildBuddy) only; see
     # "Linux-only suites" in docs/ci-platforms.md.
@@ -124,6 +126,11 @@ vesper_crate(
         }),
         # Same fixed logical replay and complete controls; see #443.
         "test/lean4lean_addability42": select({
+            "@platforms//os:macos": ["@platforms//:incompatible"],
+            "//conditions:default": [],
+        }),
+        # Same fixed logical replay and complete controls; see #443.
+        "test/lean4lean_completion42": select({
             "@platforms//os:macos": ["@platforms//:incompatible"],
             "//conditions:default": [],
         }),
