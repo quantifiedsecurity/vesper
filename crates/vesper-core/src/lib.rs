@@ -9,4 +9,5 @@ pub mod lifo;
 pub mod modal_kind;
 pub mod mode_vec;
 pub mod numeric;
+pub mod pcg;
 pub mod slice_projections;
