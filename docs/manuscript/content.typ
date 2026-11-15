@@ -28,6 +28,12 @@
   )
 ]
 
+// Keep short listing tails off isolated continuation pages.
+#let _compact-listing(body) = {
+  show raw.where(block: true): set par(leading: 0.3em)
+  body
+}
+
 #let _part-summary(tag, body) = block(
   width: 100%,
   inset: (x: 11pt, y: 9pt),
@@ -664,7 +670,7 @@ Quantified protocol theorems ($forall, exists$) reside in `Specs.lean` (#link(<c
 #_infer(
   "[T-StrongUpdate]",
   $(x :_((1, bold(m)))^(upright("own")) tau_(upright("old"))) in Gamma quad f : (upright("inout ") y : tau_(upright("in")) ~> tau_(upright("out"))) arrow.r^(epsilon) tau_(upright("ret")) \ Delta ; Phi tack.r tau_(upright("old")) <: tau_(upright("in"))$,
-  $Delta ; Sigma ; Phi ; Gamma tack.r f(upright("inout ") x) : tau_(upright("ret")) thick dash.r.bar thick Gamma[x mapsto tau_(upright("out"))] divides epsilon$,
+  $Delta ; Sigma ; Phi ; Gamma tack.r f(upright("inout ") x) : tau_(upright("ret")) thick gt.closed thick Gamma[x mapsto tau_(upright("out"))] divides epsilon$,
 )
 
 #_infer(
@@ -754,7 +760,7 @@ Effect operations invoke a lexically bound handler capability $l : upright("Cap"
 
 #_infer(
   "[T-Handle]",
-  $Delta ; Sigma ; Phi ; Gamma_s tack.r e_(upright("init")) : tau_s @ (1, bold(m)_s) divides epsilon quad forall (z :_((rho_z, bold(m)_z))^(mu) tau_z) in Gamma_h, med u(bold(m)_z) = upright("copy") \ Delta ; (Sigma, l : upright("Cap")_q [E]) ; Phi ; Gamma_(upright("body")) tack.r e_(upright("body")) : tau_b @ (1, bold(m)_b) divides { l : E^q @ g } compose epsilon \ Delta ; Sigma ; Phi ; Gamma_h, x :_((1, bold(m)_b))^(upright("own")) tau_b, s :_((1, bold(m)_s))^(upright("own")) tau_s tack.r e_(upright("ret")) : tau_(upright("out")) @ (1, bold(m)_(upright("out"))) divides epsilon \ forall (upright("op")_i : tau_i arrow.r sigma_i) in E : quad Delta ; Sigma ; Phi ; Gamma_h, y :_((1, top))^(upright("own")) tau_i, s :_((1, bold(m)_s))^(upright("own")) tau_s, k :_((1, q))^(upright("own")) ((sigma_i, tau_s) arrow.r^(epsilon)_q tau_(upright("out"))) tack.r e_i : tau_(upright("out")) @ (1, bold(m)_(upright("out"))) divides epsilon$,
+  $Delta ; Sigma ; Phi ; Gamma_s tack.r e_(upright("init")) : tau_s @ (1, bold(m)_s) divides epsilon quad forall (z :_((rho_z, bold(m)_z))^(mu) tau_z) in Gamma_h, med u(bold(m)_z) = upright("copy") \ Delta ; (Sigma, l : upright("Cap")_q [E]) ; Phi ; Gamma_(upright("body")) tack.r e_(upright("body")) : tau_b @ (1, bold(m)_b) divides { l : E^q @ g } compose epsilon \ Delta ; Sigma ; Phi ; Gamma_h, x :_((1, bold(m)_b))^(upright("own")) tau_b, s :_((1, bold(m)_s))^(upright("own")) tau_s tack.r e_(upright("ret")) : tau_(upright("out")) @ (1, bold(m)_(upright("out"))) divides epsilon \ forall (upright("op")_i : tau_i arrow.r sigma_i) in E : \ Delta ; Sigma ; Phi ; Gamma_h, y :_((1, top))^(upright("own")) tau_i, s :_((1, bold(m)_s))^(upright("own")) tau_s, k :_((1, q))^(upright("own")) ((sigma_i, tau_s) arrow.r^(epsilon)_q tau_(upright("out"))) tack.r e_i : tau_(upright("out")) @ (1, bold(m)_(upright("out"))) divides epsilon$,
   $Delta ; Sigma ; Phi ; Gamma_s convolve.o Gamma_(upright("body")) convolve.o Gamma_h tack.r (upright("handle ") l : E^q upright(" state ") s = e_(upright("init")) upright(" in ") e_(upright("body")) upright(" with ") { upright("return")(x, s) => e_(upright("ret")), upright("op")_i (y, s, k) => e_i }) : tau_(upright("out")) @ (1, bold(m)_(upright("out"))) divides epsilon$,
 )
 
@@ -804,8 +810,8 @@ Mechanized in zero-`sorryAx` Lean 4 (#link(<appendix-a>)[Appendix A]), $lambda_(
 
 - *Theorem 1 (Type, Mode, and Capability Preservation):* Well-typed closed configurations step without stuck states while preserving types, 4-axis `ModeVec` bounds, disjoint place and slice capabilities, LIFO obligation stacks, and lexical effect rows.
 - *Theorem 2 (Total Linear Exhaustion):* In every closed program $emptyset ; emptyset ; top ; emptyset tack.r e : tau @ (1, upright("copy")) divides emptyset$ terminating at a value or handled `Fail` result, every dynamically constructed `linear` value is destructured or consumed by a terminal `sink` transition *exactly once*—never leaked on an unwind edge and never duplicated across a continuation.
-- *Theorem 3 (Zero-`Pin` Stack Relocation):* Because every captured continuation $k$ has usage mode $q gt.eq.sq upright("affine")$ (at-most-once resumption) and second-class `in`/`inout`/`out` projections cannot be stored inside heap or frame structs across unrelated lifetimes, suspended fiber stacks contain zero self-referential borrows and relocate or pool safely without `Pin`.
-- *Theorem 4 (`@0` Ghost-Erasure Bisimulation):* Erasing all $\rho = 0$ bindings, `ghost` fields, and refinement indices yields an untyped operational trace bit-for-bit identical to the graded evaluation semantics.
+- *Theorem 3 (Zero-`Pin` Stack Relocation):* Because every captured continuation $k$ has usage mode $q supset.eq.sq upright("affine")$ (at-most-once resumption) and second-class `in`/`inout`/`out` projections cannot be stored inside heap or frame structs across unrelated lifetimes, suspended fiber stacks contain zero self-referential borrows and relocate or pool safely without `Pin`.
+- *Theorem 4 (`@0` Ghost-Erasure Bisimulation):* Erasing all $rho = 0$ bindings, `ghost` fields, and refinement indices yields an untyped operational trace bit-for-bit identical to the graded evaluation semantics.
 
 = 6. Vesper Pact and Forge: Traits, Coherence, and WASI Macros
 <ch-6>
@@ -1518,6 +1524,7 @@ pub fn verify_graded_resource_ceiling(
 
 After Stage 2 elaboration, HIR lowers into `PlaceIr`. The PCG dataflow solver verifies pairwise field-tree disjointness, uniform branch consumption, and the Resumption Frame Condition across every basic-block edge:
 
+#_compact-listing[
 ```rust
 // crates/vesper-mir-pcg/src/pcg.rs
 use rustc_hash::FxHashMap;
@@ -1663,6 +1670,7 @@ impl PcgState {
     }
 }
 ```
+]
 
 = 8. Prophecy-Free Lean 4 Verification Extractor
 <ch-8>
@@ -2018,7 +2026,7 @@ Vesper is engineered simultaneously as a *verifying toolchain* (extracting zero-
   - *High-Throughput Cranelift Tier:* Restricts lowering patterns to *VeriISLE*-verified rules paired with per-block *Bitwuzla* SMT translation validation and `vesper-vault`'s constant-time SSA taint verifier (#link(<ch-27-5>)[Section 27.5]).
   - *Direct Verified Backend (`crates/vesper-codegen-verified`):* For `@verified` targets and `@vesper-lang/compiler` itself, a compact (~2,500 LOC) non-speculative emitter lowers `PlaceIr` through linear-scan register allocation directly to deterministic `x86_64`, `AArch64`, and `RV64` machine bytes (with `vesper_fiber_yield` trampolines and static stack-depth bounds), proven sound via forward simulation in Lean 4.
 + *Hermetic Self-Hosting and Self-Verification (`@vesper-lang/compiler`):* The self-hosted five-stage compiler executes inside a bounded `Region::scoped` `VirtualArena` (#link(<ch-12-2>)[Section 12.2]) under `capability_ceiling = ["Fail"]` in `Loom.toml` (`Alloc`, `Net`, `Clock`, and `Ffi` statically absent). Extracting `@vesper-lang/compiler` through `vesper-verify-lean` proves that `HirChecker::infer_and_constrain` and `PcgSolver::lower_and_verify_exhaustion` refine `HasType`, `CallProjValid`, `FrameSafe`, and *Theorem 2*.
-+ *Diverse Double-Compiling (DDC) and Multi-Builder Quorum:* To defeat Thompson _Trusting Trust_ seed backdoors, `@vesper-lang/compiler` builds along two zero-shared-lineage compilation chains: *Path A* (`Stage 0` seed $\to$ `Stage 1` $\to$ `Stage 2` $\to$ `Stage 3` fixed point) and *Path B* (compiling the Lean 4 functional model of `@vesper-lang/compiler` through *Lean 4's C emitter + CompCert C* into `vesperc-lean-ddc`, with zero Rust or Cranelift in the chain, to produce `Stage 3'`). Release admission requires `BLAKE3(Stage 2) == BLAKE3(Stage 3) == BLAKE3(Stage 3')` attested across independent *Lila* clean-room builders (#link(<ch-10-2>)[Section 10.2]) and *Vesper Aegis* hardware TEE quotes (#link(<ch-28-4>)[Section 28.4]).
++ *Diverse Double-Compiling (DDC) and Multi-Builder Quorum:* To defeat Thompson _Trusting Trust_ seed backdoors, `@vesper-lang/compiler` builds along two zero-shared-lineage compilation chains: *Path A* (`Stage 0` seed $arrow.r$ `Stage 1` $arrow.r$ `Stage 2` $arrow.r$ `Stage 3` fixed point) and *Path B* (compiling the Lean 4 functional model of `@vesper-lang/compiler` through *Lean 4's C emitter + CompCert C* into `vesperc-lean-ddc`, with zero Rust or Cranelift in the chain, to produce `Stage 3'`). Release admission requires `BLAKE3(Stage 2) == BLAKE3(Stage 3) == BLAKE3(Stage 3')` attested across independent *Lila* clean-room builders (#link(<ch-10-2>)[Section 10.2]) and *Vesper Aegis* hardware TEE quotes (#link(<ch-28-4>)[Section 28.4]).
 
 == 9.2 Reproducible Multi-Stage Bootstrap Topology
 <ch-9-2>
@@ -2457,7 +2465,7 @@ Removing an abortable `Fail` effect raises $upright("res")(epsilon)$ from `affin
 
 #_infer(
   "[SV-Fn]",
-  $forall k, med bold(m)_(upright("bound,old"), k) subset.eq.sq bold(m)_(upright("bound,new"), k) quad bold(m)_(upright("fn,new")) subset.eq.sq bold(m)_(upright("fn,old")) quad forall i, med pi_(i, upright("new")) subset.eq pi_(i, upright("old")) \ forall i, med (mu_i in {upright("in"), upright("sink")} arrow.r.double Delta_(upright("old")) ; Phi_(upright("old")) tack.r tau_(i, upright("old")) <: tau_(i, upright("new"))) and (mu_i = upright("inout") arrow.r.double tau_(i, upright("in,old")) <: tau_(i, upright("in,new")) and tau_(i, upright("out,new")) <: tau_(i, upright("out,old"))) \ Delta_(upright("old")) ; Phi_(upright("new")) tack.r tau_(upright("ret,new")) <: tau_(upright("ret,old")) quad bold(m)_(upright("ret,new")) subset.eq.sq bold(m)_(upright("ret,old")) quad epsilon_(upright("new")) <: epsilon_(upright("old"))$,
+  $forall k, med bold(m)_(upright("bound,old"), k) subset.eq.sq bold(m)_(upright("bound,new"), k) quad bold(m)_(upright("fn,new")) subset.eq.sq bold(m)_(upright("fn,old")) quad forall i, med pi_(i, upright("new")) subset.eq pi_(i, upright("old")) \ forall i, med (mu_i in {upright("in"), upright("sink")} arrow.r.double Delta_(upright("old")) ; Phi_(upright("old")) tack.r tau_(i, upright("old")) <: tau_(i, upright("new"))) \ and (mu_i = upright("inout") arrow.r.double tau_(i, upright("in,old")) <: tau_(i, upright("in,new")) and tau_(i, upright("out,new")) <: tau_(i, upright("out,old"))) \ Delta_(upright("old")) ; Phi_(upright("new")) tack.r tau_(upright("ret,new")) <: tau_(upright("ret,old")) quad bold(m)_(upright("ret,new")) subset.eq.sq bold(m)_(upright("ret,old")) quad epsilon_(upright("new")) <: epsilon_(upright("old"))$,
   $(upright("fn") @ bold(m)_(upright("fn,new")) [Delta_(upright("new"))] (overline(mu) med overline(x) . overline(pi)_(upright("new")) : overline(tau)_(upright("new"))) arrow.r tau_(upright("ret,new")) @ bold(m)_(upright("ret,new")) upright(" eff ")[epsilon_(upright("new"))]) prec.curly.eq_(upright("pub")) (upright("fn") @ bold(m)_(upright("fn,old")) [Delta_(upright("old"))] (overline(mu) med overline(x) . overline(pi)_(upright("old")) : overline(tau)_(upright("old"))) arrow.r tau_(upright("ret,old")) @ bold(m)_(upright("ret,old")) upright(" eff ")[epsilon_(upright("old"))])$,
 )
 
@@ -2495,13 +2503,13 @@ Refinement predicates and pomonoid resource budgets integrate directly via Bitwu
     align: (left, left, left),
     table.header([*Interface Evolution ($I_(upright("old")) arrow.r I_(upright("new"))$)*], [*SemVer Class*], [*Governing Rule and Soundness Invariant*]),
     [Refactor body or private item with unchanged `.vhir`], [*Patch* (`mif` equal)], [Triggers *Early Cutoff*; downstream crates skip recompilation.],
-    [Relax generic modal bound (`T: mod copy` $\to$ `T: mod linear`)], [*Minor*], [Contravariant $bold(m)_(upright("bound,old")) subset.eq.sq bold(m)_(upright("bound,new"))$ in `[SV-Fn]`.],
-    [Strengthen return or closed-struct mode (`linear` $\to$ `affine` $\to$ `copy`)], [*Minor*], [Covariant `[T-SubMode]` preserves exact-once callers while allowing drops/copies.],
-    [Strengthen ADT mode (`affine` $\to$ `linear` or `unordered` $\to$ `lifo`)], [*Major*], [Invalidates caller `discard(Gamma)`, `[T-Let]` frames, or release order.],
+    [Relax generic modal bound (`T: mod copy` $arrow.r$ `T: mod linear`)], [*Minor*], [Contravariant $bold(m)_(upright("bound,old")) subset.eq.sq bold(m)_(upright("bound,new"))$ in `[SV-Fn]`.],
+    [Strengthen return or closed-struct mode (`linear` $arrow.r$ `affine` $arrow.r$ `copy`)], [*Minor*], [Covariant `[T-SubMode]` preserves exact-once callers while allowing drops/copies.],
+    [Strengthen ADT mode (`affine` $arrow.r$ `linear` or `unordered` $arrow.r$ `lifo`)], [*Major*], [Invalidates caller `discard(Gamma)`, `[T-Let]` frames, or release order.],
     [Remove `Fail[E]` or other capability from `eff [...]`], [*Minor*], [`caps` shrinks and $upright("res")(epsilon)$ rises (`affine <= linear`).],
     [Add `Fail[E]` or `Storage` to `eff [...]`], [*Major*], [Exceeds caller `capability_ceiling` and breaks live `linear` `[T-Let]` frames.],
-    [Narrow `inout` projection (`self.{index, metrics}` $\to$ `self.index`)], [*Minor*], [$pi_(upright("new")) subset.eq pi_(upright("old"))$ preserves all caller `[T-CallProj]` disjointness proofs.],
-    [Widen `inout` projection (`self.index` $\to$ `self.{index, config}`)], [*Major*], [Collides with concurrent `in self.config` borrows at call sites.],
+    [Narrow `inout` projection (`self.{index, metrics}` $arrow.r$ `self.index`)], [*Minor*], [$pi_(upright("new")) subset.eq pi_(upright("old"))$ preserves all caller `[T-CallProj]` disjointness proofs.],
+    [Widen `inout` projection (`self.index` $arrow.r$ `self.{index, config}`)], [*Major*], [Collides with concurrent `in self.config` borrows at call sites.],
     [Change `sink x: T` to `in x: T` on potentially `linear` `T`], [*Major*], [Leaves linear argument unconsumed at call site, violating *Theorem 2*.],
     [Weaken parameter refinement or tighten `ensures` / `Stack` grade], [*Minor*], [Discharged by `[SV-Refine-Pre]`, `[SV-Refine-Post]`, and `[SV-Grade]` in Bitwuzla.],
     [Strengthen parameter refinement or raise `Region` / `Stack` grade], [*Major*], [Bitwuzla `SAT` model synthesizes concrete broken-caller counterexample.],
@@ -9048,6 +9056,7 @@ Aura bridges imperative retained widgets (WinUI 3 and GTK 4) and declarative val
 
 == 37.5 Complete Showcase: Cross-Platform Stream Inspector UI
 <ch-37-5>
+#_compact-listing[
 ```
 // Cache-conscious AoSoA row layout (Section 15 Vesper Strata):
 // Hot columns stay contiguous in 64B L1 cache lines for 120Hz virtualized scrolling & SIMD filtering!
@@ -9147,6 +9156,7 @@ fn app_update(
     }
 }
 ```
+]
 
 Declarative `.vsys` bindings confine native toolkit FFI strictly to `@vesper-ui/aura`, keeping application and third-party widget packages 100% pure (`forbid_unsafe_ffi = true` in `Loom.toml`):
 
@@ -11161,6 +11171,7 @@ end Vesper.Metatheory
 == A.3 Four-Axis Modalities, Ghost Erasure, Destinations, Refinements, and Quotients (`VesperUnifiedTypeTheory.lean`)
 <app-a-3>
 
+#_compact-listing[
 ```lean
 -- VesperUnifiedTypeTheory.lean
 -- Zero-sorryAx mechanization of 4-axis ModeVec, Capsule sealing, LIFO order, @0 ghost erasure,
@@ -11296,6 +11307,7 @@ theorem uncompacted_zset_eq_compacted :
 
 end Vesper.UnifiedTypeTheory
 ```
+]
 
 = Appendix B. Official Brand Identity and Geometric Specification
 <appendix-b>
@@ -11508,6 +11520,7 @@ end Vesper.BrandGeometry
 
 `crates/vesper-highlight/src/brand.rs` synthesizes verified brand marks, `.vsp` file icons, and OpenGraph headers directly from `ChromaPalette` tokens (#link(<ch-20>)[Chapter 20]) with zero embedded binary blobs:
 
+#_compact-listing[
 ```rust
 // crates/vesper-highlight/src/brand.rs
 use crate::ChromaPalette;
@@ -11658,4 +11671,5 @@ pub fn emit_favicon_16_svg(palette: &ChromaPalette) -> String {
     )
 }
 ```
+]
 ]

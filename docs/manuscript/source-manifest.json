@@ -25,7 +25,7 @@
   "typesetting_tools": {
     "typst": "0.15.1"
   },
-  "content_sha256": "1e79dcd797aabdb5c2388470b39480904f5dac03368fa22e8d84cb6b76d9b9fa",
+  "content_sha256": "cff94e6323579e6e1346139309a1fe19edf2d8a093cb45d67b7d1ee3f72e7230",
   "template_sha256": "172c58d5ec44dafd5a2e6acecb4cc15f7735ca3b8e9e13d1e0aac2762d21d039",
   "source_hash_normalization": "UTF-8 with LF line endings",
   "transformations": [
@@ -34,6 +34,27 @@
     "Removed Pandoc #strong/#emph wrappers, HTML entities, undefined #divider calls, evolutionary crate-count/roadmap seams, and mid-stream 42-crate workspace manifest.",
     "Reunited stranded Ignis multi-backend subsections (19.8–19.11) into Chapter 38, vesper-lint into Chapter 18, and WireStructLayout (vesper-ffi) into Chapter 15.",
     "Recovered exact indented source listings for Chapters 19 (Codex), 26 (Aether), 30 (Grammar), and 39 (Kinetic), and restored dropped subsystem/toolkit spans.",
-    "Verified 273 unique labels, 416 internal #link(<...>) cross-references, 23 scholarly URLs, and 100% table column width sums."
-  ]
+    "Resolved 273 unique document labels and 416 internal cross-references; retained external scholarly hyperlinks.",
+    "Corrected unsupported Typst symbol names and TeX-style math escapes, split two wide inference-rule premises, and tightened four listing continuations without changing any source-code block."
+  ],
+  "revision_patch": {
+    "filename": "0001-manuscript-unify-end-state-specification.patch",
+    "sha256": "0c32ac5e9908b5479a0ae5c90879fd15808e156256bc01cab506c8032f724679",
+    "applied_commit": "8471e7b41a595018aeae313b9eca516fd1e79b48"
+  },
+  "publication": {
+    "pages": 228,
+    "parts": 8,
+    "chapters": 41,
+    "appendices": [
+      "A",
+      "B"
+    ],
+    "bookmarks": 280,
+    "links": 534,
+    "code_blocks_preserved": 157,
+    "embedded_font_subsets": 7,
+    "pdf_bytes": 3782075,
+    "pdf_sha256": "94a2f89fe8ac4284c594047440a07a2eef79ea191af8216a51de9b1f9895f9b8"
+  }
 }
