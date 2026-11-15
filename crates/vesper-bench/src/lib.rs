@@ -18,11 +18,13 @@ mod execution;
 mod hodges_lehmann;
 pub mod layout;
 mod statistics;
+mod walsh;
 pub mod wire;
 pub use arithmetic::*;
 pub use execution::*;
 pub use hodges_lehmann::*;
 pub use statistics::*;
+pub use walsh::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
