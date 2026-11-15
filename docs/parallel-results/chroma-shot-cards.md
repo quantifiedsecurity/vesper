@@ -1,6 +1,6 @@
 # Wave nine lane 2: Vesper Chroma `vesper shot` code cards (§43)
 
-Claim: #579. Branch: `claude/project-thread-248b49`. Base: lane 1's PR #613 head `59881d5` (on main `c9f9677`, descendant of the required baseline `37f7b8b`); this PR merges after #613.
+Claim: #579. Branch: `claude/project-thread-248b49`. Base: lane 1's PR #613 head `3194955` (on main `c9f9677`, descendant of the required baseline `37f7b8b`); this PR merges after #613.
 
 ## What was built
 
