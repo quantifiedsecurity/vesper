@@ -6,5 +6,6 @@
 pub mod ast;
 pub mod field_tree;
 pub mod lifo;
+pub mod modal_kind;
 pub mod mode_vec;
 pub mod numeric;
