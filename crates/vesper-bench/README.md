@@ -148,6 +148,28 @@ in basis points per region. Unlike Coz, regions are explicit calls rather than
 sampled lines, delay accrues when a region ends, and there is no credit for
 delay accrued while a thread was blocked.
 
+## Tied paired signed-rank confidence sets
+
+`signed_rank_confidence_set` inverts the exact two-sided 5% Wilcoxon
+signed-rank test for up to 16 caller-provided integer paired differences. It
+visits every distinct Walsh breakpoint and the intervals between them, discards
+centered zeros, and uses doubled midranks for tied absolute differences. Its
+ordered segments can be disconnected, open, closed, singleton, or unbounded;
+finite endpoints are stored as twice the location without rounding. A candidate
+with all centered differences zero is not rejected.
+
+Coverage of at least 95% requires independent, equiprobable signs conditional
+on the centered nonzero magnitudes and zero pattern at the true location. The
+API does not establish those assumptions or measurement provenance, and it does
+not alter the existing regression gate.
+
+`gate_signed_rank_confidence` compares the complete confidence set against a
+maximum candidate-minus-baseline difference in the same units. It passes only
+if every retained location is at or below the threshold and reports a regression
+only if every retained location is strictly above it. Empty or nonseparating
+sets are inconclusive; open, closed, and unbounded endpoints retain their exact
+meaning. The gate preserves the set and inherits its stated assumptions.
+
 ## Tied Walsh point estimates
 
 `walsh_pseudomedian` returns the Hodges–Lehmann point estimate for up to 32
