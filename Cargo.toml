@@ -196,7 +196,7 @@ vesper-forge = { path = "crates/vesper-forge", default-features = false }
 vesper-simd = { path = "crates/vesper-simd" }
 vesper-lean-syntax = { path = "crates/vesper-lean-syntax" }
 vesper-syntax = { path = "crates/vesper-syntax" }
-vesper-highlight = { path = "crates/vesper-highlight" }
+vesper-highlight = { path = "crates/vesper-highlight", features = ["shot"] }
 vesper-span = { path = "crates/vesper-span" }
 vesper-lsp = { path = "crates/vesper-lsp" }
 vesper-diagnostics = { path = "crates/vesper-diagnostics" }

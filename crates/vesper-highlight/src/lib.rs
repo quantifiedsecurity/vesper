@@ -31,6 +31,8 @@ mod facts;
 pub mod html;
 pub mod json;
 mod palette;
+#[cfg(feature = "shot")]
+pub mod shot;
 mod tier0;
 pub mod wire;
 
