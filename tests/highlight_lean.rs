@@ -70,9 +70,17 @@ fn lean_kernel_checks_the_model() {
     std::fs::create_dir_all(&dir).unwrap();
     let copy = dir.join("ChromaHighlightSafety.lean");
     std::fs::write(&copy, model()).unwrap();
+    // An elan proxy (`VESPER_LEAN=lean`, as on Windows) picks the toolchain
+    // from `lean-toolchain`, so run from the repository root when it is there.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cwd = if root.join("lean-toolchain").is_file() {
+        root
+    } else {
+        dir.as_path()
+    };
     let out = Command::new(lean)
         .arg(&copy)
-        .current_dir(&dir)
+        .current_dir(cwd)
         .output()
         .expect("run lean");
     std::fs::remove_dir_all(&dir).ok();
