@@ -1,4 +1,4 @@
-//! Shared runner for the five fixed audited proof packets.
+//! Shared runner for the seven fixed audited proof packets.
 //! These are logical foundation lemmas, not whole-checker verification.
 use serde_json::{Value, json};
 use std::{
@@ -18,6 +18,8 @@ pub enum Packet {
     Order,
     Map,
     Normalize,
+    Normalization,
+    Comparison,
 }
 
 struct PacketSpec {
@@ -181,6 +183,47 @@ const NORMALIZE_REQUIRED: &[&str] = &[
     "Vesper.Lean4LeanLevel42.normalizeAux_succ_mvar_counterexample",
 ];
 
+const NORMALIZATION_REQUIRED: &[&str] = &[
+    "Vesper.Lean4LeanLevel42.subsumeVars_sublist",
+    "Vesper.Lean4LeanLevel42.node_subsumeBy_var_sublist",
+    "Vesper.Lean4LeanLevel42.node_subsume_var_sublist",
+    "Vesper.Lean4LeanLevel42.node_subsume_WF",
+    "Vesper.Lean4LeanLevel42.node_isEmpty_value_zero",
+    "Vesper.Lean4LeanLevel42.node_subsume_vars_union",
+    "Vesper.Lean4LeanLevel42.node_subsume_same_context",
+    "Vesper.Lean4LeanLevel42.self_context_needs_vars_counterexample",
+    "Vesper.Lean4LeanLevel42.minimize_var_sublist",
+    "Vesper.Lean4LeanLevel42.minimize_WF",
+    "Vesper.Lean4LeanLevel42.minimize_vars_context",
+    "Vesper.Lean4LeanLevel42.minimize_value_context",
+    "Vesper.Lean4LeanLevel42.minimize_missing_lookup_counterexample",
+    "Vesper.Lean4LeanLevel42.minimizeEntry_value",
+    "Vesper.Lean4LeanLevel42.minimizeEntry_WF",
+    "Vesper.Lean4LeanLevel42.minimizeEntry_get_other",
+    "Vesper.Lean4LeanLevel42.subsumption_value",
+    "Vesper.Lean4LeanLevel42.subsumption_WF",
+    "Vesper.Lean4LeanLevel42.subsumption_needs_WF_counterexample",
+    "Vesper.Lean4LeanLevel42.subsumption_erases_dominated_row",
+    "Vesper.Lean4LeanLevel42.normalize_value",
+    "Vesper.Lean4LeanLevel42.normalize_WF",
+    "Vesper.Lean4LeanLevel42.normalize_value_witness",
+];
+
+const COMPARISON_REQUIRED: &[&str] = &[
+    "Vesper.Lean4LeanLevel42.norm_all_eq_toList_all",
+    "Vesper.Lean4LeanLevel42.norm_all_eq_true_iff",
+    "Vesper.Lean4LeanLevel42.norm_all_lookup",
+    "Vesper.Lean4LeanLevel42.compareStep_none_bound",
+    "Vesper.Lean4LeanLevel42.compareStep_some_union",
+    "Vesper.Lean4LeanLevel42.compareFold_none_bound",
+    "Vesper.Lean4LeanLevel42.norm_le_sound",
+    "Vesper.Lean4LeanLevel42.geq_sound",
+    "Vesper.Lean4LeanLevel42.norm_le_needs_right_WF_counterexample",
+    "Vesper.Lean4LeanLevel42.norm_le_split_dominators",
+    "Vesper.Lean4LeanLevel42.norm_le_raw_empty_row_incomplete",
+    "Vesper.Lean4LeanLevel42.geq_split_dominators",
+];
+
 impl Packet {
     fn spec(self) -> PacketSpec {
         match self {
@@ -282,6 +325,67 @@ impl Packet {
                 required: NORMALIZE_REQUIRED,
                 scope: "audited_pre_subsumption_normalization_proofs",
                 marker: "LEAN4LEAN_NORMALIZE42_EVIDENCE",
+            },
+            Self::Normalization => PacketSpec {
+                label: "lean4lean_normalization42",
+                module: "Lean4LeanNormalization42",
+                projected: "Lean4LeanNormalization42Kernel",
+                source_modules: &[
+                    "Lean4Lean.List",
+                    "Lean4Lean.Level",
+                    "Lean4LeanLevel42.Semantics",
+                    "Lean4LeanLevel42.ListProofs",
+                    "Lean4LeanLevel42.Subsumption",
+                    "Lean4LeanLevel42.OrderedInsert",
+                    "Lean4LeanLevel42.VarInsert",
+                    "Lean4LeanLevel42.NameOrder",
+                    "Lean4LeanLevel42.MapValue",
+                    "Lean4LeanLevel42.MapHelpers",
+                    "Lean4LeanLevel42.PathPriming",
+                    "Lean4LeanLevel42.LevelSemantics",
+                    "Lean4LeanLevel42.NormalizeInvariants",
+                    "Lean4LeanLevel42.NormalizeValue",
+                    "Lean4LeanLevel42.NodeResidual",
+                    "Lean4LeanLevel42.MapMinimize",
+                    "Lean4LeanLevel42.MapSubsumption",
+                    "Lean4LeanLevel42.NormalizeFinal",
+                    "Lean4LeanNormalization42",
+                ],
+                required: NORMALIZATION_REQUIRED,
+                scope: "audited_normalization_map_denotation",
+                marker: "LEAN4LEAN_NORMALIZATION42_EVIDENCE",
+            },
+            Self::Comparison => PacketSpec {
+                label: "lean4lean_comparison42",
+                module: "Lean4LeanComparison42",
+                projected: "Lean4LeanComparison42Kernel",
+                source_modules: &[
+                    "Lean4Lean.List",
+                    "Lean4Lean.Level",
+                    "Lean4LeanLevel42.Semantics",
+                    "Lean4LeanLevel42.ListProofs",
+                    "Lean4LeanLevel42.Subsumption",
+                    "Lean4LeanLevel42.OrderedInsert",
+                    "Lean4LeanLevel42.VarInsert",
+                    "Lean4LeanLevel42.NameOrder",
+                    "Lean4LeanLevel42.MapValue",
+                    "Lean4LeanLevel42.MapHelpers",
+                    "Lean4LeanLevel42.PathPriming",
+                    "Lean4LeanLevel42.LevelSemantics",
+                    "Lean4LeanLevel42.NormalizeInvariants",
+                    "Lean4LeanLevel42.NormalizeValue",
+                    "Lean4LeanLevel42.NodeResidual",
+                    "Lean4LeanLevel42.MapMinimize",
+                    "Lean4LeanLevel42.MapSubsumption",
+                    "Lean4LeanLevel42.NormalizeFinal",
+                    "Lean4LeanLevel42.MapAll",
+                    "Lean4LeanLevel42.CompareFold",
+                    "Lean4LeanLevel42.MapComparison",
+                    "Lean4LeanComparison42",
+                ],
+                required: COMPARISON_REQUIRED,
+                scope: "audited_level_comparison_soundness",
+                marker: "LEAN4LEAN_COMPARISON42_EVIDENCE",
             },
         }
     }
