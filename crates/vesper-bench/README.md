@@ -34,6 +34,20 @@ measured epoch, body-call count including warmups, and whole-run elapsed time.
 equal operation counts per arm. Zero totals/operations fail. Warmups are not
 included in statistical evidence.
 
+## Paired Hodges–Lehmann estimate
+
+`hodges_lehmann_paired` accepts up to 32 caller-provided signed integer paired
+differences. It returns the median Walsh average scaled by four, plus a
+two-sided signed-rank interval with bounds scaled by two and exact nominal
+coverage when a finite interval of at least 95% is available. Smaller samples
+can return an estimate without an interval. Zeros, tied absolute differences,
+and tied Walsh averages are rejected conservatively.
+
+The interval's interpretation requires independent, identically distributed
+continuous differences symmetric about their population location. The API
+does not establish those assumptions or convert benchmark measurements into
+differences. It is separate from the ratio-based regression gate below.
+
 `mann_whitney_ranks(first, second)` separately computes exact Mann–Whitney U
 rank counts for two bounded `u64` samples. Counts are doubled to represent tied
 pairs without rounding. It returns no p-value, confidence interval or gate
