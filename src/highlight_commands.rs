@@ -8,7 +8,10 @@
 //! highlighted at Tier 0 with a typed [`FallbackReason`].
 use std::{collections::BTreeMap, fs, ops::Range};
 use vesper::{
-    ast::{Expr, ExprKind, Function, Item, Mode, Module, Pass, PatternKind, Statement, Type},
+    ast::{
+        Expr, ExprKind, Function, Item, Mode, Module, Pass, Pattern, PatternKind, Statement, Type,
+        substitute,
+    },
     check::{self, World},
     parser,
 };
@@ -183,6 +186,7 @@ pub fn facts(source: &str) -> Result<SemanticFacts, FallbackReason> {
         src: source,
         world: &checked.world,
         facts: SemanticFacts::default(),
+        done: vec![],
     };
     collector.module(&parsed.module);
     let mut facts = collector.facts;
@@ -203,13 +207,15 @@ struct Binding {
     mint: Range<usize>,
     linear: bool,
     occurrences: Vec<Range<usize>>,
-    hover: u32,
+    hover: Option<u32>,
 }
 
 struct Collector<'a> {
     src: &'a str,
     world: &'a World,
     facts: SemanticFacts,
+    /// Bindings of the current function whose lexical scope has ended.
+    done: Vec<Binding>,
 }
 
 fn mode_name(mode: Mode) -> &'static str {
@@ -311,20 +317,23 @@ impl Collector<'_> {
                 mint,
                 linear: p.pass == Pass::Sink && mode == Mode::Linear,
                 occurrences: vec![],
-                hover,
+                hover: Some(hover),
             });
         }
         if let Some(body) = &f.body {
             self.expr(body, &bounds, &mut bindings, false);
         }
-        for b in bindings.into_iter().filter(|b| b.linear) {
+        let mut all = std::mem::take(&mut self.done);
+        all.extend(bindings);
+        all.sort_by_key(|b| b.mint.start);
+        for b in all.into_iter().filter(|b| b.linear) {
             let discharge = b.occurrences.last().cloned();
             self.facts.linear_bindings.push(LinearBindingFact {
                 name: b.name.as_str().into(),
                 mint: b.mint,
                 occurrences: b.occurrences,
                 discharge,
-                hover: Some(b.hover),
+                hover: b.hover,
             });
         }
     }
@@ -341,17 +350,79 @@ impl Collector<'_> {
             return;
         };
         let mode = self.world.mode(ty, bounds);
-        let hover = self.hover(
-            mint.clone(),
-            format!("{name} : {ty} (mod {})", mode_name(mode)),
-        );
+        // A binding whose type the checker did not record still shadows
+        // outer names, but gets no hover row and is never linear.
+        let known = *ty != Type::Infer;
+        let hover = known.then(|| {
+            self.hover(
+                mint.clone(),
+                format!("{name} : {ty} (mod {})", mode_name(mode)),
+            )
+        });
         bindings.push(Binding {
             name: name.into(),
             mint,
-            linear: mode == Mode::Linear,
+            linear: known && mode == Mode::Linear,
             occurrences: vec![],
             hover,
         });
+    }
+
+    /// Binds every name a pattern introduces, with its component type, as
+    /// the checker's `bind_mode` does (tuples by position, constructor
+    /// fields by name with the ADT's generics substituted).
+    fn bind_pattern(
+        &mut self,
+        p: &Pattern,
+        ty: &Type,
+        bounds: &BTreeMap<String, Mode>,
+        bindings: &mut Vec<Binding>,
+    ) {
+        match &p.kind {
+            PatternKind::Bind(name) => self.bind(name, &p.span, ty, bounds, bindings),
+            PatternKind::Wild | PatternKind::Literal(_) => {}
+            PatternKind::Tuple(ps) => {
+                for (i, q) in ps.iter().enumerate() {
+                    let t = match ty {
+                        Type::Tuple(ts) => ts.get(i).cloned().unwrap_or(Type::Infer),
+                        _ => Type::Infer,
+                    };
+                    self.bind_pattern(q, &t, bounds, bindings);
+                }
+            }
+            PatternKind::Constructor { name, fields, .. } => {
+                let found = self.world.constructor(name);
+                let vars: BTreeMap<String, Type> = match (found, ty) {
+                    (Some((adt, _)), Type::Named(n, args)) if *n == adt.name => adt
+                        .generics
+                        .iter()
+                        .zip(args)
+                        .map(|(g, t)| (g.name.clone(), t.clone()))
+                        .collect(),
+                    _ => BTreeMap::new(),
+                };
+                for (field, q) in fields {
+                    let t = found
+                        .and_then(|(_, v)| v.fields.iter().find(|f| &f.name == field))
+                        .map(|f| substitute(&f.ty, &vars))
+                        .unwrap_or(Type::Infer);
+                    self.bind_pattern(q, &t, bounds, bindings);
+                }
+            }
+        }
+    }
+
+    /// Ends a lexical scope opened when `bindings` had `mark` entries.
+    fn close(&mut self, bindings: &mut Vec<Binding>, mark: usize) {
+        self.done.extend(bindings.drain(mark..));
+    }
+
+    fn expr_type(&self, e: &Expr) -> Type {
+        self.world
+            .types
+            .get(&(e.span.start, e.span.end))
+            .cloned()
+            .unwrap_or(Type::Infer)
     }
 
     /// Field-access chain rooted at a name: marks each field identifier as a
@@ -376,13 +447,18 @@ impl Collector<'_> {
         }
     }
 
-    fn receiver_writes(&self, method: &str) -> bool {
-        let suffix = format!("::{method}");
+    /// Whether the method the checker resolves for `receiver.method(..)`
+    /// takes its receiver `inout` or `sink`: `Type::method` for the
+    /// receiver's recorded type. Unresolved calls count as reads.
+    fn receiver_writes(&self, receiver: &Expr, method: &str) -> bool {
+        let Type::Named(type_name, _) = self.expr_type(receiver) else {
+            return false;
+        };
         self.world
             .functions
-            .iter()
-            .filter(|(name, _)| name.as_str() == method || name.ends_with(&suffix))
-            .any(|(_, f)| f.params.first().is_some_and(|p| p.pass != Pass::In))
+            .get(&format!("{type_name}::{method}"))
+            .and_then(|f| f.params.first())
+            .is_some_and(|p| p.pass != Pass::In)
     }
 
     fn expr(
@@ -424,6 +500,7 @@ impl Collector<'_> {
                 }
             }
             ExprKind::Block { statements, tail } => {
+                let mark = bindings.len();
                 for s in statements {
                     match s {
                         Statement::Let { pat, ty, value } => {
@@ -431,15 +508,9 @@ impl Collector<'_> {
                             let ty = if *ty != Type::Infer {
                                 ty.clone()
                             } else {
-                                self.world
-                                    .types
-                                    .get(&(value.span.start, value.span.end))
-                                    .cloned()
-                                    .unwrap_or(Type::Infer)
+                                self.expr_type(value)
                             };
-                            if let PatternKind::Bind(name) = &pat.kind {
-                                self.bind(name, &pat.span, &ty, bounds, bindings);
-                            }
+                            self.bind_pattern(pat, &ty, bounds, bindings);
                         }
                         Statement::Expr(x) => self.expr(x, bounds, bindings, false),
                     }
@@ -447,10 +518,11 @@ impl Collector<'_> {
                 if let Some(t) = tail {
                     self.expr(t, bounds, bindings, false);
                 }
+                self.close(bindings, mark);
             }
             ExprKind::Call { callee, args, .. } => {
                 if let ExprKind::Field(receiver, method) = &callee.kind {
-                    let writes = self.receiver_writes(method);
+                    let writes = self.receiver_writes(receiver, method);
                     self.expr(receiver, bounds, bindings, writes);
                 } else {
                     self.expr(callee, bounds, bindings, false);
@@ -486,11 +558,28 @@ impl Collector<'_> {
             }
             ExprKind::Match { value, arms } => {
                 self.expr(value, bounds, bindings, false);
-                for (_, arm) in arms {
+                let ty = self.expr_type(value);
+                for (pat, arm) in arms {
+                    let mark = bindings.len();
+                    self.bind_pattern(pat, &ty, bounds, bindings);
                     self.expr(arm, bounds, bindings, false);
+                    self.close(bindings, mark);
                 }
             }
-            ExprKind::Closure { body, .. } => self.expr(body, bounds, bindings, false),
+            ExprKind::Closure { params, body, .. } => {
+                let mark = bindings.len();
+                for p in params {
+                    self.bind(&p.name, &p.span, &p.ty, bounds, bindings);
+                    // Only an owned (`sink`) parameter carries an obligation.
+                    if p.pass != Pass::Sink
+                        && let Some(b) = bindings.last_mut()
+                    {
+                        b.linear = false;
+                    }
+                }
+                self.expr(body, bounds, bindings, false);
+                self.close(bindings, mark);
+            }
             ExprKind::Handle {
                 state,
                 body,
@@ -498,14 +587,24 @@ impl Collector<'_> {
                 ops,
                 ..
             } => {
-                if let Some((_, init)) = state {
+                let outer = bindings.len();
+                if let Some((pat, init)) = state {
                     self.expr(init, bounds, bindings, false);
+                    let ty = self.expr_type(init);
+                    self.bind_pattern(pat, &ty, bounds, bindings);
                 }
                 self.expr(body, bounds, bindings, false);
-                self.expr(&ret.body, bounds, bindings, false);
-                for op in ops {
-                    self.expr(&op.body, bounds, bindings, false);
+                for clause in std::iter::once(ret.as_ref()).chain(ops) {
+                    let mark = bindings.len();
+                    for pat in &clause.pats {
+                        // Clause parameter types are not in the checker's
+                        // expression map: shadow only.
+                        self.bind_pattern(pat, &Type::Infer, bounds, bindings);
+                    }
+                    self.expr(&clause.body, bounds, bindings, false);
+                    self.close(bindings, mark);
                 }
+                self.close(bindings, outer);
             }
         }
     }

@@ -138,6 +138,25 @@ fn token_mode_matches_cst_mode_boundaries_and_classes() {
 }
 
 #[test]
+fn unclosed_effect_rows_stay_linear_time() {
+    // Each `eff [` opens a bracket that never closes; a rescan per row would
+    // be quadratic in the number of rows.
+    let src = "fn f() -> u64 eff [ A, ".repeat(20_000);
+    for mode in [highlight_tier0_tokens, highlight_tier0] {
+        let start = Instant::now();
+        let spans = mode(&src).unwrap();
+        verify_lossless_spans(src.len(), &spans).unwrap();
+        assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
+    }
+    // Many distinct effect names: classification stays bounded and lossless.
+    let names: String = (0..5000).map(|i| format!("E{i}, ")).collect();
+    let src = format!("fn f() eff [{names}] {{}}");
+    let spans = highlight_tier0_tokens(&src).unwrap();
+    assert_eq!(class_of(&src, &spans, "E0", 0), C::EffectAbortable);
+    assert_eq!(class_of(&src, &spans, "E4999", 0), C::TypeNominal);
+}
+
+#[test]
 fn oversized_input_is_a_typed_error() {
     let big = "a".repeat(64);
     assert_eq!(

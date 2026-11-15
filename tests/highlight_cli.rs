@@ -184,6 +184,48 @@ fn tier1_marks_linear_inout_and_effect_facts_from_the_checker() {
 }
 
 #[test]
+fn tier1_respects_block_scopes_and_destructuring() {
+    // An inner linear `tx` shadows an outer copy `tx`; after the block the
+    // outer one is visible again and is not linear.
+    let path = fixture("shadowing.ves");
+    let src = std::fs::read_to_string(root().join(&path)).unwrap();
+    let (doc, _) = json(&["highlight", "--json", &path]);
+    assert_eq!(doc["tier"], 1);
+    let tx: Vec<_> = tokens(&doc, &src)
+        .into_iter()
+        .filter(|t| t.text == "tx")
+        .collect();
+    assert_eq!(tx.len(), 4);
+    assert_eq!(tx[0].class, "pass-mode-in");
+    assert_eq!(tx[0].hover.as_deref(), Some("tx : u64 (mod copy)"));
+    assert_eq!(tx[1].class, "linear-binding");
+    assert_eq!(tx[2].class, "linear-binding");
+    assert_eq!(tx[3].class, "pass-mode-in", "outer tx after the block");
+    assert_eq!(tx[3].flags & 1, 0);
+
+    // `let Pair { left, right } = pair;` binds two linear Tickets.
+    let path = "tests/fixtures/runtime_resource_trace/mutation.ves";
+    let src = std::fs::read_to_string(root().join(path)).unwrap();
+    let (doc, _) = json(&["highlight", "--json", path]);
+    assert_eq!(doc["tier"], 1);
+    let toks = tokens(&doc, &src);
+    let routing = src.find("fn routing").unwrap();
+    let mut offset = 0;
+    let mut linear = vec![];
+    for t in &toks {
+        if offset > routing
+            && (t.text == "left" || t.text == "right")
+            && t.class == "linear-binding"
+        {
+            linear.push((t.text.clone(), t.hover.clone()));
+        }
+        offset += t.text.len();
+    }
+    assert!(linear.contains(&("left".into(), Some("left : Ticket (mod linear)".into()))));
+    assert!(linear.contains(&("right".into(), Some("right : Ticket (mod linear)".into()))));
+}
+
+#[test]
 fn snippets_that_do_not_check_fall_back_to_tier0_with_a_reason() {
     let path = fixture("abort_across_inout.ves");
     let (doc, stderr) = json(&["highlight", "--json", &path]);

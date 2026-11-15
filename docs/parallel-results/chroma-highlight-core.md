@@ -71,8 +71,8 @@ a descendant of the required baseline `37f7b8b`). Branch:
   only when the snippet has no syntax and no check diagnostics; otherwise it
   falls back to Tier 0 and reports the first diagnostic (stderr and `--json`).
 - **`lean/ChromaHighlightSafety.lean`** (§43.4).
-- Tests: `crates/vesper-highlight/tests/chroma.rs` (16), unit tests (5),
-  `tests/highlight_cli.rs` (5), `tests/highlight_lean.rs` (3),
+- Tests: `crates/vesper-highlight/tests/chroma.rs` (17), unit tests (5),
+  `tests/highlight_cli.rs` (6), `tests/highlight_lean.rs` (3),
   `tests/highlight_wasm.rs` (1); fixtures `tests/fixtures/highlight/`.
 
 ## Public API for lane 2 (`vesper shot`) and lane 17 (Lens)
@@ -196,9 +196,9 @@ browser's copy behaviour or perceived contrast.
 - `cargo +1.100.0 fmt --all -- --check`: clean.
 - `cargo +1.100.0 clippy --locked -p vesper-highlight -p vesper --all-targets -- -D warnings`: clean.
 - `cargo +1.100.0 clippy --locked -p vesper-highlight --target wasm32-unknown-unknown -- -D warnings`: clean.
-- `cargo +1.100.0 test -p vesper-highlight` (debug and release): 21 passed.
+- `cargo +1.100.0 test -p vesper-highlight` (debug and release): 22 passed.
 - `cargo +1.100.0 test --test highlight_cli --test highlight_lean --test highlight_wasm` with
-  `VESPER_LEAN` set: 9 passed. `highlight_cli` round-trips all 348 `.ves`
+  `VESPER_LEAN` set: 10 passed. `highlight_cli` round-trips all 348 `.ves`
   files in the repository and 13,000+ truncated prefixes in CST mode, and
   checks token mode's boundaries on every file.
 - `lean lean/ChromaHighlightSafety.lean` (4.24.0): no output, exit 0.
@@ -229,13 +229,20 @@ the sync script.
   effect) versus abortable (effect)"); Tier 1 replaces it with the checked
   World's answer.
 - Tier 1 runs only when the snippet has zero syntax and check diagnostics.
-  Its facts come from the AST and existing checker outputs; bindings are
-  matched to uses by name and source order, so an inner shadowing binding
-  of the same name in a nested block can mis-attribute uses. A linear
-  binding's discharge is its last use in the function.
+  Its facts come from the AST and existing checker outputs. Bindings follow
+  lexical scope (blocks, match arms, closures, handler clauses), patterns
+  bind their components with the types the checker's `bind_mode` gives them
+  (tuples by position, constructor fields with ADT generics substituted),
+  and uses resolve to the innermost visible binding. Handler clause
+  parameters have no recorded type, so they only shadow. A linear binding's
+  discharge is its last use in the function.
 - Mutated leaves: a field path is mutated when it is an assignment target,
   an explicit `inout`/`sink` argument, or the receiver of a method whose
-  first parameter is not `in`. Other field reads are `FieldLeafRead`.
+  first parameter is not `in`, resolved as `Type::method` from the
+  receiver's recorded type (an unresolved method counts as a read).
+- Tier 0 is linear-time on incomplete input: effect rows are tracked with a
+  bracket stack in one pass, and at most 64 distinct effect names are
+  tracked per snippet (later ones stay `TypeNominal`). Other field reads are `FieldLeafRead`.
 - Rust ownership in this crate is not evidence that the Vesper source typing
   rules are implemented; the linear facts are what the checker reported.
 

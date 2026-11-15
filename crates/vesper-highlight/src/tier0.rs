@@ -276,6 +276,9 @@ fn is_wire_scalar(text: &str) -> bool {
         }
 }
 
+/// Most distinct effect names Tier 0 tracks per snippet.
+const MAX_EFFECT_NAMES: usize = 64;
+
 const CONTEXTUAL_DECL: [&str; 9] = [
     "pub", "use", "trait", "model", "wire", "type", "where", "region", "dim",
 ];
@@ -304,16 +307,22 @@ fn classify(src: &str, toks: &[Tok], token_mode: bool) -> Vec<HighlightSpan> {
     // effects, and a map would dominate the wasm module's size).
     let mut effects: Vec<(&str, bool)> = vec![("Fail", false), ("Cancel", false)];
     fn note<'s>(effects: &mut Vec<(&'s str, bool)>, name: &'s str, linear: Option<bool>) {
-        match effects.iter_mut().find(|(n, _)| *n == name) {
-            Some(entry) => {
+        match effects.iter().position(|(n, _)| *n == name) {
+            Some(i) => {
                 if let Some(l) = linear {
-                    entry.1 = l;
+                    effects[i].1 = l;
                 }
             }
-            None => effects.push((name, linear.unwrap_or(false))),
+            // Bounded so adversarial input cannot make lookups quadratic;
+            // names past the cap stay `TypeNominal`.
+            None if effects.len() < MAX_EFFECT_NAMES => {
+                effects.push((name, linear.unwrap_or(false)))
+            }
+            None => {}
         }
     }
     let mut declared_linear: Vec<&str> = vec![];
+    let mut rows: Vec<bool> = vec![];
     for (p, &i) in sig.iter().enumerate() {
         match toks[i].kind {
             K::Effect => {
@@ -335,30 +344,17 @@ fn classify(src: &str, toks: &[Tok], token_mode: bool) -> Vec<HighlightSpan> {
                     note(&mut effects, text(&toks[j]), None);
                 }
             }
-            K::Eff => {
-                if sig.get(p + 1).is_none_or(|&j| toks[j].kind != K::LBracket) {
-                    continue;
-                }
-                let mut depth = 0usize;
-                let mut q = p + 1;
-                while let Some(&j) = sig.get(q) {
-                    match toks[j].kind {
-                        K::LBracket => depth += 1,
-                        K::RBracket => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        K::Upper if depth == 1 => {
-                            let before = toks[sig[q - 1]].kind;
-                            if matches!(before, K::LBracket | K::Comma | K::Colon) {
-                                note(&mut effects, text(&toks[j]), None);
-                            }
-                        }
-                        _ => {}
-                    }
-                    q += 1;
+            // One pass over brackets: `row` marks a `[` opened right after
+            // `eff`, so effect names are its direct elements. Unclosed
+            // brackets in incomplete input cost nothing extra.
+            K::LBracket => rows.push(p > 0 && toks[sig[p - 1]].kind == K::Eff),
+            K::RBracket => {
+                rows.pop();
+            }
+            K::Upper if rows.last() == Some(&true) => {
+                let before = toks[sig[p - 1]].kind;
+                if matches!(before, K::LBracket | K::Comma | K::Colon) {
+                    note(&mut effects, text(&toks[i]), None);
                 }
             }
             _ => {}

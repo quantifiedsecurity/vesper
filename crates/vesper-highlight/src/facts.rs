@@ -184,20 +184,22 @@ pub fn highlight_tier1(src: &str, facts: &SemanticFacts) -> Result<Highlight, Ch
             }
         }
     }
-    for e in &facts.effects {
-        let class = if e.linear {
-            C::EffectLinear
-        } else {
-            C::EffectAbortable
-        };
-        for s in spans.iter_mut() {
-            if matches!(
-                s.class,
-                C::TypeNominal | C::EffectLinear | C::EffectAbortable
-            ) && src[s.start..s.end] == *e.name
-            {
-                s.class = class;
-            }
+    let effects: std::collections::BTreeMap<&str, bool> = facts
+        .effects
+        .iter()
+        .map(|e| (e.name.as_str(), e.linear))
+        .collect();
+    for s in spans.iter_mut() {
+        if matches!(
+            s.class,
+            C::TypeNominal | C::EffectLinear | C::EffectAbortable
+        ) && let Some(&linear) = effects.get(&src[s.start..s.end])
+        {
+            s.class = if linear {
+                C::EffectLinear
+            } else {
+                C::EffectAbortable
+            };
         }
     }
     for leaf in &facts.field_leaves {
