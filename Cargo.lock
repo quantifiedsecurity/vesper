@@ -551,6 +551,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "borsh"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "553c5d846a6ba5150c65e3b1b8ec073bcf1abc20f9b7220de384a4443ea4e20a"
+dependencies = [
+ "bytes",
+ "cfg_aliases",
+]
+
+[[package]]
 name = "boxcar"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4546,6 +4556,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "smol_str"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eeb7109d23f319619d4cc0de5464613c8b7b1a09db2774a58101459cf6be2f10"
+dependencies = [
+ "borsh",
+ "serde_core",
+]
+
+[[package]]
 name = "snafu"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5324,6 +5344,7 @@ dependencies = [
  "vesper-fmt",
  "vesper-forge",
  "vesper-grammar",
+ "vesper-highlight",
  "vesper-kinetic",
  "vesper-lean-syntax",
  "vesper-lint",
@@ -5614,6 +5635,15 @@ dependencies = [
 [[package]]
 name = "vesper-grammar"
 version = "0.1.0"
+
+[[package]]
+name = "vesper-highlight"
+version = "0.1.0"
+dependencies = [
+ "rowan",
+ "smol_str",
+ "vesper-syntax",
+]
 
 [[package]]
 name = "vesper-ignis"

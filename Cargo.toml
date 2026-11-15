@@ -72,6 +72,7 @@ members = [
     "crates/vesper-gpu-compute",
     "crates/vesper-ignis-vulkan",
     "crates/vesper-codegen-verified",
+    "crates/vesper-highlight",
     "experiments/native-pulse",
 ]
 # Preserve the pre-extraction `cargo test` coverage of moved unit tests.
@@ -145,6 +146,7 @@ default-members = [
     "crates/vesper-gpu-compute",
     "crates/vesper-ignis-vulkan",
     "crates/vesper-codegen-verified",
+    "crates/vesper-highlight",
     "experiments/native-pulse",
 ]
 
@@ -194,6 +196,7 @@ vesper-forge = { path = "crates/vesper-forge", default-features = false }
 vesper-simd = { path = "crates/vesper-simd" }
 vesper-lean-syntax = { path = "crates/vesper-lean-syntax" }
 vesper-syntax = { path = "crates/vesper-syntax" }
+vesper-highlight = { path = "crates/vesper-highlight" }
 vesper-span = { path = "crates/vesper-span" }
 vesper-lsp = { path = "crates/vesper-lsp" }
 vesper-diagnostics = { path = "crates/vesper-diagnostics" }
