@@ -41,7 +41,11 @@ a descendant of the required baseline `37f7b8b`). Branch:
     `FieldLeafRead`; effects become `EffectLinear` / `EffectAbortable` from the
     checked World. Facts outside the source or off a UTF-8 boundary are
     `InvalidFact`. `tier0_fallback(src, FallbackReason)` returns Tier 0 output
-    with a typed reason (`Syntax`, `Check`, `NotRequested`).
+    with a typed reason (`Syntax`, `Check`, `Budget`, `NotRequested`). The CLI
+    runs the checker through the guarded `tooling::frontend::check_source` at
+    its hard maxima, so inputs whose inferred types grow exponentially (e.g.
+    repeated `let x = (x, x);`) fall back as `Budget` in milliseconds. An
+    argument with no mode keyword takes the callee parameter's mode.
   - **Wire record** `wire::ChromaTokenSpanWire` (16 bytes, little-endian,
     offsets 0/4/8/10/12, `NO_HOVER = u32::MAX`), `encode`, `encode_into`
     (leaves the buffer unchanged on error), `decode` (rejects truncated

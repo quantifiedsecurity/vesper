@@ -78,6 +78,9 @@ pub enum FallbackReason {
         message: SmolStr,
         span: Range<usize>,
     },
+    /// The checker's analysis budget (AST size, nesting, type growth) was
+    /// exceeded, so the snippet was not checked.
+    Budget { message: SmolStr },
     /// Tier 1 was not requested.
     NotRequested,
 }
@@ -86,13 +89,14 @@ impl FallbackReason {
     pub fn code(&self) -> &str {
         match self {
             Self::Syntax { code, .. } | Self::Check { code, .. } => code,
-            Self::NotRequested => "",
+            Self::Budget { .. } | Self::NotRequested => "",
         }
     }
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Syntax { .. } => "syntax",
             Self::Check { .. } => "check",
+            Self::Budget { .. } => "budget",
             Self::NotRequested => "not-requested",
         }
     }

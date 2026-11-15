@@ -154,6 +154,17 @@ fn unclosed_effect_rows_stay_linear_time() {
     let spans = highlight_tier0_tokens(&src).unwrap();
     assert_eq!(class_of(&src, &spans, "E0", 0), C::EffectAbortable);
     assert_eq!(class_of(&src, &spans, "E4999", 0), C::TypeNominal);
+    // 20,000 effect declarations, each used: the name table is capped, so
+    // lookups stay constant-time per token.
+    let src: String = (0..20_000)
+        .map(|i| format!("effect E{i} {{ }}\nfn f{i}() eff [E{i}] {{ }}\n"))
+        .collect();
+    for mode in [highlight_tier0_tokens, highlight_tier0] {
+        let start = Instant::now();
+        let spans = mode(&src).unwrap();
+        verify_lossless_spans(src.len(), &spans).unwrap();
+        assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
+    }
 }
 
 #[test]

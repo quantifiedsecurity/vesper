@@ -55,6 +55,10 @@ pub fn render(h: &Highlight, theme: &str) -> Result<String, ChromaError> {
                 string_into(message, &mut out);
                 let _ = write!(out, ",\"start\":{},\"end\":{}", span.start, span.end);
             }
+            if let crate::FallbackReason::Budget { message } = reason {
+                out.push_str(",\"message\":");
+                string_into(message, &mut out);
+            }
             out.push('}');
         }
     }

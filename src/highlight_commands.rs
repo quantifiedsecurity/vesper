@@ -12,8 +12,8 @@ use vesper::{
         Expr, ExprKind, Function, Item, Mode, Module, Pass, Pattern, PatternKind, Statement, Type,
         substitute,
     },
-    check::{self, World},
-    parser,
+    check::World,
+    tooling::frontend::{AnalysisFailure, AnalysisLimits, check_source},
 };
 use vesper_highlight::{
     ChromaPalette, EffectFact, FallbackReason, FieldLeafFact, Highlight, HoverEntry,
@@ -24,6 +24,18 @@ const HELP: &str = "Usage: vesper highlight [--html|--ansi|--json] [--theme dusk
 
 /// Largest input file (the highlighter's default byte budget).
 const MAX_BYTES: usize = vesper_highlight::DEFAULT_MAX_SOURCE_BYTES;
+/// Tier 1 analysis budget: the guarded front end's hard maxima.
+const ANALYSIS_LIMITS: AnalysisLimits = AnalysisLimits {
+    max_source_bytes: 262_144,
+    max_ast_nodes: 8192,
+    max_type_nodes: 32768,
+    max_depth: 64,
+    max_identifier_bytes: 1024,
+    max_printed_type_bytes: 8192,
+    max_diagnostics: 256,
+    max_diagnostic_bytes: 262_144,
+    max_metadata_bytes: 2_097_152,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Format {
@@ -127,6 +139,7 @@ fn describe(reason: &FallbackReason) -> String {
     match reason {
         FallbackReason::Syntax { code, message, .. } => format!("syntax error {code}: {message}"),
         FallbackReason::Check { code, message, .. } => format!("check error {code}: {message}"),
+        FallbackReason::Budget { message } => format!("analysis budget exceeded: {message}"),
         FallbackReason::NotRequested => "not requested".into(),
     }
 }
@@ -166,32 +179,51 @@ pub fn facts(source: &str) -> Result<SemanticFacts, FallbackReason> {
             span: 0..0,
         });
     }
-    let parsed = parser::parse(source);
-    if let Some(d) = parsed.diagnostics.first() {
-        return Err(FallbackReason::Syntax {
-            code: d.code.as_str().into(),
-            message: d.message.as_str().into(),
-            span: d.span.clone(),
-        });
-    }
-    let checked = check::check(&parsed.module);
-    if let Some(d) = checked.diagnostics.first() {
-        return Err(FallbackReason::Check {
-            code: d.code.as_str().into(),
-            message: d.message.as_str().into(),
-            span: d.span.clone(),
-        });
-    }
+    // The guarded front end bounds AST size, nesting and type growth, so a
+    // small input such as repeated `let x = (x, x);` cannot exhaust memory.
+    let checked = match check_source(source, ANALYSIS_LIMITS) {
+        Ok(c) => c,
+        Err(AnalysisFailure::Parse { diagnostics }) => {
+            return Err(diagnostics.first().map_or_else(
+                || FallbackReason::Budget {
+                    message: "parse failed".into(),
+                },
+                |d| FallbackReason::Syntax {
+                    code: d.code.as_str().into(),
+                    message: d.message.as_str().into(),
+                    span: d.span.clone(),
+                },
+            ));
+        }
+        Err(AnalysisFailure::Semantic { diagnostics }) => {
+            return Err(diagnostics.first().map_or_else(
+                || FallbackReason::Budget {
+                    message: "check failed".into(),
+                },
+                |d| FallbackReason::Check {
+                    code: d.code.as_str().into(),
+                    message: d.message.as_str().into(),
+                    span: d.span.clone(),
+                },
+            ));
+        }
+        Err(AnalysisFailure::Resource { reason } | AnalysisFailure::Unsupported { reason }) => {
+            return Err(FallbackReason::Budget {
+                message: reason.as_str().into(),
+            });
+        }
+    };
+    let parsed = checked.parsed();
     let mut collector = Collector {
         src: source,
-        world: &checked.world,
+        world: checked.world(),
         facts: SemanticFacts::default(),
         done: vec![],
     };
     collector.module(&parsed.module);
     let mut facts = collector.facts;
     facts.effects = checked
-        .world
+        .world()
         .effects
         .values()
         .map(|e| EffectFact {
@@ -252,7 +284,7 @@ fn find_word(src: &str, range: &Range<usize>, word: &str) -> Option<Range<usize>
     None
 }
 
-impl Collector<'_> {
+impl<'a> Collector<'a> {
     fn hover(&mut self, span: Range<usize>, text: String) -> u32 {
         let id = self.facts.hovers.len() as u32;
         self.facts.hovers.push(HoverEntry {
@@ -450,15 +482,22 @@ impl Collector<'_> {
     /// Whether the method the checker resolves for `receiver.method(..)`
     /// takes its receiver `inout` or `sink`: `Type::method` for the
     /// receiver's recorded type. Unresolved calls count as reads.
-    fn receiver_writes(&self, receiver: &Expr, method: &str) -> bool {
-        let Type::Named(type_name, _) = self.expr_type(receiver) else {
-            return false;
-        };
-        self.world
-            .functions
-            .get(&format!("{type_name}::{method}"))
-            .and_then(|f| f.params.first())
-            .is_some_and(|p| p.pass != Pass::In)
+    /// The function a call resolves to, and the index of the parameter its
+    /// first argument binds (1 for a method call, whose receiver is param 0).
+    fn callee(&self, callee: &Expr) -> Option<(&'a Function, usize)> {
+        match &callee.kind {
+            ExprKind::Name(n) => self.world.functions.get(n).map(|f| (f, 0)),
+            ExprKind::Field(receiver, method) => {
+                let Type::Named(type_name, _) = self.expr_type(receiver) else {
+                    return None;
+                };
+                self.world
+                    .functions
+                    .get(&format!("{type_name}::{method}"))
+                    .map(|f| (f, 1))
+            }
+            _ => None,
+        }
     }
 
     fn expr(
@@ -521,14 +560,25 @@ impl Collector<'_> {
                 self.close(bindings, mark);
             }
             ExprKind::Call { callee, args, .. } => {
-                if let ExprKind::Field(receiver, method) = &callee.kind {
-                    let writes = self.receiver_writes(receiver, method);
+                let resolved = self.callee(callee);
+                if let ExprKind::Field(receiver, _) = &callee.kind {
+                    let writes = resolved
+                        .and_then(|(f, _)| f.params.first())
+                        .is_some_and(|p| p.pass != Pass::In);
                     self.expr(receiver, bounds, bindings, writes);
                 } else {
                     self.expr(callee, bounds, bindings, false);
                 }
-                for a in args {
-                    let w = a.explicit && matches!(a.pass, Pass::Inout | Pass::Sink);
+                for (i, a) in args.iter().enumerate() {
+                    // An argument without a mode keyword takes its parameter's mode.
+                    let pass = if a.explicit {
+                        Some(a.pass)
+                    } else {
+                        resolved
+                            .and_then(|(f, off)| f.params.get(off + i))
+                            .map(|p| p.pass)
+                    };
+                    let w = matches!(pass, Some(Pass::Inout | Pass::Sink));
                     self.expr(&a.expr, bounds, bindings, w);
                 }
             }

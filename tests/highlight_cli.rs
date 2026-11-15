@@ -226,6 +226,57 @@ fn tier1_respects_block_scopes_and_destructuring() {
 }
 
 #[test]
+fn implicit_arguments_take_the_callee_parameter_mode() {
+    // `bump(c.hits)` passes `c.hits` to an `inout` parameter without a mode
+    // keyword; the leaf is still a write.
+    let path = fixture("implicit_inout.ves");
+    let src = std::fs::read_to_string(root().join(&path)).unwrap();
+    let (doc, _) = json(&["highlight", "--json", &path]);
+    assert_eq!(doc["tier"], 1);
+    let call = src.find("bump(c.hits)").unwrap();
+    let (mut offset, mut leaves) = (0, vec![]);
+    for t in tokens(&doc, &src) {
+        if offset > call && (t.text == "hits" || t.text == "total") {
+            leaves.push((t.text.clone(), t.class.clone(), t.flags & 2));
+        }
+        offset += t.text.len();
+    }
+    assert_eq!(
+        leaves,
+        [
+            ("hits".into(), "field-leaf-mut".into(), 2),
+            ("total".into(), "field-leaf-read".into(), 0)
+        ]
+    );
+}
+
+#[test]
+fn inputs_past_the_analysis_budget_fall_back_quickly() {
+    // Each `let x = (x, x);` doubles the inferred type; the guarded front end
+    // stops it before the checker allocates.
+    let dir = std::env::temp_dir().join(format!("vesper-highlight-budget-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("grow.ves");
+    let text = format!(
+        "fn main() -> u64 {{\n    let x = 0;\n{}    0\n}}\n",
+        "    let x = (x, x);\n".repeat(40)
+    );
+    std::fs::write(&path, &text).unwrap();
+    let start = std::time::Instant::now();
+    let (doc, stderr) = json(&["highlight", "--json", path.to_str().unwrap()]);
+    assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
+    assert_eq!(doc["tier"], 0);
+    assert_eq!(doc["fallback"]["kind"], "budget");
+    assert!(stderr.contains("analysis budget exceeded"), "{stderr}");
+    let toks = tokens(&doc, &text);
+    assert_eq!(
+        toks.iter().map(|t| t.text.as_str()).collect::<String>(),
+        text
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn snippets_that_do_not_check_fall_back_to_tier0_with_a_reason() {
     let path = fixture("abort_across_inout.ves");
     let (doc, stderr) = json(&["highlight", "--json", &path]);
