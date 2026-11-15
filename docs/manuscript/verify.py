@@ -22,9 +22,14 @@ def verify(pdf_path, typst):
     root = Path(__file__).resolve().parents[2]
     document = pymupdf.open(pdf_path)
     outline = document.get_toc()
+    parts = [m[1] for level, title, _ in outline
+             if level == 1 and (m := re.match(r"^Part ([IVX]+)\.\s", title))]
+    assert parts == ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"], (
+        f"The PDF must contain Parts I–VIII in order, got {parts}"
+    )
     numbered = [int(m[1]) for level, title, _ in outline
                 if level == 1 and (m := re.match(r"^(\d+)\.\s", title))]
-    assert numbered == list(range(1, 45)), "The PDF must contain all 44 chapters once, in order"
+    assert numbered == list(range(1, 42)), "The PDF must contain all 41 chapters once, in order"
     assert all(any(level == 1 and title.startswith(f"Appendix {letter}.")
                    for level, title, _ in outline) for letter in ("A", "B"))
     assert document.metadata["creator"] == "Typst 0.15.1"
@@ -58,9 +63,14 @@ def verify(pdf_path, typst):
     assert not errors, "\n".join(errors)
     assert all(document.extract_font(xref)[3] for xref in fonts), "Every font must be embedded"
     return {
-        "pages": len(document), "chapters": 44, "appendices": ["A", "B"],
-        "bookmarks": len(outline), "links": sum(len(p.get_links()) for p in document),
-        "code_blocks_preserved": len(raw), "embedded_fonts": len(fonts),
+        "pages": len(document),
+        "parts": 8,
+        "chapters": 41,
+        "appendices": ["A", "B"],
+        "bookmarks": len(outline),
+        "links": sum(len(p.get_links()) for p in document),
+        "code_blocks_preserved": len(raw),
+        "embedded_fonts": len(fonts),
         "layout_errors": errors,
     }
 

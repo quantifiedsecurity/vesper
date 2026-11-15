@@ -9,7 +9,7 @@
 #set document(
   title: "Vesper: Language Design and Formal Specification",
   author: "Vesper",
-  description: "The complete Vesper language manuscript: sections 1–44, mechanized metatheory, and official brand specification.",
+  description: "The complete Vesper language specification: Parts I–VIII (Chapters 1–41), mechanized Lean 4 metatheory, and official brand specification.",
   keywords: ("Vesper", "systems programming", "linear types", "lexical effects", "refinement types", "Lean 4"),
   date: datetime(year: 2026, month: 11, day: 14),
 )
@@ -60,7 +60,7 @@
 #v(10mm)
 #line(length: 100%, stroke: 0.6pt + rule)
 #v(7mm)
-#text(size: 12pt)[Sections 1–44 · Appendices A and B]
+#text(size: 12pt)[Parts I–VIII · Chapters 1–41 · Appendices A and B]
 #v(1fr)
 #text(size: 10.5pt, fill: muted)[Manuscript edition\ 14 November 2026]
 #v(8mm)
@@ -69,40 +69,46 @@
 #pagebreak()
 #set page(numbering: "i", footer: context align(center, text(size: 9pt, fill: muted, counter(page).display("i"))))
 #counter(page).update(1)
-#text(size: 18pt, weight: "bold")[About this edition]
+#text(size: 18pt, weight: "bold")[About this specification]
 #v(8mm)
-This manuscript brings the complete Vesper language design, formal rules,
-reference code, architecture, and metatheory into one navigable edition.
-The 44 numbered sections appear in numerical order. Appendix A contains
-the mechanized Lean 4 metatheory; Appendix B records the official geometric
-and visual identity.
+This monograph defines the canonical end-state design, formal typing rules,
+compiler and runtime architecture, standard platform substrates, and
+mechanized metatheory of the Vesper programming language ($lambda_(upright("Vesper"))$).
 
-Section 44, _Unified Advanced Type Theory_, integrates refinement types,
-ghost linearity, destination calculus, four-axis modalities, graded resource
-effects, guarded clocks, and quotients. It extends the preceding compiler
-architecture with the #raw("vesper-refine") host crate.
+The specification is organized bottom-up into eight architectural parts
+spanning Chapters 1–41 and Appendices A–B: core language design and unified
+four-axis modal, destination, liquid-refinement, and graded effect theory
+(Part I); the five-stage compiler pipeline, 49-crate host workspace,
+prophecy-free Lean 4 verification extractor, verified bootstrap, Vesper Loom,
+and mathematical SemVer variance (Part II); zero-GC memory, SIMD, fiber I/O,
+wire FFI, and WasmFX substrates (Part III); incremental IDE, formatting,
+documentation, highlighting, concolic fuzzing, flight-recording, and PMU
+benchmarking tools (Part IV); bare-metal kernels, eBPF, unikernels,
+constant-time cryptography, and confidential enclaves (Part V); region
+serialization, non-malleable binary parsers, telemetry, kernel-bypass
+networking, HTTP/3 services, choreographic consensus, hermetic SQL, and DBSP
+stream processing (Part VI); and native user interfaces, tri-backend 3D
+graphics, deterministic physics, hard-realtime DSP, and shape-checked tensor
+compute (Part VII). Appendix A presents the complete zero-`sorryAx` Lean 4
+soundness artifacts, and Appendix B specifies Vesper's geometric and visual
+identity.
 
 #v(5mm)
-#text(weight: "bold")[Source documents]
+#text(weight: "bold")[Provenance]
 
 + #link("https://docs.google.com/document/d/1zO7boUVwNTHRA-1ZNL4bDYi68OjQZBCimLWkETH6bso/edit")[Language design and formal specification], retrieved 14 November 2026.
-+ #link("https://drive.google.com/file/d/1td8Tw2W9pU8alI9QtQG6m3dMdzkQsHSU/view")[Section 44: Unified Advanced Type Theory].
-+ #link("https://drive.google.com/file/d/1QGefoudw60U8k-4xUjNnrRE1L8yplqWp/view")[Appendix B: Official Brand Identity and Geometric Specification].
++ #link("https://drive.google.com/file/d/1td8Tw2W9pU8alI9QtQG6m3dMdzkQsHSU/view")[Unified refinement, modal, destination, and graded type theory].
++ #link("https://drive.google.com/file/d/1QGefoudw60U8k-4xUjNnrRE1L8yplqWp/view")[Official brand identity and geometric specification].
 
 #v(5mm)
-#text(weight: "bold")[Editorial treatment]
+#text(weight: "bold")[Typography and navigation]
 
-Source emphasis, hyperlinks, tables, code, formal rules, and mathematical
-expressions are retained. Section order and heading hierarchy are normalized.
-Section 35's lost code indentation is restored from the preserved repository
-snapshot after a token-for-token comparison with the current source. Duplicate
-source titles and word-processor formatting markers are removed. The opening
-of Section 44 is recast as manuscript prose. Appendix B begins with the
-canonical appendix, following its source document's integration preface.
-
-The linked contents and PDF bookmarks provide navigation. Code blocks wrap
-at the page boundary and continue across pages; their complete source text
-remains in the editable Typst manuscript.
+The manuscript is authored in native Typst markup with custom inference-rule
+blocks, mathematical equations, syntax-clean raw listings, and resolved
+internal cross-references across all parts, chapters, subsections, and
+appendices. Linked contents and PDF bookmarks provide direct navigation. Code
+blocks wrap at the page boundary and continue across pages while preserving
+exact source text in the editable Typst manuscript.
 
 #v(5mm)
 #text(size: 9pt, fill: muted)[Typeset with Typst 0.15.1. Libertinus Serif, DejaVu Sans Mono, and New Computer Modern Math are embedded using Typst's bundled fonts.]
