@@ -16,5 +16,6 @@ pub mod numeric;
 pub mod out_slice;
 pub mod out_tree;
 pub mod pcg;
+pub mod refine_update;
 pub mod resource_grade;
 pub mod slice_projections;
