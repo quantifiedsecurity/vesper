@@ -928,10 +928,21 @@ fn macro_provenance_gate(
             if let Some(value) = function_markers.get(dependency) {
                 expanded.push((dependency.as_str(), *value));
             } else if let (Some(table), Some(namespace)) = (manifest, namespace) {
+                // Use the extractor's ownership rule, so a stripped marker on
+                // a `$block_f_N` helper or `f$...` companion is caught too.
                 let (space, last) = split_last(dependency);
-                if space == namespace && table.expanded_functions().any(|f| f.function == last) {
+                let functions = table
+                    .functions
+                    .iter()
+                    .map(|f| f.function.as_str())
+                    .collect::<BTreeSet<_>>();
+                if space == namespace
+                    && provenance::lean_owner(last, &functions)
+                        .and_then(|owner| table.function(owner))
+                        .is_some_and(|f| f.origin == provenance::FunctionOrigin::Expanded)
+                {
                     return Err(format!(
-                        "theorem {} depends on {dependency}, an expanded function whose provenance marker is missing",
+                        "theorem {} depends on {dependency}, expanded code whose provenance marker is missing",
                         theorem.name
                     ));
                 }

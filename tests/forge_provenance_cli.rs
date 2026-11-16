@@ -167,7 +167,8 @@ fn lean() -> Option<String> {
 
 const PROOF: &str = "import Expanded\n\
 theorem Proof.main_eq : Vesper.main = 42 := by decide\n\
-theorem Proof.plain_eq : Vesper.plain 7 = 7 := by decide\n";
+theorem Proof.plain_eq : Vesper.plain 7 = 7 := by decide\n\
+theorem Proof.block_eq : Vesper.«$block_main_0» = 42 := by decide\n";
 
 fn compile(lean: &str, root: &Path, expanded: &str) {
     fs::write(root.join("Expanded.lean"), expanded).unwrap();
@@ -301,6 +302,13 @@ fn proof_audit_refuses_stripped_provenance_markers() {
     let message = error(&audit(&lean, &root.0, "Proof.main_eq", Some(&manifest))).to_owned();
     assert!(
         message.contains("provenance marker is missing"),
+        "{message}"
+    );
+    // A theorem about the stripped `$block_main_0` helper alone is caught by
+    // the extractor's ownership rule, not only by bare function names.
+    let message = error(&audit(&lean, &root.0, "Proof.block_eq", Some(&manifest))).to_owned();
+    assert!(
+        message.contains("Vesper.$block_main_0") && message.contains("marker is missing"),
         "{message}"
     );
 

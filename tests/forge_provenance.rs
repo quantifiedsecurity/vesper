@@ -230,3 +230,49 @@ fn lean_owner_follows_extractor_companion_names() {
     assert_eq!(provenance::lean_owner("HandlerCPS", &functions), None);
     assert_eq!(provenance::lean_owner("$arith_simps", &functions), None);
 }
+
+#[test]
+fn diagnostic_origin_uses_half_open_segments() {
+    use forge::{ByteRange, SourceMapSegment};
+    use vesper::ast::Span;
+    let seg =
+        |e: (usize, usize), o: (usize, usize), kind: MapKind, m: Option<&str>| SourceMapSegment {
+            expanded: ByteRange {
+                start: e.0,
+                end: e.1,
+            },
+            original: ByteRange {
+                start: o.0,
+                end: o.1,
+            },
+            kind,
+            r#macro: m.map(str::to_owned),
+        };
+    // `let n = ` (source, binder) then `true` (source) then `;` at EOF.
+    let map = vec![
+        seg((0, 8), (100, 108), MapKind::Source, None),
+        seg((8, 12), (200, 204), MapKind::Source, None),
+        seg((12, 13), (300, 301), MapKind::Source, None),
+    ];
+    let at_boundary = provenance::origin_of(&map, &Span { start: 8, end: 12 }).unwrap();
+    assert_eq!(
+        at_boundary.original,
+        ByteRange {
+            start: 200,
+            end: 204
+        }
+    );
+    let empty_at_boundary = provenance::origin_of(&map, &Span { start: 8, end: 8 }).unwrap();
+    assert_eq!(empty_at_boundary.original.start, 200);
+    // End of file has no successor and falls back to the last segment.
+    let eof = provenance::origin_of(&map, &Span { start: 13, end: 13 }).unwrap();
+    assert_eq!(eof.original.start, 301);
+    // A generated segment that ends where a span starts does not claim it.
+    let map = vec![
+        seg((0, 8), (50, 57), MapKind::Generated, Some("m")),
+        seg((8, 12), (200, 204), MapKind::Source, None),
+    ];
+    let origin = provenance::origin_of(&map, &Span { start: 8, end: 12 }).unwrap();
+    assert_eq!(origin.kind, MapKind::Source);
+    assert_eq!(origin.r#macro, None);
+}

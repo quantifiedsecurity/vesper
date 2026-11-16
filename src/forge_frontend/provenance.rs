@@ -350,7 +350,7 @@ pub fn origin_of(map: &[SourceMapSegment], span: &Span) -> Option<DiagnosticOrig
     let overlaps = |s: &SourceMapSegment| {
         let (a, b) = (s.expanded.start, s.expanded.end);
         if span.start == span.end {
-            a <= span.start && span.start <= b
+            a <= span.start && span.start < b
         } else {
             a < span.end && span.start < b
         }
@@ -358,13 +358,21 @@ pub fn origin_of(map: &[SourceMapSegment], span: &Span) -> Option<DiagnosticOrig
     let generated = map
         .iter()
         .find(|s| matches!(s.kind, MapKind::Generated) && overlaps(s));
-    let segment = generated.or_else(|| {
-        map.iter().find(|s| {
-            matches!(s.kind, MapKind::Source)
-                && s.expanded.start <= span.start
-                && span.start <= s.expanded.end
+    // Segments are half-open and adjacent, so a span starting at a boundary
+    // belongs to the following segment. Only a position at the very end of a
+    // segment with no successor (end of file) falls back to the one before.
+    let source = |s: &&SourceMapSegment| matches!(s.kind, MapKind::Source);
+    let segment = generated
+        .or_else(|| {
+            map.iter()
+                .filter(source)
+                .find(|s| s.expanded.start <= span.start && span.start < s.expanded.end)
         })
-    })?;
+        .or_else(|| {
+            map.iter()
+                .filter(source)
+                .find(|s| s.expanded.start <= span.start && span.start == s.expanded.end)
+        })?;
     let original = match segment.kind {
         MapKind::Generated => segment.original,
         MapKind::Source => {
