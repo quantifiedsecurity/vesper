@@ -516,6 +516,17 @@ fn constructs_outside_the_subset_are_typed_errors() {
         "fn main() -> i64 { region r { let m = r.checkpoint(); r.commit(m); 1 } }",
         Unsupported::Effect,
     );
+    // Nothing supplies the entry's region capabilities.
+    rejects(
+        "fn main() -> i64 eff [r: Region] { let b = r.box(1); r.get(b) }",
+        Unsupported::Effect,
+    );
+    // Every `inout` argument is checked, not only the first.
+    rejects(
+        "fn both(inout a: i64, inout b: i64) { a = wrapping_add(a, 1); b = wrapping_add(b, 1); } \
+         fn main() -> i64 { let y = 2; region r(64) { let z = 0; both(inout z, inout y); wrapping_add(z, y) } }",
+        Unsupported::Effect,
+    );
     rejects(
         "fn main() -> i64 { let f = |x: i64| -> i64 { x }; f(1) }",
         Unsupported::FunctionValue,

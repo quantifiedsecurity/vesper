@@ -425,6 +425,15 @@ pub fn plan(
         }
         effects_supported(world, f)?;
         let caps = inherited.unwrap_or_else(|| row_caps(world, f));
+        // Nothing supplies the entry's capabilities: the process starts with
+        // no open region.
+        if name == entry && !caps.is_empty() {
+            return Err(VerifiedError::unsupported(
+                Unsupported::Effect,
+                &name,
+                format!("region capability on the entry ({})", caps.join(", ")),
+            ));
+        }
         let params = f
             .params
             .iter()
@@ -1348,17 +1357,21 @@ impl FnLower<'_> {
             .collect();
         for b in &f.blocks {
             for ins in &b.instructions {
-                let written = match &ins.op {
-                    Op::Write { place, .. } => place.split('.').next().map(str::to_owned),
+                let written: Vec<String> = match &ins.op {
+                    Op::Write { place, .. } => place
+                        .split('.')
+                        .next()
+                        .map(str::to_owned)
+                        .into_iter()
+                        .collect(),
                     Op::Call { args, .. } => args
                         .iter()
                         .filter(|a| a.pass == Pass::Inout)
-                        .find_map(|a| a.place.as_ref().map(|p| p.root.clone())),
-                    _ => None,
+                        .filter_map(|a| a.place.as_ref().map(|p| p.root.clone()))
+                        .collect(),
+                    _ => vec![],
                 };
-                if let Some(root) = written
-                    && by_value.contains(root.as_str())
-                {
+                if let Some(root) = written.iter().find(|r| by_value.contains(r.as_str())) {
                     return Err(self.err(
                         Unsupported::Effect,
                         format!("region block assigns the captured place '{root}'"),
@@ -1547,7 +1560,9 @@ impl FnLower<'_> {
                     offset: H_ALLOCS,
                     src: allocs2,
                 })?;
-                let (globals, first, _, after) = self.heap_alloc(shape.len())?;
+                // A zero-word payload still takes one word, so that distinct
+                // boxes get distinct handles.
+                let (globals, first, _, after) = self.heap_alloc(shape.len().max(1))?;
                 // An allocation in a region that is not the innermost pins
                 // the heap words below it until the outer region closes.
                 let inner = self.load_ptr(globals, G_INNER)?;

@@ -44,7 +44,10 @@ fn count(n: i64, acc: RegionBox[r, i64]) -> i64 eff [r: Region] {
 fn inner_sum(k: i64) -> i64 {
     // A region per call: its heap words are reused by the next call.
     region r(4096) {
+        // Zero-word payloads still get distinct handles.
+        let u = r.box(());
         let b = r.box(k);
+        r.set(u, ());
         bump(b);
         bump(b);
         r.get(b)
