@@ -62,12 +62,16 @@ jobs:
             xvfb libxcb1
       - name: Load udmabuf (lavapipe sync-fd export needs /dev/udmabuf)
         run: |
-          if ! sudo modprobe udmabuf; then
-            sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)"
-            sudo modprobe udmabuf
+          # Built into some runner kernels; a module on others. The sync-fd
+          # test itself fails (VESPER_IGNIS_VULKAN_REQUIRE_SYNC_FD) if the
+          # extension is still missing afterwards.
+          if [ ! -e /dev/udmabuf ]; then
+            sudo modprobe udmabuf || {
+              sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" &&
+                sudo modprobe udmabuf
+            } || echo "udmabuf unavailable"
           fi
-          sudo chmod a+rw /dev/udmabuf
-          ls -l /dev/udmabuf
+          if [ -e /dev/udmabuf ]; then sudo chmod a+rw /dev/udmabuf; ls -l /dev/udmabuf; fi
       - name: Report the Vulkan device
         run: |
           vulkaninfo | grep -E "external_(semaphore|fence)_fd|xcb_surface" || echo "no sync-fd or XCB extensions"
