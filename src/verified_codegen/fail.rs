@@ -198,8 +198,12 @@ fn reads(f: &FunctionIr, name: &str) -> bool {
         .flat_map(|b| &b.instructions)
         .any(|i| match &i.op {
             Op::Read { root, .. } => root == name,
-            Op::Closure { aliases, .. } | Op::Handle { aliases, .. } => {
-                aliases.values().any(|v| v == name)
+            // The alias map holds every name in scope; only the free names
+            // of the nested expression are actually captured.
+            Op::Closure { expr, aliases, .. } | Op::Handle { expr, aliases, .. } => {
+                crate::check::free_names(expr)
+                    .iter()
+                    .any(|n| aliases.get(n).is_some_and(|v| v == name))
             }
             _ => false,
         })

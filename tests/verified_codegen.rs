@@ -690,6 +690,17 @@ fn unhandled_user_failures_at_the_entry_are_typed_errors() {
     vc::compile(&w, "main", &Options::new(Target::X86_64_LINUX)).unwrap();
 }
 
+/// A raise clause that names its continuation but leaves it unused is
+/// non-resuming even when it holds a nested handler (whose IR alias map lists
+/// every name in scope). Capturing the continuation there is a checker
+/// error (E0404), so the checker already refuses that case.
+#[test]
+fn nested_handlers_in_raise_clauses_capture_only_their_free_names() {
+    differential(
+        "copy enum E { A } copy enum G { B } fn f() -> i64 eff [Fail[E]] { Fail::raise(E::A) } fn g() -> i64 eff [Fail[G]] { Fail::raise(G::B) } fn main() -> i64 { handle Fail[E] in { f() } with { return v => v, raise(_, k) => handle Fail[G] in { g() } with { return w => w, raise(_, j) => 5, }, } }",
+    );
+}
+
 /// Programs without handlers compile as before: no trap scope and no status
 /// word. A function that passes a caught implicit failure on sets a scope
 /// after its prologue and restores the default at its end.
