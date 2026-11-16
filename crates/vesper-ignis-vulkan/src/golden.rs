@@ -52,7 +52,7 @@ impl Image {
 
     /// Converts BGRA bytes (a `B8G8R8A8` swapchain or X11 image) to RGBA.
     pub fn from_bgra(width: u32, height: u32, mut bgra: Vec<u8>) -> Result<Self, GoldenError> {
-        for px in bgra.chunks_exact_mut(4) {
+        for px in bgra.as_chunks_mut::<4>().0 {
             px.swap(0, 2);
         }
         Self::new(width, height, bgra)
@@ -142,8 +142,10 @@ pub fn diff(actual: &Image, expected: &Image, tolerance: u8) -> Option<Diff> {
     };
     for (a, e) in actual
         .rgba
-        .chunks_exact(4)
-        .zip(expected.rgba.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(expected.rgba.as_chunks::<4>().0)
     {
         let delta = a
             .iter()

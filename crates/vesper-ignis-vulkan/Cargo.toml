@@ -16,3 +16,5 @@ vesper-ignis = { path = "../vesper-ignis" }
 [target.'cfg(target_os = "linux")'.dependencies]
 # XCB is loaded at run time for swapchain presentation under Xvfb.
 libloading = "=0.8.9"
+# Sync fds are polled from a Pulse driver (§19.9).
+vesper-pulse = { path = "../vesper-pulse" }

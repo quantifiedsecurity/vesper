@@ -92,9 +92,15 @@ fn range_key(r: SubresourceRange) -> [u32; 6] {
 
 fn key(b: &Barrier) -> (Key, ResourceRef) {
     match b {
-        Barrier::Buffer(b) => (Key::Buffer(ResourceRef::from(b.resource).index()), b.resource.into()),
+        Barrier::Buffer(b) => (
+            Key::Buffer(ResourceRef::from(b.resource).index()),
+            b.resource.into(),
+        ),
         Barrier::Texture(t) => (
-            Key::Texture(ResourceRef::from(t.resource).index(), range_key(t.subresources)),
+            Key::Texture(
+                ResourceRef::from(t.resource).index(),
+                range_key(t.subresources),
+            ),
             t.resource.into(),
         ),
     }

@@ -34,7 +34,13 @@ fn copy_out(
 ) -> vesper_ignis::PassId {
     g.add_pass(
         PassDesc::new(name, q)
-            .texture(tex, range, Access::COPY_SOURCE, Sync::COPY, Layout::CopySource)
+            .texture(
+                tex,
+                range,
+                Access::COPY_SOURCE,
+                Sync::COPY,
+                Layout::CopySource,
+            )
             .buffer(buf, ByteRange::WHOLE, Access::COPY_DEST, Sync::COPY),
     )
     .unwrap()
@@ -74,7 +80,14 @@ fn depth_and_stencil_render_match_golden_and_read_back() {
                 ),
         )
         .unwrap();
-    let copy_color = copy_out(&mut g, q, "copy-color", color, SubresourceRange::ALL, color_out);
+    let copy_color = copy_out(
+        &mut g,
+        q,
+        "copy-color",
+        color,
+        SubresourceRange::ALL,
+        color_out,
+    );
     let copy_depth = copy_out(
         &mut g,
         q,
@@ -120,8 +133,11 @@ fn depth_and_stencil_render_match_golden_and_read_back() {
         Err(e) => panic!("{e}"),
     };
     let mut r = FrameResources::new();
-    r.bind_texture(color, device.create_texture(TextureInfo::new(W, H)).unwrap())
-        .unwrap();
+    r.bind_texture(
+        color,
+        device.create_texture(TextureInfo::new(W, H)).unwrap(),
+    )
+    .unwrap();
     r.bind_texture(ds, ds_tex).unwrap();
     for b in [color_out, depth_out, stencil_out] {
         let size = if b == stencil_out { W * H } else { W * H * 4 };
@@ -184,8 +200,10 @@ fn depth_and_stencil_render_match_golden_and_read_back() {
         .buffer(depth_out)
         .unwrap()
         .read()
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     let stencil = r.buffer(stencil_out).unwrap().read();
     let at = |x: u32, y: u32| (y * W + x) as usize;
@@ -314,9 +332,16 @@ fn triangle_renders_into_float_and_bgra_targets() {
                 _ => unreachable!(),
             }
         };
-        let tolerance = if format == Format::Bgra8Unorm { 0.003 } else { 1e-6 };
+        let tolerance = if format == Format::Bgra8Unorm {
+            0.003
+        } else {
+            1e-6
+        };
         for (got, want) in rgba(center).iter().zip([1.0, 0.25, 0.0, 1.0]) {
-            assert!((got - want).abs() <= tolerance, "{format:?} center {got} vs {want}");
+            assert!(
+                (got - want).abs() <= tolerance,
+                "{format:?} center {got} vs {want}"
+            );
         }
         assert_eq!(rgba(corner), [0.0, 0.0, 1.0, 1.0], "{format:?} clear");
         finish(rt, allocators, r);

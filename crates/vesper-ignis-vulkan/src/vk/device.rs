@@ -173,6 +173,8 @@ pub(crate) struct Family {
 }
 
 pub(crate) struct Inner {
+    /// Keeps the loaded `libvulkan` alive for the instance and device.
+    #[allow(dead_code)]
     pub entry: ash::Entry,
     pub instance: ash::Instance,
     pub physical: vk::PhysicalDevice,
@@ -941,18 +943,21 @@ impl Device {
         if vertex.stage != Stage::Vertex || fragment.stage != Stage::Fragment {
             return Err(VulkanError::InvalidDesc("graphics pipeline stages"));
         }
-        if desc.color.is_some_and(|f| !f.is_color()) || desc.depth.is_some_and(|f| f.is_color())
-        {
+        if desc.color.is_some_and(|f| !f.is_color()) || desc.depth.is_some_and(|f| f.is_color()) {
             return Err(VulkanError::InvalidDesc("attachment formats"));
         }
         if desc.color.is_none() && desc.depth.is_none() {
             return Err(VulkanError::InvalidDesc("a pipeline needs an attachment"));
         }
         if desc.depth.is_none() && (desc.depth_test.is_some() || desc.stencil.is_some()) {
-            return Err(VulkanError::InvalidDesc("depth state without a depth format"));
+            return Err(VulkanError::InvalidDesc(
+                "depth state without a depth format",
+            ));
         }
         if desc.stencil.is_some() && !desc.depth.is_some_and(|f| f.has_stencil()) {
-            return Err(VulkanError::InvalidDesc("stencil state without a stencil plane"));
+            return Err(VulkanError::InvalidDesc(
+                "stencil state without a stencil plane",
+            ));
         }
         check_layout(vertex, &[])?;
         check_layout(fragment, &[])?;
@@ -994,8 +999,12 @@ impl Device {
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
         let attachments = [vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)];
-        let blend = vk::PipelineColorBlendStateCreateInfo::default()
-            .attachments(if desc.color.is_some() { &attachments } else { &[] });
+        let blend =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(if desc.color.is_some() {
+                &attachments
+            } else {
+                &[]
+            });
         let mut dynamic_states = vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         if desc.stencil.is_some() {
             dynamic_states.push(vk::DynamicState::STENCIL_REFERENCE);

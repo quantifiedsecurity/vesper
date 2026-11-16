@@ -6,6 +6,8 @@ mod backend;
 mod device;
 #[cfg(target_os = "linux")]
 mod present;
+#[cfg(unix)]
+mod syncfd;
 
 pub use backend::{
     Bind, ColorTarget, DepthTarget, FrameParts, FrameResources, MAX_FRAME_OBJECTS,
@@ -17,3 +19,5 @@ pub use device::{
 };
 #[cfg(target_os = "linux")]
 pub use present::{Swapchain, SwapchainDesc, XcbWindow};
+#[cfg(unix)]
+pub use syncfd::{CloseError, SyncFd, SyncFdExporter, SyncFdKind, SyncFdMode};

@@ -5,9 +5,9 @@ use super::device::{
     descriptor_type,
 };
 use crate::error::VulkanError;
+use crate::ranges::{Bytes, barrier_range};
 use crate::schedule::{Segment, schedule};
 use crate::shader::BindingKind;
-use crate::ranges::{Bytes, barrier_range};
 use crate::split::{self, Role};
 use crate::translate::{self, Barrier2, QueueCaps};
 use ash::vk;
@@ -158,7 +158,10 @@ impl PassWork {
                 dst,
                 dst_offset,
                 size,
-            } => vec![(*src, at(*src_offset, *size)), (*dst, at(*dst_offset, *size))],
+            } => vec![
+                (*src, at(*src_offset, *size)),
+                (*dst, at(*dst_offset, *size)),
+            ],
             PassWork::CopyPlaneToBuffer {
                 src,
                 plane,
@@ -355,6 +358,8 @@ pub struct VulkanBackend {
     pending: VecDeque<FencePoint>,
     max_pending: usize,
     last_stats: SubmitStats,
+    #[cfg(unix)]
+    exports: super::syncfd::Exports,
     live: bool,
 }
 
@@ -387,6 +392,8 @@ impl VulkanBackend {
             pending: VecDeque::new(),
             max_pending: MAX_PENDING_SIGNALS,
             last_stats: SubmitStats::default(),
+            #[cfg(unix)]
+            exports: Default::default(),
             live: true,
         };
         let mut used: BTreeMap<u32, u32> = BTreeMap::new();
@@ -477,6 +484,10 @@ impl VulkanBackend {
     /// submitted signal has not been observed complete on the device.
     #[allow(clippy::result_large_err)]
     pub fn destroy(mut self) -> Result<(), (Self, VulkanError)> {
+        #[cfg(unix)]
+        if super::syncfd::exports_open(&self.exports) > 0 {
+            return Err((self, VulkanError::Pending));
+        }
         if !self.inner.is_lost() {
             for t in &self.timelines {
                 match self.inner.check("vkGetSemaphoreCounterValue", unsafe {
@@ -492,9 +503,29 @@ impl VulkanBackend {
             // After a loss nothing proves completion; keep the objects.
             return Err((self, VulkanError::DeviceLost { call: "destroy" }));
         }
+        #[cfg(unix)]
+        if !super::syncfd::close_exports(&self.exports) {
+            return Err((self, VulkanError::Pending));
+        }
         self.destroy_semaphores();
         self.release();
         Ok(())
+    }
+
+    /// An exporter of sync fds for this backend's timelines, to be taken
+    /// before the backend moves into a `Runtime`. While any fd it exported is
+    /// open, [`destroy`](Self::destroy) fails with [`VulkanError::Pending`].
+    #[cfg(unix)]
+    pub fn sync_fd_exporter(&self) -> super::syncfd::SyncFdExporter {
+        super::syncfd::SyncFdExporter {
+            inner: Arc::clone(&self.inner),
+            timelines: self
+                .timelines
+                .iter()
+                .map(|t| (t.semaphore, t.queue))
+                .collect(),
+            exports: self.exports.clone(),
+        }
     }
 
     fn timeline(&self, id: TimelineId) -> Result<&TimelineState, VulkanError> {
@@ -577,7 +608,8 @@ impl Layouts {
                     .is_some_and(|a| b.range.aspect_mask.contains(a))
             })
             .collect();
-        if planes.is_empty() || b.range.aspect_mask & !format.aspects() != vk::ImageAspectFlags::empty()
+        if planes.is_empty()
+            || b.range.aspect_mask & !format.aspects() != vk::ImageAspectFlags::empty()
         {
             return Err(oob);
         }
@@ -835,7 +867,8 @@ fn work_resources(r: &FrameResources, w: &PassWork) -> Vec<Res> {
                 });
             }
         }
-        PassWork::CopyTextureToBuffer { src, dst } | PassWork::CopyPlaneToBuffer { src, dst, .. } => {
+        PassWork::CopyTextureToBuffer { src, dst }
+        | PassWork::CopyPlaneToBuffer { src, dst, .. } => {
             out.push(tex(*src));
             out.push(buf(*dst));
         }
@@ -943,7 +976,8 @@ impl VulkanBackend {
                     };
                     return Err(VulkanError::OwnershipTransfer(resource));
                 };
-                let (release, acq) = ownership_deps(r, &layouts, x.resource, x.from_family, x.to_family);
+                let (release, acq) =
+                    ownership_deps(r, &layouts, x.resource, x.from_family, x.to_family);
                 batches[k].releases.buffers.extend(release.buffers);
                 batches[k].releases.images.extend(release.images);
                 acquire.buffers.extend(acq.buffers);
@@ -1031,7 +1065,9 @@ impl VulkanBackend {
                                     (buffer_index(r, bb.resource).map(Res::Buffer), false)
                                 }
                                 Barrier::Texture(tb) => (
-                                    find_texture(r, tb.resource).ok().map(|(i, _)| Res::Texture(i)),
+                                    find_texture(r, tb.resource)
+                                        .ok()
+                                        .map(|(i, _)| Res::Texture(i)),
                                     tb.layout_before == vesper_ignis::Layout::Undefined,
                                 ),
                             };
@@ -1085,9 +1121,7 @@ impl VulkanBackend {
             // buffer narrowing), and whether it changes tracked layouts.
             let (whole, dst_at, apply) = match role {
                 Role::Plain => (*b, at, true),
-                Role::Begin(n) if caps.events() => {
-                    (pairing.pairs[n], pairing.end_command[n], true)
-                }
+                Role::Begin(n) if caps.events() => (pairing.pairs[n], pairing.end_command[n], true),
                 Role::Begin(_) => {
                     stats.collapsed_splits += 1;
                     continue;
@@ -1109,7 +1143,8 @@ impl VulkanBackend {
                     let mut range = barrier_range(stream, dst_at, bb.resource, touches);
                     if !range.is_whole() {
                         range.size = range.size.min(buf.size().saturating_sub(range.offset));
-                        if range.offset >= buf.size() || (range.offset == 0 && range.size == buf.size())
+                        if range.offset >= buf.size()
+                            || (range.offset == 0 && range.size == buf.size())
                         {
                             range = Bytes::WHOLE;
                         } else {
@@ -1190,7 +1225,7 @@ impl VulkanBackend {
                 .filter(|e| *e <= buf.size() && size > 0)
                 .ok_or(VulkanError::OutOfBounds("buffer range"))?;
             let _ = end;
-            if offset % align != 0 || (align == 4 && size % 4 != 0) {
+            if !offset.is_multiple_of(align) || (align == 4 && !size.is_multiple_of(4)) {
                 return Err(VulkanError::OutOfBounds("buffer range alignment"));
             }
             Ok(buf)
@@ -1504,7 +1539,11 @@ impl VulkanBackend {
                     r,
                     d.texture,
                     0,
-                    if writes_depth { &DEPTH_WRITE } else { &DEPTH_READ },
+                    if writes_depth {
+                        &DEPTH_WRITE
+                    } else {
+                        &DEPTH_READ
+                    },
                 )?;
                 let stencil_layout = if fmt.has_stencil() {
                     let writes = d.clear_stencil.is_some()
@@ -1526,7 +1565,9 @@ impl VulkanBackend {
                     };
                     Some(layouts.require(r, d.texture, 1, allowed)?.1)
                 } else if d.clear_stencil.is_some() {
-                    return Err(VulkanError::InvalidDesc("stencil clear without a stencil plane"));
+                    return Err(VulkanError::InvalidDesc(
+                        "stencil clear without a stencil plane",
+                    ));
                 } else {
                     None
                 };
@@ -1671,9 +1712,9 @@ impl VulkanBackend {
         // signals of this submission complete; arrays borrow locals that
         // outlive each call.
         match cmd {
-            Cmd::Barrier(dep) => self.with_dependency(dep, |info| unsafe {
-                d.cmd_pipeline_barrier2(cb, info)
-            }),
+            Cmd::Barrier(dep) => {
+                self.with_dependency(dep, |info| unsafe { d.cmd_pipeline_barrier2(cb, info) })
+            }
             Cmd::SetEvent { event: n, dep } => {
                 let e = event(*n)?;
                 self.with_dependency(dep, |info| unsafe { d.cmd_set_event2(cb, e, info) })
@@ -2032,7 +2073,13 @@ impl VulkanBackend {
 
 /// Release (on the old family) and acquire (on the new family) barriers for
 /// one resource, keeping every subresource in its current layout.
-fn ownership_deps(r: &FrameResources, layouts: &Layouts, res: Res, from: u32, to: u32) -> (Dep, Dep) {
+fn ownership_deps(
+    r: &FrameResources,
+    layouts: &Layouts,
+    res: Res,
+    from: u32,
+    to: u32,
+) -> (Dep, Dep) {
     let mut release = Dep::default();
     let mut acquire = Dep::default();
     let rel = |old: vk::ImageLayout, range| translate::ImageBarrier2 {
@@ -2115,7 +2162,6 @@ fn ownership_deps(r: &FrameResources, layouts: &Layouts, res: Res, from: u32, to
     }
     (release, acquire)
 }
-
 
 impl Backend for VulkanBackend {
     type Allocator = CommandAllocator;

@@ -285,9 +285,9 @@ impl XcbWindow {
                 Some(std::slice::from_raw_parts(data, want).to_vec())
             };
             (self.xcb.free)(reply as *mut c_void);
-            let mut bgrx =
-                bytes.ok_or_else(|| VulkanError::Window(format!("unexpected image (depth {depth})")))?;
-            for px in bgrx.chunks_exact_mut(4) {
+            let mut bgrx = bytes
+                .ok_or_else(|| VulkanError::Window(format!("unexpected image (depth {depth})")))?;
+            for px in bgrx.as_chunks_mut::<4>().0 {
                 px[3] = 255;
             }
             Image::from_bgra(self.width, self.height, bgrx)
@@ -452,7 +452,9 @@ impl Swapchain {
             )
         };
         if !supported {
-            return Err(VulkanError::Unsupported("presentation from the direct queue family"));
+            return Err(VulkanError::Unsupported(
+                "presentation from the direct queue family",
+            ));
         }
         if !modes.contains(&desc.present_mode) {
             return Err(VulkanError::Unsupported("present mode"));
@@ -461,7 +463,9 @@ impl Swapchain {
             .supported_usage_flags
             .contains(vk::ImageUsageFlags::TRANSFER_DST)
         {
-            return Err(VulkanError::Unsupported("swapchain images as copy destinations"));
+            return Err(VulkanError::Unsupported(
+                "swapchain images as copy destinations",
+            ));
         }
         let chosen = formats
             .iter()
@@ -471,7 +475,9 @@ impl Swapchain {
             .ok_or(VulkanError::Unsupported("surface formats"))?;
         let extent = if caps.current_extent.width == u32::MAX {
             vk::Extent2D {
-                width: window.width.clamp(caps.min_image_extent.width, caps.max_image_extent.width),
+                width: window
+                    .width
+                    .clamp(caps.min_image_extent.width, caps.max_image_extent.width),
                 height: window
                     .height
                     .clamp(caps.min_image_extent.height, caps.max_image_extent.height),
@@ -479,7 +485,9 @@ impl Swapchain {
         } else {
             caps.current_extent
         };
-        let mut count = caps.min_image_count.saturating_add(desc.extra_images.min(8));
+        let mut count = caps
+            .min_image_count
+            .saturating_add(desc.extra_images.min(8));
         if caps.max_image_count != 0 {
             count = count.min(caps.max_image_count);
         }
@@ -499,8 +507,10 @@ impl Swapchain {
         // SAFETY (block): valid create infos; every object is released by
         // `release` (null handles are ignored).
         unsafe {
-            self.swapchain =
-                inner.check("vkCreateSwapchainKHR", swap_fns.create_swapchain(&info, None))?;
+            self.swapchain = inner.check(
+                "vkCreateSwapchainKHR",
+                swap_fns.create_swapchain(&info, None),
+            )?;
             self.images = inner.check(
                 "vkGetSwapchainImagesKHR",
                 swap_fns.get_swapchain_images(self.swapchain),
@@ -574,7 +584,9 @@ impl Swapchain {
         if !texture.format().is_color()
             || !texture.usage().contains(vk::ImageUsageFlags::TRANSFER_SRC)
         {
-            return Err(VulkanError::InvalidDesc("present source must be a color copy source"));
+            return Err(VulkanError::InvalidDesc(
+                "present source must be a color copy source",
+            ));
         }
         let old_layout = texture.layout(0, 0).unwrap_or(vk::ImageLayout::UNDEFINED);
         if old_layout == vk::ImageLayout::UNDEFINED {
@@ -601,7 +613,11 @@ impl Swapchain {
             ) {
                 Ok((i, _suboptimal)) => i,
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Err(VulkanError::OutOfDate),
-                Err(e) => return Err(inner.check::<()>("vkAcquireNextImageKHR", Err(e)).unwrap_err()),
+                Err(e) => {
+                    return Err(inner
+                        .check::<()>("vkAcquireNextImageKHR", Err(e))
+                        .unwrap_err());
+                }
             };
             let image = self.images[index as usize];
             let cb = self.commands[0];

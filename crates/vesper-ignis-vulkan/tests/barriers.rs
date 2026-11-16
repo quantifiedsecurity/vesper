@@ -111,8 +111,11 @@ fn split_barriers_become_events_and_validate() {
     let fs = compile_wgsl(shaders::TRIANGLE, Stage::Fragment, "fs_main").unwrap();
     let cs = compile_wgsl(shaders::INVERT, Stage::Compute, "main").unwrap();
     let mut r = FrameResources::new();
-    r.bind_texture(color, device.create_texture(TextureInfo::new(W, H)).unwrap())
-        .unwrap();
+    r.bind_texture(
+        color,
+        device.create_texture(TextureInfo::new(W, H)).unwrap(),
+    )
+    .unwrap();
     r.bind_buffer(scratch, device.create_buffer(256).unwrap())
         .unwrap();
     r.bind_buffer(inverted, device.create_buffer(BYTES).unwrap())
@@ -280,7 +283,12 @@ fn split_barriers_on_a_copy_queue_are_collapsed() {
     let other = buffer(&mut g, "other", 256);
     let out = buffer(&mut g, "out", 256);
     let fill = g
-        .add_pass(PassDesc::new("fill", q).buffer(a, ByteRange::WHOLE, Access::COPY_DEST, Sync::COPY))
+        .add_pass(PassDesc::new("fill", q).buffer(
+            a,
+            ByteRange::WHOLE,
+            Access::COPY_DEST,
+            Sync::COPY,
+        ))
         .unwrap();
     let unrelated = g
         .add_pass(PassDesc::new("unrelated", q).buffer(
@@ -302,12 +310,25 @@ fn split_barriers_on_a_copy_queue_are_collapsed() {
     assert!(split_halves(&g) >= 2, "planner emitted no split barrier");
     let mut r = FrameResources::new();
     for h in [a, other, out] {
-        r.bind_buffer(h, device.create_buffer(256).unwrap()).unwrap();
+        r.bind_buffer(h, device.create_buffer(256).unwrap())
+            .unwrap();
     }
-    r.set_pass(fill, PassWork::FillBuffer { dst: a, value: 0x0303_0303 })
-        .unwrap();
-    r.set_pass(unrelated, PassWork::FillBuffer { dst: other, value: 4 })
-        .unwrap();
+    r.set_pass(
+        fill,
+        PassWork::FillBuffer {
+            dst: a,
+            value: 0x0303_0303,
+        },
+    )
+    .unwrap();
+    r.set_pass(
+        unrelated,
+        PassWork::FillBuffer {
+            dst: other,
+            value: 4,
+        },
+    )
+    .unwrap();
     r.set_pass(
         copy,
         PassWork::CopyBuffer {
@@ -376,8 +397,14 @@ fn compute_queue_barriers_drop_graphics_stages() {
         },
     )
     .unwrap();
-    r.set_pass(second, PassWork::FillBuffer { dst: buf, value: 0x0202_0202 })
-        .unwrap();
+    r.set_pass(
+        second,
+        PassWork::FillBuffer {
+            dst: buf,
+            value: 0x0202_0202,
+        },
+    )
+    .unwrap();
     let rt = runtime(&device, &[QueueKind::Compute]);
     let b = batch(&rt, &device, &g, &[(q, QueueKind::Compute)], r);
     let (rt, allocs, r) = run_frame(rt, b);
@@ -407,7 +434,12 @@ fn exclusive_sharing_runs_three_queues() {
     let buf = buffer(&mut g, "buf", 256);
     let out = buffer(&mut g, "out", 256);
     let fill = g
-        .add_pass(PassDesc::new("fill", copy).buffer(buf, ByteRange::WHOLE, Access::COPY_DEST, Sync::COPY))
+        .add_pass(PassDesc::new("fill", copy).buffer(
+            buf,
+            ByteRange::WHOLE,
+            Access::COPY_DEST,
+            Sync::COPY,
+        ))
         .unwrap();
     let read = g
         .add_pass(
@@ -418,10 +450,17 @@ fn exclusive_sharing_runs_three_queues() {
         .unwrap();
     let mut r = FrameResources::new();
     for h in [buf, out] {
-        r.bind_buffer(h, device.create_buffer(256).unwrap()).unwrap();
+        r.bind_buffer(h, device.create_buffer(256).unwrap())
+            .unwrap();
     }
-    r.set_pass(fill, PassWork::FillBuffer { dst: buf, value: 0x0909_0909 })
-        .unwrap();
+    r.set_pass(
+        fill,
+        PassWork::FillBuffer {
+            dst: buf,
+            value: 0x0909_0909,
+        },
+    )
+    .unwrap();
     r.set_pass(
         read,
         PassWork::CopyBuffer {

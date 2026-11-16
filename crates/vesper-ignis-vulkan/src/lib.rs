@@ -32,13 +32,32 @@
 //!   [`VulkanError::DeviceLost`], after which submissions are rejected and
 //!   polls report the error; pending frames never retire.
 //!
+//! * **Formats and depth/stencil.** [`Format`] covers RGBA8/BGRA8/sRGB,
+//!   16- and 32-bit float, R32 and the depth/stencil formats; usage comes
+//!   from the format's features and an unsupported format is
+//!   [`VulkanError::UnsupportedFormat`]. Depth and stencil are planes 0 and 1
+//!   (the D3D12 convention), with layouts tracked per plane.
+//! * **Split barriers** become `vkCmdSetEvent2`/`vkCmdWaitEvents2` pairs
+//!   ([`split`]); on queues without graphics or compute they are collapsed
+//!   to one barrier at the end half.
+//! * **Buffer sub-range barriers** cover only the bytes later passes touch
+//!   ([`ranges`]); **stage and access masks** are filtered by the queue
+//!   family's capabilities ([`translate::QueueCaps`]).
+//! * **Queue-family ownership transfers** ([`ownership`]) are recorded as
+//!   release/acquire pairs when [`Sharing::Exclusive`] is configured.
+//! * **Presentation.** [`Swapchain`] presents to an [`XcbWindow`] (tested
+//!   under Xvfb, read back from the X server and compared with a golden).
+//! * **Sync fds.** [`SyncFd`]s for timeline points are polled from a Pulse
+//!   epoll driver ([`pulse`]), natively (`SYNC_FD`) or through a bridge
+//!   thread where the extension is missing.
+//!
 //! Not implemented: DirectX 12 and Metal (deferred; this crate is the
-//! Vulkan path only), work-graph scratch (D3D12-only, rejected), split
-//! barriers, ray tracing, transform feedback, VRS, depth/stencil
-//! textures, swapchains/presentation, descriptor heaps
-//! (`VK_EXT_descriptor_heap`), and queue-family ownership transfers
-//! (resources use `CONCURRENT` sharing when several families are used).
-//! Only lavapipe has been exercised; no hardware GPU was available.
+//! Vulkan path only), work-graph scratch (D3D12-only, rejected), ray
+//! tracing, transform feedback, VRS, descriptor heaps
+//! (`VK_EXT_descriptor_heap`), windowing systems other than X11/XCB, and
+//! multisampling. Only lavapipe has been exercised; no hardware GPU was
+//! available, and lavapipe has one queue family, so ownership transfers run
+//! only as no-ops on the device (the planner is unit-tested).
 #![deny(unsafe_code)]
 
 pub mod error;

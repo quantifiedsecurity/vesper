@@ -473,7 +473,10 @@ pub fn filter_accesses(access: A2, stages: S2) -> A2 {
             | S2::ALL_TRANSFER.as_raw(),
     );
     let table: [(A2, bool); 14] = [
-        (A2::INDIRECT_COMMAND_READ, stages.intersects(S2::DRAW_INDIRECT) || graphics),
+        (
+            A2::INDIRECT_COMMAND_READ,
+            stages.intersects(S2::DRAW_INDIRECT) || graphics,
+        ),
         (A2::INDEX_READ, any(S2::VERTEX_INPUT | S2::INDEX_INPUT)),
         (
             A2::VERTEX_ATTRIBUTE_READ,
@@ -771,7 +774,10 @@ mod tests {
         let all_shading = stages(Sync::ALL_SHADING).unwrap();
         let on_compute = filter_stages(all_shading, QueueCaps::COMPUTE);
         assert_eq!(on_compute, S2::COMPUTE_SHADER);
-        assert_eq!(filter_stages(all_shading, QueueCaps::UNIVERSAL), all_shading);
+        assert_eq!(
+            filter_stages(all_shading, QueueCaps::UNIVERSAL),
+            all_shading
+        );
         // A purely graphics scope on a transfer queue keeps an execution
         // dependency instead of vanishing.
         assert_eq!(
@@ -782,13 +788,21 @@ mod tests {
         let copy = stages(Sync::COPY).unwrap();
         assert_eq!(filter_stages(copy, QueueCaps::TRANSFER), copy);
         // Depth accesses are dropped once no fragment-test stage remains.
-        let ds = accesses(Access::DEPTH_STENCIL_WRITE | Access::SHADER_RESOURCE, S2::ALL_COMMANDS)
-            .unwrap();
+        let ds = accesses(
+            Access::DEPTH_STENCIL_WRITE | Access::SHADER_RESOURCE,
+            S2::ALL_COMMANDS,
+        )
+        .unwrap();
         let kept = filter_accesses(ds, on_compute);
         assert!(kept.contains(A2::SHADER_SAMPLED_READ));
         assert!(!kept.intersects(A2::DEPTH_STENCIL_ATTACHMENT_WRITE));
         assert_eq!(filter_accesses(ds, S2::ALL_COMMANDS), ds);
-        assert!(QueueCaps::new(vesper_ignis::QueueKind::Compute, vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE) == QueueCaps::COMPUTE);
+        assert!(
+            QueueCaps::new(
+                vesper_ignis::QueueKind::Compute,
+                vk::QueueFlags::GRAPHICS | vk::QueueFlags::COMPUTE
+            ) == QueueCaps::COMPUTE
+        );
         assert!(!QueueCaps::TRANSFER.events());
     }
 }

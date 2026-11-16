@@ -26,7 +26,10 @@ fn required() -> bool {
 }
 
 fn skip(why: &str) {
-    assert!(!required(), "VESPER_IGNIS_VULKAN_REQUIRE_PRESENT is set but: {why}");
+    assert!(
+        !required(),
+        "VESPER_IGNIS_VULKAN_REQUIRE_PRESENT is set but: {why}"
+    );
     eprintln!("skipped: {why}");
 }
 
@@ -50,7 +53,15 @@ fn display() -> Option<(String, Option<Xvfb>)> {
     // `-displayfd 1` makes Xvfb pick a free display and print its number
     // once it accepts connections.
     let mut child = Command::new("Xvfb")
-        .args(["-displayfd", "1", "-screen", "0", "128x128x24", "-nolisten", "tcp"])
+        .args([
+            "-displayfd",
+            "1",
+            "-screen",
+            "0",
+            "128x128x24",
+            "-nolisten",
+            "tcp",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -121,8 +132,11 @@ fn rendered_triangle_is_presented_to_an_x11_window() {
     let vs = compile_wgsl(shaders::TRIANGLE, Stage::Vertex, "vs_main").unwrap();
     let fs = compile_wgsl(shaders::TRIANGLE, Stage::Fragment, "fs_main").unwrap();
     let mut r = FrameResources::new();
-    r.bind_texture(color, device.create_texture(TextureInfo::new(W, H)).unwrap())
-        .unwrap();
+    r.bind_texture(
+        color,
+        device.create_texture(TextureInfo::new(W, H)).unwrap(),
+    )
+    .unwrap();
     r.bind_buffer(out, device.create_buffer(u64::from(W * H * 4)).unwrap())
         .unwrap();
     let pipeline = r
@@ -165,7 +179,10 @@ fn rendered_triangle_is_presented_to_an_x11_window() {
     assert_eq!(swapchain.presents(), indices.len() as u64);
     indices.sort_unstable();
     indices.dedup();
-    assert!(indices.len() >= 2, "one swapchain image reused: {indices:?}");
+    assert!(
+        indices.len() >= 2,
+        "one swapchain image reused: {indices:?}"
+    );
 
     // What the X server shows is what was rendered. The WSI may still be
     // handing the last image to the server, so poll briefly.
@@ -179,7 +196,11 @@ fn rendered_triangle_is_presented_to_an_x11_window() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
     assert_eq!(d.differing, 0, "window differs from the texture: {d:?}");
-    check_golden("present_triangle", include_bytes!("goldens/present_triangle.pam"), &shown);
+    check_golden(
+        "present_triangle",
+        include_bytes!("goldens/present_triangle.pam"),
+        &shown,
+    );
     assert_eq!(shown.pixel(0, 0), Some([0, 0, 255, 255]));
     assert_ne!(shown.pixel(W / 2, H / 2), Some([0, 0, 255, 255]));
 

@@ -139,10 +139,7 @@ mod tests {
                     size: 16,
                 },
                 p if p == passes[3] => Bytes::WHOLE,
-                _ => Bytes {
-                    offset: 0,
-                    size: 8,
-                },
+                _ => Bytes { offset: 0, size: 8 },
             };
             vec![(buf, r)]
         };
