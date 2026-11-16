@@ -30,7 +30,7 @@
 //!    to fixed bytes, and a container (`container.rs`): a static Linux ELF
 //!    executable, or a Mach-O AArch64 object for the system linker.
 //!
-//! The supported subset is: `u8`, `u32`, `u64`, `i64`, `bool` and `Unit`;
+//! The supported subset is: `u8`, `u32`, `u64`, `i64`, `f64`, `bool` and `Unit`;
 //! structs (after generic substitution) and tuples of them, passed as words
 //! on the stack; checked `+ - * / %`, negation and compound assignment with
 //! the `vesper.arith.checked/1` aborts; `wrapping_*`; comparisons; `!`;
@@ -44,8 +44,13 @@
 //! chain of word tests over tag, integer and `bool` literal, tuple, struct
 //! and variant patterns, built only from existing slot-IR rows (`Const`,
 //! `Compare`, `BranchZero`, `Jump`), so it needs no new rows in the Lean
-//! table. Handlers and every other effect, floats, strings, recursive
-//! enums, closures, generic functions, vectors and regions are rejected.
+//! table. `f64` values are their binary64 bit pattern in one word, with
+//! IEEE-754 `+ - * /` (round to nearest, ties to even; no fast-math),
+//! negation and ordered comparisons; their Lean rows are proved relative to
+//! one shared binary64 semantics (Lean's `Float`), not against the hardware.
+//! Handlers and every other effect, `f32`, `f64` remainder, strings,
+//! recursive enums, closures, generic functions, vectors and regions are
+//! rejected.
 //!
 //! Values live in frame slots, never in registers across slot-IR rows: there
 //! is no register allocator, so the code is slow but each row is local, which
@@ -64,9 +69,10 @@ mod x86_64;
 
 pub use cli::build_command;
 pub use machine::{
-    ArithOp, Cond, Kind, Label, Lir, Loc, M, Reg, Sign, Slot, TrapKind, WrapOp, select,
+    ArithOp, Cond, FloatOp, Kind, Label, Lir, Loc, M, Reg, Sign, Slot, TrapKind, WrapOp, select,
     table_listing, table_rows,
 };
+pub use riscv64::encoding_listing as rv64_encoding_listing;
 
 /// The value of `vesper build --codegen` that selects this backend.
 pub const CODEGEN: &str = "verified";
@@ -93,6 +99,7 @@ pub enum Arch {
 pub enum Os {
     Linux,
     MacOs,
+    Windows,
 }
 /// A supported target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +124,10 @@ impl Target {
         arch: Arch::Riscv64,
         os: Os::Linux,
     };
+    pub const X86_64_WINDOWS: Target = Target {
+        arch: Arch::X86_64,
+        os: Os::Windows,
+    };
     /// Parse a target triple.
     pub fn from_triple(triple: &str) -> Result<Self, VerifiedError> {
         let arch = if triple.starts_with("x86_64-") {
@@ -134,6 +145,8 @@ impl Target {
             Os::Linux
         } else if triple.contains("-apple-darwin") || triple.contains("-macos") {
             Os::MacOs
+        } else if triple.contains("-windows") {
+            Os::Windows
         } else {
             return Err(VerifiedError::Target(format!(
                 "unsupported operating system in '{triple}'"
@@ -142,6 +155,11 @@ impl Target {
         if arch != Arch::Aarch64 && os == Os::MacOs {
             return Err(VerifiedError::Target(format!(
                 "{arch:?} macOS is not a verified-codegen target"
+            )));
+        }
+        if arch != Arch::X86_64 && os == Os::Windows {
+            return Err(VerifiedError::Target(format!(
+                "{arch:?} Windows is not a verified-codegen target"
             )));
         }
         Ok(Self { arch, os })
@@ -153,6 +171,7 @@ impl Target {
             ("aarch64", "linux") => Some(Self::AARCH64_LINUX),
             ("aarch64", "macos") => Some(Self::AARCH64_MACOS),
             ("riscv64", "linux") => Some(Self::RISCV64_LINUX),
+            ("x86_64", "windows") => Some(Self::X86_64_WINDOWS),
             _ => None,
         }
     }
@@ -265,6 +284,10 @@ pub enum Container {
     ElfExecutable,
     /// A Mach-O object exporting `_main` (link it with `cc`).
     MachOObject,
+    /// An x86-64 COFF object exporting the C `main`, with `.pdata`/`.xdata`
+    /// unwind tables (link it with `link.exe`, see
+    /// `native::windows::link_executable`).
+    CoffObject,
 }
 
 #[derive(Clone, Debug)]
@@ -321,12 +344,22 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
     let entry_plan = &plan.functions[0];
     let result_words = entry_plan.result.0.clone();
     let mut a = asm::Asm::default();
+    a.windows = options.target.os == Os::Windows;
+    let mut windows_main = 0;
     if options.target.arch == Arch::Riscv64 && options.target.os != Os::Linux {
         return Err(VerifiedError::Target(
             "riscv64 is a Linux-only verified-codegen target".into(),
         ));
     }
     match options.target.arch {
+        Arch::X86_64 if options.target.os == Os::Windows => {
+            windows_main = x86_64::start_windows(
+                &mut a,
+                options.protocol,
+                entry_plan.result.len(),
+                entry_plan.label,
+            )?;
+        }
         Arch::X86_64 => x86_64::start(
             &mut a,
             options.target.os,
@@ -367,6 +400,8 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
             }
         }
     }
+    let prologues = std::mem::take(&mut a.prologues);
+    let externals = std::mem::take(&mut a.externals);
     let code = a.finish()?;
     let (container, bytes) = match options.target {
         Target {
@@ -395,8 +430,19 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
             container::elf_executable(container::EM_RISCV, &code),
         ),
         Target {
+            arch: Arch::X86_64,
+            os: Os::Windows,
+        } => (
+            Container::CoffObject,
+            container::coff_object(&code, windows_main, &prologues, &externals),
+        ),
+        Target {
             arch: Arch::X86_64 | Arch::Riscv64,
             os: Os::MacOs,
+        }
+        | Target {
+            arch: Arch::Aarch64 | Arch::Riscv64,
+            os: Os::Windows,
         } => {
             return Err(VerifiedError::Target(format!(
                 "{:?} macOS is not a verified-codegen target",
@@ -490,6 +536,7 @@ fn decode_at(
         "u32" => Value::UInt(word()?, 32),
         "u8" => Value::UInt(word()?, 8),
         "bool" => Value::Bool(word()? != 0),
+        "f64" => Value::Float(f64::from_bits(word()?)),
         "Unit" => Value::Tuple(vec![]),
         _ => match &ty {
             Type::Tuple(ts) => Value::Tuple(

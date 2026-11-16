@@ -34,7 +34,8 @@ fn scratch(tag: &str) -> PathBuf {
 #[test]
 fn builds_and_runs_on_the_host() {
     let dir = scratch("run");
-    let exe = dir.join("fib");
+    // Windows starts executables by their `.exe` name.
+    let exe = dir.join(format!("fib{}", std::env::consts::EXE_SUFFIX));
     let host = Target::host();
     let mut cmd = vesper();
     cmd.arg("build")
@@ -58,7 +59,7 @@ fn builds_and_runs_on_the_host() {
         let status = Command::new(&exe).status().unwrap();
         assert_eq!(status.code(), Some(6765 % 256));
         // An unhandled overflow exits with the documented status.
-        let exe = dir.join("overflow");
+        let exe = dir.join(format!("overflow{}", std::env::consts::EXE_SUFFIX));
         let out = vesper()
             .arg("build")
             .arg(fixture("overflow.ves"))
@@ -103,7 +104,11 @@ fn rejects_bad_flags_and_unsupported_programs() {
         assert!(!out.status.success(), "{args:?} should fail");
     }
     let source = dir.join("float.ves");
-    std::fs::write(&source, "fn main() -> f64 { 1.5 }\n").unwrap();
+    std::fs::write(
+        &source,
+        "fn r(a: f64, b: f64) -> f64 { a % b }\nfn main() -> f64 { r(1.5, 1.0) }\n",
+    )
+    .unwrap();
     let out = vesper()
         .arg("build")
         .arg(&source)

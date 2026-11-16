@@ -61,7 +61,7 @@ before, Rust lowering is outside the Lean proofs.
 
 ### Remaining gaps in #583
 
-`f64` arithmetic, strings and byte access, Windows PE/COFF
+Strings and byte access, Windows PE/COFF
 output with unwind data, and Lean encoder proofs against an ISA model are
 not in this milestone. They follow as separate PRs.
 
@@ -102,3 +102,150 @@ not in this milestone. They follow as separate PRs.
   reported as unavailable, never as a pass.
 - The Lean model covers abstract instruction selection only; the RV64 byte
   encodings are checked by the unit tests and by execution, not proved.
+
+## Milestone 3: `f64`
+
+### What was built
+
+- `f64` is a one-word kind holding the IEEE-754 binary64 bit pattern.
+  Literals are their `to_bits()`. New slot-IR rows `FArith` (`+ - * /`,
+  also compound assignment), `FNeg` and `FCompare` (`== != < <= > >=`)
+  select to new abstract instructions `fop`, `fneg` and `fcmp`. `%` on `f64`
+  and `f32` are typed `Unsupported::Float` errors.
+- Encodings: x86-64 SSE2 (`movq`, `addsd`/`subsd`/`mulsd`/`divsd`,
+  `ucomisd` with a parity check so `==` is false and `!=` true on NaN,
+  operand swaps for `<`/`<=`, and `btc rax, 63` for negation); AArch64
+  (`fmov`, `fadd`/`fsub`/`fmul`/`fdiv`, `fcmp` with `cset` on EQ, NE, MI,
+  LS, GT, GE, which are all false for an unordered pair except NE, and
+  `fneg`); RV64 D extension (`fmv.d.x`/`fmv.x.d`, `fadd.d` etc. with the
+  static round-to-nearest-even mode, `feq.d`/`flt.d`/`fle.d`, `fsgnjn.d`).
+  No fused multiply-add or reassociation is ever emitted.
+- Lean: `lean/VerifiedCodegen.lean` gains the three rows and three
+  instructions, with `sim_farith`, `sim_fneg` and `sim_fcompare` in
+  `select_simulates`. Both levels are defined with Lean's `Float` on the
+  same bit patterns, so the theorem shows the table routes the right
+  operands to the right binary64 operation and writes the right result
+  word. It does not show that `addsd` (or any target instruction)
+  implements IEEE-754, and NaN payloads, which differ between targets, are
+  not meaningful in the model. `lean/CodegenValidation.lean` drops integer
+  facts for `f64` results (`fcompare` results are `bool`), and every
+  Codegen Lean file still compiles with Lean 4.35.0 and no `sorry`.
+
+### Checks
+
+- `tests/fixtures/verified_codegen/floats.ves` (dot product, a sum loop of
+  `0.1`, `-0.0`, `inf - inf`, a subnormal quotient, `0.1 + 0.2` via `+=`,
+  all six comparisons with NaN and with `-0.0 == 0.0`, `nan != nan`) agrees
+  with the evaluator and Cranelift on x86-64, and on AArch64 and RV64 under
+  QEMU, optimizer on and off. NaN results are compared as NaN, not by
+  payload.
+- `VESPER_LEAN=<lean 4.35.0> cargo test --locked --test verified_codegen_lean
+  --test refinement_places_lean`: pass, including the line-for-line table
+  comparison (93 rows).
+
+## Milestone 4: Windows x64 COFF
+
+### What was built
+
+- `Target::X86_64_WINDOWS` (`x86_64-pc-windows-msvc`) emits an x86-64 COFF
+  object (written directly, deterministically) with `.text`, `.xdata` and
+  `.pdata`, exporting the C `main`. `vesper build --codegen verified
+  --target x86_64-pc-windows-msvc` links it with the same MSVC linker
+  discovery and static runtime libraries as the Cranelift Windows path
+  (`native::windows::link_executable`, read-only reuse).
+- Every compiled function and `main` get one `RUNTIME_FUNCTION` and a
+  version-1 `UNWIND_INFO` (`UWOP_PUSH_NONVOL rbp`, then
+  `UWOP_ALLOC_SMALL`/`ALLOC_LARGE` for the fixed frame), with
+  `IMAGE_REL_AMD64_ADDR32NB` relocations. Function bodies never move `rsp`,
+  so the fixed allocation is the whole unwind state. On Windows the
+  epilogue is the canonical `add rsp, frame; pop rbp; ret`, and frames of a
+  page or more touch each page below `rsp` in order (as `__chkstk` does)
+  before allocating.
+- `main` calls the entry, writes the result words with `GetStdHandle` and
+  `WriteFile` (raw bytes, no CRT text mode) for the word protocol, and
+  returns the low byte of the first word as the exit status. Abort exits
+  call `ExitProcess(101|102|103)`. The x86-64 integer, float and control
+  encodings are otherwise shared with Linux: they use only `rax`, `rcx`,
+  `rdx`, `xmm0` and `xmm1` (volatile in the Windows ABI) and `rbp`, which
+  the prologue saves.
+
+### Checks
+
+- The differential tests include the Windows target. Locally the objects
+  were linked with MinGW-w64 GCC 13 and run under Wine 9.0: every fixture,
+  every checked-arithmetic boundary and the ten-million-iteration loop
+  agree with the evaluator and Cranelift. On the Windows CI job the same
+  tests link with `link.exe` and run natively; elsewhere the target is
+  reported as unavailable.
+- `containers_are_well_formed` checks the object with
+  `native::windows::inspect`: AMD64, `.text`/`.xdata`/`.pdata`, one
+  `RUNTIME_FUNCTION` and `UNWIND_INFO` per function plus `main`, and three
+  `ADDR32NB` relocations per row.
+- `builds_and_runs_on_the_host` now builds and runs the native `.exe` on
+  Windows (exit status `6765 % 256`, and 101 for an unhandled overflow).
+
+### Limits
+
+The abort stubs, and the brief `WriteFile` call window in `main`, have no
+exact unwind description: a trap is a jump into the stub from the
+function's own frame, so a stack walk started there would be imprecise.
+Nothing in these programs raises SEH exceptions, and no unwinding is
+exercised by the tests.
+
+## Milestone 5: RV64 encodings proved against the ISA formats
+
+### What was built
+
+- `lean/CodegenRv64Encoding.lean` (imports `VerifiedCodegen.lean`) models
+  the RV64 encoder:
+  - `Inst` is the subset the emitter uses, named as in the ISA manual:
+    - the `OP` and `OP-IMM` operations;
+    - `slli`, `srai`, `ld`, `sd`, the four branches, `jal`, `jalr` and `ecall`;
+    - the D-extension operations and `fmv.d.x`/`fmv.x.d`.
+  - `decode` is the specification:
+    - the R/I/S/B/J field positions;
+    - the scattered B and J immediate bits;
+    - sign extension;
+    - the manual's opcode, `funct3` and `funct7` tables.
+  - `encode` writes the fields the way `riscv64.rs` does.
+- `decode_encode`:
+  - Statement: every well-formed instruction encodes to a word below
+    `2^32`, and `decode` maps that word back to the same instruction.
+  - Well-formed means registers below 32, immediates in their field's
+    range, and even branch and jump offsets.
+  - `bytes_encode` gives the little-endian bytes.
+- `emit` mirrors `riscv64::emit` for every `M` instruction. It covers the
+  11-instruction `li`, large frame offsets through `t0`, and the
+  inverted-branch-over-`jal` trap checks. Two theorems cover it:
+  - `emit_ok` proves every instruction `emit` produces is well formed, for
+    any `M` with `u32` frame indices and sizes.
+  - `emit_decodes` chains `emit_ok` with `decode_encode` over the laid-out
+    sequence.
+- The listing check:
+  - The Lean file prints the words of 59 sample `M` instructions, covering
+    every instruction kind, both signs, every condition, large offsets and
+    full 64-bit immediates.
+  - `riscv64::encoding_listing()` (re-exported as
+    `verified_codegen::rv64_encoding_listing`) runs the Rust emitter on the
+    same instructions.
+  - `tests/verified_codegen_lean.rs` requires the two listings to be equal
+    line for line. This ties the Rust bit-twiddling to the proven model on
+    those samples. Outside the samples it is a test, not a proof.
+- `scripts/ci/check-lean-models.sh` compiles the new file after
+  `VerifiedCodegen.olean`.
+
+### Checks
+
+- With Lean 4.35.0 the file compiles with no warnings.
+- Every theorem's axiom report uses only `propext`, `Classical.choice` and
+  `Quot.sound`. The hygiene test bans `sorry`, `native_decide`,
+  `bv_decide` and similar escape hatches.
+- The listings agree: `cargo test --test verified_codegen_lean` passes
+  with `VESPER_LEAN` set.
+
+### Remaining gaps
+
+- No encoding proof exists yet for x86-64 or AArch64.
+- The RV64 proof covers encoding only. Instruction semantics (that the
+  emitted sequence implements `Mach.step`) are still checked by
+  differential tests under QEMU.

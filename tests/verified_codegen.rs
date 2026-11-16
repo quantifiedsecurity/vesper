@@ -53,6 +53,13 @@ fn runner(target: Target) -> Option<Vec<PathBuf>> {
     if host == Some(target) {
         return Some(vec![]);
     }
+    if target == Target::X86_64_WINDOWS && cfg!(target_os = "linux") {
+        // Link with MinGW and run under Wine when both are installed.
+        return match (on_path("x86_64-w64-mingw32-gcc"), on_path("wine")) {
+            (Some(_), Some(wine)) => Some(vec![wine]),
+            _ => None,
+        };
+    }
     let qemu: &[&str] = if target == Target::AARCH64_LINUX {
         &["qemu-aarch64", "qemu-aarch64-static"]
     } else if target == Target::RISCV64_LINUX {
@@ -153,7 +160,12 @@ fn emitted_launch_retries_temporary_text_busy_but_preserves_failures() {
 /// Run an artifact built with `ResultProtocol::Words`.
 fn execute(artifact: &Artifact, prefix: &[PathBuf]) -> Outcome {
     let dir = scratch();
-    let exe = dir.join("program");
+    // Windows starts executables by their `.exe` name.
+    let exe = dir.join(if artifact.container == Container::CoffObject {
+        "program.exe"
+    } else {
+        "program"
+    });
     match artifact.container {
         Container::ElfExecutable => {
             std::fs::write(&exe, &artifact.bytes).unwrap();
@@ -170,6 +182,22 @@ fn execute(artifact: &Artifact, prefix: &[PathBuf]) -> Outcome {
                 .expect("spawn cc");
             assert!(status.success(), "cc failed to link the Mach-O object");
         }
+        Container::CoffObject => {
+            let object = dir.join("program.obj");
+            std::fs::write(&object, &artifact.bytes).unwrap();
+            if cfg!(windows) {
+                vesper::native::windows::link_executable(&object, &exe, None)
+                    .expect("link.exe links the COFF object");
+            } else {
+                let status = Command::new("x86_64-w64-mingw32-gcc")
+                    .arg(&object)
+                    .arg("-o")
+                    .arg(&exe)
+                    .status()
+                    .expect("spawn x86_64-w64-mingw32-gcc");
+                assert!(status.success(), "MinGW failed to link the COFF object");
+            }
+        }
     }
     let mut cmd = match prefix.split_first() {
         Some((q, rest)) => {
@@ -179,6 +207,14 @@ fn execute(artifact: &Artifact, prefix: &[PathBuf]) -> Outcome {
         }
         None => Command::new(&exe),
     };
+    if artifact.container == Container::CoffObject && !prefix.is_empty() {
+        // Wine: a private prefix outside the home directory, no debug noise.
+        cmd.env(
+            "WINEPREFIX",
+            std::env::temp_dir().join("vesper-verified-wine"),
+        )
+        .env("WINEDEBUG", "-all");
+    }
     let out = emitted_output(&mut cmd).expect("run the emitted executable");
     let _ = std::fs::remove_dir_all(&dir);
     Outcome::from_exit(out.status.code(), &out.stdout)
@@ -259,11 +295,12 @@ fn render(world: &World, outcome: &Outcome) -> String {
     }
 }
 
-const TARGETS: [Target; 4] = [
+const TARGETS: [Target; 5] = [
     Target::X86_64_LINUX,
     Target::AARCH64_LINUX,
     Target::AARCH64_MACOS,
     Target::RISCV64_LINUX,
+    Target::X86_64_WINDOWS,
 ];
 
 /// Compile for every target (with and without the IR optimizer), check the
@@ -320,6 +357,13 @@ fn fixture(name: &str) -> String {
 
 /// Rendered by the evaluator; the tests check the other engines agree.
 const ENUMS: &str = "(110, 5, 6, -1, Some(42), Rect(3, 5))";
+/// `tiny / 1e17` is the subnormal 4.9e-322: 321 zeros after the point.
+fn floats_expected() -> String {
+    format!(
+        "(5.775, 0.9999999999999999, -0, NaN, 0.{}49, 0.30000000000000004, (false, true, false, false, false, false), (true, false, false, true, false, true), true, -inf)",
+        "0".repeat(321)
+    )
+}
 const LITERALS: &str = "(100, 200, 300, 400, 500, Ok(42), Err(Halt), (-2, -1, 0))";
 
 #[test]
@@ -341,6 +385,7 @@ fn fixtures_agree_with_the_evaluator_and_cranelift() {
         ("enums.ves", ENUMS),
         ("literals.ves", LITERALS),
         ("nested.ves", "(Some(Some(1)), Some(None), 9, 3, 4)"),
+        ("floats.ves", floats_expected().as_str()),
     ] {
         assert_eq!(differential(&fixture(name)), expected, "{name}");
     }
@@ -430,7 +475,10 @@ fn rejects(source: &str, construct: Unsupported) {
 
 #[test]
 fn constructs_outside_the_subset_are_typed_errors() {
-    rejects("fn main() -> f64 { 1.5 }", Unsupported::Float);
+    rejects(
+        "fn r(a: f64, b: f64) -> f64 { a % b } fn main() -> f64 { r(1.5, 1.0) }",
+        Unsupported::Float,
+    );
     rejects("fn main() -> i64 { let s = \"x\"; 1 }", Unsupported::String);
     rejects(
         "enum L { Nil, Cons(i64, L) } fn main() -> i64 { match L::Nil { L::Nil => 0, L::Cons(x, _) => x, } }",
@@ -482,6 +530,11 @@ fn entry_and_target_errors() {
         Target::RISCV64_LINUX
     );
     assert!(Target::from_triple("riscv64gc-apple-darwin").is_err());
+    assert_eq!(
+        Target::from_triple("x86_64-pc-windows-msvc").unwrap(),
+        Target::X86_64_WINDOWS
+    );
+    assert!(Target::from_triple("aarch64-pc-windows-msvc").is_err());
     assert!(Target::from_triple("powerpc64le-unknown-linux-gnu").is_err());
     assert!(Target::from_triple("x86_64-apple-darwin").is_err());
     assert_eq!(
@@ -522,6 +575,17 @@ fn containers_are_well_formed() {
     assert_eq!(&mac.bytes[..4], &0xfeed_facfu32.to_le_bytes());
     assert_eq!(&mac.bytes[4..8], &0x0100_000cu32.to_le_bytes());
     assert!(mac.bytes.windows(6).any(|w| w == b"_main\0"));
+    // The COFF object: AMD64, one RUNTIME_FUNCTION and UNWIND_INFO per
+    // compiled function plus `main`, every `.pdata` field relocated.
+    let win = vc::compile(&w, "main", &Options::new(Target::X86_64_WINDOWS)).unwrap();
+    assert_eq!(win.container, Container::CoffObject);
+    let coff = vesper::native::windows::inspect(&win.bytes).unwrap();
+    assert_eq!(coff.machine, 0x8664);
+    assert_eq!(coff.sections, [".text", ".xdata", ".pdata"]);
+    assert_eq!(coff.runtime_functions, win.lir.len() + 1);
+    assert_eq!(coff.unwind_infos, coff.runtime_functions);
+    assert_eq!(coff.pdata_relocations, 3 * coff.runtime_functions);
+    assert_eq!(coff.external_functions, ["main"]);
     // The slot IR and the machine instruction count are reported.
     assert!(x86.lir.iter().any(|(n, _)| n == "length2"));
     assert!(x86.machine_instructions > 50);
