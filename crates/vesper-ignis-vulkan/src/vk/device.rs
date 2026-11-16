@@ -199,6 +199,8 @@ pub(crate) struct Inner {
     /// Serializes host access to the shared `VkQueue`s (external
     /// synchronization), across every backend built on this device.
     pub submit_lock: Mutex<()>,
+    /// Counters of the last accepted submission on this device.
+    pub stats: Mutex<crate::vk::backend::SubmitStats>,
 }
 
 impl Drop for Inner {
@@ -596,6 +598,7 @@ impl Device {
                 info,
                 lost: AtomicBool::new(false),
                 submit_lock: Mutex::new(()),
+                stats: Mutex::new(Default::default()),
             }),
         })
     }
@@ -642,6 +645,12 @@ impl Device {
 
     pub fn is_lost(&self) -> bool {
         self.inner.is_lost()
+    }
+
+    /// What the last accepted submission on this device recorded (split
+    /// events, narrowed barriers, filtered barriers, ownership transfers).
+    pub fn last_submit_stats(&self) -> crate::SubmitStats {
+        self.inner.stats.lock().map(|s| *s).unwrap_or_default()
     }
 
     /// A host-visible, coherent, persistently mapped buffer usable as a

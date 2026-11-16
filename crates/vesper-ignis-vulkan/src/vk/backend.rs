@@ -2023,6 +2023,9 @@ impl VulkanBackend {
             }
         }
         self.last_stats = stats;
+        if let Ok(mut s) = self.inner.stats.lock() {
+            *s = stats;
+        }
         Ok(())
     }
 }
