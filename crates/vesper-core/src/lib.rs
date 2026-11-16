@@ -14,4 +14,5 @@ pub mod mode_vec;
 pub mod numeric;
 pub mod out_slice;
 pub mod pcg;
+pub mod resource_grade;
 pub mod slice_projections;
