@@ -182,6 +182,18 @@ on the observed nonzero magnitudes and zero pattern. The API does not establish
 these assumptions or measurement provenance; it does not compute a confidence
 interval or operate the existing regression gate.
 
+`signed_rank_exact_paired_samples` accepts the existing `PairedSample` totals
+directly and ranks candidate-minus-baseline differences per operation as exact
+rational values. Equivalent fractions tie without rounding. It uses the same
+zero convention and statistical assumptions; callers must establish common
+units and provenance.
+
+`vesper bench FILE --signed-rank` optionally includes this exact paired
+signed-rank report for the selected measured metric. It supports up to 32
+measured epochs, or up to 32 aggregate randomized-layout samples; it excludes
+deterministic mode. All-zero differences report unavailable. The report does
+not add a gate and explicitly states the conditional-sign assumption.
+
 ## Tied paired signed-rank confidence sets
 
 `signed_rank_confidence_set` inverts the exact two-sided 5% Wilcoxon
