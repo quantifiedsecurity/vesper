@@ -53,8 +53,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             mesa-vulkan-drivers libvulkan1 vulkan-validationlayers vulkan-tools
+      - name: Load udmabuf (lavapipe sync-fd export needs /dev/udmabuf)
+        run: |
+          sudo modprobe udmabuf || sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" && sudo modprobe udmabuf || true
+          ls -l /dev/udmabuf || true
+          sudo chmod a+rw /dev/udmabuf || true
       - name: Report the Vulkan device
         run: |
+          vulkaninfo | grep -E "external_(semaphore|fence)_fd" || echo "no sync-fd extensions"
+          ls /dev/dri || true
           dpkg-query -W mesa-vulkan-drivers vulkan-validationlayers libvulkan1
           vulkaninfo --summary
       - uses: dtolnay/rust-toolchain@stable
