@@ -15,7 +15,9 @@
 //!   submission tells [`SyncFd::close`] when the semaphore can be destroyed.
 //! * **Bridged**, where the extension is missing (lavapipe exposes it only
 //!   when `/dev/udmabuf` exists): a thread blocks in `vkWaitSemaphores` and
-//!   writes one byte into a pipe whose read end is the fd.
+//!   writes one byte into a pipe whose read end is the fd. `Auto` also uses
+//!   the bridge for points not submitted yet: a native export of such a
+//!   point would wait on the same queue ahead of its own signal.
 //!
 //! The exporter is taken from the backend before the backend moves into a
 //! `Runtime`. Every exported fd is a linear owner: the backend refuses to be
@@ -59,6 +61,8 @@ pub enum SyncFdKind {
 pub(crate) struct ExportState {
     open: usize,
     closed: bool,
+    /// Per timeline: the highest value whose signal has been submitted.
+    pub(crate) submitted: Vec<u64>,
 }
 
 /// Shared between a backend and its exporters.
@@ -106,9 +110,9 @@ impl SyncFdExporter {
     }
 
     /// An fd that becomes readable once timeline `timeline` (the runtime's
-    /// timeline index) reaches `value`. `value` may be a point whose signal
-    /// has not been submitted yet (Vulkan timelines allow wait-before-signal);
-    /// a point that is never signalled leaves the fd unreadable.
+    /// timeline index) reaches `value`. A point whose signal has not been
+    /// submitted yet is bridged (`Auto`) or rejected (`Native`); a point that
+    /// is never signalled leaves the fd unreadable.
     pub fn export(
         &self,
         timeline: usize,
@@ -123,19 +127,30 @@ impl SyncFdExporter {
             return Err(VulkanError::InvalidDesc("sync fd for timeline value 0"));
         }
         self.inner.ensure_live("vkGetSemaphoreFdKHR")?;
-        {
+        // A native export submits a wait on the timeline's own queue. If the
+        // signal of `value` is not submitted yet, it would be submitted after
+        // that wait on the same queue and could never run (no forward
+        // progress), so only submitted points are exported natively.
+        let native = {
             let mut s = self.exports.lock().unwrap_or_else(|p| p.into_inner());
             if s.closed {
                 return Err(VulkanError::Unavailable(
                     "the backend of this exporter was destroyed".into(),
                 ));
             }
+            let submitted = s.submitted.get(timeline).copied().unwrap_or(0) >= value;
+            let native = match mode {
+                SyncFdMode::Auto => self.native_available() && submitted,
+                SyncFdMode::Native if !submitted => {
+                    return Err(VulkanError::Unsupported(
+                        "a native sync fd for a timeline point not yet submitted",
+                    ));
+                }
+                SyncFdMode::Native => true,
+                SyncFdMode::Bridged => false,
+            };
             s.open += 1;
-        }
-        let native = match mode {
-            SyncFdMode::Auto => self.native_available(),
-            SyncFdMode::Native => true,
-            SyncFdMode::Bridged => false,
+            native
         };
         let made = if native {
             self.native(semaphore, queue, value)

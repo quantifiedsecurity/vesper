@@ -163,6 +163,26 @@ validation message of error severity.
   the WSI. `present_texture` blits from an idle texture and waits on its own
   fence, so the frame graph stays independent of the swapchain.
 
+* **Native sync fds only for submitted points.** A native export submits
+  a wait on the timeline's own queue. For a point whose signal is not
+  submitted yet, that wait would sit ahead of its own signal on the same
+  queue, with no forward progress. `Auto` bridges such points, and `Native`
+  rejects them (`Unsupported`).
+* **Ownership transfers need a semaphore path.** The planner orders hazards
+  only, so two reads on different families may have no dependency at all.
+  Vulkan requires the release to execute before the acquire, so a transfer
+  whose acquiring segment has no transitive semaphore wait on the releasing
+  segment's signal is `VulkanError::OwnershipTransfer`. Submission order is
+  not treated as a dependency.
+* **Review fixes (Codex review of the PR).**
+  * Depth/stencil plane copies on a non-graphics family are `WrongQueue`
+    (VUID-10216; `maintenance10` is not enabled).
+  * Plane copies constrain only the buffer offset, not the byte count.
+  * Presenting an integer format, or a format without `BLIT_SRC`, is
+    `Unsupported`.
+  * A presentation fence that times out is no longer reset: the copy stays
+    in flight, and the next call or `destroy` waits for it.
+
 ## Checks run
 
 Local cloud host: Ubuntu 24.04, Mesa 25.2.8 lavapipe, VVL 1.3.275, Xvfb,
@@ -172,7 +192,7 @@ Rust 1.97 and 1.100.
 * `cargo +1.100.0 clippy --locked -p vesper-ignis-vulkan --all-targets -- -D warnings`:
   clean.
 * `VESPER_IGNIS_VULKAN_REQUIRE=1 VESPER_IGNIS_VULKAN_VALIDATION=required VESPER_IGNIS_VULKAN_REQUIRE_PRESENT=1 cargo test --locked --no-fail-fast -p vesper-ignis-vulkan`:
-  * unit tests: 16 pass;
+  * unit tests: 17 pass;
   * depth: 3 pass;
   * lavapipe: 8 pass;
   * present: 2 pass;

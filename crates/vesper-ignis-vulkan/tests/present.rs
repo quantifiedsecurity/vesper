@@ -204,6 +204,16 @@ fn rendered_triangle_is_presented_to_an_x11_window() {
     assert_eq!(shown.pixel(0, 0), Some([0, 0, 255, 255]));
     assert_ne!(shown.pixel(W / 2, H / 2), Some([0, 0, 255, 255]));
 
+    // An integer texture cannot be blitted into the normalized swapchain.
+    let int_tex = device
+        .create_texture(TextureInfo::new(W, H).with_format(Format::R32Uint))
+        .unwrap();
+    assert!(matches!(
+        swapchain.present_texture(&int_tex),
+        Err(VulkanError::Unsupported(_))
+    ));
+    int_tex.destroy();
+
     swapchain.destroy();
     window.destroy();
     finish(rt, allocators, r);

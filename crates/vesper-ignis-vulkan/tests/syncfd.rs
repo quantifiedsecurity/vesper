@@ -97,11 +97,29 @@ fn run(mode: SyncFdMode) {
     let v1 = rt.submission(t1).unwrap().terminal[0].value;
     let fd1 = exporter.export(0, v1, mode).unwrap();
     // Frame 2's point, exported before frame 2 exists (wait-before-signal).
-    let fd2 = exporter.export(0, v1 + 1, mode).unwrap();
+    // Natively that would wait on the queue ahead of its own signal, so
+    // Native refuses and Auto bridges it.
+    if mode == SyncFdMode::Native {
+        assert!(matches!(
+            exporter.export(0, v1 + 1, mode),
+            Err(VulkanError::Unsupported(_))
+        ));
+    }
+    let fd2 = exporter
+        .export(
+            0,
+            v1 + 1,
+            if mode == SyncFdMode::Native {
+                SyncFdMode::Auto
+            } else {
+                mode
+            },
+        )
+        .unwrap();
     eprintln!("kinds: {:?} {:?}", fd1.kind(), fd2.kind());
-    match mode {
-        SyncFdMode::Bridged => assert_eq!(fd2.kind(), SyncFdKind::Bridged),
-        _ => assert_eq!(fd2.kind(), SyncFdKind::Native),
+    assert_eq!(fd2.kind(), SyncFdKind::Bridged);
+    if mode == SyncFdMode::Native {
+        assert_ne!(fd1.kind(), SyncFdKind::Bridged);
     }
     waiter.watch(&fd1, 1).unwrap();
     waiter.watch(&fd2, 2).unwrap();

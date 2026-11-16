@@ -353,6 +353,10 @@ pub struct Swapchain {
     /// Per image: signalled by the copy, waited by the present.
     rendered: Vec<vk::Semaphore>,
     fence: vk::Fence,
+    /// A copy was submitted with `fence` and has not been seen complete
+    /// (its fence wait timed out); the command buffer, acquire semaphore
+    /// and source texture are still in use.
+    in_flight: bool,
     presents: u64,
     live: bool,
 }
@@ -406,6 +410,7 @@ impl Swapchain {
             acquire: vk::Semaphore::null(),
             rendered: Vec::new(),
             fence: vk::Fence::null(),
+            in_flight: false,
             presents: 0,
             live: true,
         };
@@ -588,6 +593,26 @@ impl Swapchain {
                 "present source must be a color copy source",
             ));
         }
+        // The blit converts into the (unorm/sRGB) swapchain format, which
+        // Vulkan allows only from float/unorm/sRGB sources with BLIT_SRC.
+        if texture.format() == crate::Format::R32Uint {
+            return Err(VulkanError::Unsupported(
+                "presenting an integer format (blit to a normalized swapchain)",
+            ));
+        }
+        // SAFETY: valid physical device of this instance.
+        let features = unsafe {
+            inner
+                .instance
+                .get_physical_device_format_properties(inner.physical, texture.format().vk())
+        }
+        .optimal_tiling_features;
+        if !features.contains(vk::FormatFeatureFlags::BLIT_SRC) {
+            return Err(VulkanError::Unsupported(
+                "BLIT_SRC on the present source format",
+            ));
+        }
+        self.wait_previous(&inner)?;
         let old_layout = texture.layout(0, 0).unwrap_or(vk::ImageLayout::UNDEFINED);
         if old_layout == vk::ImageLayout::UNDEFINED {
             return Err(VulkanError::InvalidDesc(
@@ -601,10 +626,10 @@ impl Swapchain {
         let d = &inner.device;
         // SAFETY (block): every handle is owned by this swapchain or by the
         // caller's idle texture; the single command buffer and acquire
-        // semaphore are reused only after the fence wait at the end of the
-        // previous call; the queue is externally synchronized by
+        // semaphore are reused only after `wait_previous` has seen the
+        // previous copy's fence; the queue is externally synchronized by
         // `submit_lock`.
-        unsafe {
+        let index = unsafe {
             let index = match swap.acquire_next_image(
                 self.swapchain,
                 5_000_000_000,
@@ -756,22 +781,42 @@ impl Swapchain {
             if let Some(slot) = texture.slot(0, 0, 0) {
                 texture.layouts.borrow_mut()[slot] = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
             }
-            let waited = inner.check(
-                "vkWaitForFences",
-                d.wait_for_fences(&[self.fence], true, 10_000_000_000),
-            );
-            let reset = inner.check("vkResetFences", d.reset_fences(&[self.fence]));
+            self.in_flight = true;
+            self.presents += 1;
             match presented {
                 Some(Ok(_suboptimal)) => {}
                 Some(Err(vk::Result::ERROR_OUT_OF_DATE_KHR)) => return Err(VulkanError::OutOfDate),
                 Some(Err(e)) => inner.check::<()>("vkQueuePresentKHR", Err(e))?,
                 None => {}
             }
-            waited?;
-            reset?;
-            self.presents += 1;
-            Ok(index)
+            index
+        };
+        self.wait_previous(&inner)?;
+        Ok(index)
+    }
+
+    /// Waits up to ten seconds for the last copy's fence and resets it. On
+    /// timeout the copy stays in flight (nothing is reset or reused) and
+    /// [`VulkanError::Pending`] is returned: the source texture may still be
+    /// read, so the caller must call [`present_texture`](Self::present_texture)
+    /// again or [`destroy`](Self::destroy) (which waits for the queue) before
+    /// reusing or destroying it.
+    fn wait_previous(&mut self, inner: &Inner) -> Result<(), VulkanError> {
+        if !self.in_flight {
+            return Ok(());
         }
+        let d = &inner.device;
+        // SAFETY: our fence; it is reset only after the wait proves the
+        // submission that signals it has completed.
+        unsafe {
+            match d.wait_for_fences(&[self.fence], true, 10_000_000_000) {
+                Err(vk::Result::TIMEOUT) => return Err(VulkanError::Pending),
+                r => inner.check("vkWaitForFences", r)?,
+            }
+            inner.check("vkResetFences", d.reset_fences(&[self.fence]))?;
+        }
+        self.in_flight = false;
+        Ok(())
     }
 
     fn release(&mut self) {

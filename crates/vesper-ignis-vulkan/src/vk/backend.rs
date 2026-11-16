@@ -417,6 +417,13 @@ impl VulkanBackend {
                     return Err(e);
                 }
             };
+            #[cfg(unix)]
+            backend
+                .exports
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .submitted
+                .push(0);
             backend.timelines.push(TimelineState {
                 kind: *kind,
                 family: family.index,
@@ -958,6 +965,11 @@ impl VulkanBackend {
         } else {
             (Vec::new(), None)
         };
+        let reach = if transfers.is_empty() {
+            Vec::new()
+        } else {
+            semaphore_reach(&order)
+        };
         let mut stats = SubmitStats::default();
         let mut events = vec![0usize; submission.streams.len()];
         let mut layouts = Layouts::new(r);
@@ -969,13 +981,25 @@ impl VulkanBackend {
             let mut commands = Vec::with_capacity(segment.body.len() + 1);
             let mut acquire = Dep::default();
             for x in transfers.iter().filter(|x| x.acquire_in == i) {
-                let Some(k) = x.release_in else {
-                    let resource = match x.resource {
-                        Res::Buffer(b) => r.buffers[b].0.into(),
-                        Res::Texture(t) => r.textures[t].0.into(),
-                    };
-                    return Err(VulkanError::OwnershipTransfer(resource));
+                let resource = || match x.resource {
+                    Res::Buffer(b) => r.buffers[b].0.into(),
+                    Res::Texture(t) => r.textures[t].0.into(),
                 };
+                let Some(k) = x.release_in else {
+                    return Err(VulkanError::OwnershipTransfer(resource()));
+                };
+                // The release must happen before the acquire through a
+                // semaphore (submission order is not an execution
+                // dependency). The planner orders hazards only, so two
+                // reads on different families may have none: reject.
+                let ordered = batches[k].segment.signals.iter().any(|sig| {
+                    reach[i]
+                        .get(&sig.timeline.index())
+                        .is_some_and(|v| *v >= sig.value)
+                });
+                if !ordered {
+                    return Err(VulkanError::OwnershipTransfer(resource()));
+                }
                 let (release, acq) =
                     ownership_deps(r, &layouts, x.resource, x.from_family, x.to_family);
                 batches[k].releases.buffers.extend(release.buffers);
@@ -1218,18 +1242,21 @@ impl VulkanBackend {
                 .ok_or(VulkanError::BadPipeline { pass })
         };
         let limits = &self.inner.limits;
-        let buffer_span = |b: BufferHandle, offset: u64, size: u64, align: u64| {
-            let buf = find_buffer(r, b)?;
-            let end = offset
-                .checked_add(size)
-                .filter(|e| *e <= buf.size() && size > 0)
-                .ok_or(VulkanError::OutOfBounds("buffer range"))?;
-            let _ = end;
-            if !offset.is_multiple_of(align) || (align == 4 && !size.is_multiple_of(4)) {
-                return Err(VulkanError::OutOfBounds("buffer range alignment"));
-            }
-            Ok(buf)
-        };
+        // `whole_words`: the size must also be a multiple of 4 (buffer fills);
+        // copies constrain only the offset.
+        let buffer_span =
+            |b: BufferHandle, offset: u64, size: u64, align: u64, whole_words: bool| {
+                let buf = find_buffer(r, b)?;
+                let end = offset
+                    .checked_add(size)
+                    .filter(|e| *e <= buf.size() && size > 0)
+                    .ok_or(VulkanError::OutOfBounds("buffer range"))?;
+                let _ = end;
+                if !offset.is_multiple_of(align) || (whole_words && !size.is_multiple_of(4)) {
+                    return Err(VulkanError::OutOfBounds("buffer range alignment"));
+                }
+                Ok(buf)
+            };
         Ok(Some(match work {
             PassWork::Empty => return Ok(None),
             PassWork::Draw {
@@ -1349,7 +1376,7 @@ impl VulkanBackend {
                             BindingKind::StorageBuffer,
                         ) => {
                             let align = limits.min_storage_buffer_offset_alignment.max(1);
-                            let buf = buffer_span(*buffer, *offset, *size, align)?;
+                            let buf = buffer_span(*buffer, *offset, *size, align, false)?;
                             if *size > u64::from(limits.max_storage_buffer_range) {
                                 return Err(VulkanError::OutOfBounds(
                                     "storage range exceeds maxStorageBufferRange",
@@ -1403,13 +1430,25 @@ impl VulkanBackend {
             } => {
                 let (i, layout) = layouts.require_at(r, *src, *plane, *mip, &COPY_READ)?;
                 let tex = &r.textures[i].1;
+                // Depth/stencil image-to-buffer copies need a graphics
+                // family (VUID-vkCmdCopyImageToBuffer-commandBuffer-10216;
+                // maintenance10 is not enabled).
+                if !tex.format().is_color()
+                    && !self
+                        .inner
+                        .family(kind)
+                        .flags
+                        .contains(vk::QueueFlags::GRAPHICS)
+                {
+                    return Err(VulkanError::WrongQueue { pass, kind });
+                }
                 let aspect = tex
                     .format()
                     .aspect(*plane)
                     .ok_or(VulkanError::RangeOutOfBounds((*src).into()))?;
                 let bytes = plane_copy_bytes(tex, *plane, *mip)
                     .ok_or(VulkanError::RangeOutOfBounds((*src).into()))?;
-                let buf = buffer_span(*dst, *offset, bytes, 4)?;
+                let buf = buffer_span(*dst, *offset, bytes, 4, false)?;
                 Cmd::CopyImageToBuffer {
                     image: tex.image,
                     layout,
@@ -1432,7 +1471,7 @@ impl VulkanBackend {
                 size,
                 value,
             } => Cmd::Fill {
-                buffer: buffer_span(*dst, *offset, *size, 4)?.buffer,
+                buffer: buffer_span(*dst, *offset, *size, 4, true)?.buffer,
                 offset: *offset,
                 size: *size,
                 value: *value,
@@ -1444,8 +1483,8 @@ impl VulkanBackend {
                 dst_offset,
                 size,
             } => {
-                let s = buffer_span(*src, *src_offset, *size, 1)?;
-                let d = buffer_span(*dst, *dst_offset, *size, 1)?;
+                let s = buffer_span(*src, *src_offset, *size, 1, false)?;
+                let d = buffer_span(*dst, *dst_offset, *size, 1, false)?;
                 if s.buffer == d.buffer {
                     let (a, b) = (*src_offset, *dst_offset);
                     if a < b + size && b < a + size {
@@ -2052,6 +2091,16 @@ impl VulkanBackend {
             for s in &batch.segment.signals {
                 self.timelines[s.timeline.index()].submitted = s.value;
                 self.pending.push_back(*s);
+                #[cfg(unix)]
+                if let Some(v) = self
+                    .exports
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .submitted
+                    .get_mut(s.timeline.index())
+                {
+                    *v = s.value;
+                }
             }
         }
         layouts.commit(owners.resources);
@@ -2069,6 +2118,51 @@ impl VulkanBackend {
         }
         Ok(())
     }
+}
+
+/// For each segment (in submission order), the timeline values that are
+/// known to have been reached before it starts: its own waits, and,
+/// transitively, what the segments signalling those values had waited for.
+/// Submission order on one queue adds nothing (it is not an execution
+/// dependency between batches).
+fn semaphore_reach(order: &[Segment]) -> Vec<BTreeMap<usize, u64>> {
+    let points = |ps: &[vesper_ignis::lifecycle::FencePoint]| {
+        ps.iter().map(|p| (p.timeline.index(), p.value)).collect()
+    };
+    let segments: Vec<WaitsSignals> = order
+        .iter()
+        .map(|s| (points(&s.waits), points(&s.signals)))
+        .collect();
+    reach_of(&segments)
+}
+
+/// A segment's waits and signals as `(timeline index, value)`.
+type WaitsSignals = (Vec<(usize, u64)>, Vec<(usize, u64)>);
+
+/// [`semaphore_reach`] over `(waits, signals)` of `(timeline, value)`.
+fn reach_of(segments: &[WaitsSignals]) -> Vec<BTreeMap<usize, u64>> {
+    let mut reach: Vec<BTreeMap<usize, u64>> = Vec::with_capacity(segments.len());
+    for (waits, _) in segments {
+        let mut known: BTreeMap<usize, u64> = BTreeMap::new();
+        let merge = |t: usize, v: u64, known: &mut BTreeMap<usize, u64>| {
+            let e = known.entry(t).or_insert(0);
+            *e = (*e).max(v);
+        };
+        for &(t, v) in waits {
+            merge(t, v, &mut known);
+            // The earliest earlier segment whose signal satisfies the wait.
+            let producer = segments[..reach.len()]
+                .iter()
+                .position(|(_, signals)| signals.iter().any(|&(st, sv)| st == t && sv >= v));
+            if let Some(p) = producer {
+                for (&pt, &pv) in &reach[p] {
+                    merge(pt, pv, &mut known);
+                }
+            }
+        }
+        reach.push(known);
+    }
+    reach
 }
 
 /// Release (on the old family) and acquire (on the new family) barriers for
@@ -2211,5 +2305,28 @@ impl Backend for VulkanBackend {
             completions.push(Completion::reported(point));
         }
         PollBatch { completions, error }
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::reach_of;
+
+    #[test]
+    fn reach_follows_semaphores_not_submission_order() {
+        // 0: A signals A=1. 1: B signals B=1 without waiting. 2: B waits
+        // A=1, signals B=2. 3: A waits B=2, signals A=2.
+        let segments = vec![
+            (vec![], vec![(0, 1)]),
+            (vec![], vec![(1, 1)]),
+            (vec![(0, 1)], vec![(1, 2)]),
+            (vec![(1, 2)], vec![(0, 2)]),
+        ];
+        let reach = reach_of(&segments);
+        assert!(reach[0].is_empty() && reach[1].is_empty());
+        assert_eq!(reach[2].get(&0), Some(&1));
+        // Transitive: segment 3 waited for segment 2, which waited for A=1.
+        assert_eq!(reach[3].get(&1), Some(&2));
+        assert_eq!(reach[3].get(&0), Some(&1));
     }
 }
