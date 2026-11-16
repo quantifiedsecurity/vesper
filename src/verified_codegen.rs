@@ -48,8 +48,14 @@
 //! IEEE-754 `+ - * /` (round to nearest, ties to even; no fast-math),
 //! negation and ordered comparisons; their Lean rows are proved relative to
 //! one shared binary64 semantics (Lean's `Float`), not against the hardware.
+//! Generic functions are monomorphized per instance (`mono.rs`). Region
+//! blocks, `RegionBox[r, T]` handles and region-polymorphic functions
+//! (`eff [r: Region]`, a hidden pointer-word parameter per capability) work
+//! over a bump-allocated program heap with `vesper.region.accounting/1`
+//! bounds (`box`, `get`, `set`, `used`; exhaustion exits with
+//! [`EXIT_REGION`]); only the Linux ELF executable maps that heap.
 //! Handlers and every other effect, `f32`, `f64` remainder, strings,
-//! recursive enums, closures, generic functions, vectors and regions are
+//! recursive enums, closures, vectors and region watermarks and `take` are
 //! rejected.
 //!
 //! Values live in frame slots, never in registers across slot-IR rows: there
@@ -64,6 +70,7 @@ mod cli;
 mod container;
 mod lower;
 mod machine;
+mod mono;
 mod riscv64;
 mod x86_64;
 
@@ -84,6 +91,13 @@ pub const EXIT_OVERFLOW: u8 = 101;
 pub const EXIT_DIVISION_BY_ZERO: u8 = 102;
 /// Process exit status when an unreachable block is reached.
 pub const EXIT_UNREACHABLE: u8 = 103;
+/// Process exit status when a region bound or the program heap is exhausted.
+pub const EXIT_REGION: u8 = 104;
+/// Virtual address of the program heap that holds region payloads (a
+/// zero-fill ELF segment, present only when the program uses regions).
+pub const HEAP_BASE: u64 = 0x1000_0000;
+/// Words of the program heap (512 MiB).
+pub const HEAP_WORDS: u64 = 1 << 26;
 /// Frame words per function (slots plus the outgoing call area). Keeps every
 /// frame offset inside one AArch64 scaled 12-bit immediate.
 pub const MAX_FRAME_WORDS: u32 = 4000;
@@ -320,6 +334,13 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
     if options.optimize {
         crate::ir_opt::optimize(world, &mut program).map_err(VerifiedError::Invalid)?;
     }
+    // One copy of every reachable function per instance the checker fixed.
+    let program = mono::monomorphize(
+        world,
+        &program,
+        entry,
+        options.max_functions.saturating_mul(4),
+    )?;
     let plan = lower::plan(world, &program, entry, options.max_functions)?;
     let mut next_label = plan
         .functions
@@ -342,6 +363,18 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
         lir.push((plan.functions[index].name.clone(), lowered.rows));
     }
     let entry_plan = &plan.functions[0];
+    // Region payloads live in the program heap, which only the ELF
+    // container maps (a zero-fill segment at `HEAP_BASE`).
+    let heap = lir
+        .iter()
+        .flat_map(|(_, rows)| rows)
+        .any(|r| matches!(r, Lir::LoadPtr { .. } | Lir::StorePtr { .. }));
+    if heap && options.target.os != Os::Linux {
+        return Err(VerifiedError::Target(format!(
+            "regions need the program heap, which only the Linux ELF executable maps (not {:?})",
+            options.target.os
+        )));
+    }
     let result_words = entry_plan.result.0.clone();
     let mut a = asm::Asm::default();
     a.windows = options.target.os == Os::Windows;
@@ -409,14 +442,14 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
             os: Os::Linux,
         } => (
             Container::ElfExecutable,
-            container::elf_executable(container::EM_X86_64, &code),
+            container::elf_executable(container::EM_X86_64, &code, heap),
         ),
         Target {
             arch: Arch::Aarch64,
             os: Os::Linux,
         } => (
             Container::ElfExecutable,
-            container::elf_executable(container::EM_AARCH64, &code),
+            container::elf_executable(container::EM_AARCH64, &code, heap),
         ),
         Target {
             arch: Arch::Aarch64,
@@ -427,7 +460,7 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
             os: Os::Linux,
         } => (
             Container::ElfExecutable,
-            container::elf_executable(container::EM_RISCV, &code),
+            container::elf_executable(container::EM_RISCV, &code, heap),
         ),
         Target {
             arch: Arch::X86_64,
@@ -469,6 +502,8 @@ pub enum Outcome {
     Overflow,
     DivisionByZero,
     Unreachable,
+    /// A region bound or the heap was exhausted.
+    Region,
     /// Any other exit (a bug or a signal).
     Other(String),
 }
@@ -487,6 +522,7 @@ impl Outcome {
             Some(c) if c == i32::from(EXIT_OVERFLOW) => Self::Overflow,
             Some(c) if c == i32::from(EXIT_DIVISION_BY_ZERO) => Self::DivisionByZero,
             Some(c) if c == i32::from(EXIT_UNREACHABLE) => Self::Unreachable,
+            Some(c) if c == i32::from(EXIT_REGION) => Self::Region,
             other => Self::Other(format!("exit {other:?}, {} stdout bytes", stdout.len())),
         }
     }

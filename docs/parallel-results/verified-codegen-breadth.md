@@ -249,3 +249,125 @@ exercised by the tests.
 - The RV64 proof covers encoding only. Instruction semantics (that the
   emitted sequence implements `Mach.step`) are still checked by
   differential tests under QEMU.
+
+## Milestone 8: generic and region-polymorphic functions, region memory
+
+Claim #844 (lane V2 of the verified-compiler plan; references #582, #583).
+
+### What was built
+
+- Monomorphization (`src/verified_codegen/mono.rs`) runs before planning.
+  - Starting at the entry, it collects every reachable instance
+    `(function, type arguments)`. The arguments come from the checker's
+    `World::calls` plus explicit `f[T](..)` arguments.
+  - Each instance gets a copy of its Place IR with every type substituted,
+    and every direct callee renamed to the callee's instance.
+  - The nested functions of `handle` bodies are instantiated with their
+    parent's arguments.
+  - An instance is named `name<T=i64,...>`. A function with no type
+    arguments keeps its name, so non-generic programs compile to the same
+    bytes as before.
+  - A call whose type arguments are not all concrete is a typed
+    `Unsupported::Generic`.
+- Regions lower to plain pointer words.
+  - `RegionBox[r, T]` is one word: the heap word index of its payload.
+  - Every `r: Region` entry of a function's row becomes a hidden capability
+    parameter: one pointer word to the region's header, placed after the
+    ordinary parameters. A call passes the caller's capability with the
+    same label, which is how the checker resolves it.
+  - A `region r(N) { .. }` block is an `Op::Handle` of the built-in
+    `Region` effect. Lowering opens a header in the heap, calls the body's
+    nested function with the captured places, the enclosing capabilities
+    and the new one, then closes the header. The identity return clause is
+    skipped. A body that assigns a place it captured by value is refused.
+  - `r.box`, `r.get`, `r.set` and `r.used` follow
+    `vesper.region.accounting/1`. A payload charges
+    `slot_bytes(Layout::of(T).size)` bytes against the block's capacity,
+    and a block allows at most `MAX_ALLOCATIONS` allocations. Payload words
+    are the flattened words of `T`.
+  - `take`, `checkpoint`, `rewind` and `commit` are typed
+    `Unsupported::Effect` refusals.
+- The program heap.
+  - Linux ELF executables that use regions get a second, zero-fill RW
+    `PT_LOAD` of 512 MiB at `HEAP_BASE = 0x1000_0000`. The code moves to
+    file offset `0x100`, because two program headers do not fit below
+    `0x80`.
+  - Heap word 0 holds the words in use, word 1 the innermost open header
+    and word 2 a pin. Payloads and headers are bump-allocated.
+  - Closing a block resets the words in use to where the block started.
+    The exception is when an outer region allocated while the block was
+    open: then it resets to the pin instead, so it never frees live words.
+  - Exceeding a region's bound, its allocation count or the heap aborts
+    with the new `TrapKind::Region`, exit status 104 (`EXIT_REGION`).
+    `FIRST_FREE_LABEL` is now 4.
+  - macOS and Windows outputs refuse programs that use the heap with a
+    `VerifiedError::Target` error, because their containers do not map it.
+- Slot IR and machine.
+  - New rows `LoadPtr { dst, ptr, offset }` and
+    `StorePtr { ptr, offset, src }`.
+  - New instructions `LdH(off)` (`r0 := heap[r1 + off]`) and `StH(off)`
+    (`heap[r1 + off] := r0`), encoded for all three ISAs:
+    - x86-64: `mov r11d, HEAP_BASE` and `[r11 + rcx*8 + disp32]`;
+    - AArch64: `movz x16` / `add x16, x16, x1, lsl #3` / `ldr|str [x16, #imm]`;
+    - RV64: `addi`/`slli` builds `1 << 28` in `t0`, then `slli`/`add`, and
+      `ld|sd` (offsets of 2 KiB or more go through `t1`).
+- Lean.
+  - `VerifiedCodegen.lean`:
+    - `Loc.heap`, `Failure.region`, the rows `loadPtr`/`storePtr` and the
+      instructions `ldh`/`sth` with their semantics;
+    - the table rows, and `sim_loadPtr`/`sim_storePtr`, now cases of
+      `select_simulates`;
+    - a pointer is the machine word its slot holds, read as a word index.
+  - `CodegenRv64Encoding.lean`:
+    - models the new RV64 sequences, and `heap_ok` proves them well formed,
+      so `emit_decodes` covers them;
+    - 64 listing samples (with `trap region`, `ldh 3`, `sth 3`, `ldh 300`
+      and `sth 300`) match `riscv64::encoding_listing()`.
+  - `CodegenValidation.lean`:
+    - a heap load gives no range fact, and a heap store forgets every heap
+      fact;
+    - `transfer_sound` covers both rows.
+
+### Checks
+
+- `tests/verified_codegen.rs`, `generics_and_regions_agree_with_the_evaluator`:
+  - Fixtures, each compiled with and without the IR optimizer:
+    - `generics.ves`: generic structs and enums, generic recursion, and a
+      generic calling a generic;
+    - `regions.ves`: region-polymorphic functions with struct and generic
+      payloads, recursion through a region-polymorphic function, `used()`,
+      an inner block that allocates in the outer region, and a block per
+      call;
+    - `region_exhausted.ves`: the fourth 8-byte box in a 24-byte region;
+    - `syntax_pages.ves`: the self-hosted front end's radix pages,
+      `syntax_directory[T]`, `syntax_words`, `syntax_read_0` and
+      `syntax_write_0`.
+  - Results:
+    - All four agree with the evaluator on x86-64 (native), AArch64 and RV64
+      (QEMU 8.2.2).
+    - The output is deterministic.
+    - The macOS and Windows targets give the typed heap error.
+  - Cranelift is compared only on `generics.ves`. It refuses recursion
+    through region-polymorphic functions: "recursive effect specialization
+    exceeds 64 inline frames".
+- Lean 4.35.0:
+  - `VerifiedCodegen`, `CodegenRv64Encoding`, `CodegenComposition`,
+    `CodegenControlFlow`, `CodegenValidation` and `CodegenFlowValidation`
+    compile with no warnings;
+  - the axiom audits use only `propext`, `Classical.choice` and
+    `Quot.sound`;
+  - `cargo test --test verified_codegen_lean` passes with `VESPER_LEAN` set.
+
+### Remaining gaps
+
+- The heap exists only in the Linux ELF executables. Mach-O and COFF need a
+  zero-fill section and relocations.
+- The Lean heap is unbounded. The physical bound (512 MiB) comes from the
+  allocator rows that lowering emits; it is enforced at run time and tested,
+  not proved.
+- Physical words are reclaimed only when a block closes and no outer region
+  allocated while it was open (the pin). Programs that allocate in an outer
+  region from inside an inner block keep those words until the program
+  exits.
+- Constant tuple indexing (`page.slots[0]`) and `handle SyntaxMemory` belong
+  to lane V3, which also takes `syntax_run`'s closure parameter.

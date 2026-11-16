@@ -15,7 +15,10 @@ use std::path::PathBuf;
 
 const NAMESPACE: &str = "Vesper.VerifiedCodegen";
 const STANDARD_AXIOMS: [&str; 3] = ["propext", "Classical.choice", "Quot.sound"];
-const KEY_THEOREMS: [&str; 12] = [
+const KEY_THEOREMS: [&str; 14] = [
+    // Milestone 8: region heap words.
+    "sim_loadPtr",
+    "sim_storePtr",
     "sim_farith",
     "sim_fneg",
     "sim_fcompare",
@@ -31,7 +34,13 @@ const KEY_THEOREMS: [&str; 12] = [
 ];
 
 const RV64_NAMESPACE: &str = "Vesper.VerifiedCodegen.Rv64";
-const RV64_KEY_THEOREMS: [&str; 4] = ["decode_encode", "emit_ok", "emit_decodes", "bytes_encode"];
+const RV64_KEY_THEOREMS: [&str; 5] = [
+    "decode_encode",
+    "emit_ok",
+    "emit_decodes",
+    "bytes_encode",
+    "heap_ok",
+];
 
 fn model() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lean/VerifiedCodegen.lean")
@@ -188,7 +197,9 @@ fn model_has_no_escape_hatches_and_audits_every_theorem() {
 #[test]
 fn rust_rv64_listing_covers_every_instruction_kind() {
     let listing = vesper::verified_codegen::rv64_encoding_listing();
-    assert_eq!(listing.lines().count(), 59);
+    assert_eq!(listing.lines().count(), 64);
+    // Milestone 8: t0 := 1 << 28; t1 := a1 << 3; t0 += t1; ld a0, 24(t0).
+    assert!(listing.contains("ldh 3: 00100293 01c29293 00359313 006282b3 0182b503\n"));
     // add a0,a0,a1; bgeu a0,a1,+8; j ovf (the abort exits sit at offset 0)
     assert!(listing.contains("addchk u: 00b50533 00b57463 ff9ff06f\n"));
     assert!(listing.contains("leave: 00040113 00013403 00813083 01010113 00008067\n"));
@@ -197,7 +208,10 @@ fn rust_rv64_listing_covers_every_instruction_kind() {
 #[test]
 fn rust_table_covers_every_row_kind() {
     let listing = vesper::verified_codegen::table_listing();
-    assert_eq!(listing.lines().count(), 93);
+    assert_eq!(listing.lines().count(), 96);
+    assert!(listing.contains("loadptr: ld r1 s1; ldh 3; st s0 r0\n"));
+    assert!(listing.contains("storeptr: ld r1 s1; ld r0 s2; sth 3\n"));
+    assert!(listing.contains("trap region: trap region\n"));
     assert!(listing.contains("farith div: ld r0 s1; ld r1 s2; fop div; st s0 r0\n"));
     assert!(listing.contains("fcompare ne: ld r0 s1; ld r1 s2; fcmp ne; st s0 r0\n"));
     assert!(listing.contains("fneg: ld r0 s1; fneg; st s0 r0\n"));
