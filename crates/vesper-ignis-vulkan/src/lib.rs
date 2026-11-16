@@ -42,12 +42,20 @@
 #![deny(unsafe_code)]
 
 pub mod error;
+pub mod format;
+pub mod golden;
+pub mod ownership;
+#[cfg(target_os = "linux")]
+pub mod pulse;
+pub mod ranges;
 pub mod schedule;
 pub mod shader;
+pub mod split;
 pub mod translate;
 mod vk;
 
 pub use error::VulkanError;
+pub use format::Format;
 pub use schedule::ScheduleError;
 pub use shader::{BindingKind, CompiledShader, ShaderError, Stage, compile_wgsl};
 pub use vk::*;
@@ -58,6 +66,9 @@ pub mod shaders {
     pub const TRIANGLE: &str = include_str!("../shaders/triangle.wgsl");
     /// `main`: `dst[i] = pack4x8unorm(1 - src[i])` over a 2D texture, 8x8 groups.
     pub const INVERT: &str = include_str!("../shaders/invert.wgsl");
+    /// `vs_main`/`fs_main`: a near green and a far red triangle (instances 0
+    /// and 1) for depth/stencil tests.
+    pub const DEPTH: &str = include_str!("../shaders/depth.wgsl");
 }
 
 /// Re-export of the `ash` version this crate is built against.
