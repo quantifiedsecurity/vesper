@@ -4,6 +4,8 @@
 
 mod backend;
 mod device;
+#[cfg(target_os = "linux")]
+mod present;
 
 pub use backend::{
     Bind, ColorTarget, DepthTarget, FrameParts, FrameResources, MAX_FRAME_OBJECTS,
@@ -13,3 +15,5 @@ pub use device::{
     CommandAllocator, Device, DeviceConfig, DeviceInfo, GpuBuffer, GpuTexture, GraphicsDesc,
     Pipeline, Sharing, StencilDesc, TextureInfo, Validation, ValidationMessage, leaked_owners,
 };
+#[cfg(target_os = "linux")]
+pub use present::{Swapchain, SwapchainDesc, XcbWindow};

@@ -359,8 +359,23 @@ fn compute_queue_barriers_drop_graphics_stages() {
     let mut r = FrameResources::new();
     r.bind_buffer(buf, device.create_buffer(256).unwrap())
         .unwrap();
-    r.set_pass(first, PassWork::FillBuffer { dst: buf, value: 1 })
+    let cs = compile_wgsl(shaders::FILL, Stage::Compute, "main").unwrap();
+    let fill = r
+        .add_pipeline(
+            device
+                .create_compute_pipeline(&cs, &[BindingKind::StorageBuffer])
+                .unwrap(),
+        )
         .unwrap();
+    r.set_pass(
+        first,
+        PassWork::Dispatch {
+            pipeline: fill,
+            bindings: vec![Bind::StorageBuffer(buf)],
+            groups: [1, 1, 1],
+        },
+    )
+    .unwrap();
     r.set_pass(second, PassWork::FillBuffer { dst: buf, value: 0x0202_0202 })
         .unwrap();
     let rt = runtime(&device, &[QueueKind::Compute]);

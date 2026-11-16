@@ -69,6 +69,8 @@ pub mod shaders {
     /// `vs_main`/`fs_main`: a near green and a far red triangle (instances 0
     /// and 1) for depth/stencil tests.
     pub const DEPTH: &str = include_str!("../shaders/depth.wgsl");
+    /// `main`: writes `0x01010101` to every word of one storage buffer.
+    pub const FILL: &str = include_str!("../shaders/fill.wgsl");
 }
 
 /// Re-export of the `ash` version this crate is built against.
