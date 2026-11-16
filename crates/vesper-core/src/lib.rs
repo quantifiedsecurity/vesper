@@ -6,6 +6,7 @@
 pub mod ast;
 pub mod clock_quotient;
 pub mod field_tree;
+pub mod ghost;
 pub mod guarded_graph;
 pub mod lifo;
 pub mod modal_kind;
