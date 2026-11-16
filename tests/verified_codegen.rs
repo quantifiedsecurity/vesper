@@ -693,6 +693,7 @@ fn generics_and_regions_agree_with_the_evaluator() {
             "(4, Point { x: 11, y: 2 }, 10, (true, false), 48, 12, 7)",
         ),
         ("region_exhausted.ves", "region"),
+        ("region_unit.ves", "false"),
         // Writes to index 99 land in cell 15 (`syntax_slot`'s catch-all).
         ("syntax_pages.ves", "(30, 990, 0, true)"),
     ] {
