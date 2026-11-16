@@ -74,6 +74,7 @@ mod mono;
 mod riscv64;
 mod x86_64;
 
+pub use aarch64::encoding_listing as a64_encoding_listing;
 pub use cli::build_command;
 pub use machine::{
     ArithOp, Cond, FloatOp, Kind, Label, Lir, Loc, M, Reg, Sign, Slot, TrapKind, WrapOp, select,
