@@ -248,6 +248,10 @@ theorem transfer_sound {facts : Facts} {store next : Store} (holds : Holds facts
     | slot n => simpa [upd] using holds _ kind known
     | out n => simpa [upd] using holds _ kind known
     | inn n => simpa [upd] using holds _ kind known
+  | scope o d =>
+    simp only [lirStep, Res.ok.injEq] at result
+    subst next
+    exact holds
   | branchZero _ _ | jump _ | label _ | call _ | enter _ | ret =>
     simp [checkRow] at accepted
 

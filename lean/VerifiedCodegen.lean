@@ -119,6 +119,10 @@ inductive Lir
   -- Milestone 8 (regions): a heap word at a pointer slot plus an offset.
   | loadPtr (d p off : Nat)
   | storePtr (p off src : Nat)
+  -- Milestone 7 (abort-only `Fail[E]`): from here on in emission order,
+  -- `overflow` aborts go to label `ovf` and `divZero` aborts to `div0`
+  -- (`CodegenFailScope.lean`). A no-op on the data state.
+  | scope (ovf div0 : Nat)
 
 inductive Res (α : Type) | ok (a : α) | abort (f : Failure)
 
@@ -271,6 +275,8 @@ inductive M
   -- `r0 := heap[r1 + off]` and `heap[r1 + off] := r0`.
   | ldh (off : Nat)
   | sth (off : Nat)
+  -- Milestone 7: emits no code; sets the trap labels (see `Lir.scope`).
+  | scope (ovf div0 : Nat)
 
 structure Mach where
   mem : Loc → Int
@@ -405,6 +411,7 @@ def select : Lir → List M
   | .trap f => [.trap f]
   | .loadPtr d p off => [.ld .r1 (.slot p), .ldh off, .st (.slot d) .r0]
   | .storePtr p off src => [.ld .r1 (.slot p), .ld .r0 (.slot src), .sth off]
+  | .scope o d => [.scope o d]
 
 /-! ## The simulation relation and the theorem -/
 
@@ -537,6 +544,11 @@ theorem sim_storeIn (i a : Nat) :
     Sim (lirStep (.storeIn i a) s) (run (select (.storeIn i a)) m) := by
   simp only [lirStep, select, run, Mach.step, setReg, Sim]
   exact enc_upd s _ hR _ _ _ (by simp [hR (.slot a)])
+
+theorem sim_scope (o d : Nat) :
+    Sim (lirStep (.scope o d) s) (run (select (.scope o d)) m) := by
+  simp only [lirStep, select, run, Mach.step, Sim, Res.bind]
+  exact hR
 
 omit hR in
 theorem sim_trap (f : Failure) :
@@ -721,6 +733,7 @@ theorem select_simulates (r : Lir) (s : Store) (m : Mach) (hR : Rel s m) (hd : D
   | trap f => exact sim_trap s m f
   | loadPtr d p off => exact sim_loadPtr s m hR d p off
   | storePtr p off src => exact sim_storePtr s m hR p off src
+  | scope o d => exact sim_scope s m hR o d
   | branchZero => simp [DataRow] at hd
   | jump => simp [DataRow] at hd
   | label => simp [DataRow] at hd
@@ -798,6 +811,7 @@ def M.render : M → String
   | .trap f => s!"trap {f.render}"
   | .ldh n => s!"ldh {n}"
   | .sth n => s!"sth {n}"
+  | .scope o d => s!"scope L{o} L{d}"
 
 def integerKinds : List Kind := [.u8, .u32, .u64, .i64]
 
@@ -825,7 +839,9 @@ def tableRows : List (String × Lir) :=
    ("trap ovf", .trap .overflow), ("trap div0", .trap .divZero),
    ("trap unreachable", .trap .unreachable)] ++
   -- Milestone 8 (regions).
-  [("loadptr", .loadPtr 0 1 3), ("storeptr", .storePtr 1 3 2), ("trap region", .trap .region)]
+  [("loadptr", .loadPtr 0 1 3), ("storeptr", .storePtr 1 3 2), ("trap region", .trap .region)] ++
+  -- Milestone 7 (abort-only `Fail[E]`)
+  [("scope", .scope 9 10)]
 
 def listing : String :=
   String.join (tableRows.map fun (name, r) =>
@@ -853,6 +869,7 @@ def listing : String :=
 #print axioms Vesper.VerifiedCodegen.sim_trap
 #print axioms Vesper.VerifiedCodegen.sim_loadPtr
 #print axioms Vesper.VerifiedCodegen.sim_storePtr
+#print axioms Vesper.VerifiedCodegen.sim_scope
 #print axioms Vesper.VerifiedCodegen.rel_st
 #print axioms Vesper.VerifiedCodegen.sim_arith
 #print axioms Vesper.VerifiedCodegen.sim_wrapping

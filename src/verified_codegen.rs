@@ -48,15 +48,21 @@
 //! IEEE-754 `+ - * /` (round to nearest, ties to even; no fast-math),
 //! negation and ordered comparisons; their Lean rows are proved relative to
 //! one shared binary64 semantics (Lean's `Float`), not against the hardware.
+//! Abort-only `Fail[E]` (Milestone 7, `fail.rs`): `?`, `Fail::raise` and
+//! non-resuming `handle Fail[E]` are structured early exits. A function
+//! that may raise returns a status word before its result, callers test it
+//! after each call, and implicit `ArithOverflow`/`RuntimeError` failures
+//! that a handler catches are redirected by a trap scope ([`Lir::Scope`]).
 //! Generic functions are monomorphized per instance (`mono.rs`). Region
 //! blocks, `RegionBox[r, T]` handles and region-polymorphic functions
 //! (`eff [r: Region]`, a hidden pointer-word parameter per capability) work
 //! over a bump-allocated program heap with `vesper.region.accounting/1`
 //! bounds (`box`, `get`, `set`, `used`; exhaustion exits with
-//! [`EXIT_REGION`]); only the Linux ELF executable maps that heap.
-//! Handlers and every other effect, `f32`, `f64` remainder, strings,
-//! recursive enums, closures, vectors and region watermarks and `take` are
-//! rejected.
+//! [`EXIT_REGION`]); only the Linux ELF executable maps that heap. A
+//! failure leaving a region block closes it.
+//! Resuming or stateful handlers and every other effect, `f32`, `f64`
+//! remainder, strings, recursive enums, closures, vectors and region
+//! watermarks and `take` are rejected.
 //!
 //! Values live in frame slots, never in registers across slot-IR rows: there
 //! is no register allocator, so the code is slow but each row is local, which
@@ -68,6 +74,7 @@ mod aarch64;
 mod asm;
 mod cli;
 mod container;
+mod fail;
 mod lower;
 mod machine;
 mod mono;

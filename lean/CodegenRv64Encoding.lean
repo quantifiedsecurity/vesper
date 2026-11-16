@@ -562,6 +562,9 @@ def emit : M → List Item
   | .trap f => [.jump zero (trapLabel f)]
   | .ldh off => heapAt off ++ [memOp true a0 t0 (heapDisp off)]
   | .sth off => heapAt off ++ [memOp false a0 t0 (heapDisp off)]
+  -- Milestone 7: a trap scope emits no code (it changes which labels the
+  -- checked instructions' branches name).
+  | .scope _ _ => []
 
 /-! ## Layout: abort exits before the instruction, other labels after it -/
 
@@ -690,6 +693,7 @@ theorem emit_ok (m : M) (hm : mBounded m) : ∀ it ∈ emit m, it.Ok := by
   | sth off => exact heap_ok false off hm
   | label l | jmp l | bz l | call l =>
     simp [emit, branchTo, Item.Ok, Inst.Wf, zero, a0, ra]
+  | scope _ _ => simp [emit]
   | _ => decide
 
 theorem emit_length (m : M) : (emit m).length ≤ 24 := by

@@ -884,6 +884,7 @@ def emit : M → List Item
   -- add x16, x16, x1, lsl #3; ldr x0, [x16, #8*off]` (`str` for `sth`).
   | .ldh off => heapAt ++ [.ins (.ldr 0 16 off)]
   | .sth off => heapAt ++ [.ins (.str 0 16 off)]
+  | .scope _ _ => []
 
 /-! ## Layout: abort exits before the instruction, other labels after it -/
 
@@ -989,6 +990,7 @@ theorem emit_ok (m : M) (hm : mBounded m) : ∀ it ∈ emit m, it.Ok := by
     simp only [emit, heapAt, List.cons_append, List.nil_append, List.mem_cons,
       List.not_mem_nil, or_false] at hit
     rcases hit with rfl | rfl | rfl <;> simp only [Item.Ok, Inst.Wf] <;> omega
+  | scope _ _ => simp [emit]
   | _ => decide
 
 theorem emit_length (m : M) : (emit m).length ≤ 8 := by
