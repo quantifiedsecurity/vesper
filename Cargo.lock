@@ -5826,8 +5826,10 @@ name = "vesper-ignis-vulkan"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "libloading",
  "naga",
  "vesper-ignis",
+ "vesper-pulse",
 ]
 
 [[package]]
