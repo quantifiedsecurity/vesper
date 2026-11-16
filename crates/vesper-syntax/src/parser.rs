@@ -867,14 +867,8 @@ impl Parser<'_> {
                 }
                 self.expect(K::LBrace);
                 let mut methods = vec![];
-                while self.at(K::Fn) || (self.at(K::At) && self.at_word(1, "fip")) {
-                    let m_start = self.start();
-                    let m_fip = self.fip_attr();
-                    let mut m = self.function(false, m_fip);
-                    if m_fip {
-                        m.span.start = m_start;
-                    }
-                    methods.push(m);
+                while self.at_method() {
+                    methods.push(self.method());
                 }
                 self.expect(K::RBrace);
                 self.row_names = old_rows;
@@ -926,6 +920,32 @@ impl Parser<'_> {
             effects,
             span: start..self.start(),
         }
+    }
+    fn at_method(&self) -> bool {
+        self.at(K::Fn)
+            || (self.at_word(0, "pub")
+                && (self.nth(1) == K::Fn || (self.nth(1) == K::At && self.at_word(2, "fip"))))
+            || (self.at(K::At) && self.at_word(1, "fip"))
+    }
+    fn method(&mut self) -> Function {
+        let start = self.start();
+        let mut fip = self.fip_attr();
+        let public = self.at_word(0, "pub")
+            && (self.nth(1) == K::Fn || (!fip && self.nth(1) == K::At && self.at_word(2, "fip")));
+        if public {
+            self.bump();
+        }
+        if !fip {
+            fip = self.fip_attr();
+        }
+        if fip && !self.at(K::Fn) {
+            self.error("@fip may only annotate a fn declaration");
+        }
+        let mut function = self.function(false, fip);
+        if public || fip {
+            function.span.start = start;
+        }
+        function
     }
     fn function(&mut self, op: bool, fip: bool) -> Function {
         let diagnostics_before = self.diagnostics.len();
@@ -1326,14 +1346,8 @@ impl Parser<'_> {
                     ty,
                     span: start..self.end(),
                 });
-            } else if self.at(K::Fn) || (self.at(K::At) && self.at_word(1, "fip")) {
-                let m_start = self.start();
-                let m_fip = self.fip_attr();
-                let mut m = self.function(false, m_fip);
-                if m_fip {
-                    m.span.start = m_start;
-                }
-                methods.push(m);
+            } else if self.at_method() {
+                methods.push(self.method());
             } else {
                 self.error("expected 'type' or 'fn' in an impl or model");
             }
