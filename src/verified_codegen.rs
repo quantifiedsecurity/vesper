@@ -38,9 +38,14 @@
 //! position is a loop; `inout` arguments (copy-in/copy-out); `let` with
 //! irrefutable tuple and struct patterns. Functions may declare
 //! `Fail[ArithOverflow]` and `Fail[RuntimeError]`: an abort exits the
-//! process with [`EXIT_OVERFLOW`] or [`EXIT_DIVISION_BY_ZERO`]. Handlers and
-//! every other effect, floats, strings, enums and `match`, closures, generic
-//! functions, vectors and regions are rejected.
+//! process with [`EXIT_OVERFLOW`] or [`EXIT_DIVISION_BY_ZERO`]. Non-recursive
+//! enums (generic ones after substitution) are a tag word followed by a
+//! union payload as wide as the widest variant; `match` is a first-match
+//! chain of word tests over tag, integer and `bool` literal, tuple, struct
+//! and variant patterns, built only from existing slot-IR rows (`Const`,
+//! `Compare`, `BranchZero`, `Jump`), so it needs no new rows in the Lean
+//! table. Handlers and every other effect, floats, strings, recursive
+//! enums, closures, generic functions, vectors and regions are rejected.
 //!
 //! Values live in frame slots, never in registers across slot-IR rows: there
 //! is no register allocator, so the code is slow but each row is local, which
@@ -54,6 +59,7 @@ mod cli;
 mod container;
 mod lower;
 mod machine;
+mod riscv64;
 mod x86_64;
 
 pub use cli::build_command;
@@ -80,6 +86,8 @@ pub const MAX_FRAME_WORDS: u32 = 4000;
 pub enum Arch {
     X86_64,
     Aarch64,
+    /// RV64I with the M extension (runs on RV64GC).
+    Riscv64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Os {
@@ -105,15 +113,21 @@ impl Target {
         arch: Arch::Aarch64,
         os: Os::MacOs,
     };
+    pub const RISCV64_LINUX: Target = Target {
+        arch: Arch::Riscv64,
+        os: Os::Linux,
+    };
     /// Parse a target triple.
     pub fn from_triple(triple: &str) -> Result<Self, VerifiedError> {
         let arch = if triple.starts_with("x86_64-") {
             Arch::X86_64
         } else if triple.starts_with("aarch64-") || triple.starts_with("arm64-") {
             Arch::Aarch64
+        } else if triple.starts_with("riscv64") {
+            Arch::Riscv64
         } else {
             return Err(VerifiedError::Target(format!(
-                "unsupported target '{triple}' (x86_64 or aarch64 Linux, aarch64 macOS)"
+                "unsupported target '{triple}' (x86_64, aarch64 or riscv64 Linux, aarch64 macOS)"
             )));
         };
         let os = if triple.contains("-linux") {
@@ -125,10 +139,10 @@ impl Target {
                 "unsupported operating system in '{triple}'"
             )));
         };
-        if arch == Arch::X86_64 && os == Os::MacOs {
-            return Err(VerifiedError::Target(
-                "x86_64 macOS is not a verified-codegen target".into(),
-            ));
+        if arch != Arch::Aarch64 && os == Os::MacOs {
+            return Err(VerifiedError::Target(format!(
+                "{arch:?} macOS is not a verified-codegen target"
+            )));
         }
         Ok(Self { arch, os })
     }
@@ -138,6 +152,7 @@ impl Target {
             ("x86_64", "linux") => Some(Self::X86_64_LINUX),
             ("aarch64", "linux") => Some(Self::AARCH64_LINUX),
             ("aarch64", "macos") => Some(Self::AARCH64_MACOS),
+            ("riscv64", "linux") => Some(Self::RISCV64_LINUX),
             _ => None,
         }
     }
@@ -306,17 +321,33 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
     let entry_plan = &plan.functions[0];
     let result_words = entry_plan.result.0.clone();
     let mut a = asm::Asm::default();
-    let start = match options.target.arch {
-        Arch::X86_64 => x86_64::start,
-        Arch::Aarch64 => aarch64::start,
-    };
-    start(
-        &mut a,
-        options.target.os,
-        options.protocol,
-        entry_plan.result.len(),
-        entry_plan.label,
-    )?;
+    if options.target.arch == Arch::Riscv64 && options.target.os != Os::Linux {
+        return Err(VerifiedError::Target(
+            "riscv64 is a Linux-only verified-codegen target".into(),
+        ));
+    }
+    match options.target.arch {
+        Arch::X86_64 => x86_64::start(
+            &mut a,
+            options.target.os,
+            options.protocol,
+            entry_plan.result.len(),
+            entry_plan.label,
+        )?,
+        Arch::Aarch64 => aarch64::start(
+            &mut a,
+            options.target.os,
+            options.protocol,
+            entry_plan.result.len(),
+            entry_plan.label,
+        )?,
+        Arch::Riscv64 => riscv64::start(
+            &mut a,
+            options.protocol,
+            entry_plan.result.len(),
+            entry_plan.label,
+        )?,
+    }
     let mut machine_instructions = 0;
     for (_, rows) in &lir {
         for row in rows {
@@ -325,6 +356,7 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
                 match options.target.arch {
                     Arch::X86_64 => x86_64::emit(&mut a, &m)?,
                     Arch::Aarch64 => aarch64::emit(&mut a, &m)?,
+                    Arch::Riscv64 => riscv64::emit(&mut a, &m)?,
                 }
             }
             if a.here() > options.max_code_bytes {
@@ -356,12 +388,20 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
             os: Os::MacOs,
         } => (Container::MachOObject, container::macho_object(&code)),
         Target {
-            arch: Arch::X86_64,
+            arch: Arch::Riscv64,
+            os: Os::Linux,
+        } => (
+            Container::ElfExecutable,
+            container::elf_executable(container::EM_RISCV, &code),
+        ),
+        Target {
+            arch: Arch::X86_64 | Arch::Riscv64,
             os: Os::MacOs,
         } => {
-            return Err(VerifiedError::Target(
-                "x86_64 macOS is not a verified-codegen target".into(),
-            ));
+            return Err(VerifiedError::Target(format!(
+                "{:?} macOS is not a verified-codegen target",
+                options.target.arch
+            )));
         }
     };
     Ok(Artifact {
@@ -457,6 +497,36 @@ fn decode_at(
                     .map(|t| decode_at(world, t, words, at, depth + 1))
                     .collect::<Result<_, _>>()?,
             ),
+            Type::Named(n, _) if world.adts.get(n).is_some_and(|a| a.is_enum) => {
+                let adt = &world.adts[n];
+                let start = *at;
+                let total = lower::shape(world, &ty, "<result>")?.len() as usize;
+                let tag = words
+                    .get(start)
+                    .copied()
+                    .ok_or_else(|| VerifiedError::Invalid("too few result words".into()))?;
+                let variant = usize::try_from(tag)
+                    .ok()
+                    .and_then(|t| adt.variants.get(t))
+                    .ok_or_else(|| VerifiedError::Invalid(format!("tag {tag} of {ty}")))?;
+                let layout = lower::variant_layout(world, &ty, &variant.name, "<result>")
+                    .ok_or_else(|| VerifiedError::Invalid(format!("cannot decode {ty}")))??;
+                let mut fields = std::collections::BTreeMap::new();
+                for (name, offset, t) in &layout.fields {
+                    *at = start + *offset as usize;
+                    fields.insert(name.clone(), decode_at(world, t, words, at, depth + 1)?);
+                }
+                *at = start + total;
+                if *at > words.len() {
+                    return Err(VerifiedError::Invalid("too few result words".into()));
+                }
+                Value::Data {
+                    ty: n.clone(),
+                    constructor: variant.name.clone(),
+                    fields,
+                    resource_identity: None,
+                }
+            }
             Type::Named(n, args) => {
                 let adt = world
                     .adts

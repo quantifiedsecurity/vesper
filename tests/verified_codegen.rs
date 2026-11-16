@@ -53,8 +53,15 @@ fn runner(target: Target) -> Option<Vec<PathBuf>> {
     if host == Some(target) {
         return Some(vec![]);
     }
-    if target == Target::AARCH64_LINUX && cfg!(target_os = "linux") {
-        for q in ["qemu-aarch64", "qemu-aarch64-static"] {
+    let qemu: &[&str] = if target == Target::AARCH64_LINUX {
+        &["qemu-aarch64", "qemu-aarch64-static"]
+    } else if target == Target::RISCV64_LINUX {
+        &["qemu-riscv64", "qemu-riscv64-static"]
+    } else {
+        &[]
+    };
+    if cfg!(target_os = "linux") {
+        for &q in qemu {
             if let Some(q) = on_path(q) {
                 return Some(vec![q]);
             }
@@ -252,10 +259,11 @@ fn render(world: &World, outcome: &Outcome) -> String {
     }
 }
 
-const TARGETS: [Target; 3] = [
+const TARGETS: [Target; 4] = [
     Target::X86_64_LINUX,
     Target::AARCH64_LINUX,
     Target::AARCH64_MACOS,
+    Target::RISCV64_LINUX,
 ];
 
 /// Compile for every target (with and without the IR optimizer), check the
@@ -310,6 +318,10 @@ fn fixture(name: &str) -> String {
     .unwrap()
 }
 
+/// Rendered by the evaluator; the tests check the other engines agree.
+const ENUMS: &str = "(110, 5, 6, -1, Some(42), Rect(3, 5))";
+const LITERALS: &str = "(100, 200, 300, 400, 500, Ok(42), Err(Halt), (-2, -1, 0))";
+
 #[test]
 fn fixtures_agree_with_the_evaluator_and_cranelift() {
     for (name, expected) in [
@@ -326,6 +338,9 @@ fn fixtures_agree_with_the_evaluator_and_cranelift() {
         ("overflow.ves", "overflow"),
         ("divide.ves", "div0"),
         ("unit.ves", "()"),
+        ("enums.ves", ENUMS),
+        ("literals.ves", LITERALS),
+        ("nested.ves", "(Some(Some(1)), Some(None), 9, 3, 4)"),
     ] {
         assert_eq!(differential(&fixture(name)), expected, "{name}");
     }
@@ -417,10 +432,17 @@ fn rejects(source: &str, construct: Unsupported) {
 fn constructs_outside_the_subset_are_typed_errors() {
     rejects("fn main() -> f64 { 1.5 }", Unsupported::Float);
     rejects("fn main() -> i64 { let s = \"x\"; 1 }", Unsupported::String);
-    rejects("fn main() -> Option[i64] { Some(1) }", Unsupported::Enum);
     rejects(
-        "fn main() -> i64 { match true { true => 1, false => 0, } }",
-        Unsupported::Match,
+        "enum L { Nil, Cons(i64, L) } fn main() -> i64 { match L::Nil { L::Nil => 0, L::Cons(x, _) => x, } }",
+        Unsupported::Enum,
+    );
+    rejects(
+        "fn main() -> i64 { match \"a\" { \"a\" => 1, _ => 0, } }",
+        Unsupported::String,
+    );
+    rejects(
+        "fn main() -> i64 { match 1.5 { 1.5 => 1, _ => 0, } }",
+        Unsupported::Float,
     );
     rejects(
         "fn id[T](sink x: T) -> T { x } fn main() -> i64 { id[i64](4) }",
@@ -455,7 +477,12 @@ fn entry_and_target_errors() {
         vc::compile(&w, "nope", &Options::new(Target::X86_64_LINUX)),
         Err(VerifiedError::Entry(_))
     ));
-    assert!(Target::from_triple("riscv64gc-unknown-linux-gnu").is_err());
+    assert_eq!(
+        Target::from_triple("riscv64gc-unknown-linux-gnu").unwrap(),
+        Target::RISCV64_LINUX
+    );
+    assert!(Target::from_triple("riscv64gc-apple-darwin").is_err());
+    assert!(Target::from_triple("powerpc64le-unknown-linux-gnu").is_err());
     assert!(Target::from_triple("x86_64-apple-darwin").is_err());
     assert_eq!(
         Target::from_triple("aarch64-apple-darwin").unwrap(),
@@ -480,7 +507,9 @@ fn containers_are_well_formed() {
     let w = world(&fixture("structs.ves"));
     let x86 = vc::compile(&w, "main", &Options::new(Target::X86_64_LINUX)).unwrap();
     let arm = vc::compile(&w, "main", &Options::new(Target::AARCH64_LINUX)).unwrap();
-    for (a, machine) in [(&x86, 62u16), (&arm, 183)] {
+    let rv = vc::compile(&w, "main", &Options::new(Target::RISCV64_LINUX)).unwrap();
+    assert_eq!(rv.code_len % 4, 0);
+    for (a, machine) in [(&x86, 62u16), (&arm, 183), (&rv, 243)] {
         assert_eq!(&a.bytes[..4], b"\x7fELF");
         assert_eq!(a.bytes[4], 2, "ELFCLASS64");
         assert_eq!(u16::from_le_bytes([a.bytes[16], a.bytes[17]]), 2, "ET_EXEC");
