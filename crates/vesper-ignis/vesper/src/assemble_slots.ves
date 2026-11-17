@@ -1,0 +1,390 @@
+// A barrier waiting for its slot. Sorted by slot, then `barrier_sort_key`
+// (resource, subresource box), then creation order.
+copy struct SlotItem {
+    slot: u32,
+    value: u32,
+    resource: u32,
+    range: SubresourceRange,
+    seq: u64,
+    barrier: u64
+}
+
+impl Ord for SlotItem {}
+
+impl Eq for SlotItem {}
+
+fn find_flat(in members: ChunkSeq[u32], flat: u32) -> u64 {
+    let mut lo: u64 = 0;
+    let mut hi = members.len();
+    loop {
+        if lo >= hi {
+            break;
+        }
+        let mid = wrapping_add(lo, wrapping_sub(hi, lo) / 2);
+        let v = get32(in members, mid);
+        if v == flat {
+            return mid;
+        }
+        if v < flat {
+            lo = wrapping_add(mid, 1);
+        } else {
+            hi = mid;
+        }
+    }
+    max_u64()
+}
+
+fn box_has(
+    in members: ChunkSeq[u32],
+    in removed: ChunkSeq[bool],
+    r: Resource,
+    m: u32,
+    s: u32,
+    p: u32
+) -> bool {
+    if m >= r.mips || s >= r.slices || p >= r.planes {
+        return false;
+    }
+    let at = find_flat(in members, flat_index(r, m, s, p));
+    at != max_u64() && !getb(in removed, at)
+}
+
+// Greedy deterministic cover of a subresource set by boxes: extend along
+// mips, then slices, then planes, from the lowest uncovered index (`boxes`).
+fn boxes(r: Resource, in members: ChunkSeq[u32], in coords: ChunkSeq[SubPos])
+    -> ChunkSeq[SubresourceRange] {
+    let mut out: ChunkSeq[SubresourceRange] = ChunkSeq::new[SubresourceRange]();
+    let mut removed: ChunkSeq[bool] = ChunkSeq::new[bool]();
+    for i in 0..members.len() {
+        removed.push(false);
+    }
+    let mut cursor: u64 = 0;
+    loop {
+        loop {
+            if cursor >= members.len() || !getb(in removed, cursor) {
+                break;
+            }
+            cursor = wrapping_add(cursor, 1);
+        }
+        if cursor >= members.len() {
+            break;
+        }
+        let c = match coords.try_get(cursor) {
+            Option::Some(x) => x,
+            Option::None => no_sub(),
+        };
+        let m0 = c.mip;
+        let s0 = c.slice;
+        let p0 = c.plane;
+        let mut mips: u32 = 1;
+        loop {
+            if !box_has(in members, in removed, r, wrapping_add(m0, mips), s0, p0) {
+                break;
+            }
+            mips = wrapping_add(mips, 1);
+        }
+        let mut slices: u32 = 1;
+        loop {
+            let mut all = true;
+            for m in m0..wrapping_add(m0, mips) {
+                if !box_has(in members, in removed, r, m, wrapping_add(s0, slices), p0) {
+                    all = false;
+                }
+            }
+            if !all {
+                break;
+            }
+            slices = wrapping_add(slices, 1);
+        }
+        let mut planes: u32 = 1;
+        loop {
+            let mut all = true;
+            for s in s0..wrapping_add(s0, slices) {
+                for m in m0..wrapping_add(m0, mips) {
+                    if !box_has(in members, in removed, r, m, s, wrapping_add(p0, planes)) {
+                        all = false;
+                    }
+                }
+            }
+            if !all {
+                break;
+            }
+            planes = wrapping_add(planes, 1);
+        }
+        for p in p0..wrapping_add(p0, planes) {
+            for s in s0..wrapping_add(s0, slices) {
+                for m in m0..wrapping_add(m0, mips) {
+                    let at = find_flat(in members, flat_index(r, m, s, p));
+                    if at != max_u64() {
+                        removed.try_set(at, true);
+                    }
+                }
+            }
+        }
+        out
+            .push(
+            SubresourceRange {
+                first_mip: m0,
+                mip_count: mips,
+                first_slice: s0,
+                slice_count: slices,
+                first_plane: p0,
+                plane_count: planes
+            }
+        );
+    }
+    out
+}
+
+fn whole_single() -> SubresourceRange {
+    SubresourceRange {
+        first_mip: 0,
+        mip_count: 1,
+        first_slice: 0,
+        slice_count: 1,
+        first_plane: 0,
+        plane_count: 1
+    }
+}
+
+// Files one barrier (both halves of a split) into the slot list.
+fn file_barrier(
+    inout items: ChunkSeq[SlotItem],
+    inout pending: ChunkSeq[BarrierRec],
+    pk0: u32,
+    pk1: u32,
+    pk2: u32,
+    b: BarrierRec
+) {
+    let key = if b.texture {
+        b.subresources
+    } else {
+        whole_single()
+    };
+    if pk0 == 4 {
+        let mut begin = b;
+        begin.sync_after = split_bit();
+        let mut end = b;
+        end.sync_before = split_bit();
+        let seq1 = items.len();
+        let at1 = pending.len();
+        items
+            .push(
+            SlotItem {
+                slot: 1,
+                value: pk1,
+                resource: b.resource,
+                range: key,
+                seq: seq1,
+                barrier: at1
+            }
+        );
+        pending.push(begin);
+        let seq2 = items.len();
+        let at2 = pending.len();
+        items
+            .push(
+            SlotItem {
+                slot: 0,
+                value: pk2,
+                resource: b.resource,
+                range: key,
+                seq: seq2,
+                barrier: at2
+            }
+        );
+        pending.push(end);
+    } else {
+        let seq0 = items.len();
+        let at0 = pending.len();
+        items
+            .push(
+            SlotItem {
+                slot: pk0,
+                value: pk1,
+                resource: b.resource,
+                range: key,
+                seq: seq0,
+                barrier: at0
+            }
+        );
+        pending.push(b);
+    }
+}
+
+copy struct SlotRange {
+    start: u64,
+    count: u64
+}
+
+fn get_range(in s: ChunkSeq[SlotRange], i: u64) -> SlotRange {
+    match s.try_get(i) {
+        Option::Some(r) => r,
+        Option::None => SlotRange {
+            start: 0,
+            count: 0
+        },
+    }
+}
+
+struct Clocks {
+    nq: u64,
+    qpos: ChunkSeq[u32],
+    pass_queue: ChunkSeq[u32],
+    by_q: ChunkSeq[u32],
+    q_start: ChunkSeq[u64],
+    knowledge: ChunkSeq[u32],
+    clock: ChunkSeq[u32],
+    signaled: ChunkSeq[bool]
+}
+
+// Fence waits with vector-clock elision: queue `q` skips a wait when it
+// already knows the producer finished (`needed_waits`).
+fn needed_waits(inout ck: Clocks, q: u32, in producers: ChunkSeq[u32]) -> ChunkSeq[Pair] {
+    let nq = ck.nq;
+    let mut latest: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    for i in 0..nq {
+        latest.push(0);
+    }
+    for i in 0..producers.len() {
+        let d = get32(in producers, i);
+        let dq = get32(in ck.pass_queue, widen_u64(d));
+        if dq != q {
+            let pos = get32(in ck.qpos, widen_u64(d));
+            let at = widen_u64(dq);
+            let best = max32(get32(in latest, at), pos);
+            latest.try_set(at, best);
+        }
+    }
+    let qrow = wrapping_mul(widen_u64(q), nq);
+    let mut candidates: ChunkSeq[Pair] = ChunkSeq::new[Pair]();
+    for dq in 0..nq {
+        let pos = get32(in latest, dq);
+        if pos > 0 && get32(in ck.knowledge, wrapping_add(qrow, dq)) < pos {
+            let d = get32(
+                in ck.by_q,
+                wrapping_add(get64(in ck.q_start, dq), wrapping_sub(widen_u64(pos), 1))
+            );
+            candidates
+                .push(
+                Pair {
+                    key: wrapping_u32(dq),
+                    value: d
+                }
+            );
+        }
+    }
+    let mut out: ChunkSeq[Pair] = ChunkSeq::new[Pair]();
+    for i in 0..candidates.len() {
+        match candidates.try_get(i) {
+            Option::Some(c) => {
+                let pos = get32(in ck.qpos, widen_u64(c.value));
+                let mut implied = false;
+                for k in 0..candidates.len() {
+                    match candidates.try_get(k) {
+                        Option::Some(o) => {
+                            let clock_at = wrapping_add(
+                                wrapping_mul(widen_u64(o.value), nq),
+                                widen_u64(c.key)
+                            );
+                            if o.key != c.key && get32(in ck.clock, clock_at) >= pos {
+                                implied = true;
+                            }
+                        },
+                        Option::None => (),
+                    }
+                }
+                if !implied {
+                    out.push(c);
+                }
+            },
+            Option::None => (),
+        }
+    }
+    for i in 0..out.len() {
+        match out.try_get(i) {
+            Option::Some(c) => {
+                ck.signaled.try_set(widen_u64(c.value), true);
+                let crow = wrapping_mul(widen_u64(c.value), nq);
+                for k in 0..nq {
+                    let mine = get32(in ck.knowledge, wrapping_add(qrow, k));
+                    let theirs = get32(in ck.clock, wrapping_add(crow, k));
+                    ck.knowledge.try_set(wrapping_add(qrow, k), max32(mine, theirs));
+                }
+            },
+            Option::None => (),
+        }
+    }
+    out
+}
+
+fn producers_of(in pairs: ChunkSeq[Pair], key: u32) -> ChunkSeq[u32] {
+    let mut out: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    for i in 0..pairs.len() {
+        match pairs.try_get(i) {
+            Option::Some(x) => {
+                if x.key == key {
+                    out.push(x.value);
+                }
+            },
+            Option::None => (),
+        }
+    }
+    out
+}
+
+fn emit_slot(
+    inout out: PlanOut,
+    in items: ChunkSeq[SlotItem],
+    in pending: ChunkSeq[BarrierRec],
+    r: SlotRange,
+    queue: u32
+) {
+    if r.count == 0 {
+        return;
+    }
+    let start = out.barriers.len();
+    for i in r.start..wrapping_add(r.start, r.count) {
+        match items.try_get(i) {
+            Option::Some(item) => match pending.try_get(item.barrier) {
+                Option::Some(b) => out.barriers.push(b),
+                Option::None => (),
+            },
+            Option::None => (),
+        }
+    }
+    out
+        .cmds
+        .push(
+        CmdRec {
+            queue: queue,
+            tag: 1,
+            a: start,
+            b: r.count
+        }
+    );
+}
+
+fn emit_waits(inout out: PlanOut, in list: ChunkSeq[Pair], in value_of: ChunkSeq[u64], queue: u32) {
+    for i in 0..list.len() {
+        match list.try_get(i) {
+            Option::Some(w) => out
+                .cmds
+                .push(
+                CmdRec {
+                    queue: queue,
+                    tag: 0,
+                    a: widen_u64(w.key),
+                    b: get64(in value_of, widen_u64(w.value))
+                }
+            ),
+            Option::None => (),
+        }
+    }
+}
+
+copy struct WaitRec {
+    pass: u32,
+    queue: u32,
+    producer: u32
+}

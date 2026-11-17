@@ -324,6 +324,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("tests/fixtures/seq")
                     || path.ends_with("tests/fixtures/strings")
                     || path.ends_with("packages/vesper-std")
+                    // Port P1 lane 12 (#909): its fragments need `use` (#880).
+                    || path.ends_with("crates/vesper-ignis/vesper")
                 {
                     continue;
                 }

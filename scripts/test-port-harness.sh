@@ -44,3 +44,4 @@ if cargo test --locked -p vesper-port-pilot --features vesper-port-divergent --t
 fi
 grep -qF 'leaked over 10^5 cycles' "$log" || { cat "$log"; echo "the kit leak check failed for another reason" >&2; exit 1; }
 echo "divergent kit detected (one failure per form, and the leak)"
+sh crates/vesper-ignis/port/check.sh  # port P1 lane 12 (#909): vesper-ignis, both builds and the divergence check

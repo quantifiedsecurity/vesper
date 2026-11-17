@@ -1,0 +1,644 @@
+// ---------------------------------------------------------------------------
+// Graph declarations (src/graph.rs)
+
+fn none32() -> u32 {
+    0xffffffff
+}
+
+fn max_u64() -> u64 {
+    0xffffffffffffffff
+}
+
+// A box of texture subresources (`SubresourceRange`). A count of u32::MAX
+// means "all remaining" until it is resolved.
+copy struct SubresourceRange {
+    first_mip: u32,
+    mip_count: u32,
+    first_slice: u32,
+    slice_count: u32,
+    first_plane: u32,
+    plane_count: u32
+}
+
+impl Ord for SubresourceRange {}
+
+impl Eq for SubresourceRange {}
+
+// One declared access, as the Rust `PassDesc` builder recorded it. `foreign`
+// marks a handle of another graph, which the Rust wrapper detects.
+copy struct UseDesc {
+    foreign: bool,
+    resource: u32,
+    bytes: bool,
+    offset: u64,
+    size: u64,
+    range: SubresourceRange,
+    access: u32,
+    sync: u32,
+    has_layout: bool,
+    layout: Layout
+}
+
+// One validated access: a resolved byte range `[start, end)` or a resolved
+// subresource box.
+copy struct Use {
+    resource: u32,
+    bytes: bool,
+    start: u64,
+    end: u64,
+    range: SubresourceRange,
+    access: u32,
+    sync: u32,
+    has_layout: bool,
+    layout: Layout
+}
+
+copy struct Resource {
+    texture: bool,
+    size: u64,
+    mips: u32,
+    slices: u32,
+    planes: u32,
+    initial_layout: Layout,
+    has_final: bool,
+    final_layout: Layout
+}
+
+copy struct PassInfo {
+    queue: u32,
+    first_use: u64,
+    use_count: u64
+}
+
+copy struct Edge2 {
+    before: u32,
+    after: u32
+}
+
+// The graph: queues, resources, passes with their uses, explicit edges.
+// The Rust wrapper keeps the graph id and the names.
+struct Graph {
+    queues: ChunkSeq[QueueKind],
+    resources: ChunkSeq[Resource],
+    passes: ChunkSeq[PassInfo],
+    uses: ChunkSeq[Use],
+    explicit: ChunkSeq[Edge2]
+}
+
+copy enum QueueOutcome {
+    Added(u32),
+    TooManyQueues
+}
+
+// Why `add_buffer` or `add_texture` refused a declaration
+// (`GraphError::InvalidResource` reasons).
+copy enum ResourceOutcome {
+    Added(u32),
+    ZeroSize,
+    ZeroDimension,
+    CountOverflow,
+    TooManySubresources,
+    FinalUndefined,
+    TooManyResources
+}
+
+// `add_pass` results: the new pass index, or the `GraphError` without the
+// pass name (the wrapper adds it).
+copy enum PassOutcome {
+    Added(u32),
+    ForeignHandle,
+    InvalidAccess {
+        use_index: u64,
+        access: u32
+    },
+    InvalidSync {
+        use_index: u64,
+        sync: u32
+    },
+    AccessSyncMismatch {
+        use_index: u64,
+        access: u32,
+        sync: u32
+    },
+    AccessLayoutMismatch {
+        use_index: u64,
+        access: u32,
+        layout: Layout
+    },
+    AccessResourceKindMismatch {
+        use_index: u64,
+        access: u32
+    },
+    QueueAccess {
+        use_index: u64,
+        access: u32
+    },
+    QueueSync {
+        use_index: u64,
+        sync: u32
+    },
+    QueueLayout {
+        use_index: u64,
+        layout: Layout
+    },
+    InvalidRange {
+        use_index: u64
+    },
+    ConflictingUses {
+        first_use: u64,
+        second_use: u64
+    },
+    TooManyPasses
+}
+
+copy enum DependencyOutcome {
+    Added,
+    AlreadyPresent,
+    ForeignHandle,
+    SelfDependency
+}
+
+pub fn graph_new() -> Graph {
+    Graph {
+        queues: ChunkSeq::new[QueueKind](),
+        resources: ChunkSeq::new[Resource](),
+        passes: ChunkSeq::new[PassInfo](),
+        uses: ChunkSeq::new[Use](),
+        explicit: ChunkSeq::new[Edge2]()
+    }
+}
+
+pub fn graph_add_queue(inout g: Graph, kind: QueueKind) -> QueueOutcome {
+    let n = g.queues.len();
+    if n > 65535 {
+        QueueOutcome::TooManyQueues
+    } else {
+        g.queues.push(kind);
+        QueueOutcome::Added(wrapping_u32(n))
+    }
+}
+
+pub fn graph_queue_kind(in g: Graph, index: u64) -> Option[QueueKind] {
+    g.queues.try_get(index)
+}
+
+pub fn graph_queue_count(in g: Graph) -> u64 {
+    g.queues.len()
+}
+
+pub fn graph_pass_count(in g: Graph) -> u64 {
+    g.passes.len()
+}
+
+pub fn graph_resource_count(in g: Graph) -> u64 {
+    g.resources.len()
+}
+
+// Whether resource `index` exists and is a texture.
+pub fn graph_is_texture(in g: Graph, index: u64) -> bool {
+    match g.resources.try_get(index) {
+        Option::Some(r) => r.texture,
+        Option::None => false,
+    }
+}
+
+fn resource_count_ok(in g: Graph) -> bool {
+    g.resources.len() <= 0xffffffff
+}
+
+pub fn graph_add_buffer(inout g: Graph, size: u64) -> ResourceOutcome {
+    if size == 0 {
+        ResourceOutcome::ZeroSize
+    } else if !resource_count_ok(in g) {
+        ResourceOutcome::TooManyResources
+    } else {
+        let index = wrapping_u32(g.resources.len());
+        g
+            .resources
+            .push(
+            Resource {
+                texture: false,
+                size: size,
+                mips: 0,
+                slices: 0,
+                planes: 0,
+                initial_layout: Layout::Undefined,
+                has_final: false,
+                final_layout: Layout::Undefined
+            }
+        );
+        ResourceOutcome::Added(index)
+    }
+}
+
+pub fn graph_add_texture(
+    inout g: Graph,
+    mips: u32,
+    slices: u32,
+    planes: u32,
+    initial_layout: Layout,
+    has_final: bool,
+    final_layout: Layout
+) -> ResourceOutcome {
+    if mips == 0 || slices == 0 || planes == 0 {
+        ResourceOutcome::ZeroDimension
+    } else {
+        let ms = wrapping_mul(widen_u64(mips), widen_u64(slices));
+        let count = wrapping_mul(ms, widen_u64(planes));
+        if ms > 0xffffffff || count > 0xffffffff {
+            ResourceOutcome::CountOverflow
+        } else if count > 1048576 {
+            ResourceOutcome::TooManySubresources
+        } else if has_final && final_layout == Layout::Undefined {
+            ResourceOutcome::FinalUndefined
+        } else if !resource_count_ok(in g) {
+            ResourceOutcome::TooManyResources
+        } else {
+            let index = wrapping_u32(g.resources.len());
+            g
+                .resources
+                .push(
+                Resource {
+                    texture: true,
+                    size: 0,
+                    mips: mips,
+                    slices: slices,
+                    planes: planes,
+                    initial_layout: initial_layout,
+                    has_final: has_final,
+                    final_layout: final_layout
+                }
+            );
+            ResourceOutcome::Added(index)
+        }
+    }
+}
+
+fn subresource_count(r: Resource) -> u64 {
+    wrapping_mul(wrapping_mul(widen_u64(r.mips), widen_u64(r.slices)), widen_u64(r.planes))
+}
+
+// `ByteRange::resolve`: `[offset, end)` within `len`, or None.
+fn resolve_bytes(offset: u64, size: u64, len: u64) -> Option[(u64, u64)] {
+    if offset >= len {
+        Option::None
+    } else if size == max_u64() {
+        Option::Some((offset, len))
+    } else if offset > wrapping_sub(max_u64(), size) {
+        Option::None
+    } else {
+        let end = wrapping_add(offset, size);
+        if size != 0 && end <= len {
+            Option::Some((offset, end))
+        } else {
+            Option::None
+        }
+    }
+}
+
+// One axis of `SubresourceRange::resolve`: the resolved count, or 0.
+fn resolve_axis(first: u32, count: u32, len: u32) -> u32 {
+    if first >= len || count == 0 {
+        0
+    } else if count == 0xffffffff {
+        wrapping_sub(len, first)
+    } else if wrapping_add(widen_u64(first), widen_u64(count)) <= widen_u64(len) {
+        count
+    } else {
+        0
+    }
+}
+
+fn resolve_range(r: SubresourceRange, res: Resource) -> Option[SubresourceRange] {
+    let mips = resolve_axis(r.first_mip, r.mip_count, res.mips);
+    let slices = resolve_axis(r.first_slice, r.slice_count, res.slices);
+    let planes = resolve_axis(r.first_plane, r.plane_count, res.planes);
+    if mips == 0 || slices == 0 || planes == 0 {
+        Option::None
+    } else {
+        Option::Some(
+            SubresourceRange {
+                first_mip: r.first_mip,
+                mip_count: mips,
+                first_slice: r.first_slice,
+                slice_count: slices,
+                first_plane: r.first_plane,
+                plane_count: planes
+            }
+        )
+    }
+}
+
+fn axis_overlaps(a0: u32, an: u32, b0: u32, bn: u32) -> bool {
+    widen_u64(a0)
+        < wrapping_add(widen_u64(b0), widen_u64(bn))
+        && widen_u64(b0)
+        < wrapping_add(widen_u64(a0), widen_u64(an))
+}
+
+// `overlaps`: byte ranges or subresource boxes intersect.
+fn uses_overlap(a: Use, b: Use) -> bool {
+    if a.bytes && b.bytes {
+        a.start < b.end && b.start < a.end
+    } else if !a.bytes && !b.bytes {
+        axis_overlaps(a.range.first_mip, a.range.mip_count, b.range.first_mip, b.range.mip_count)
+            && axis_overlaps(
+            a.range.first_slice,
+            a.range.slice_count,
+            b.range.first_slice,
+            b.range.slice_count
+        )
+            && axis_overlaps(
+            a.range.first_plane,
+            a.range.plane_count,
+            b.range.first_plane,
+            b.range.plane_count
+        )
+    } else {
+        false
+    }
+}
+
+copy enum UseCheck {
+    Valid(Use),
+    Refused(PassOutcome)
+}
+
+fn empty_range() -> SubresourceRange {
+    SubresourceRange {
+        first_mip: 0,
+        mip_count: 0,
+        first_slice: 0,
+        slice_count: 0,
+        first_plane: 0,
+        plane_count: 0
+    }
+}
+
+// `RenderGraph::validate_use`.
+fn validate_use(in g: Graph, queue: QueueKind, use_index: u64, u: UseDesc) -> UseCheck {
+    if u.foreign {
+        return UseCheck::Refused(PassOutcome::ForeignHandle);
+    }
+    let info = match g.resources.try_get(widen_u64(u.resource)) {
+        Option::Some(r) => r,
+        Option::None => {
+            return UseCheck::Refused(PassOutcome::ForeignHandle);
+        },
+    };
+    let access = u.access;
+    if access == 0 || access == no_access() || (access & ~known_access()) != 0 {
+        return UseCheck::Refused(
+            PassOutcome::InvalidAccess {
+                use_index: use_index,
+                access: access
+            }
+        );
+    }
+    let sync = u.sync;
+    if sync == 0 || (sync & split_bit()) != 0 {
+        return UseCheck::Refused(
+            PassOutcome::InvalidSync {
+                use_index: use_index,
+                sync: sync
+            }
+        );
+    }
+    let bad = access_incompatible_with_sync(access, sync);
+    if bad != 0 {
+        return UseCheck::Refused(
+            PassOutcome::AccessSyncMismatch {
+                use_index: use_index,
+                access: bad,
+                sync: sync
+            }
+        );
+    }
+    if !access_contains(queue_supported_access(queue), access) {
+        return UseCheck::Refused(
+            PassOutcome::QueueAccess {
+                use_index: use_index,
+                access: access
+            }
+        );
+    }
+    if !access_contains(queue_supported_sync(queue), sync) {
+        return UseCheck::Refused(
+            PassOutcome::QueueSync {
+                use_index: use_index,
+                sync: sync
+            }
+        );
+    }
+    if !info.texture && u.bytes {
+        if (access & texture_only_access()) != 0 {
+            return UseCheck::Refused(
+                PassOutcome::AccessResourceKindMismatch {
+                    use_index: use_index,
+                    access: access
+                }
+            );
+        }
+        match resolve_bytes(u.offset, u.size, info.size) {
+            Option::Some((start, end)) => UseCheck::Valid(
+                Use {
+                    resource: u.resource,
+                    bytes: true,
+                    start: start,
+                    end: end,
+                    range: empty_range(),
+                    access: access,
+                    sync: sync,
+                    has_layout: false,
+                    layout: Layout::Undefined
+                }
+            ),
+            Option::None => UseCheck::Refused(
+                PassOutcome::InvalidRange {
+                    use_index: use_index
+                }
+            ),
+        }
+    } else if info.texture && !u.bytes {
+        if (access & buffer_only_access()) != 0 {
+            return UseCheck::Refused(
+                PassOutcome::AccessResourceKindMismatch {
+                    use_index: use_index,
+                    access: access
+                }
+            );
+        }
+        if u.has_layout {
+            if u.layout == Layout::Undefined || !layout_allows(u.layout, access) {
+                return UseCheck::Refused(
+                    PassOutcome::AccessLayoutMismatch {
+                        use_index: use_index,
+                        access: access,
+                        layout: u.layout
+                    }
+                );
+            }
+            if !queue_supports_layout(queue, u.layout) {
+                return UseCheck::Refused(
+                    PassOutcome::QueueLayout {
+                        use_index: use_index,
+                        layout: u.layout
+                    }
+                );
+            }
+        }
+        match resolve_range(u.range, info) {
+            Option::Some(r) => UseCheck::Valid(
+                Use {
+                    resource: u.resource,
+                    bytes: false,
+                    start: 0,
+                    end: 0,
+                    range: r,
+                    access: access,
+                    sync: sync,
+                    has_layout: u.has_layout,
+                    layout: u.layout
+                }
+            ),
+            Option::None => UseCheck::Refused(
+                PassOutcome::InvalidRange {
+                    use_index: use_index
+                }
+            ),
+        }
+    } else {
+        UseCheck::Refused(PassOutcome::ForeignHandle)
+    }
+}
+
+fn get_use(in uses: ChunkSeq[Use], i: u64) -> Use {
+    match uses.try_get(i) {
+        Option::Some(u) => u,
+        Option::None => Use {
+            resource: none32(),
+            bytes: true,
+            start: 0,
+            end: 0,
+            range: empty_range(),
+            access: 0,
+            sync: 0,
+            has_layout: false,
+            layout: Layout::Undefined
+        },
+    }
+}
+
+// The pairwise checks of `add_pass` over the validated uses.
+fn check_pairs(in uses: ChunkSeq[Use]) -> PassOutcome {
+    let n = uses.len();
+    for i in 0..n {
+        for j in wrapping_add(i, 1)..n {
+            let a = get_use(in uses, i);
+            let b = get_use(in uses, j);
+            if a.resource == b.resource && uses_overlap(a, b) {
+                let differ = a.has_layout && b.has_layout && a.layout != b.layout;
+                if access_is_write(a.access) || access_is_write(b.access) || differ {
+                    return PassOutcome::ConflictingUses {
+                        first_use: i,
+                        second_use: j
+                    };
+                }
+                if a.has_layout && !layout_allows(a.layout, b.access) {
+                    return PassOutcome::AccessLayoutMismatch {
+                        use_index: j,
+                        access: b.access,
+                        layout: a.layout
+                    };
+                }
+                if b.has_layout && !layout_allows(b.layout, a.access) {
+                    return PassOutcome::AccessLayoutMismatch {
+                        use_index: i,
+                        access: a.access,
+                        layout: b.layout
+                    };
+                }
+            }
+        }
+    }
+    PassOutcome::Added(0)
+}
+
+// Validates and appends a pass on queue `queue` (u64::MAX for a foreign
+// queue handle). Nothing is added on error.
+pub fn graph_add_pass(inout g: Graph, queue: u64, in descs: Slice[UseDesc]) -> PassOutcome {
+    let kind = match g.queues.try_get(queue) {
+        Option::Some(k) => k,
+        Option::None => {
+            return PassOutcome::ForeignHandle;
+        },
+    };
+    let mut uses: ChunkSeq[Use] = ChunkSeq::new[Use]();
+    for i in 0..descs.len() {
+        match descs.try_get(i) {
+            Option::Some(d) => match validate_use(in g, kind, i, d) {
+                UseCheck::Valid(u) => uses.push(u),
+                UseCheck::Refused(e) => {
+                    return e;
+                },
+            },
+            Option::None => (),
+        }
+    }
+    match check_pairs(in uses) {
+        PassOutcome::Added(_) => (),
+        other => {
+            return other;
+        },
+    }
+    let index = g.passes.len();
+    if index > 0xfffffffe {
+        return PassOutcome::TooManyPasses;
+    }
+    let first = g.uses.len();
+    for i in 0..uses.len() {
+        g.uses.push(get_use(in uses, i));
+    }
+    g
+        .passes
+        .push(
+        PassInfo {
+            queue: wrapping_u32(queue),
+            first_use: first,
+            use_count: uses.len()
+        }
+    );
+    PassOutcome::Added(wrapping_u32(index))
+}
+
+// `add_dependency`: `after` runs after `before`.
+pub fn graph_add_dependency(inout g: Graph, before: u64, after: u64) -> DependencyOutcome {
+    let n = g.passes.len();
+    if before >= n || after >= n {
+        return DependencyOutcome::ForeignHandle;
+    }
+    if before == after {
+        return DependencyOutcome::SelfDependency;
+    }
+    let b = wrapping_u32(before);
+    let a = wrapping_u32(after);
+    for i in 0..g.explicit.len() {
+        match g.explicit.try_get(i) {
+            Option::Some(e) => {
+                if e.before == b && e.after == a {
+                    return DependencyOutcome::AlreadyPresent;
+                }
+            },
+            Option::None => (),
+        }
+    }
+    g
+        .explicit
+        .push(
+        Edge2 {
+            before: b,
+            after: a
+        }
+    );
+    DependencyOutcome::Added
+}

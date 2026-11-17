@@ -1,0 +1,345 @@
+// @vesper/ignis: the vesper-ignis render-graph planner (design section 19,
+// port wave P1 lane 12, #909). The Rust crate keeps its public types and
+// forwards to the functions below through the generated binding
+// (port/binding.rs); names, strings and backend payloads stay in the Rust
+// wrapper (src/port/).
+//
+// Sections: D3D12 barrier vocabulary, graph declarations, the hazard
+// planner, multi-backend lowering, the lifecycle fence protocol and the
+// recording backend. Bit sets (`Sync`, `Access`) cross the boundary as
+// their raw D3D12 `u32` patterns.
+
+// ---------------------------------------------------------------------------
+// D3D12 enhanced-barrier vocabulary (src/d3d12.rs)
+//
+// Sync bits: ALL 0x1, DRAW 0x2, INDEX_INPUT 0x4, VERTEX_SHADING 0x8,
+// PIXEL_SHADING 0x10, DEPTH_STENCIL 0x20, RENDER_TARGET 0x40,
+// COMPUTE_SHADING 0x80, RAYTRACING 0x100, COPY 0x200, RESOLVE 0x400,
+// EXECUTE_INDIRECT 0x800, ALL_SHADING 0x1000, NON_PIXEL_SHADING 0x2000,
+// EMIT_RTAS_POSTBUILD_INFO 0x4000, CLEAR_UAV 0x8000, BUILD_RTAS 0x800000,
+// COPY_RTAS 0x1000000, SPLIT 0x80000000.
+//
+// Access bits: COMMON 0, VERTEX_BUFFER 0x1, CONSTANT_BUFFER 0x2,
+// INDEX_BUFFER 0x4, RENDER_TARGET 0x8, UNORDERED_ACCESS 0x10,
+// DEPTH_STENCIL_WRITE 0x20, DEPTH_STENCIL_READ 0x40, SHADER_RESOURCE 0x80,
+// STREAM_OUTPUT 0x100, INDIRECT_ARGUMENT 0x200, COPY_DEST 0x400,
+// COPY_SOURCE 0x800, RESOLVE_DEST 0x1000, RESOLVE_SOURCE 0x2000,
+// RTAS_READ 0x4000, RTAS_WRITE 0x8000, SHADING_RATE_SOURCE 0x10000,
+// NO_ACCESS 0x80000000.
+
+// `D3D12_BARRIER_LAYOUT` for textures, in the Rust enum's order.
+copy enum Layout {
+    Undefined,
+    Common,
+    GenericRead,
+    RenderTarget,
+    UnorderedAccess,
+    DepthStencilWrite,
+    DepthStencilRead,
+    ShaderResource,
+    CopySource,
+    CopyDest,
+    ResolveSource,
+    ResolveDest,
+    ShadingRateSource,
+    DirectQueueCommon,
+    DirectQueueGenericRead,
+    DirectQueueUnorderedAccess,
+    DirectQueueShaderResource,
+    DirectQueueCopySource,
+    DirectQueueCopyDest,
+    ComputeQueueCommon,
+    ComputeQueueGenericRead,
+    ComputeQueueUnorderedAccess,
+    ComputeQueueShaderResource,
+    ComputeQueueCopySource,
+    ComputeQueueCopyDest
+}
+
+copy enum QueueKind {
+    Direct,
+    Compute,
+    Copy
+}
+
+// Sync scopes the `ALL` table supersedes.
+fn all_sync_supersedes() -> u32 {
+    0x8ffe
+}
+
+fn split_bit() -> u32 {
+    0x80000000
+}
+
+fn no_access() -> u32 {
+    0x80000000
+}
+
+// Aggregate scopes expanded to the scopes they supersede.
+pub fn sync_expanded(sync: u32) -> u32 {
+    let mut bits = sync & 0x7fffffff;
+    if (bits & 0x1) != 0 {
+        bits = bits | all_sync_supersedes() | 0x1000 | 0x2000;
+    }
+    if (bits & 0x2) != 0 {
+        bits = bits | 0x4 | 0x8 | 0x10 | 0x20 | 0x40;
+    }
+    if (bits & 0x1000) != 0 {
+        bits = bits | 0x8 | 0x10 | 0x80;
+    }
+    if (bits & 0x2000) != 0 {
+        bits = bits | 0x8 | 0x80;
+    }
+    bits
+}
+
+pub fn sync_covers(have: u32, need: u32) -> bool {
+    let h = sync_expanded(have);
+    let n = sync_expanded(need);
+    (h & n) == n
+}
+
+// Union where NONE is the identity (`Sync::union_nonempty`).
+fn sync_union(a: u32, b: u32) -> u32 {
+    if a == 0 {
+        b
+    } else if b == 0 {
+        a
+    } else {
+        a | b
+    }
+}
+
+// Union where NO_ACCESS is the identity (`Access::union_nonempty`).
+fn access_union(a: u32, b: u32) -> u32 {
+    if a == no_access() {
+        b
+    } else if b == no_access() {
+        a
+    } else {
+        a | b
+    }
+}
+
+fn write_access() -> u32 {
+    0x8 | 0x10 | 0x20 | 0x100 | 0x400 | 0x1000 | 0x8000
+}
+
+fn buffer_only_access() -> u32 {
+    0x1 | 0x2 | 0x4 | 0x100 | 0x200 | 0x4000 | 0x8000
+}
+
+fn texture_only_access() -> u32 {
+    0x8 | 0x20 | 0x40 | 0x1000 | 0x2000 | 0x10000
+}
+
+fn known_access() -> u32 {
+    0x1ffff
+}
+
+pub fn access_is_write(access: u32) -> bool {
+    access != no_access() && (access & write_access()) != 0
+}
+
+fn access_contains(have: u32, need: u32) -> bool {
+    (have & need) == need
+}
+
+// Sync scopes compatible with one access bit.
+fn compatible_sync(bit: u32) -> u32 {
+    let shading: u32 = 0x8 | 0x10 | 0x80 | 0x2 | 0x1000;
+    let rtas: u32 = 0x800000 | 0x1000000;
+    let listed: u32 = if bit == 0x1 {
+        0x8 | 0x2 | 0x1000
+    } else if bit == 0x2 {
+        shading
+    } else if bit == 0x4 {
+        0x4 | 0x2
+    } else if bit == 0x8 {
+        0x2 | 0x40
+    } else if bit == 0x10 {
+        shading | 0x8000 | 0x4000 | 0x100
+    } else if bit == 0x20 || bit == 0x40 {
+        0x2 | 0x20
+    } else if bit == 0x80 {
+        shading | 0x800000 | 0x100
+    } else if bit == 0x100 {
+        0x8 | 0x2 | 0x1000
+    } else if bit == 0x200 {
+        0x800
+    } else if bit == 0x400 || bit == 0x800 {
+        0x200
+    } else if bit == 0x1000 || bit == 0x2000 {
+        0x400
+    } else if bit == 0x4000 {
+        0x80 | 0x100 | 0x1000 | rtas | 0x4000
+    } else if bit == 0x8000 {
+        0x80 | 0x100 | 0x1000 | rtas
+    } else if bit == 0x10000 {
+        0x10 | 0x1000
+    } else {
+        0
+    };
+    0x1 | listed
+}
+
+// Access bits for which none of `sync`'s scopes is listed as compatible.
+pub fn access_incompatible_with_sync(access: u32, sync: u32) -> u32 {
+    let mut bad: u32 = 0;
+    let mut rest = access;
+    loop {
+        if rest == 0 {
+            break;
+        }
+        let bit = rest & wrapping_add(~rest, 1);
+        rest = rest & ~bit;
+        if (sync & compatible_sync(bit)) == 0 {
+            bad = bad | bit;
+        }
+    }
+    bad
+}
+
+pub fn layout_raw(layout: Layout) -> u32 {
+    match layout {
+        Layout::Undefined => 0xffffffff,
+        Layout::Common => 0,
+        Layout::GenericRead => 1,
+        Layout::RenderTarget => 2,
+        Layout::UnorderedAccess => 3,
+        Layout::DepthStencilWrite => 4,
+        Layout::DepthStencilRead => 5,
+        Layout::ShaderResource => 6,
+        Layout::CopySource => 7,
+        Layout::CopyDest => 8,
+        Layout::ResolveSource => 9,
+        Layout::ResolveDest => 10,
+        Layout::ShadingRateSource => 11,
+        Layout::DirectQueueCommon => 18,
+        Layout::DirectQueueGenericRead => 19,
+        Layout::DirectQueueUnorderedAccess => 20,
+        Layout::DirectQueueShaderResource => 21,
+        Layout::DirectQueueCopySource => 22,
+        Layout::DirectQueueCopyDest => 23,
+        Layout::ComputeQueueCommon => 24,
+        Layout::ComputeQueueGenericRead => 25,
+        Layout::ComputeQueueUnorderedAccess => 26,
+        Layout::ComputeQueueShaderResource => 27,
+        Layout::ComputeQueueCopySource => 28,
+        Layout::ComputeQueueCopyDest => 29,
+    }
+}
+
+// Accesses the specification lists as compatible with a layout.
+pub fn layout_compatible_access(layout: Layout) -> u32 {
+    let srv: u32 = 0x80;
+    let src: u32 = 0x800;
+    let dst: u32 = 0x400;
+    let uav: u32 = 0x10;
+    match layout {
+        Layout::Undefined => 0,
+        Layout::Common => srv | src | dst,
+        Layout::DirectQueueCommon => srv | src | dst | uav,
+        Layout::ComputeQueueCommon => srv | src | dst | uav,
+        Layout::GenericRead => srv | src,
+        Layout::ComputeQueueGenericRead => srv | src,
+        Layout::DirectQueueGenericRead => srv | src | 0x40 | 0x10000 | 0x2000,
+        Layout::RenderTarget => 0x8,
+        Layout::UnorderedAccess => uav,
+        Layout::DirectQueueUnorderedAccess => uav,
+        Layout::ComputeQueueUnorderedAccess => uav,
+        Layout::DepthStencilWrite => 0x40 | 0x20,
+        Layout::DepthStencilRead => 0x40,
+        Layout::ShaderResource => srv,
+        Layout::DirectQueueShaderResource => srv,
+        Layout::ComputeQueueShaderResource => srv,
+        Layout::CopySource => src,
+        Layout::DirectQueueCopySource => src,
+        Layout::ComputeQueueCopySource => src,
+        Layout::CopyDest => dst,
+        Layout::DirectQueueCopyDest => dst,
+        Layout::ComputeQueueCopyDest => dst,
+        Layout::ResolveSource => 0x2000,
+        Layout::ResolveDest => 0x1000,
+        Layout::ShadingRateSource => 0x10000,
+    }
+}
+
+pub fn layout_allows(layout: Layout, access: u32) -> bool {
+    access != no_access() && access_contains(layout_compatible_access(layout), access)
+}
+
+fn is_compute_queue_layout(layout: Layout) -> bool {
+    match layout {
+        Layout::ComputeQueueCommon => true,
+        Layout::ComputeQueueGenericRead => true,
+        Layout::ComputeQueueUnorderedAccess => true,
+        Layout::ComputeQueueShaderResource => true,
+        Layout::ComputeQueueCopySource => true,
+        Layout::ComputeQueueCopyDest => true,
+        _ => false,
+    }
+}
+
+// Layouts a subresource may be in while used on a queue type.
+pub fn queue_supports_layout(kind: QueueKind, layout: Layout) -> bool {
+    match kind {
+        QueueKind::Direct => !(layout == Layout::Undefined || is_compute_queue_layout(layout)),
+        QueueKind::Compute => match layout {
+            Layout::Common => true,
+            Layout::GenericRead => true,
+            Layout::UnorderedAccess => true,
+            Layout::ShaderResource => true,
+            Layout::CopySource => true,
+            Layout::CopyDest => true,
+            _ => is_compute_queue_layout(layout),
+        },
+        QueueKind::Copy => layout == Layout::Common,
+    }
+}
+
+pub fn queue_can_transition(kind: QueueKind, before: Layout, after: Layout) -> bool {
+    kind
+        != QueueKind::Copy
+        && after
+        != Layout::Undefined
+        && (before == Layout::Undefined || queue_supports_layout(kind, before))
+        && queue_supports_layout(kind, after)
+}
+
+pub fn queue_supported_access(kind: QueueKind) -> u32 {
+    match kind {
+        QueueKind::Direct => known_access(),
+        QueueKind::Compute => 0x2 | 0x10 | 0x80 | 0x200 | 0x400 | 0x800 | 0x4000 | 0x8000,
+        QueueKind::Copy => 0x400 | 0x800,
+    }
+}
+
+pub fn queue_supported_sync(kind: QueueKind) -> u32 {
+    match kind {
+        QueueKind::Direct => 0xffff | 0x1800000,
+        QueueKind::Compute => 0x1 | 0x80 | 0x1000 | 0x2000 | 0x100 | 0x200 | 0x800 | 0x8000 | 0x4000 | 0x800000 | 0x1000000,
+        QueueKind::Copy => 0x1 | 0x200,
+    }
+}
+
+// Layouts tried, in order, when a use leaves its layout to the planner and
+// the current layout does not admit the access (`AUTO_CANDIDATES`, then
+// `Common`).
+fn auto_candidate(i: u64) -> Layout {
+    match i {
+        0 => Layout::ShaderResource,
+        1 => Layout::CopySource,
+        2 => Layout::CopyDest,
+        3 => Layout::UnorderedAccess,
+        4 => Layout::RenderTarget,
+        5 => Layout::DepthStencilRead,
+        6 => Layout::DepthStencilWrite,
+        7 => Layout::ResolveSource,
+        8 => Layout::ResolveDest,
+        9 => Layout::ShadingRateSource,
+        10 => Layout::GenericRead,
+        11 => Layout::DirectQueueGenericRead,
+        _ => Layout::Common,
+    }
+}
