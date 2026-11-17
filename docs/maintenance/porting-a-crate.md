@@ -113,10 +113,12 @@ What is exportable today:
 - `Option[T]`, `Result[T, E]`, `ArithOverflow` and `RuntimeError`.
 - Effect rows that hold only unlabeled `Fail[E]` and imported `Ffi[Lib]`.
 - `inout` scalars and aggregates.
-- `ChunkSeq[T]` results and `in`/`inout` parameters, and `Slice[T]`
-  parameters, of `copy` elements.
-- `String` results, `in Str`, `in String` and `inout String` parameters,
-  and `String` fields of handles.
+- `ChunkSeq[T]` results and `in`/`inout`/by-value parameters, and
+  `Slice[T]` parameters, of `copy` elements. A by-value sequence belongs to
+  the callee, which frees it (the binding takes a `Vec<T>`).
+- `String` results, `in Str`, `in String`, `inout String` and by-value
+  `String` parameters (the binding takes a `String`; the callee frees any
+  buffer it grows), and `String` fields of handles.
 - Handle types (non-`copy` structs and enums, affine or linear), with
   sequence, box, `Option` and nested handle fields.
 - Instances of generic functions.
@@ -125,9 +127,9 @@ Everything else is refused, with a message that names the function
 (`tests/native_export_v2.rs` lists every case):
 
 - generic functions without an instance
-- a sequence or string, or a handle that owns one, taken by value
-  (`sink`): native code does not free a dropped sequence or string yet, so
-  take it `in` or `inout`
+- a handle that owns a sequence or string, taken by value (`sink`): native
+  code does not free the sequences inside a dropped handle yet, so take it
+  `in` or `inout`
 - strings as sequence or slice elements, and `String` errors
 - a `Box[T]` as a parameter or result of its own (wrap it in a handle type)
 - any other effect, including capability effects and unlabeled rows

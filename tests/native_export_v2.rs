@@ -139,20 +139,12 @@ fn still_refused_forms_name_the_function() {
             "cannot export generic function 'id'",
         ),
         (
-            "pub fn f(sink xs: ChunkSeq[u64]) -> u64 { 0 }",
-            "cannot export 'f': type ChunkSeq[u64] is a sequence taken by value",
-        ),
-        (
             "struct S { xs: ChunkSeq[u64] }\npub fn f(sink s: S) -> u64 { 0 }",
             "cannot export 'f': type S is a handle that owns a sequence, taken by value",
         ),
         (
             "pub fn f(in b: Box[i64]) -> i64 { 0 }",
             "cannot export 'f': type Box[i64] owns memory",
-        ),
-        (
-            "pub fn f(sink s: String) -> u64 { 0 }",
-            "cannot export 'f': type String is a string taken by value",
         ),
         (
             "pub fn f() -> u64 eff [Fail[String]] { 0 }",
