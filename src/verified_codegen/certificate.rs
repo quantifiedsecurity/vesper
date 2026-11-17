@@ -239,6 +239,8 @@ pub fn check_row(facts: &Facts, row: &Lir) -> bool {
         | Lir::LoadIn { .. }
         | Lir::StoreIn { .. }
         | Lir::Scope { .. }
+        | Lir::LoadPtr { .. }
+        | Lir::StorePtr { .. }
         | Lir::Trap(_) => true,
     }
 }
@@ -265,6 +267,10 @@ pub fn transfer(facts: &Facts, row: &Lir, signed: bool) -> Facts {
         Lir::LoadOut { dst, index } => put(&mut next, Slot(dst), facts.get(&Out(index)).copied()),
         Lir::LoadIn { dst, index } => put(&mut next, Slot(dst), facts.get(&In(index)).copied()),
         Lir::StoreIn { index, src } => put(&mut next, In(index), facts.get(&Slot(src)).copied()),
+        // Heap words are addressed through run-time pointers: a load knows
+        // nothing. A store forgets every heap fact in Lean (`forgetHeap`);
+        // the Rust `Loc` has no heap words, so there is none to forget.
+        Lir::LoadPtr { dst, .. } => put(&mut next, Slot(dst), None),
         _ => {}
     }
     next

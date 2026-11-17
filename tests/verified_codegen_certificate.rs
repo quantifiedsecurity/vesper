@@ -45,8 +45,19 @@ fn lower_with(source: &str, require: bool) -> Program {
 /// Fixtures whose certificates the facts cannot establish yet: the status
 /// protocol of `Fail` (milestone 7) returns a payload word that is only
 /// meaningful on one side of a status test, which needs status-guarded
-/// facts (the same follow-up as enum payloads).
-const IMPRECISE: [&str; 2] = ["fail_implicit.ves", "fail_try.ves"];
+/// facts (the same follow-up as enum payloads). Region programs (milestone
+/// 8) add to the bump pointer, a word loaded from the heap through a run-time
+/// pointer, which carries no fact (`transfer` of `loadPtr`), so their checked
+/// `u64` adds need heap facts.
+const IMPRECISE: [&str; 7] = [
+    "fail_implicit.ves",
+    "fail_try.ves",
+    "region_exhausted.ves",
+    "region_fail.ves",
+    "region_unit.ves",
+    "regions.ves",
+    "syntax_pages.ves",
+];
 
 fn fixtures() -> Vec<(String, Program)> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/verified_codegen");
