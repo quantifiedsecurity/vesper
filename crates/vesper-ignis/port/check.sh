@@ -12,7 +12,7 @@ cargo test --locked -p vesper-ignis
 cargo test --locked -p vesper-ignis --features vesper-port
 # The path of the divergent build's test binary for tests/$1.rs.
 divergent() {
-    cargo test --locked -p vesper-ignis --features vesper-port-divergent --no-run --test "$1" 2>&1 |
+    cargo test --locked --color never -p vesper-ignis --features vesper-port-divergent --no-run --test "$1" 2>&1 |
         sed -n "s/.*Executable tests[/\\\\]$1\.rs (\(.*\))$/\1/p"
 }
 VESPER_IGNIS_DIVERGENT_PLANNER=$(divergent planner)
