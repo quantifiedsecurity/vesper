@@ -7,15 +7,12 @@ publish = false
 build = "build.rs"
 
 [features]
-# Forward the implementation to the Vesper build of vesper/aura.ves
-# (port wave P1 lane 13, #910).
-vesper-port = ["dep:vesper-port-abi", "dep:vesper-port-harness"]
-# Deliberately wrong Vesper builds, one per ported module: the port test
-# runs must fail (scripts/test-port-harness.sh asserts which tests do).
-vesper-port-divergent = ["vesper-port"]
+# A deliberately wrong Vesper build, one edit per ported module: the tests
+# must fail (scripts/test-port-harness.sh asserts which ones do).
+vesper-port-divergent = []
 
 [dependencies]
-vesper-port-abi = { path = "../vesper-port-abi", optional = true }
+vesper-port-abi = { path = "../vesper-port-abi" }
 
 [build-dependencies]
-vesper-port-harness = { path = "../vesper-port-harness", optional = true }
+vesper-port-harness = { path = "../vesper-port-harness" }

@@ -1,5 +1,6 @@
 //! The Vesper build (port wave P1 lane 13, #910): the public API forwards
-//! to vesper/aura.ves through the committed binding in port/binding.rs.
+//! to the Loom package in vesper/ through the committed binding in
+//! port/binding.rs.
 //! These wrappers keep the Rust-only parts: the thread-confined owners
 //! (`UiThread` checks, `PhantomData<Rc<()>>`), the generic `Backend`
 //! adaptor that `Session<B>` applies a plan to, and the conversions in
