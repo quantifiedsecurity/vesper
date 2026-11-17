@@ -91,6 +91,18 @@ fn signature_with_trace<M: Module>(
     f: &Function,
     trace_fail: bool,
 ) -> Result<ir::Signature, String> {
+    signature_with_status(m, world, f, trace_fail, false)
+}
+/// [`signature_with_trace`], plus the failure status as a second `i64`
+/// return value when `status` is set (the register-status Fail ABI, see
+/// [`status_abi_keys`]).
+fn signature_with_status<M: Module>(
+    m: &M,
+    world: &World,
+    f: &Function,
+    trace_fail: bool,
+    status: bool,
+) -> Result<ir::Signature, String> {
     let mut sig = m.make_signature();
     let result = Layout::of(world, &f.result)?;
     if result.aggregate() {
@@ -120,6 +132,9 @@ fn signature_with_trace<M: Module>(
     } else {
         scalar(&f.result, &f.generics)?
     }));
+    if status {
+        sig.returns.push(AbiParam::new(types::I64));
+    }
     Ok(sig)
 }
 fn instance_key(name: &str, vars: &BTreeMap<String, Type>) -> String {
@@ -423,6 +438,40 @@ fn fail_record_size(world: &World, f: &Function) -> Result<u32, String> {
     }
     Ok(8 + payload.div_ceil(8) * 8)
 }
+/// Instances compiled with the register-status Fail ABI (Stage 1 perf lane
+/// 5, #935). Such a `fail_only` function returns its failure status as a
+/// second `i64` value: 0 for success, `k` when it raised the `k`-th `Fail` of
+/// its row. The hidden pointer it takes is caller storage for the error
+/// payload only (at the same offset as in a failure record), so a successful
+/// call stores nothing: the caller neither zeroes a record before the call
+/// nor loads a tag after it, and tests the returned register instead.
+///
+/// Only optimized builds use it (a native-only change behind `optimize`, so
+/// the Stage 1 corpus, built unoptimized, keeps its Cranelift artifacts).
+/// Boundary symbols keep the failure-record ABI: `is_boundary` names the
+/// entry or the library exports, which foreign callers reach with a record
+/// whose status word they read. Capability-ABI functions
+/// ([`CAPABILITY_ABI`]) keep their documented record too.
+fn status_abi_keys(
+    world: &World,
+    instances: &InstanceMap,
+    optimize: bool,
+    is_boundary: impl Fn(&str) -> bool,
+) -> Result<BTreeSet<String>, String> {
+    let mut out = BTreeSet::new();
+    if !optimize {
+        return Ok(out);
+    }
+    for (key, (name, vars)) in instances {
+        let f = concrete(world, name, vars)?;
+        if fail_only(world, &f) && !capability_abi(world, &f) && !is_boundary(key) {
+            out.insert(key.clone());
+        }
+    }
+    Ok(out)
+}
+/// The empty [`status_abi_keys`] set: every function keeps the record ABI.
+static NO_STATUS_ABI: BTreeSet<String> = BTreeSet::new();
 type InstanceMap = BTreeMap<String, (String, BTreeMap<String, Type>)>;
 fn instances(world: &World, entry: &str) -> Result<InstanceMap, String> {
     instances_for_entry(world, entry, false)
@@ -664,8 +713,9 @@ fn compile_entry<M: Module>(
         // Native only, never the verified backend (Stage 1 perf lane 3).
         crate::bounds_hoist::run(&mut program);
     }
+    let status = status_abi_keys(world, &instances, optimize, |key| key == entry)?;
     let (ids, trace_entry_id) =
-        declare_instances_with_trace(m, world, entry, &instances, linkage, trace_ok)?;
+        declare_instances_with_trace(m, world, entry, &instances, linkage, trace_ok, &status)?;
     let trace_entry = trace_entry_id.map(|id| (entry, id));
     let clif = define_instances_observed_with_trace(
         m,
@@ -680,6 +730,7 @@ fn compile_entry<M: Module>(
         trace_ok,
         trace_entry,
         optimize,
+        &status,
     )?;
     let mut abi = Vec::new();
     for (key, (name, vars)) in &instances {
@@ -793,7 +844,15 @@ fn declare_instances<M: Module>(
     instances: &InstanceMap,
     linkage: DefinitionLinkage,
 ) -> Result<BTreeMap<String, FuncId>, String> {
-    let (ids, _) = declare_instances_with_trace(m, world, entry, instances, linkage, false)?;
+    let (ids, _) = declare_instances_with_trace(
+        m,
+        world,
+        entry,
+        instances,
+        linkage,
+        false,
+        &NO_STATUS_ABI,
+    )?;
     Ok(ids)
 }
 fn declare_instances_with_trace<M: Module>(
@@ -803,6 +862,7 @@ fn declare_instances_with_trace<M: Module>(
     instances: &InstanceMap,
     linkage: DefinitionLinkage,
     trace_host: bool,
+    status: &BTreeSet<String>,
 ) -> Result<(BTreeMap<String, FuncId>, Option<FuncId>), String> {
     let mut ids = BTreeMap::new();
     let mut trace_entry_id = None;
@@ -832,7 +892,7 @@ fn declare_instances_with_trace<M: Module>(
                 .declare_function(
                     &symbol,
                     linkage.function(key == entry),
-                    &signature_with_trace(m, world, &f, pass_trace)?,
+                    &signature_with_status(m, world, &f, pass_trace, status.contains(key))?,
                 )
                 .map_err(|e| e.to_string())?;
             ids.insert(key.clone(), id);
@@ -863,6 +923,7 @@ fn define_instances<M: Module>(
         false,
         None,
         optimize,
+        &NO_STATUS_ABI,
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -879,6 +940,7 @@ fn define_instances_observed_with_trace<M: Module>(
     trace_host: bool,
     trace_entry: Option<(&str, FuncId)>,
     operands_only: bool,
+    status: &BTreeSet<String>,
 ) -> Result<String, String> {
     let mut clif = String::new();
     let denorm = crate::capability_effects::const_denorm_spans(world);
@@ -894,7 +956,8 @@ fn define_instances_observed_with_trace<M: Module>(
             ids[key]
         };
         let mut ctx = m.make_context();
-        ctx.func.signature = signature_with_trace(m, world, &f, pass_trace)?;
+        let status_return = status.contains(key);
+        ctx.func.signature = signature_with_status(m, world, &f, pass_trace, status_return)?;
         let mut fbctx = FunctionBuilderContext::new();
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
@@ -977,6 +1040,8 @@ fn define_instances_observed_with_trace<M: Module>(
                 source_locations: options.source_locations,
                 srcloc: ir::SourceLoc::default(),
                 operands_only,
+                status_keys: status,
+                status_return,
             };
             c.set_location(f.span.start);
             // Function-value parameters bound to top-level functions by
@@ -1694,6 +1759,11 @@ struct Codegen<'a, 'b, M: Module> {
     /// Reading every value at every instruction gives each block a phi for
     /// each value of the graph, which inlining makes quadratic.
     operands_only: bool,
+    /// Instances compiled with the register-status Fail ABI
+    /// ([`status_abi_keys`]); calls to them test the returned status.
+    status_keys: &'b BTreeSet<String>,
+    /// The function being compiled returns its failure status in a register.
+    status_return: bool,
 }
 /// The Cranelift source location of source byte `offset`. Locations are
 /// byte offsets into the checked module's source; the all-ones value is
@@ -2969,7 +3039,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                     if let Some(join) = return_to {
                         self.jump(join, &[value.into()]);
                     } else {
-                        self.b.ins().return_(&[value]);
+                        self.return_value(value);
                     }
                 }
                 Terminator::Jump { block, args } => {
@@ -3093,7 +3163,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         if let Some(join) = target.join {
             self.jump(join, &[value.into()]);
         } else {
-            self.b.ins().return_(&[value]);
+            self.return_value(value);
         }
         // Whatever follows the jump is emitted into a block nothing reaches.
         let dead = self.b.create_block();
@@ -3160,6 +3230,17 @@ impl<M: Module> Codegen<'_, '_, M> {
                 .unwrap_or(&Type::Infer),
             &self.generic_vars,
         ))
+    }
+    /// Stack storage that is written before it is read, so it is not zeroed.
+    fn alloc_uninit(&mut self, size: u32) -> ir::Value {
+        let slot = self.b.create_sized_stack_slot(ir::StackSlotData::new(
+            ir::StackSlotKind::ExplicitSlot,
+            size.max(8),
+            3,
+        ));
+        self.b
+            .ins()
+            .stack_addr(self.m.target_config().pointer_type(), slot, 0)
     }
     fn alloc(&mut self, size: u32) -> ir::Value {
         let slot = self.b.create_sized_stack_slot(ir::StackSlotData::new(
@@ -4546,11 +4627,31 @@ impl<M: Module> Codegen<'_, '_, M> {
     }
     /// After a call to a `fail_only` function, raise its recorded failure
     /// through the capability selected for that effect instance.
-    fn reraise(&mut self, f: &Function, record: ir::Value) -> Result<(), String> {
-        let tag = self
-            .b
-            .ins()
-            .load(types::I64, ir::MemFlags::new(), record, 0);
+    /// `tag` is the record's status word, or the status register of a
+    /// register-status call ([`status_abi_keys`]). The error payload is at
+    /// offset 8 of `record` either way.
+    fn reraise_status(
+        &mut self,
+        f: &Function,
+        record: ir::Value,
+        tag: ir::Value,
+    ) -> Result<(), String> {
+        if fail_instances(f).count() > 1 {
+            // Several instances: one test of the status first, so the
+            // success path takes a single branch whatever the row's size.
+            let failed = self.b.ins().icmp_imm(IntCC::NotEqual, tag, 0);
+            let bad = self.b.create_block();
+            let good = self.b.create_block();
+            self.branch(failed, bad, &[], good, &[]);
+            self.b.switch_to_block(bad);
+            self.reraise_each(f, record, tag)?;
+            self.jump(good, &[]);
+            self.b.switch_to_block(good);
+            return Ok(());
+        }
+        self.reraise_each(f, record, tag)
+    }
+    fn reraise_each(&mut self, f: &Function, record: ir::Value, tag: ir::Value) -> Result<(), String> {
         for (index, effect) in fail_instances(f).enumerate() {
             let failed = self.b.ins().icmp_imm(IntCC::Equal, tag, index as i64 + 1);
             let bad = self.b.create_block();
@@ -4927,8 +5028,16 @@ impl<M: Module> Codegen<'_, '_, M> {
             if let Some(slot_ptr) = call_slot_arg {
                 values.push(slot_ptr);
             }
+            let status_call = self.status_keys.contains(&key);
             let record = if fail_only(self.world, &f) {
-                let record = self.alloc(fail_record_size(self.world, &f)?);
+                let size = fail_record_size(self.world, &f)?;
+                // A status-ABI callee writes only the error payload, and
+                // only when it fails: its storage needs no zeroing.
+                let record = if status_call {
+                    self.alloc_uninit(size)
+                } else {
+                    self.alloc(size)
+                };
                 values.push(record);
                 Some(record)
             } else {
@@ -4964,7 +5073,16 @@ impl<M: Module> Codegen<'_, '_, M> {
                 self.check_trace_failed();
             }
             if let Some(record) = record {
-                self.reraise(&f, record)?;
+                if status_call {
+                    let status = self.b.inst_results(call)[1];
+                    self.reraise_status(&f, record, status)?;
+                } else {
+                    let tag = self
+                        .b
+                        .ins()
+                        .load(types::I64, ir::MemFlags::new(), record, 0);
+                    self.reraise_status(&f, record, tag)?;
+                }
             }
             result
         };
@@ -5166,7 +5284,9 @@ impl<M: Module> Codegen<'_, '_, M> {
             .cloned()
             .ok_or("native failure exit names an unknown instance")?;
         let tag = self.b.ins().iconst(types::I64, index + 1);
-        self.b.ins().store(ir::MemFlags::new(), tag, record, 0);
+        if !self.status_return {
+            self.b.ins().store(ir::MemFlags::new(), tag, record, 0);
+        }
         let payload = self.offset(record, 8);
         self.store(payload, values[0], &ty)?;
         let returns = self.b.func.signature.returns[0].value_type;
@@ -5175,7 +5295,12 @@ impl<M: Module> Codegen<'_, '_, M> {
         } else {
             self.b.ins().iconst(returns, 0)
         };
-        self.b.ins().return_(&[placeholder]);
+        if self.status_return {
+            // The register-status ABI: the status is the second return value.
+            self.b.ins().return_(&[placeholder, tag]);
+        } else {
+            self.b.ins().return_(&[placeholder]);
+        }
         let dead = self.b.create_block();
         self.b.switch_to_block(dead);
         Ok(self.zero())
@@ -5400,7 +5525,17 @@ impl<M: Module> Codegen<'_, '_, M> {
         } else {
             self.b.ins().iconst(returns, 0)
         };
-        self.b.ins().return_(&[placeholder]);
+        self.return_value(placeholder);
+    }
+    /// Return `value` from the function being compiled, with a zero
+    /// (success) status when it uses the register-status Fail ABI.
+    fn return_value(&mut self, value: ir::Value) {
+        if self.status_return {
+            let ok = self.b.ins().iconst(types::I64, 0);
+            self.b.ins().return_(&[value, ok]);
+        } else {
+            self.b.ins().return_(&[value]);
+        }
     }
     fn abort_on_nonzero_status(&mut self, status: ir::Value) {
         let failed = self.b.ins().icmp_imm(IntCC::NotEqual, status, 0);
