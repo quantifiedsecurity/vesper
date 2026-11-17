@@ -2448,12 +2448,16 @@ impl<M: Module> Codegen<'_, '_, M> {
         for _ in 1..f.blocks.len() {
             blocks.push(self.b.create_block());
         }
+        // Locals this graph declares itself (a nested graph, such as a
+        // handled body, shares the names its caller already has).
+        let mut fresh_locals = BTreeSet::new();
         for (n, t) in &f.locals {
             let ty = crate::numeric::default_type(&substitute(t, &self.generic_vars));
             let layout = Layout::of(self.world, &ty)?;
             let var = if let Some(var) = self.vars.get(n) {
                 *var
             } else {
+                fresh_locals.insert(n.clone());
                 let native_ty = if layout.aggregate() {
                     self.m.target_config().pointer_type()
                 } else {
@@ -2573,12 +2577,15 @@ impl<M: Module> Codegen<'_, '_, M> {
             ));
         }
         let result_type = crate::numeric::default_type(&substitute(&f.result, &self.generic_vars));
-        // Sequence and string drops: only a function's own graph owns slots
-        // (a nested or inlined graph shares its caller's).
-        let drops = if return_to.is_none() && !self.in_fip_fn {
-            self.seq_drop_slots(f)?
-        } else {
+        // Sequence and string drops: a function's own graph owns its slots;
+        // a nested graph (a handled body or clause) owns only the locals it
+        // declares, such as those of a call the inliner spliced into it.
+        let drops = if self.in_fip_fn {
             vec![]
+        } else if return_to.is_none() {
+            self.seq_drop_slots(f, None)?
+        } else {
+            self.seq_drop_slots(f, Some(&fresh_locals))?
         };
         self.exits.push(ExitTarget {
             owner: f.name.clone(),

@@ -64,11 +64,12 @@ impl<M: Module> Codegen<'_, '_, M> {
         Ok(())
     }
 
-    /// The drop slots of graph `f`, a function's own graph, with their
-    /// string storage allocated and emptied.
+    /// The drop slots of graph `f`, with their string storage allocated and
+    /// emptied. `only` limits a nested graph to the locals it declares.
     pub(super) fn seq_drop_slots(
         &mut self,
         f: &crate::ir::FunctionIr,
+        only: Option<&std::collections::BTreeSet<String>>,
     ) -> Result<Vec<SeqDropSlot>, String> {
         let mut slots = vec![];
         let jit = std::any::type_name::<M>().contains("JITModule");
@@ -78,10 +79,13 @@ impl<M: Module> Codegen<'_, '_, M> {
             return Ok(slots);
         }
         for (name, kind) in crate::fip::seq_drop_plan(self.world, f) {
+            let param = f.params.iter().any(|p| p.name == name);
+            if only.is_some_and(|names| param || !names.contains(&name)) {
+                continue;
+            }
             let Some(&var) = self.vars.get(&name) else {
                 continue;
             };
-            let param = f.params.iter().any(|p| p.name == name);
             let storage = if kind == crate::fip::SeqDrop::Str && !param {
                 let storage = self.alloc(crate::seq::HEADER_BYTES as u32);
                 let zero = self.zero();

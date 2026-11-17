@@ -342,6 +342,19 @@ pub fn moved_in_handled() -> u64 {
     }
 }
 
+// With the optimizer on, the inliner splices `consume` and `build` into the
+// handled body, whose own locals then own sequences.
+pub fn local_in_handled() -> u64 {
+    let t = build(2);
+    handle Fail[RuntimeError] in {
+        let v = build(3);
+        wrapping_add(wrapping_add(consume(v), consume(build(4))), t.len())
+    } with {
+        return x => x,
+        raise(e, k) => 0,
+    }
+}
+
 pub fn branches() -> u64 {
     let mut total: u64 = 0;
     for i in u(0)..u(6) {
@@ -356,8 +369,9 @@ pub fn branches() -> u64 {
 }
 "#;
 
-const MOVE_CALLS: [&str; 6] = [
+const MOVE_CALLS: [&str; 7] = [
     "by_value",
+    "local_in_handled",
     "moved_in_handled",
     "moved_then_dropped",
     "returned",
@@ -368,9 +382,9 @@ const MOVE_CALLS: [&str; 6] = [
 #[test]
 fn moved_and_by_value_sequences_are_freed_once() {
     let main = format!(
-        "{MOVES}\nfn main() -> u64 {{ wrapping_add(wrapping_add(by_value(), moved_then_dropped()), wrapping_add(wrapping_add(returned(), through_aggregate()), wrapping_add(branches(), moved_in_handled()))) }}\n"
+        "{MOVES}\nfn main() -> u64 {{ wrapping_add(wrapping_add(by_value(), moved_then_dropped()), wrapping_add(wrapping_add(returned(), through_aggregate()), wrapping_add(branches(), wrapping_add(moved_in_handled(), local_in_handled())))) }}\n"
     );
-    assert_eq!(differential("moves", &main), 2 + 1 + 9 + 4 + 15 + 7);
+    assert_eq!(differential("moves", &main), 2 + 1 + 9 + 4 + 15 + 7 + 9);
     if let Some((before, after)) = library_live("moves", MOVES, &MOVE_CALLS, 100) {
         assert_eq!(before, after, "the library leaked sequences");
     }
