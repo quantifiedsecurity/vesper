@@ -181,7 +181,7 @@ fn overlapping_interval_loans_are_rejected() {
     // Constant intervals that overlap.
     rejected(
         &with_prelude(
-            "fn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); take(inout s[0..3], inout s[2..5]); 0 }",
+            "fn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); take(inout s[0..3], inout s[2..5]); 0 }",
         ),
         "E0301",
         "may overlap",
@@ -189,7 +189,7 @@ fn overlapping_interval_loans_are_rejected() {
     // Bounds that are not shared or known.
     rejected(
         &with_prelude(
-            "fn f(a: u64, b: u64) -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); take(inout s[0..a], inout s[b..4]); 0 }",
+            "fn f(a: u64, b: u64) -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); take(inout s[0..a], inout s[b..4]); 0 }",
         ),
         "E0301",
         "may overlap",
@@ -197,7 +197,7 @@ fn overlapping_interval_loans_are_rejected() {
     // The same interval twice.
     rejected(
         &with_prelude(
-            "fn f(m: u64) -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); take(inout s[0..m], inout s[0..m]); 0 }",
+            "fn f(m: u64) -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); take(inout s[0..m], inout s[0..m]); 0 }",
         ),
         "E0301",
         "overlapping arguments",
@@ -205,7 +205,7 @@ fn overlapping_interval_loans_are_rejected() {
     // A whole view and an interval.
     rejected(
         &with_prelude(
-            "fn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); take(inout s.as_slice_mut(), inout s[0..1]); 0 }",
+            "fn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); take(inout s.as_slice_mut(), inout s[0..1]); 0 }",
         ),
         "E0301",
         "may overlap",
@@ -213,20 +213,20 @@ fn overlapping_interval_loans_are_rejected() {
     // An inout view and a shared view of the same interval.
     rejected(
         &with_prelude(
-            "fn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); mixed(inout s[0..2], in s[1..3]); 0 }",
+            "fn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); mixed(inout s[0..2], in s[1..3]); 0 }",
         ),
         "E0301",
         "may overlap",
     );
     // An interval and the whole sequence place.
     rejected(
-        "fn g(inout a: Slice[u64], in s: ChunkSeq[u64]) { () }\nfn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); g(inout s[0..1], in s); 0 }",
+        "fn g(inout a: Slice[u64], in s: ChunkSeq[u64]) { () }\nfn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); g(inout s[0..1], in s); 0 }",
         "E0301",
         "overlapping arguments",
     );
     // Shared views may overlap; shared-bound splits are disjoint.
     accepted(&with_prelude(
-        "fn f(m: u64, n: u64) -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); look(in s[0..3], in s[1..4]); take(inout s[0..m], inout s[m..n]); take(inout s[0..2], inout s[2..4]); 0 }",
+        "fn f(m: u64, n: u64) -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); look(in s[0..3], in s[1..4]); take(inout s[0..m], inout s[m..n]); take(inout s[0..2], inout s[2..4]); 0 }",
     ));
     // Slicing an `in` slice for inout is a mutation of a shared parameter.
     rejected(
@@ -243,12 +243,12 @@ fn overlapping_interval_loans_are_rejected() {
 #[test]
 fn slices_are_second_class() {
     rejected(
-        "fn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); let v = s[0..1]; 0 }",
+        "fn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); let v = s[0..1]; 0 }",
         "E1521",
         "second-class",
     );
     rejected(
-        "fn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); let v = s.as_slice(); 0 }",
+        "fn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); let v = s.as_slice(); 0 }",
         "E1521",
         "second-class",
     );
@@ -261,12 +261,12 @@ fn slices_are_second_class() {
     rejected("fn f(sink x: Slice[u64]) { () }", "E1520", "sink");
     rejected("fn f(x: (Slice[u64], u64)) { () }", "E1520", "parameter");
     rejected(
-        "fn main() -> u64 { let s: ChunkSeq[Slice[u64]] = ChunkSeq::new[Slice[u64]](); 0 }",
+        "fn main() -> u64 { let mut s: ChunkSeq[Slice[u64]] = ChunkSeq::new[Slice[u64]](); 0 }",
         "E1520",
         "element",
     );
     rejected(
-        "fn main() -> u64 { let s: ChunkSeq[fn() -> u64] = ChunkSeq::new[fn() -> u64](); 0 }",
+        "fn main() -> u64 { let mut s: ChunkSeq[fn() -> u64] = ChunkSeq::new[fn() -> u64](); 0 }",
         "E1524",
         "functions",
     );
@@ -277,7 +277,7 @@ fn element_modes_are_enforced() {
     // A linear sequence that is not finished leaks its elements.
     rejected(
         &with_prelude(
-            "fn main() -> u64 { let s: ChunkSeq[Ticket] = ChunkSeq::new[Ticket](); s.push(Ticket { id: 1 }); 0 }",
+            "fn main() -> u64 { let mut s: ChunkSeq[Ticket] = ChunkSeq::new[Ticket](); s.push(Ticket { id: 1 }); 0 }",
         ),
         "E0302",
         "must be consumed",
@@ -367,7 +367,7 @@ fn element_modes_are_enforced() {
 
 #[test]
 fn interval_faults_agree_across_backends() {
-    let source = "fn total(in x: Slice[u64]) -> u64 { x.len() }\nfn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); s.push(1); s.push(2); total(in s[1..5]) }";
+    let source = "fn total(in x: Slice[u64]) -> u64 { x.len() }\nfn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); s.push(1); s.push(2); total(in s[1..5]) }";
     let c = accepted(source);
     let e = Runtime::new(&c.world).run("main", vec![]).unwrap_err();
     assert!(e.contains("out of bounds"), "evaluator: {e}");
@@ -375,7 +375,7 @@ fn interval_faults_agree_across_backends() {
     assert!(j.contains("out of bounds"), "JIT: {j}");
     // A later JIT run on the same thread is unaffected.
     let ok = accepted(
-        "fn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); s.push(3); s.len() }",
+        "fn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); s.push(3); s.len() }",
     );
     assert_eq!(native::jit(&ok.world, "main").unwrap().to_string(), "1");
     if links_executables() {
@@ -387,7 +387,7 @@ fn interval_faults_agree_across_backends() {
 
 #[test]
 fn capacity_overflow_is_a_fault() {
-    let source = "fn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](2305843009213693952); s.push(1); s.len() }";
+    let source = "fn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](2305843009213693952); s.push(1); s.len() }";
     let c = accepted(source);
     let e = Runtime::new(&c.world).run("main", vec![]).unwrap_err();
     assert!(e.contains("out of memory"), "evaluator: {e}");
@@ -478,7 +478,7 @@ fn wasm_and_ebpf_refuse_sequences_with_typed_errors() {
     );
     let source = "copy enum XdpAction { Aborted, Drop, Pass, Tx, Redirect }
 fn main() -> XdpAction {
-    let s: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut s: ChunkSeq[u64] = ChunkSeq::new[u64]();
     s.push(1);
     XdpAction::Pass
 }";
@@ -532,19 +532,19 @@ fn review_findings_are_rejected() {
     );
     // A bound that another argument mutates proves nothing.
     rejected(
-        "fn bump(inout m: u64) -> u64 { 0 }\nfn take3(inout a: Slice[u64], x: u64, inout b: Slice[u64]) { () }\nfn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); let m: u64 = 2; take3(inout s[0..m], bump(inout m), inout s[m..4]); 0 }",
+        "fn bump(inout m: u64) -> u64 { 0 }\nfn take3(inout a: Slice[u64], x: u64, inout b: Slice[u64]) { () }\nfn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); let m: u64 = 2; take3(inout s[0..m], bump(inout m), inout s[m..4]); 0 }",
         "E0301",
         "may overlap",
     );
     // A slice cannot be passed by sink into a generic parameter.
     rejected(
-        "fn id[T](sink x: T) -> T { x }\nfn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); let v = id(s[0..1]); 0 }",
+        "fn id[T](sink x: T) -> T { x }\nfn main() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); let v = id(s[0..1]); 0 }",
         "E1521",
         "sink",
     );
     // @fip code cannot allocate a sequence.
     rejected(
-        "@fip fn make() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); 0 }",
+        "@fip fn make() -> u64 { let mut s: ChunkSeq[u64] = ChunkSeq::new[u64](); 0 }",
         "E0801",
         "ChunkSeq::new",
     );

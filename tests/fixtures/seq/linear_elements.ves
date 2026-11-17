@@ -13,7 +13,7 @@ fn redeem(sink t: Ticket) -> u64 {
 }
 
 fn drain(sink s: ChunkSeq[Ticket], acc: u64) -> u64 eff [Fail[RuntimeError]] {
-    let mut_s = s;
+    let mut mut_s = s;
     match mut_s.pop() {
         Option::Some(t) => drain(mut_s, wrapping_add(wrapping_mul(acc, 10), redeem(t))),
         Option::None => {
@@ -24,7 +24,7 @@ fn drain(sink s: ChunkSeq[Ticket], acc: u64) -> u64 eff [Fail[RuntimeError]] {
 }
 
 fn run() -> u64 eff [Fail[RuntimeError]] {
-    let tickets: ChunkSeq[Ticket] = ChunkSeq::new[Ticket]();
+    let mut tickets: ChunkSeq[Ticket] = ChunkSeq::new[Ticket]();
     tickets
         .push(
         Ticket {
@@ -44,8 +44,8 @@ fn run() -> u64 eff [Fail[RuntimeError]] {
         }
     );
     // Affine elements: sequences of sequences.
-    let rows: ChunkSeq[ChunkSeq[u64]] = ChunkSeq::new[ChunkSeq[u64]]();
-    let row: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut rows: ChunkSeq[ChunkSeq[u64]] = ChunkSeq::new[ChunkSeq[u64]]();
+    let mut row: ChunkSeq[u64] = ChunkSeq::new[u64]();
     row.push(40);
     rows.push(row);
     let inner = match rows.pop() {
