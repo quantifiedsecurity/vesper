@@ -6160,6 +6160,10 @@ dependencies = [
 [[package]]
 name = "vesper-prism"
 version = "0.1.0"
+dependencies = [
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
 
 [[package]]
 name = "vesper-prism-h3"

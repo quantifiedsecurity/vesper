@@ -1,5 +1,9 @@
 # Prism HTTP/1.1 framing milestones
 
+> **Port freeze (2026-11-17):** this crate is being ported to Vesper (port
+> wave P1 lane 14, [#911](https://github.com/robot-head/vesper/issues/911)).
+> Its Rust code takes bug fixes only.
+
 This is a safe, dependency-free Rust host library for a bounded part of expanded
 [manuscript §33](../../docs/manuscript/README.md). It is not the Prism server or its source-language APIs.
 

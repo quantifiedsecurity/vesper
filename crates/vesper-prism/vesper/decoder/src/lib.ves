@@ -1,0 +1,406 @@
+// Vesper port of the vesper-prism HTTP/1.1 request decoder (`Decoder` and
+// `parse_head`; port wave P1 lane 14, #911). The Rust wrapper keeps the queued
+// input (lent as two slices) and copies bodies out. `inout` functions cannot
+// raise (E0402), so parsers return Result/Option and use wrapping arithmetic.
+
+use self::syntax::{
+    inc,
+    dec,
+    byte,
+    queued,
+    all_token,
+    eq_lit,
+    named,
+    trim_ows,
+    find,
+    valid_target,
+    valid_host,
+    decimal,
+    push_range,
+    push_lower,
+    connection_options
+};
+
+copy struct Limits {
+    max_head_bytes: u64,
+    max_headers: u64,
+    max_body_bytes: u64,
+    max_buffered_bytes: u64
+}
+
+copy enum Error {
+    InvalidLimits,
+    AllocationFailed,
+    BufferedLimit,
+    HeadLimit,
+    HeaderCountLimit,
+    BodyLimit,
+    InvalidLineEnding,
+    InvalidRequestLine,
+    UnsupportedVersion,
+    InvalidTarget,
+    UnsupportedMethod,
+    InvalidHeader,
+    InvalidHost,
+    MissingHost,
+    DuplicateHost,
+    DuplicateContentLength,
+    InvalidContentLength,
+    AmbiguousFraming,
+    UnsupportedTransferCoding,
+    UnsupportedUpgrade,
+    UnsupportedExpectation,
+    InvalidConnection,
+    UnexpectedEof,
+    InputEnded,
+    Poisoned
+}
+
+copy enum Step {
+    Incomplete,
+    Ready {
+        head_bytes: u64,
+        consumed: u64
+    },
+    Failed(Error)
+}
+
+struct Head {
+    method: ChunkSeq[u8],
+    target: ChunkSeq[u8],
+    names: ChunkSeq[u8],
+    name_ends: ChunkSeq[u64],
+    values: ChunkSeq[u8],
+    value_ends: ChunkSeq[u64],
+    content_length: u64,
+    is_head: bool,
+    close: bool
+}
+
+struct DecoderCore {
+    limits: Limits,
+    scan: u64,
+    line_start: u64,
+    after_cr: bool,
+    pending: bool,
+    head_bytes: u64,
+    ended: bool,
+    poisoned: bool,
+    head: Head
+}
+
+copy enum Scan {
+    Found(u64),
+    More,
+    Fail(Error)
+}
+
+fn bad(e: Error) -> Result[Head, Error] {
+    Result::Err(e)
+}
+
+fn empty_head() -> Head {
+    Head {
+        method: ChunkSeq::new[u8](),
+        target: ChunkSeq::new[u8](),
+        names: ChunkSeq::new[u8](),
+        name_ends: ChunkSeq::new[u64](),
+        values: ChunkSeq::new[u8](),
+        value_ends: ChunkSeq::new[u64](),
+        content_length: 0,
+        is_head: false,
+        close: false
+    }
+}
+
+// Parse a complete head (ending in CRLF CRLF) exactly like `parse_head`.
+fn parse_head(in h: Slice[u8], limits: Limits) -> Result[Head, Error] {
+    let n = h.len();
+    let line_end = find(in h, 0, n, 10);
+    if line_end == 0 || byte(in h, dec(line_end)) != 13 {
+        return bad(Error::InvalidLineEnding);
+    }
+    let line_hi = dec(line_end);
+    let m_hi = find(in h, 0, line_hi, 32);
+    if m_hi >= line_hi {
+        return bad(Error::InvalidRequestLine);
+    }
+    let t_lo = inc(m_hi);
+    let t_hi = find(in h, t_lo, line_hi, 32);
+    if t_hi >= line_hi {
+        return bad(Error::InvalidRequestLine);
+    }
+    let v_lo = inc(t_hi);
+    let v_hi = find(in h, v_lo, line_hi, 32);
+    if m_hi == 0 || !all_token(in h, 0, m_hi) || t_hi == t_lo || v_hi < line_hi {
+        return bad(Error::InvalidRequestLine);
+    }
+    if !eq_lit(in h, v_lo, v_hi, "HTTP/1.1", false) {
+        return bad(Error::UnsupportedVersion);
+    }
+    if named(in h, 0, m_hi, "CONNECT") {
+        return bad(Error::UnsupportedMethod);
+    }
+    if !valid_target(eq_lit(in h, 0, m_hi, "OPTIONS", false), in h, t_lo, t_hi) {
+        return bad(Error::InvalidTarget);
+    }
+    let mut head = empty_head();
+    push_range(inout head.method, in h, 0, m_hi);
+    push_range(inout head.target, in h, t_lo, t_hi);
+    head.is_head = eq_lit(in h, 0, m_hi, "HEAD", false);
+    let mut host = false;
+    let mut has_length = false;
+    let mut transfer_coding = false;
+    let mut upgrade = false;
+    let mut expectation = false;
+    let mut count: u64 = 0;
+    let mut at = inc(line_end);
+    loop {
+        if at >= n {
+            break;
+        }
+        let end = find(in h, at, n, 10);
+        if inc(at) == end && byte(in h, at) == 13 {
+            break;
+        }
+        if count == limits.max_headers {
+            return bad(Error::HeaderCountLimit);
+        }
+        if end >= n || end == at || byte(in h, dec(end)) != 13 {
+            return bad(Error::InvalidLineEnding);
+        }
+        let hi = dec(end);
+        let colon = find(in h, at, hi, 58);
+        if colon >= hi || colon == at || !all_token(in h, at, colon) {
+            return bad(Error::InvalidHeader);
+        }
+        for i in inc(colon)..hi {
+            let b = byte(in h, i);
+            if (b < 32 && b != 9) || b == 127 {
+                return bad(Error::InvalidHeader);
+            }
+        }
+        let v = trim_ows(in h, inc(colon), hi);
+        if named(in h, at, colon, "host") {
+            if host {
+                return bad(Error::DuplicateHost);
+            }
+            if !valid_host(in h, v.lo, v.hi) {
+                return bad(Error::InvalidHost);
+            }
+            host = true;
+        } else if named(in h, at, colon, "content-length") {
+            if has_length {
+                return bad(Error::DuplicateContentLength);
+            }
+            let length = match decimal(in h, v.lo, v.hi) {
+                Option::Some(length) => length,
+                Option::None => {
+                    return bad(Error::InvalidContentLength);
+                },
+            };
+            if length > limits.max_body_bytes {
+                return bad(Error::BodyLimit);
+            }
+            head.content_length = length;
+            has_length = true;
+        } else if named(in h, at, colon, "transfer-encoding") {
+            transfer_coding = true;
+        } else if named(in h, at, colon, "upgrade") {
+            upgrade = true;
+        } else if named(in h, at, colon, "expect") {
+            expectation = true;
+        } else if named(in h, at, colon, "connection") {
+            let flags = connection_options(in h, v.lo, v.hi);
+            if flags >= 4 {
+                return bad(Error::InvalidConnection);
+            }
+            upgrade = upgrade || (flags & 1) != 0;
+            head.close = head.close || (flags & 2) != 0;
+        }
+        push_lower(inout head.names, in h, at, colon);
+        head.name_ends.push(head.names.len());
+        push_range(inout head.values, in h, v.lo, v.hi);
+        head.value_ends.push(head.values.len());
+        count = inc(count);
+        at = inc(end);
+    }
+    if !host {
+        return bad(Error::MissingHost);
+    }
+    if transfer_coding && has_length {
+        return bad(Error::AmbiguousFraming);
+    }
+    if transfer_coding {
+        return bad(Error::UnsupportedTransferCoding);
+    }
+    if upgrade {
+        return bad(Error::UnsupportedUpgrade);
+    }
+    if expectation {
+        return bad(Error::UnsupportedExpectation);
+    }
+    Result::Ok(head)
+}
+
+pub fn decoder_core_new(limits: Limits) -> DecoderCore eff [Fail[Error]] {
+    let sum = wrapping_add(limits.max_head_bytes, limits.max_body_bytes);
+    if limits
+        .max_head_bytes
+        < 4
+        || limits
+        .max_headers
+        == 0
+        || sum
+        < limits
+        .max_head_bytes
+        || sum
+        > limits
+        .max_buffered_bytes {
+        Fail::raise(Error::InvalidLimits)
+    } else {
+        DecoderCore {
+            limits: limits,
+            scan: 0,
+            line_start: 0,
+            after_cr: false,
+            pending: false,
+            head_bytes: 0,
+            ended: false,
+            poisoned: false,
+            head: empty_head()
+        }
+    }
+}
+
+pub fn decoder_core_admit(inout d: DecoderCore, buffered: u64, incoming: u64) -> Option[Error] {
+    if d.poisoned {
+        return Option::Some(Error::Poisoned);
+    }
+    if d.ended {
+        return Option::Some(Error::InputEnded);
+    }
+    if incoming > wrapping_sub(d.limits.max_buffered_bytes, buffered) {
+        d.poisoned = true;
+        return Option::Some(Error::BufferedLimit);
+    }
+    Option::None
+}
+
+pub fn decoder_core_end_input(inout d: DecoderCore) {
+    d.ended = true;
+}
+
+fn incomplete(inout d: DecoderCore, total: u64) -> Step {
+    if d.ended && total != 0 {
+        d.poisoned = true;
+        Step::Failed(Error::UnexpectedEof)
+    } else {
+        Step::Incomplete
+    }
+}
+
+fn scan_head(inout d: DecoderCore, in front: Slice[u8], in back: Slice[u8]) -> Scan {
+    let total = wrapping_add(front.len(), back.len());
+    loop {
+        if d.scan >= total {
+            break;
+        }
+        if d.scan == d.limits.max_head_bytes {
+            return Scan::Fail(Error::HeadLimit);
+        }
+        let b = queued(in front, in back, d.scan);
+        let index = d.scan;
+        d.scan = inc(d.scan);
+        if d.after_cr {
+            if b != 10 {
+                return Scan::Fail(Error::InvalidLineEnding);
+            }
+            d.after_cr = false;
+            if dec(index) == d.line_start {
+                if d.line_start == 0 {
+                    return Scan::Fail(Error::InvalidRequestLine);
+                }
+                return Scan::Found(d.scan);
+            }
+            d.line_start = d.scan;
+        } else if b == 13 {
+            d.after_cr = true;
+        } else if b == 10 {
+            return Scan::Fail(Error::InvalidLineEnding);
+        }
+    }
+    if d.scan == d.limits.max_head_bytes {
+        return Scan::Fail(Error::HeadLimit);
+    }
+    Scan::More
+}
+
+pub fn decoder_core_next(inout d: DecoderCore, in front: Slice[u8], in back: Slice[u8]) -> Step {
+    if d.poisoned {
+        return Step::Failed(Error::Poisoned);
+    }
+    let total = wrapping_add(front.len(), back.len());
+    if !d.pending {
+        match scan_head(inout d, in front, in back) {
+            Scan::Found(head_bytes) => {
+                let mut h: ChunkSeq[u8] = ChunkSeq::with_capacity[u8](head_bytes);
+                for i in 0..head_bytes {
+                    h.push(queued(in front, in back, i));
+                }
+                match parse_head(in h.as_slice(), d.limits) {
+                    Result::Ok(head) => {
+                        d.head = head;
+                        d.pending = true;
+                        d.head_bytes = head_bytes;
+                    },
+                    Result::Err(e) => {
+                        d.poisoned = true;
+                        return Step::Failed(e);
+                    },
+                }
+            },
+            Scan::More => {
+                return incomplete(inout d, total);
+            },
+            Scan::Fail(e) => {
+                d.poisoned = true;
+                return Step::Failed(e);
+            },
+        }
+    }
+    let consumed = wrapping_add(d.head_bytes, d.head.content_length);
+    if total < consumed {
+        return incomplete(inout d, total);
+    }
+    d.pending = false;
+    d.scan = 0;
+    d.line_start = 0;
+    d.after_cr = false;
+    Step::Ready {
+        head_bytes: d.head_bytes,
+        consumed: consumed
+    }
+}
+
+// The status of the minimal `Connection: close` response the connection
+// sends after a decoder failure; 0 means close without one.
+pub fn decoder_error_status(e: Error) -> u64 {
+    match e {
+        Error::UnexpectedEof => 0,
+        Error::InputEnded => 0,
+        Error::Poisoned => 0,
+        Error::AllocationFailed => 500,
+        Error::InvalidLimits => 500,
+        Error::BodyLimit => 413,
+        Error::BufferedLimit => 413,
+        Error::HeadLimit => 431,
+        Error::HeaderCountLimit => 431,
+        Error::UnsupportedVersion => 505,
+        Error::UnsupportedExpectation => 417,
+        Error::UnsupportedTransferCoding => 501,
+        Error::UnsupportedUpgrade => 501,
+        Error::UnsupportedMethod => 501,
+        _ => 400,
+    }
+}
