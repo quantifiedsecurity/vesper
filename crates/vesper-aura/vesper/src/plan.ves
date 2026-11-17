@@ -316,18 +316,15 @@ pub fn mount_next(in old: Mounted, inout p: Prepared, in text: Slice[u8]) {
     sort_by_key(in p.m.keys, inout p.m.sorted, inout p.m.tmp);
 }
 
-// The key of the parent of `key` in the new tree, or none.
-pub fn new_parent_key(in t: Tree, key: u64) -> u64 {
+// Whether `key` has a parent in the new tree and that parent is `parent_key`
+// (a key can be u64::MAX, so a missing parent is not a sentinel key).
+pub fn new_parent_is(in t: Tree, key: u64, parent_key: u64) -> bool {
     let c = tree_find(in t, key);
     if c == none_id() {
-        none_id()
+        false
     } else {
         let parent = seq_u64(in t.parent, c);
-        if parent == none_id() {
-            none_id()
-        } else {
-            tnode(in t.nodes, parent).key
-        }
+        parent != none_id() && tnode(in t.nodes, parent).key == parent_key
     }
 }
 
@@ -356,9 +353,7 @@ pub fn detach(in old: Mounted, inout p: Prepared, max: u64) -> bool {
             let ci = mounted_find(in old, child);
             let keep = keep_node
                 && old_retained(in p, ci)
-                && new_parent_key(in p.tree, child)
-                == node
-                .key;
+                && new_parent_is(in p.tree, child, node.key);
             if !keep {
                 if !emit(inout p, max, op(8, node.id, mnode(in old.nodes, ci).id, i, 0)) {
                     return false;

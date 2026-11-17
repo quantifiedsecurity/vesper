@@ -103,7 +103,10 @@ WCAG-gated `SimAura` and checks that the port's live-allocation count returns
 to its start. The two unit tests share a lock because the count is
 process-wide.
 
-All 28 tests and the 9 doctests pass against both builds.
+All 28 tests and the 9 doctests pass against both builds, as does a 29th
+integration test added in review (`maximum_key_is_an_ordinary_key_when_parent_and_child_swap`):
+the port had used `u64::MAX` as its "no parent" sentinel in one comparison,
+so a parent keyed `Key(u64::MAX)` was mistaken for a missing one.
 
 ## Divergence checks
 
