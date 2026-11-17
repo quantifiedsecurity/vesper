@@ -5,7 +5,7 @@ reference row executor and the cost-based access planner of
 `crates/vesper-quarry/spec/planner-ddl.md` run in Vesper under
 `--features vesper-port`, from the Loom package `@vesper/quarry` in
 `crates/vesper-quarry/vesper/`. Every test passes against both builds. The
-port is about 4.3x to 4.9x slower than Rust on the parse+plan benchmark, so
+port is about 4.3x to 4.9x slower than Rust on the parse+plan benchmark (3.2x after the compiler's new inliner landed on main), so
 the 2x stop rule applies: **the Rust code is not deleted**, and the Rust build
 stays the default. The user's standing rule (2026-11-17) is that the Vesper
 build stays non-default until it reaches reasonable performance parity.
@@ -130,6 +130,7 @@ release profile, port compiled by a release `vesper` (Cranelift).
 | Run | Rust (A) | Port (B) | Median regression |
 | --- | --- | --- | --- |
 | port as built (Cranelift default opt level) | 5.0-8.1 µs/query | 24-37 µs/query | +32608 to +39298 bp (4.3x-4.9x) |
+| after main's inliner and bounds hoisting (main at 2026-11-17 23:26 UTC) | 4.6 µs/query | 14.5 µs/query | +21612 bp (3.2x) |
 | experiment: compiler patched to `opt_level=speed` (not committed) | 5.7 µs/query | 25 µs/query | +31942 bp (4.2x) |
 
 2x gate: **Regression**. Per the lane rule, the Rust code is not deleted.
