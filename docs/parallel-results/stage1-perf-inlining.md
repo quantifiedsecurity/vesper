@@ -27,7 +27,10 @@ Optimized native builds (`optimize = true`) on the JIT, library-export
 
    Each caller may grow by 2,000 instructions and the program by 40,000.
    Callers whose row names a capability effect (`ConstTime`, `Realtime`,
-   `DetFloat`) keep their calls. `inout` arguments, and borrowed aggregate
+   `DetFloat`) keep their calls, and so do callers holding `Box` values:
+   `fip::elaborate_non_fip_drops` places `Box` drops per block, and
+   splitting a block at an inlined call let it free a list that had been
+   moved into a pending argument (caught by `bounded_generics` in CI). `inout` arguments, and borrowed aggregate
    or sequence `in` arguments, are not copied: the callee's reads, writes
    and argument places of `p.f` become the caller's `place.f`. By-value
    parameters are bound to renamed locals (`name$inlN`). Callee values and
@@ -65,9 +68,19 @@ Not changed:
 No file under `src/verified_codegen/**`, `src/ir.rs`, `src/ir_opt.rs`,
 `lean/**`, `bootstrap/**` or `packages/vesper-compiler/**` changed. Every new
 behaviour is behind `optimize`, and `bootstrap/stage1.rs` builds the corpus
-with `optimize` off on both backends, so the verified artifacts and the
-Cranelift corpus objects are both expected to be unchanged. The
-`bootstrap-stage1` workflow run on this branch is linked from the PR.
+with `optimize` off on both backends.
+
+Evidence: `bootstrap/run.sh stage1 --outcome` on `main` (10dc20a) and on this
+branch, in the same cloud container, wrote fresh locks whose every program
+entry (11 `cranelift_artifact` digests, 11 `programs.verified.artifact`
+digests, results and sources) is byte-identical; only `seed_binary` and
+`frontend_sources` differ, as they do for any change to the compiler's
+sources. Both runs report the same stale fields against the committed
+`bootstrap/stage1.lock` (`seed_binary`, `frontend_sources` and every
+program's `cranelift_artifact` and `verified`), so that staleness is already
+on `main` and is not from this PR. The `bootstrap-stage1` workflow run on the
+branch (run 44177732985) passed reproducibility, the ratchet and the strict
+cross-backend gate with the same stale list.
 
 ## Tests
 
