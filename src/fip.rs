@@ -716,6 +716,10 @@ fn unsafe_non_fip_functions(world: &World, caller_slot_fns: &BTreeSet<String>) -
                         }
                     }
                     ExprKind::Call { callee, .. } => {
+                        if crate::seq::fip_allocation(world, callee).is_some() {
+                            is_unsafe = true;
+                            return;
+                        }
                         if let ExprKind::Name(name) = &callee.kind {
                             if name == BOX_NEW
                                 || name == BOX_NEW_IN_CALLER
@@ -1238,6 +1242,13 @@ impl<'a> FipChecker<'a> {
                 *state = self.merge_states(f, arm_states, e.span.clone());
             }
             ExprKind::Call { callee, args, .. } => {
+                if let Some(op) = crate::seq::fip_allocation(self.world, callee) {
+                    self.diagnostics.push(Diagnostic::new(
+                        "E0801",
+                        format!("@fip function cannot allocate through ChunkSeq::{op}"),
+                        e.span.clone(),
+                    ));
+                }
                 if let ExprKind::Name(name) = &callee.kind {
                     if name == BOX_NEW {
                         for a in args {

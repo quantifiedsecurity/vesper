@@ -520,3 +520,36 @@ fn windows_executables_run_sequences() {
         assert_eq!(status.code(), Some((expected & 0xff) as i32), "{name}");
     }
 }
+
+#[test]
+fn review_findings_are_rejected() {
+    let body = |s: &str| format!("fn mutate(inout a: Slice[u64]) {{ () }}\n{s}");
+    // An `in` sequence cannot be lent out as an exclusive whole view.
+    rejected(
+        &body("fn f(in s: ChunkSeq[u64]) -> u64 { mutate(inout s.as_slice()); 0 }"),
+        "E0307",
+        "cannot mutate shared parameter",
+    );
+    // A bound that another argument mutates proves nothing.
+    rejected(
+        "fn bump(inout m: u64) -> u64 { 0 }\nfn take3(inout a: Slice[u64], x: u64, inout b: Slice[u64]) { () }\nfn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); let m: u64 = 2; take3(inout s[0..m], bump(inout m), inout s[m..4]); 0 }",
+        "E0301",
+        "may overlap",
+    );
+    // A slice cannot be passed by sink into a generic parameter.
+    rejected(
+        "fn id[T](sink x: T) -> T { x }\nfn main() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); let v = id(s[0..1]); 0 }",
+        "E1521",
+        "sink",
+    );
+    // @fip code cannot allocate a sequence.
+    rejected(
+        "@fip fn make() -> u64 { let s: ChunkSeq[u64] = ChunkSeq::new[u64](); 0 }",
+        "E0801",
+        "ChunkSeq::new",
+    );
+    // The JIT cannot hand a sequence back to the host.
+    let c = accepted("fn main() -> ChunkSeq[u64] { ChunkSeq::new[u64]() }");
+    let e = native::jit(&c.world, "main").unwrap_err();
+    assert!(e.contains("cannot return a ChunkSeq"), "{e}");
+}

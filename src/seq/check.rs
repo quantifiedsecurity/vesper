@@ -245,7 +245,8 @@ impl Checker<'_> {
                         a.expr.span.clone(),
                     );
                 }
-                self.slice_args.insert((a.expr.span.start, a.expr.span.end));
+                self.slice_args
+                    .insert((a.expr.span.start, a.expr.span.end), Pass::In);
                 let t = self.expr(&a.expr, env, Usage::Borrow(Pass::In));
                 self.expect_type(&slice_of(elem_ty.clone()), &t, a.expr.span.clone());
                 if let (Some(src), Some(dst)) =
@@ -350,15 +351,18 @@ impl Checker<'_> {
         bounds: Option<(&Expr, &Expr)>,
         env: &mut Env,
         span: Span,
-        inout: bool,
+        mut inout: bool,
     ) -> Type {
         let base_ty = self.peek_type(base, env);
-        if !self.slice_args.contains(&(span.start, span.end)) {
-            self.error(
+        match self.slice_args.get(&(span.start, span.end)) {
+            None => self.error(
                 "E1521",
                 "a slice is a second-class borrow: write it directly as an 'in' or 'inout' call argument",
                 span.clone(),
-            );
+            ),
+            // The view is borrowed as the parameter borrows it.
+            Some(Pass::Inout) => inout = true,
+            Some(_) => {}
         }
         if bounds.is_none() && !is_seq_type(&base_ty) && base_ty != Type::Infer {
             self.error(
@@ -435,7 +439,14 @@ impl Checker<'_> {
             } else {
                 continue;
             };
-            self.slice_args.insert((e.span.start, e.span.end));
+            if *pass == Pass::Sink {
+                self.error(
+                    "E1521",
+                    "a slice is a second-class borrow and cannot be passed by 'sink'",
+                    e.span.clone(),
+                );
+            }
+            self.slice_args.insert((e.span.start, e.span.end), *pass);
             let Some(mut place) = self.seq_view_place(e) else {
                 continue;
             };
@@ -447,6 +458,45 @@ impl Checker<'_> {
                 span: e.span.clone(),
             });
         }
+        // Bounds are evaluated with the arguments, so a bound whose root an
+        // argument mutates proves nothing.
+        let mut mutated: Vec<String> = vec![];
+        for (e, pass) in actuals {
+            if matches!(pass, Pass::Inout | Pass::Sink)
+                && let Some(p) = Place::from_expr(e)
+            {
+                mutated.push(p.root);
+            }
+            crate::regions::visit_expr(e, &mut |x| {
+                if let ExprKind::Call { callee, args, .. } = &x.kind {
+                    // A method may mutate its receiver.
+                    if let ExprKind::Field(base, method) = &callee.kind
+                        && !matches!(method.as_str(), "len" | "get" | "try_get" | "as_slice")
+                        && let Some(p) = Place::from_expr(base)
+                    {
+                        mutated.push(p.root);
+                    }
+                    for a in args {
+                        if matches!(a.pass, Pass::Inout | Pass::Sink)
+                            && let Some(p) = Place::from_expr(&a.expr)
+                        {
+                            mutated.push(p.root.clone());
+                        }
+                    }
+                }
+            });
+        }
+        let stable = |b: &Expr| {
+            let mut ok = true;
+            crate::regions::visit_expr(b, &mut |x| {
+                if let ExprKind::Name(n) = &x.kind
+                    && mutated.contains(n)
+                {
+                    ok = false;
+                }
+            });
+            ok
+        };
         for (i, a) in loans.iter().enumerate() {
             for b in &loans[..i] {
                 if a.place != b.place || (a.pass == Pass::In && b.pass == Pass::In) {
@@ -465,7 +515,8 @@ impl Checker<'_> {
                                     (Some(x), Some(y)) if x <= y
                                 )
                         };
-                        le(ahi, blo) || le(bhi, alo)
+                        [alo, ahi, blo, bhi].into_iter().all(stable)
+                            && (le(ahi, blo) || le(bhi, alo))
                     }
                     _ => false,
                 };

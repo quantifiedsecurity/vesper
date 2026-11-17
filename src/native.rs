@@ -1126,6 +1126,11 @@ fn jit_run_entry(
     if !f.params.is_empty() {
         return Err("JIT entry must take no arguments".into());
     }
+    if crate::seq::holds_sequence(world, &f.result) {
+        return Err(format!(
+            "JIT entry '{entry}' cannot return a ChunkSeq: its sequences are freed when the entry returns"
+        ));
+    }
     let mut flags = settings::builder();
     flags
         .set("use_colocated_libcalls", "false")

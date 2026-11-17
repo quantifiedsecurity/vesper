@@ -263,6 +263,57 @@ pub fn same_bound(a: &Expr, b: &Expr) -> bool {
 /// Resolves a sequence call to its operation. `receiver_ty` is the type of a
 /// method receiver; static calls are `ChunkSeq::new`, `ChunkSeq::with_capacity`
 /// and `ChunkSeq::finish`.
+/// Whether a value of `ty` can hold a sequence handle (through type
+/// arguments or data fields). The JIT cannot hand such a value back to the
+/// host, because its sequences are freed when the entry returns.
+pub fn holds_sequence(world: &World, ty: &Type) -> bool {
+    fn visit(world: &World, ty: &Type, seen: &mut std::collections::BTreeSet<String>) -> bool {
+        if is_seq_or_slice(ty) {
+            return true;
+        }
+        match ty {
+            Type::Tuple(ts) => ts.iter().any(|t| visit(world, t, seen)),
+            Type::Named(n, args) => {
+                if args.iter().any(|a| visit(world, a, seen)) {
+                    return true;
+                }
+                let Some(a) = world.adts.get(n) else {
+                    return false;
+                };
+                if !seen.insert(n.clone()) {
+                    return false;
+                }
+                let found = a
+                    .variants
+                    .iter()
+                    .any(|v| v.fields.iter().any(|f| visit(world, &f.ty, seen)));
+                seen.remove(n);
+                found
+            }
+            _ => false,
+        }
+    }
+    visit(world, ty, &mut Default::default())
+}
+
+/// The growing sequence operation a call performs, if any: `@fip` code
+/// cannot allocate, so the FIP verifier rejects these.
+pub fn fip_allocation(world: &World, callee: &Expr) -> Option<&'static str> {
+    let op = match &callee.kind {
+        ExprKind::Name(n) => resolve(n, None)?,
+        ExprKind::Field(base, method) => resolve(
+            method,
+            Some(world.types.get(&(base.span.start, base.span.end))?),
+        )?,
+        _ => return None,
+    };
+    matches!(
+        op,
+        SeqOp::New | SeqOp::WithCapacity | SeqOp::Push | SeqOp::Extend
+    )
+    .then(|| op.name())
+}
+
 pub fn resolve(callee_name: &str, receiver_ty: Option<&Type>) -> Option<SeqOp> {
     if let Some(t) = receiver_ty {
         let method = callee_name.rsplit("::").next().unwrap_or(callee_name);

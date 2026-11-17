@@ -480,7 +480,7 @@ pub(crate) fn check_core(
             caps: vec![],
             cap_aliases: BTreeMap::new(),
             loans: vec![],
-            slice_args: BTreeSet::new(),
+            slice_args: BTreeMap::new(),
             effect_inference: vec![],
             traits,
             current: String::new(),
@@ -574,7 +574,7 @@ struct Checker<'a> {
     cap_aliases: BTreeMap<String, String>,
     loans: Vec<(Place, Pass, Span)>,
     /// Spans of call arguments that may be slice views (`s[a..b]`).
-    slice_args: BTreeSet<(usize, usize)>,
+    slice_args: BTreeMap<(usize, usize), Pass>,
     effect_inference: Vec<(bool, usize, Effects, String)>,
     traits: Option<&'a dyn TraitCalls>,
     current: String,
