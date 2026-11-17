@@ -81,3 +81,5 @@ divergent "package port" root_package_modules_are_linked dependency_modules_are_
     -p vesper-port-build --features divergent --test package
 cargo test --locked -p vesper-beacon -p vesper-beacon-seed
 cargo test --locked -p vesper-beacon-arrow --test beacon_build
+# Port wave P1 lane 14 (#911): vesper-prism against its Vesper port.
+sh crates/vesper-prism/test-port.sh

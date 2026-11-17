@@ -1,0 +1,498 @@
+// Vesper port of the bounded static/parameter router of crates/vesper-prism
+// (`Router` in src/router.rs, port wave P1 lane 14, #911).
+//
+// The trie lives in flat arenas: `nodes`, static child `edges` (a linked list
+// per node), and route `terms` (a linked list per node and trailing-slash
+// flag), with their byte strings in `keys`, `names` and `methods`. The Rust
+// wrapper keeps the routes' payloads (`T`), their parameter names and their
+// methods, indexed by the route ids this library hands out.
+//
+// Precedence is independent of insertion order: a static segment beats a
+// parameter at the first position where two candidates differ, and matching
+// backtracks depth first within `max_match_work` visited nodes.
+
+use self::matching::{
+    find_path,
+    is_lit,
+    not_allowed,
+    not_found
+};
+
+use self::pattern::{
+    same,
+    parse_pattern
+};
+
+copy struct RouterLimits {
+    max_routes: u64,
+    max_route_segments: u64,
+    max_match_work: u64
+}
+
+// `RouteError`, with the ambiguous parameter names as byte ranges: the
+// existing one in the router (`names[existing_lo..existing_hi]`), the new one
+// in the pattern (`pattern[new_lo..new_hi]`).
+pub copy enum RouteFault {
+    InvalidLimits,
+    InvalidMethod,
+    InvalidPattern,
+    InvalidParameterName,
+    DuplicateParameterName,
+    RouteLimit,
+    SegmentLimit,
+    DuplicateRoute,
+    AmbiguousParameter {
+        existing_lo: u64,
+        existing_hi: u64,
+        new_lo: u64,
+        new_hi: u64
+    },
+    WorkLimit,
+    AllocationFailed
+}
+
+copy struct Node {
+    first_static: u64,
+    param_child: u64,
+    param_lo: u64,
+    param_hi: u64,
+    terms: u64,
+    terms_slash: u64
+}
+
+copy struct Edge {
+    next: u64,
+    child: u64,
+    key_lo: u64,
+    key_hi: u64
+}
+
+copy struct Term {
+    next: u64,
+    method_lo: u64,
+    method_hi: u64,
+    route: u64
+}
+
+pub copy struct Piece {
+    param: bool,
+    lo: u64,
+    hi: u64
+}
+
+pub struct Pattern {
+    pieces: ChunkSeq[Piece],
+    trailing: bool
+}
+
+pub struct RouterCore {
+    limits: RouterLimits,
+    nodes: ChunkSeq[Node],
+    edges: ChunkSeq[Edge],
+    terms: ChunkSeq[Term],
+    keys: ChunkSeq[u8],
+    names: ChunkSeq[u8],
+    methods: ChunkSeq[u8],
+    routes: u64
+}
+
+// The outcome of `router_core_resolve`. `kind` is 0 for a match (`route`,
+// `head_fallback`, and `captured`, the segment index of each parameter in
+// route order), 1 for a path whose methods differ (`allowed`: route ids in
+// method order, with `none()` for the HEAD that GET implies), 2 for no path.
+pub struct Resolved {
+    kind: u64,
+    route: u64,
+    head_fallback: bool,
+    captured: ChunkSeq[u64],
+    allowed: ChunkSeq[u64]
+}
+
+pub fn none() -> u64 {
+    18446744073709551615
+}
+
+pub fn work_exhausted() -> u64 {
+    18446744073709551614
+}
+
+pub fn byte(in s: Slice[u8], i: u64) -> u8 {
+    match s.try_get(i) {
+        Option::Some(b) => b,
+        Option::None => 0,
+    }
+}
+
+pub fn byte_of(in s: ChunkSeq[u8], i: u64) -> u8 {
+    match s.try_get(i) {
+        Option::Some(b) => b,
+        Option::None => 0,
+    }
+}
+
+pub fn word(in s: Slice[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+pub fn is_digit(b: u8) -> bool {
+    b >= 48 && b <= 57
+}
+
+pub fn is_alpha(b: u8) -> bool {
+    (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+}
+
+// Whether `b` is one of the bytes of `set`.
+fn in_set(b: u8, in set: Str) -> bool {
+    for i in 0..set.len() {
+        match set.try_byte_at(i) {
+            Option::Some(c) => if c == b {
+                return true;
+            },
+            Option::None => (),
+        }
+    }
+    false
+}
+
+fn token(b: u8) -> bool {
+    is_digit(b) || is_alpha(b) || in_set(b, "!#$%&'*+-.^_`|~")
+}
+
+pub fn node_at(in r: RouterCore, i: u64) -> Node {
+    match r.nodes.try_get(i) {
+        Option::Some(n) => n,
+        Option::None => Node {
+            first_static: none(),
+            param_child: none(),
+            param_lo: 0,
+            param_hi: 0,
+            terms: none(),
+            terms_slash: none()
+        },
+    }
+}
+
+fn edge_at(in r: RouterCore, i: u64) -> Edge {
+    match r.edges.try_get(i) {
+        Option::Some(e) => e,
+        Option::None => Edge {
+            next: none(),
+            child: none(),
+            key_lo: 0,
+            key_hi: 0
+        },
+    }
+}
+
+pub fn term_at(in r: RouterCore, i: u64) -> Term {
+    match r.terms.try_get(i) {
+        Option::Some(t) => t,
+        Option::None => Term {
+            next: none(),
+            method_lo: 0,
+            method_hi: 0,
+            route: none()
+        },
+    }
+}
+
+fn fresh_node() -> Node {
+    Node {
+        first_static: none(),
+        param_child: none(),
+        param_lo: 0,
+        param_hi: 0,
+        terms: none(),
+        terms_slash: none()
+    }
+}
+
+pub fn terms_of(n: Node, trailing: bool) -> u64 {
+    if trailing {
+        n.terms_slash
+    } else {
+        n.terms
+    }
+}
+
+pub fn router_core_new(limits: RouterLimits) -> RouterCore eff [Fail[RouteFault]] {
+    if limits.max_routes == 0 || limits.max_match_work == 0 {
+        Fail::raise(RouteFault::InvalidLimits);
+    }
+    let mut nodes: ChunkSeq[Node] = ChunkSeq::new[Node]();
+    nodes.push(fresh_node());
+    RouterCore {
+        limits: limits,
+        nodes: nodes,
+        edges: ChunkSeq::new[Edge](),
+        terms: ChunkSeq::new[Term](),
+        keys: ChunkSeq::new[u8](),
+        names: ChunkSeq::new[u8](),
+        methods: ChunkSeq::new[u8](),
+        routes: 0
+    }
+}
+
+pub fn router_core_len(in r: RouterCore) -> u64 {
+    r.routes
+}
+
+// The parameter names of a pattern `router_core_insert` accepted, as
+// `[lo, hi)` byte ranges of the pattern in route order.
+pub fn pattern_params(in pattern: Slice[u8]) -> ChunkSeq[u64] {
+    let mut out: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    match parse_pattern(in pattern, none()) {
+        Result::Ok(parsed) => for k in 0..parsed.pieces.len() {
+            match parsed.pieces.try_get(k) {
+                Option::Some(q) => if q.param {
+                    out.push(q.lo);
+                    out.push(q.hi);
+                },
+                Option::None => (),
+            }
+        },
+        Result::Err(e) => (),
+    }
+    out
+}
+
+pub fn static_child(in r: RouterCore, node: u64, in key: Slice[u8], lo: u64, hi: u64) -> u64 {
+    let mut e = node_at(in r, node).first_static;
+    loop {
+        if e == none() {
+            return none();
+        }
+        let edge = edge_at(in r, e);
+        if same(in r.keys.as_slice(), edge.key_lo, edge.key_hi, in key, lo, hi) {
+            return edge.child;
+        }
+        e = edge.next;
+    }
+}
+
+fn find_term(in r: RouterCore, first: u64, in method: Slice[u8], lo: u64, hi: u64) -> u64 {
+    let mut t = first;
+    loop {
+        if t == none() {
+            return none();
+        }
+        let term = term_at(in r, t);
+        if same(in r.methods.as_slice(), term.method_lo, term.method_hi, in method, lo, hi) {
+            return t;
+        }
+        t = term.next;
+    }
+}
+
+fn set_node(inout r: RouterCore, i: u64, n: Node) {
+    r.nodes.try_set(i, n);
+}
+
+// `Router::insert`: the route id, or why it was refused. The router is
+// unchanged on every refusal: conflicts are found by a dry run first.
+pub fn router_core_insert(inout r: RouterCore, in method: Slice[u8], in pattern: Slice[u8])
+    -> Result[u64, RouteFault] {
+    if method.len() == 0 {
+        return Result::Err(RouteFault::InvalidMethod);
+    }
+    for i in 0..method.len() {
+        if !token(byte(in method, i)) {
+            return Result::Err(RouteFault::InvalidMethod);
+        }
+    }
+    if r.routes == r.limits.max_routes {
+        return Result::Err(RouteFault::RouteLimit);
+    }
+    let parsed = match parse_pattern(in pattern, r.limits.max_route_segments) {
+        Result::Ok(p) => p,
+        Result::Err(e) => {
+            return Result::Err(e);
+        },
+    };
+    // Dry run.
+    let mut node: u64 = 0;
+    let mut walking = true;
+    for k in 0..parsed.pieces.len() {
+        if walking {
+            let piece = match parsed.pieces.try_get(k) {
+                Option::Some(q) => q,
+                Option::None => Piece {
+                    param: false,
+                    lo: 0,
+                    hi: 0
+                },
+            };
+            let next = if piece.param {
+                let current = node_at(in r, node);
+                if current.param_child == none() {
+                    none()
+                } else if same(
+                    in r.names.as_slice(),
+                    current.param_lo,
+                    current.param_hi,
+                    in pattern,
+                    piece.lo,
+                    piece.hi
+                ) {
+                    current.param_child
+                } else {
+                    return Result::Err(
+                        RouteFault::AmbiguousParameter {
+                            existing_lo: current.param_lo,
+                            existing_hi: current.param_hi,
+                            new_lo: piece.lo,
+                            new_hi: piece.hi
+                        }
+                    );
+                }
+            } else {
+                static_child(in r, node, in pattern, piece.lo, piece.hi)
+            };
+            if next == none() {
+                walking = false;
+            } else {
+                node = next;
+            }
+        }
+    }
+    if walking
+        && find_term(
+        in r,
+        terms_of(node_at(in r, node), parsed.trailing),
+        in method,
+        0,
+        method.len()
+    )
+        != none() {
+        return Result::Err(RouteFault::DuplicateRoute);
+    }
+    // Every refusal was found above; from here the insert cannot fail.
+    let id = r.routes;
+    node = 0;
+    for k in 0..parsed.pieces.len() {
+        let piece = match parsed.pieces.try_get(k) {
+            Option::Some(q) => q,
+            Option::None => Piece {
+                param: false,
+                lo: 0,
+                hi: 0
+            },
+        };
+        let mut current = node_at(in r, node);
+        if piece.param {
+            if current.param_child == none() {
+                let child = r.nodes.len();
+                r.nodes.push(fresh_node());
+                current.param_child = child;
+                current.param_lo = r.names.len();
+                for i in piece.lo..piece.hi {
+                    r.names.push(byte(in pattern, i));
+                }
+                current.param_hi = r.names.len();
+                set_node(inout r, node, current);
+            }
+            node = current.param_child;
+        } else {
+            let found = static_child(in r, node, in pattern, piece.lo, piece.hi);
+            if found == none() {
+                let child = r.nodes.len();
+                r.nodes.push(fresh_node());
+                let key_lo = r.keys.len();
+                for i in piece.lo..piece.hi {
+                    r.keys.push(byte(in pattern, i));
+                }
+                let e = r.edges.len();
+                r
+                    .edges
+                    .push(
+                    Edge {
+                        next: current.first_static,
+                        child: child,
+                        key_lo: key_lo,
+                        key_hi: r.keys.len()
+                    }
+                );
+                current.first_static = e;
+                set_node(inout r, node, current);
+                node = child;
+            } else {
+                node = found;
+            }
+        }
+    }
+    let mut last = node_at(in r, node);
+    let method_lo = r.methods.len();
+    for i in 0..method.len() {
+        r.methods.push(byte(in method, i));
+    }
+    let t = r.terms.len();
+    r
+        .terms
+        .push(
+        Term {
+            next: terms_of(last, parsed.trailing),
+            method_lo: method_lo,
+            method_hi: r.methods.len(),
+            route: id
+        }
+    );
+    if parsed.trailing {
+        last.terms_slash = t;
+    } else {
+        last.terms = t;
+    }
+    set_node(inout r, node, last);
+    r.routes = wrapping_add(id, 1);
+    Result::Ok(id)
+}
+
+// `Router::resolve` over a decoded origin target (`segments` split at
+// `ends`), or `OPTIONS *` (`asterisk`), which never matches. Exhausting the
+// work budget is an error, never a not-found result.
+pub fn router_core_resolve(
+    in r: RouterCore,
+    in method: Slice[u8],
+    asterisk: bool,
+    in segments: Slice[u8],
+    in ends: Slice[u64],
+    trailing: bool
+) -> Resolved eff [Fail[RouteFault]] {
+    if asterisk {
+        return not_found();
+    }
+    let mut work: u64 = 0;
+    let mut captured: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](ends.len());
+    let node = find_path(in r, 0, in segments, in ends, trailing, 0, inout captured, inout work);
+    if node == work_exhausted() {
+        Fail::raise(RouteFault::WorkLimit);
+    }
+    if node == none() {
+        return not_found();
+    }
+    let first = terms_of(node_at(in r, node), trailing);
+    let exact = find_term(in r, first, in method, 0, method.len());
+    let mut head_fallback = false;
+    let mut t = exact;
+    if t == none() && is_lit(in method, 0, method.len(), "HEAD") {
+        let mut get: ChunkSeq[u8] = ChunkSeq::new[u8]();
+        get.push(71);
+        get.push(69);
+        get.push(84);
+        t = find_term(in r, first, in get.as_slice(), 0, 3);
+        head_fallback = true;
+    }
+    if t == none() {
+        return not_allowed(in r, first);
+    }
+    Resolved {
+        kind: 0,
+        route: term_at(in r, t).route,
+        head_fallback: head_fallback,
+        captured: captured,
+        allowed: ChunkSeq::new[u64]()
+    }
+}
