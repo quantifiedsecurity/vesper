@@ -1,5 +1,5 @@
 //! The Rust reference implementation of [`crate::seq`], compiled without
-//! `vesper-port` (the Vesper build is `vesper/tcp.ves`).
+//! `vesper-port` (the Vesper build is `vesper/seq.ves`).
 
 use crate::seq::{Seq, SeqMap};
 

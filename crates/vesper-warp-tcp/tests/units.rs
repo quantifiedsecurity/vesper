@@ -3,11 +3,12 @@
 //! lane 11, #908; see docs/maintenance/porting-a-crate.md, "The unit-test
 //! rule").
 
-use vesper_warp_tcp::cc::{AckedPacket, CongestionController, CongestionEvent, LostPacket, NewReno};
+use vesper_warp_tcp::cc::{
+    AckedPacket, CongestionController, CongestionEvent, LostPacket, NewReno,
+};
 use vesper_warp_tcp::rtt::{RtoConfig, RttEstimator};
 use vesper_warp_tcp::seq::{Seq, SeqMap};
 use vesper_warp_tcp::wire::{SackBlock, TcpOptions, Timestamps, WireError, fold, sum_bytes};
-
 
 // ---- seq.rs
 #[test]
@@ -35,7 +36,6 @@ fn lift_absolute_positions() {
     assert_eq!(map.abs(far, map.seq(far - 7)), Some(far - 7));
     assert_eq!(map.abs(0, Seq(u32::MAX - 3)), None);
 }
-
 
 // ---- rtt.rs
 #[test]
@@ -65,7 +65,6 @@ fn rfc6298_formulas_and_backoff() {
     assert_eq!(e.min_ns(), 400);
     assert!(e.rto_ns() < 100_000);
 }
-
 
 // ---- cc.rs
 fn acked(sent_ns: u64, bytes: u32) -> CongestionEvent {
@@ -105,7 +104,6 @@ fn slow_start_then_one_reduction_per_episode() {
     assert_eq!(cc.ssthresh(), 2000);
     assert_eq!(cc.schedule_edt_ns(100, 77), 77);
 }
-
 
 // ---- wire.rs
 #[test]

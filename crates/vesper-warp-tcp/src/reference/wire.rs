@@ -1,10 +1,11 @@
 //! The Rust reference implementation of [`crate::wire`], compiled without
-//! `vesper-port` (the Vesper build is `vesper/tcp.ves`).
+//! `vesper-port` (the Vesper build is `vesper/wire.ves`, `options.ves`,
+//! `segment.ves` and `checksum.ves`).
 
 use crate::seq::Seq;
 use crate::wire::{
-    Flags, HEADER_LEN, HeaderFields, IPPROTO_TCP, IpPair, MAX_OPTIONS_LEN, MAX_SACK_BLOCKS, SackBlock,
-    Segment, TcpOptions, Timestamps, WireError, offsets,
+    Flags, HEADER_LEN, HeaderFields, IPPROTO_TCP, IpPair, MAX_OPTIONS_LEN, MAX_SACK_BLOCKS,
+    SackBlock, Segment, TcpOptions, Timestamps, WireError, offsets,
 };
 
 impl Flags {

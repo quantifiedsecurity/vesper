@@ -6,6 +6,8 @@ use crate::seq::{Seq, SeqMap};
 impl Seq {
     /// `self + n` modulo 2^32.
     #[must_use]
+    // The public name of the Rust build's `const fn add`.
+    #[allow(clippy::should_implement_trait)]
     pub fn add(self, n: u32) -> Seq {
         Seq(b::sn_add(self.0, n))
     }

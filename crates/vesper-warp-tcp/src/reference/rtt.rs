@@ -1,5 +1,5 @@
 //! The Rust reference implementation of [`crate::rtt`], compiled without
-//! `vesper-port` (the Vesper build is `vesper/tcp.ves`).
+//! `vesper-port` (the Vesper build is `vesper/rtt.ves`).
 
 use crate::rtt::{RtoConfig, RttEstimator};
 

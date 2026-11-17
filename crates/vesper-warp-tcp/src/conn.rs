@@ -14,14 +14,13 @@
 //! - time is a caller-supplied virtual nanosecond clock; timers are
 //!   surfaced as deadlines by [`Connection::poll_timeout`].
 
-
 use crate::rtt::RtoConfig;
 use crate::wire::{IpPair, WireError};
 
-#[cfg(not(feature = "vesper-port"))]
-pub use crate::reference::conn::Connection;
 #[cfg(feature = "vesper-port")]
 pub use crate::ported::conn::Connection;
+#[cfg(not(feature = "vesper-port"))]
+pub use crate::reference::conn::Connection;
 
 /// Smallest sender MSS accepted from a peer; smaller advertisements are
 /// clamped up so that a hostile MSS option cannot stall the sender.
@@ -53,7 +52,6 @@ pub enum State {
     /// Waiting 2·MSL before reuse.
     TimeWait,
 }
-
 
 /// Endpoint configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

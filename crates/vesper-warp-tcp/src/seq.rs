@@ -12,7 +12,6 @@ use core::fmt;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Seq(pub u32);
 
-
 impl fmt::Debug for Seq {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Seq({})", self.0)
@@ -28,4 +27,3 @@ pub struct SeqMap {
     /// The initial sequence number.
     pub isn: Seq,
 }
-

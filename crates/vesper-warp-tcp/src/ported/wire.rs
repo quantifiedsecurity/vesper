@@ -77,7 +77,8 @@ pub(crate) fn opts_to(o: &TcpOptions) -> Opts {
 }
 
 pub(crate) fn opts_from(o: Opts) -> TcpOptions {
-    let sack_blocks: [SackBlock; MAX_SACK_BLOCKS] = [sack(o.b0), sack(o.b1), sack(o.b2), sack(o.b3)];
+    let sack_blocks: [SackBlock; MAX_SACK_BLOCKS] =
+        [sack(o.b0), sack(o.b1), sack(o.b2), sack(o.b3)];
     TcpOptions {
         mss: o.mss,
         window_scale: o.window_scale,

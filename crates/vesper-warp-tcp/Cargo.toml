@@ -7,7 +7,7 @@ publish = false
 build = "build.rs"
 
 [features]
-# Forward every ported function to the Vesper build of vesper/tcp.ves.
+# Forward every ported function to the Vesper library in vesper/.
 vesper-port = ["dep:vesper-port-abi", "dep:vesper-port-harness"]
 # A deliberately wrong Vesper build, one change per ported module: the port
 # test runs must fail (scripts/test-port-harness.sh and Bazel assert it).
@@ -20,4 +20,5 @@ vesper-port-abi = { path = "../vesper-port-abi", optional = true }
 vesper-port-harness = { path = "../vesper-port-harness", optional = true }
 
 [dev-dependencies]
+vesper-bench = { path = "../vesper-bench" }
 vesper-ffi = { path = "../vesper-ffi" }

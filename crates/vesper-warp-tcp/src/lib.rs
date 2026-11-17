@@ -27,12 +27,13 @@ pub mod rtt;
 pub mod seq;
 pub mod wire;
 
+/// The Vesper build: every function forwards to the Vesper library `tcp`
+/// (`vesper/*.ves`).
+#[cfg(feature = "vesper-port")]
+mod ported;
 /// The Rust implementation, built without `vesper-port`.
 #[cfg(not(feature = "vesper-port"))]
 mod reference;
-/// The Vesper build: every function forwards to `vesper/tcp.ves`.
-#[cfg(feature = "vesper-port")]
-mod ported;
 
 pub use cc::{CongestionController, CongestionEvent, NewReno};
 pub use conn::{

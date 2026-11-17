@@ -1,5 +1,5 @@
 //! The Rust reference implementation of [`crate::cc`], compiled without
-//! `vesper-port` (the Vesper build is `vesper/tcp.ves`).
+//! `vesper-port` (the Vesper build is `vesper/cc.ves`).
 
 use crate::cc::{CongestionController, CongestionEvent, NewReno, RttSample, SentPacket};
 

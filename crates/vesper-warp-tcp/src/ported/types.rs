@@ -1,11 +1,9 @@
 //! The types of the export ABI (`--rust-types crate::ported::types`): the
 //! crate's own public types where their layout is plain words, and
 //! word-only mirrors of the ones that hold arrays, borrowed slices or
-//! `&'static str` (see `vesper/tcp.ves` for each mirror's counterpart).
+//! `&'static str` (see `vesper/*.ves` for each mirror's counterpart).
 
-pub use crate::cc::{
-    AckedPacket, CongestionEvent, LostPacket, NewReno, RttSample,
-};
+pub use crate::cc::{AckedPacket, CongestionEvent, LostPacket, NewReno, RttSample};
 pub use crate::conn::{CloseReason, Config, Event, State, Stats};
 pub use crate::rtt::{RtoConfig, RttEstimator};
 pub use crate::wire::{Timestamps, WireError};

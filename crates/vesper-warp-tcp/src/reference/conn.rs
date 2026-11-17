@@ -1,5 +1,5 @@
 //! The Rust reference implementation of [`crate::conn`], compiled without
-//! `vesper-port` (the Vesper build is `vesper/tcp.ves`).
+//! `vesper-port` (the Vesper build is `vesper/conn*.ves`).
 
 use crate::cc::{
     AckedPacket, CongestionController, CongestionEvent, LostPacket, NewReno, RttSample, SentPacket,
