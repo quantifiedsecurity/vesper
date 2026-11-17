@@ -524,7 +524,7 @@ fn constructs_outside_the_subset_are_typed_errors() {
     // Every `inout` argument is checked, not only the first.
     rejects(
         "fn both(inout a: i64, inout b: i64) { a = wrapping_add(a, 1); b = wrapping_add(b, 1); } \
-         fn main() -> i64 { let y = 2; region r(64) { let z = 0; both(inout z, inout y); wrapping_add(z, y) } }",
+         fn main() -> i64 { let mut y = 2; region r(64) { let mut z = 0; both(inout z, inout y); wrapping_add(z, y) } }",
         Unsupported::Effect,
     );
     rejects(
