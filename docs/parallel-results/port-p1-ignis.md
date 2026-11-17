@@ -142,9 +142,24 @@ Bazel runs `:port_planner_test`, `:port_lifecycle_test`,
 
 ## Benchmarks
 
-vesper-ignis is not on the wave's hot-path list and has no benchmark, so no
-ABBA benchmark was added. The test suites take the same time on both builds
-(the planner suite well under 10 ms on each).
+vesper-ignis is not on the wave's hot-path list and has no benchmark of its
+own. To decide on parity, an ad-hoc timing loop (not committed) built a
+graph of 8 textures (4 mips) and one buffer on a direct and a compute queue,
+with alternating write/read passes, and timed 200 iterations of building
+the graph, `plan()`, and `lower_plan(Vulkan14)`. `cargo test --release`,
+Linux x86-64 cloud container, one run each (mean microseconds per call):
+
+| Passes | Build | | Plan | | Lower | |
+| --- | --- | --- | --- | --- | --- | --- |
+| | Rust | Vesper | Rust | Vesper | Rust | Vesper |
+| 64 | 14.2 | 84.5 (6.0x) | 176 | 1,898 (10.8x) | 4.1 | 24.2 (5.9x) |
+| 256 | 62.1 | 588 (9.5x) | 1,942 | 25,219 (13.0x) | 13.7 | 73.9 (5.4x) |
+
+Both builds emitted the same barrier totals. The Vesper build is 5x to 13x
+slower, so it stays non-default. Likely costs: copy records cross the ABI by
+value, `ChunkSeq` reads go through `try_get` with bounds checks, and the
+planner state uses linear scans (`signal_value`, coverage lists) where the
+Rust build uses `BTreeMap`s.
 
 ## Platforms
 
