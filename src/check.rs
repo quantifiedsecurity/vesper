@@ -8,6 +8,8 @@ mod vector_check;
 #[path = "regions/check.rs"]
 mod region_rules;
 
+#[path = "float_math/check.rs"]
+mod float_math_rules;
 #[path = "integer_widths/check.rs"]
 mod integer_widths_rules;
 #[path = "tiled/check.rs"]
@@ -36,6 +38,10 @@ pub struct World {
     pub calls: BTreeMap<(usize, usize), BTreeMap<String, Type>>,
     /// Source trait/model elaboration metadata (empty without traits).
     pub elaboration: Elaboration,
+    /// Names of the generated transcendental prelude functions this module
+    /// uses (`vesper.float.ieee754/1`); a user definition of the same name
+    /// is not one.
+    pub float_prelude: BTreeSet<String>,
 }
 impl World {
     pub fn collect(module: &Module) -> (Self, Vec<Diagnostic>) {
@@ -56,12 +62,27 @@ impl World {
             module,
             crate::integer_widths::module_end(&secret_prelude),
         );
+        // Transcendental functions used by the module (`vesper.float.ieee754/1`).
+        let float_prelude = crate::float_math::prelude(
+            module,
+            crate::integer_widths::module_end(&secret_prelude)
+                .max(crate::integer_widths::module_end(&width_prelude)),
+        );
+        w.float_prelude = float_prelude
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Function(f) => Some(f.name.clone()),
+                _ => None,
+            })
+            .collect();
         for (index, item) in builtins
             .items
             .iter()
             .chain(module.items.iter())
             .chain(secret_prelude.items.iter())
             .chain(width_prelude.items.iter())
+            .chain(float_prelude.items.iter())
             .enumerate()
         {
             match item {
@@ -1212,6 +1233,13 @@ impl Checker<'_> {
                         }
                         t
                     }
+                } else if matches!(l, Literal::Float(_))
+                    && crate::numeric::FloatKind::from_type(expected)
+                        == Some(crate::numeric::FloatKind::F32)
+                {
+                    // An unsuffixed float literal in f32 context
+                    // (`vesper.float.ieee754/1`).
+                    expected.clone()
                 } else {
                     t
                 }
@@ -1250,9 +1278,28 @@ impl Checker<'_> {
                     Type::Infer
                 }
             }
-            ExprKind::Tuple(es) => {
-                Type::Tuple(es.iter().map(|e| self.expr(e, env, Usage::Own)).collect())
-            }
+            ExprKind::Tuple(es) => Type::Tuple(
+                es.iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        // Float elements, also in nested tuples, take their
+                        // kind from the context (`vesper.float.ieee754/1`);
+                        // integer literals
+                        // settle later (`constrain_literals`).
+                        let goal = match expected {
+                            Type::Tuple(ts)
+                                if ts.len() == es.len()
+                                    && (crate::numeric::FloatKind::from_type(&ts[i]).is_some()
+                                        || matches!(ts[i], Type::Tuple(_))) =>
+                            {
+                                ts[i].clone()
+                            }
+                            _ => Type::Infer,
+                        };
+                        self.expr_expected(e, env, Usage::Own, &goal)
+                    })
+                    .collect(),
+            ),
             ExprKind::Struct { name, fields } => self.construct(
                 name,
                 fields.iter().map(|(n, e)| (n.clone(), e)).collect(),
@@ -1482,6 +1529,9 @@ impl Checker<'_> {
                 let left_fact = self.integer_fact(l, env);
                 let right_goal = if goal != Type::Infer {
                     goal
+                } else if float_math_rules::float_literal_tree(l) {
+                    // `2.0 * x`: the right operand decides the float kind.
+                    Type::Infer
                 } else if !matches!(a, Type::IntLiteral(_)) {
                     a.clone()
                 } else {
@@ -1507,6 +1557,9 @@ impl Checker<'_> {
                 } else {
                     self.expr_expected(r, env, Usage::Own, &right_goal)
                 };
+                // A float literal left operand takes an f32 right operand's
+                // kind (`2.0 * x`).
+                let a = self.retype_float_literal(l, env, &a, &b);
                 let common = match (&a, &b) {
                     (Type::IntLiteral(x), Type::IntLiteral(y)) => {
                         crate::numeric::IntegerKind::default_for((*x).max(*y)).ty()
@@ -2035,6 +2088,20 @@ impl Checker<'_> {
             }
             if crate::numeric::rotate_intrinsic(name).is_some() {
                 return self.rotate_call(name, types, args, env, span, expected);
+            }
+            // Float intrinsics and conversions (`vesper.float.ieee754/1`);
+            // user functions take precedence.
+            if let Some(op) = crate::numeric::float::math_intrinsic(name) {
+                return self.math_call(op, types, args, env, span, expected);
+            }
+            if let Some(c) = crate::numeric::float::float_conversion(name) {
+                return self.float_conversion_call(name, c, types, args, env, span);
+            }
+            if let Some(k) = crate::numeric::float::saturating_conversion(name) {
+                return self.saturating_call(name, k, types, args, env, span);
+            }
+            if let Some(b) = crate::numeric::float::bits_intrinsic(name) {
+                return self.bits_call(name, b, types, args, env, span);
             }
             if name
                 .split_once("::")
@@ -3373,7 +3440,15 @@ impl Checker<'_> {
                 if let Literal::String(s) = l {
                     self.string_capacity = self.string_capacity.max(s.len());
                 }
-                self.expect_type(ty, &literal_type(l), p.span.clone());
+                let lt = if matches!(l, Literal::Float(_))
+                    && crate::numeric::FloatKind::from_type(ty)
+                        == Some(crate::numeric::FloatKind::F32)
+                {
+                    ty.clone()
+                } else {
+                    literal_type(l)
+                };
+                self.expect_type(ty, &lt, p.span.clone());
             }
             PatternKind::Tuple(ps) => {
                 if let Type::Tuple(ts) = ty {
@@ -3846,7 +3921,7 @@ pub fn integer(t: &Type) -> bool {
     crate::numeric::is_integer_name(t.name()) || matches!(t, Type::IntLiteral(_) | Type::Infer)
 }
 pub fn numeric(t: &Type) -> bool {
-    integer(t) || t.name() == "f64"
+    integer(t) || crate::numeric::is_float_name(t.name())
 }
 pub fn compatible(a: &Type, b: &Type) -> bool {
     if *a == Type::Infer || *b == Type::Infer || b.name() == "Never" {
