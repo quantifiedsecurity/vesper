@@ -10,8 +10,8 @@ fn main() {
     port.build();
 }
 
-/// The divergence checks, one per ported module, asserted by
-/// scripts/test-port-harness.sh.
+/// The divergence checks, one per ported module (mirrored in BUILD.bazel
+/// and asserted by scripts/test-port-harness.sh).
 #[cfg(feature = "vesper-port-divergent")]
 const EDITS: &[(&str, &str)] = &[
     // view.rs (validate): one child too few is accepted.
