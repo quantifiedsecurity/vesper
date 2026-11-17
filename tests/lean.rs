@@ -158,7 +158,9 @@ fn closure_captures_and_nullary_call() {
 }
 #[test]
 fn closure_mutable_captures_are_values() {
-    validates("fn main() -> i64 { let mut x = 0; let f = || { x += 1; x }; wrapping_add(f(), f()) }");
+    validates(
+        "fn main() -> i64 { let mut x = 0; let f = || { x += 1; x }; wrapping_add(f(), f()) }",
+    );
 }
 #[test]
 fn returned_closure() {

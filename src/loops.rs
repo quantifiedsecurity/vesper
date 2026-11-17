@@ -55,13 +55,12 @@ pub fn uses_loop_syntax(module: &crate::ast::Module) -> bool {
                 | ExprKind::Range { .. }
                 | ExprKind::Break(_)
                 | ExprKind::Return(_) => found = true,
-                ExprKind::Block { statements, .. } => {
+                ExprKind::Block { statements, .. }
                     if statements
                         .iter()
-                        .any(|s| matches!(s, Statement::Let { mutable: true, .. }))
-                    {
-                        found = true;
-                    }
+                        .any(|s| matches!(s, Statement::Let { mutable: true, .. })) =>
+                {
+                    found = true;
                 }
                 _ => {}
             });

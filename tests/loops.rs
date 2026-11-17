@@ -263,7 +263,10 @@ fn inferred_closure_returns_must_agree() {
 
 #[test]
 fn optimized_early_return_of_a_forwarded_local() {
-    assert_eq!(differential("fn main() -> i64 { let x = 42; return x; }"), "42");
+    assert_eq!(
+        differential("fn main() -> i64 { let x = 42; return x; }"),
+        "42"
+    );
 }
 
 #[test]

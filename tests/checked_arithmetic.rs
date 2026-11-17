@@ -425,7 +425,10 @@ fn aborts_respect_linear_values_state_and_continuations() {
 #[test]
 fn facts_are_invalidated_by_assignment_inout_calls_and_resumptions() {
     // Assignment replaces the fact.
-    rejects("fn f(a: u8) -> u8 { let mut x: u8 = 1; x = a; x + 1 }", "E0401");
+    rejects(
+        "fn f(a: u8) -> u8 { let mut x: u8 = 1; x = a; x + 1 }",
+        "E0401",
+    );
     // Field writes never establish a fact about their root.
     rejects(
         "copy struct P { v: u8 } fn f(a: u8) -> u8 { let mut p = P { v: 1 }; p.v = a; p.v + 1 }",
