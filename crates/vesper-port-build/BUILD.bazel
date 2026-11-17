@@ -49,7 +49,7 @@ vesper_crate(
         ":port_build_vesper_binding",
     ],
     build_script_env = {
-        "VESPER_PORT_OBJECT": "$${pwd}/$(execpath :port_build_vesper)",
-        "VESPER_PORT_GENERATED_BINDING": "$${pwd}/$(execpath :port_build_vesper_binding)",
+        "VESPER_PORT_OBJECT": "$(execpath :port_build_vesper)",
+        "VESPER_PORT_GENERATED_BINDING": "$(execpath :port_build_vesper_binding)",
     },
 )

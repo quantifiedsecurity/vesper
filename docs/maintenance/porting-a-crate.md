@@ -168,8 +168,7 @@ Sequences and strings get added to the ABI once P0 lanes 3 and 7 land.
        `crates/vesper-beacon/BUILD.bazel` and `crates/vesper-port-build/BUILD.bazel`
        do (`build_script_data` plus `VESPER_PORT_OBJECT` and
        `VESPER_PORT_GENERATED_BINDING` in `build_script_env`, both
-       `"$${pwd}/$(execpath ...)"`; `$$` escapes Bazel's Make variables and
-       rules_rust replaces `${pwd}` with the execution root), so every
+       `"$(execpath ...)"`, which rules_rust makes absolute), so every
        generated target links the port;
        or
      - for an optional `vesper-port` feature, copy the `rust_library` (with
