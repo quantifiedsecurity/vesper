@@ -324,6 +324,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("tests/fixtures/seq")
                     || path.ends_with("tests/fixtures/strings")
                     || path.ends_with("packages/vesper-std")
+                    // The warp-wheel port's files form one library (#900).
+                    || path.ends_with("crates/vesper-warp-wheel/vesper")
                 {
                     continue;
                 }
