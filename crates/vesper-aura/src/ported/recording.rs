@@ -1,5 +1,5 @@
 //! `RecordingBackend` over the Vesper recorder (`recorder_*` in
-//! vesper/src). The recorder stages, checks and publishes every
+//! the Loom package in vesper/). The recorder stages, checks and publishes every
 //! transaction; this wrapper keeps the thread token and a copied
 //! [`RecordingSnapshot`] of the published state, refreshed after each
 //! change, so the accessors can lend references as before.

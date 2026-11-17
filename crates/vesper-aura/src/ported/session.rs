@@ -1,5 +1,5 @@
 //! `Session`, `PreparedUpdate` and `CloseDecision` over the Vesper
-//! reconciler (`reconciler_*` in vesper/src). The generic backend and
+//! reconciler (`reconciler_*` in the Loom package in vesper/). The generic backend and
 //! the thread token stay here: `dyn Backend` inside Vesper waits for F7b, so
 //! Vesper returns a recorded plan and this wrapper applies it.
 

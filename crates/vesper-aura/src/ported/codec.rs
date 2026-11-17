@@ -1,8 +1,8 @@
-//! The wire between the public Rust types and vesper/src: trees,
+//! The wire between the public Rust types and the Loom package in vesper/: trees,
 //! patches and limits become words plus one byte buffer of text, and the
 //! library's faults, plans and recorded state become the crate's types
 //! again. Nothing here decides anything; the codes are listed at the top of
-//! vesper/src/lib.ves.
+//! the Loom package in vesper/.
 
 use super::binding::{self, BackendFault, Op, RStateRef, ViewFault};
 use crate::{
@@ -101,7 +101,7 @@ fn value_of(tag: u64, payload: u64, text: &[u8]) -> Value {
     }
 }
 
-/// The tree in the layout `decode` in vesper/src reads.
+/// The tree in the layout `decode` in the Loom package in vesper/ reads.
 pub(crate) fn tree(tree: &ViewTree) -> (Vec<u64>, Vec<u8>) {
     let mut words = vec![tree.root.0, tree.nodes.len() as u64];
     let mut text = Vec::new();
@@ -280,7 +280,7 @@ pub(crate) fn patches(session: u64, ops: &[Op], input: Option<&ViewTree>) -> Vec
         .collect()
 }
 
-/// Ten words per patch (see `apply_patch` in vesper/src): the tag, and
+/// Ten words per patch (see `apply_patch` in the Loom package in vesper/): the tag, and
 /// every identity as its session and serial.
 pub(crate) fn transaction(patches: &[Patch]) -> (Vec<u64>, Vec<u8>) {
     let mut words = Vec::with_capacity(patches.len() * 10);

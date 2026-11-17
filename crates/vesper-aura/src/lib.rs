@@ -17,11 +17,6 @@
 //! that claimed the token. Toolkit initialization must independently establish
 //! that this is its OS main thread. Rust consuming APIs and must-use owners do
 //! not establish source-language linear exhaustion: Rust still permits Drop.
-//!
-//! The implementation is written in Vesper (the Loom package `@vesper/aura`
-//! in `vesper/`, port wave P1 lane 13, #910) and linked through the export
-//! ABI; this crate keeps the public types, the thread-confined owners and the
-//! generic [`Backend`] adaptor that applies the plans Vesper records.
 
 mod identity;
 mod plan;
@@ -30,9 +25,19 @@ mod session;
 mod sim_aura;
 mod view;
 
-// The implementation is the Vesper build of the Loom package in vesper/
-// (port wave P1 lane 13, #910), behind thin Rust wrappers.
+// The implementation: the frozen Rust build, or the Vesper build of
+// the Loom package in vesper/ behind thin wrappers (port wave P1 lane 13, #910).
+#[cfg(not(feature = "vesper-port"))]
+mod reference;
+#[cfg(not(feature = "vesper-port"))]
+pub use reference::{
+    CloseDecision, PreparedUpdate, RecordingBackend, Session, SimAura, audit_view_tree,
+    encode_view_tree,
+};
+
+#[cfg(feature = "vesper-port")]
 mod ported;
+#[cfg(feature = "vesper-port")]
 pub use ported::{
     CloseDecision, PreparedUpdate, RecordingBackend, Session, SimAura, audit_view_tree,
     encode_view_tree,

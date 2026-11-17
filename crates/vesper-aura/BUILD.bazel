@@ -1,9 +1,11 @@
 load("//tools/bazel:defs.bzl", "vesper_crate")
 load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_package", "vesper_port_object")
 
-# build.rs links the object built here from the Loom package in vesper/ and
-# checks port/binding.rs against the generated binding
-# (docs/maintenance/porting-a-crate.md).
+# The Rust implementation is the default build. The Vesper port (the Loom
+# package in vesper/, Cargo feature `vesper-port`) is non-default until it
+# reaches performance parity; these targets keep it and its five divergent
+# builds compiling under Bazel. scripts/test-port-harness.sh runs the tests
+# against the port and asserts which test catches each divergent edit.
 vesper_package(
     name = "port_package",
     srcs = glob(["vesper/src/**/*.ves"]),
@@ -15,12 +17,6 @@ vesper_port_object(
     library = "aura",
     package = ":port_package",
     target = VESPER_TARGET,
-)
-
-filegroup(
-    name = "aura_vesper_binding",
-    srcs = [":aura_vesper"],
-    output_group = "rust_binding",
 )
 
 # The divergent builds, one per ported module (the Cargo
@@ -72,14 +68,4 @@ vesper_port_object(
     target = VESPER_TARGET,
 )
 
-vesper_crate(
-    build_script_data = [
-        ":aura_vesper",
-        ":aura_vesper_binding",
-    ],
-    build_script_env = {
-        # rules_rust already makes these execpaths absolute.
-        "VESPER_PORT_OBJECT": "$(execpath :aura_vesper)",
-        "VESPER_PORT_GENERATED_BINDING": "$(execpath :aura_vesper_binding)",
-    },
-)
+vesper_crate()

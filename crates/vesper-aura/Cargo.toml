@@ -7,12 +7,15 @@ publish = false
 build = "build.rs"
 
 [features]
-# A deliberately wrong Vesper build, one edit per ported module: the tests
-# must fail (scripts/test-port-harness.sh asserts which ones do).
-vesper-port-divergent = []
+# Forward the implementation to the Vesper build of the Loom package in vesper/
+# (port wave P1 lane 13, #910).
+vesper-port = ["dep:vesper-port-abi", "dep:vesper-port-harness"]
+# Deliberately wrong Vesper builds, one per ported module: the port test
+# runs must fail (scripts/test-port-harness.sh asserts which tests do).
+vesper-port-divergent = ["vesper-port"]
 
 [dependencies]
-vesper-port-abi = { path = "../vesper-port-abi" }
+vesper-port-abi = { path = "../vesper-port-abi", optional = true }
 
 [build-dependencies]
-vesper-port-harness = { path = "../vesper-port-harness" }
+vesper-port-harness = { path = "../vesper-port-harness", optional = true }

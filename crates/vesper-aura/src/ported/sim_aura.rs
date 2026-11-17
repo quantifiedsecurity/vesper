@@ -1,4 +1,4 @@
-//! `SimAura`, `encode_view_tree` and `audit_view_tree` over vesper/src
+//! `SimAura`, `encode_view_tree` and `audit_view_tree` over the Loom package in vesper/
 //! (`sim_*`, `encode_tree`, `audit_tree`). The focus field and the
 //! dispatched-event log are plain owned state here; every decision (focus
 //! order, wrap-around, which handler fires, WCAG findings, the topology

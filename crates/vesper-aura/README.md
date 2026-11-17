@@ -1,17 +1,14 @@
 # Aura reconciliation core
 
-This host library implements a bounded keyed view runtime and an executable
-recording backend. It is an initial library milestone for design
-[manuscript §37.2](../../docs/manuscript/README.md), not a Vesper compiler feature or a native UI toolkit.
+> **Frozen (port wave P1 lane 13, [#910](https://github.com/robot-head/vesper/issues/910)):**
+> the Rust implementation takes bug fixes only. The Vesper port (`vesper/`,
+> built with the `vesper-port` feature) passes the same tests and stays
+> non-default until it reaches performance parity; see
+> [the port report](../../docs/parallel-results/port-p1-aura.md).
 
-The runtime is written in Vesper: validation, planning, the session state
-machine, the recorder and the SimAura queries live in the Loom package
-`@vesper/aura` (`vesper/`), which `build.rs` compiles into a static library
-through the export ABI (port wave P1 lane 13,
-[#910](https://github.com/robot-head/vesper/issues/910)). The Rust crate keeps
-the public types, the `Backend` trait and the `UiThread` token, and applies the
-recorded plan Vesper returns. See
-[the port report](../../docs/parallel-results/port-p1-aura.md).
+By default this dependency-free host library implements a bounded keyed view runtime and
+an executable recording backend. It is an initial library milestone for design
+[manuscript §37.2](../../docs/manuscript/README.md), not a Vesper compiler feature or a native UI toolkit.
 
 `examples/recorded_counter.rs` mounts a tree, dispatches a registered event to
 its trusted handler identity, applies one fine-grained slot change, and consumes
