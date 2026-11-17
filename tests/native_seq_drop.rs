@@ -277,7 +277,10 @@ fn locals_are_freed_on_every_exit() {
     let main = format!(
         "{EXITS}\nfn main() -> u64 {{ wrapping_add(wrapping_add(wrapping_add(normal(), early()), wrapping_add(rebound(), assigned())), wrapping_add(wrapping_add(failed(), not_failed()), wrapping_add(returned_from_handled(), finished()))) }}\n"
     );
-    assert_eq!(differential("exits", &main), 40 + 10 + 50 + 1 + 11 + 3 + 7 + 1);
+    assert_eq!(
+        differential("exits", &main),
+        40 + 10 + 50 + 1 + 11 + 3 + 7 + 1
+    );
     if let Some((before, after)) = library_live("exits", EXITS, &EXIT_CALLS, 100) {
         assert_eq!(before, after, "the library leaked sequences");
     }
@@ -464,10 +467,12 @@ fn the_checker_refuses_use_after_drop() {
         "E1521",
     );
     rejected("fn f(in x: Slice[u64]) -> Slice[u64] { x }", "E1520");
-    let string_moved = rejected_code(
-        "fn main() -> u64 { let s = String::new(); let t = s; s.len() }",
+    let string_moved =
+        rejected_code("fn main() -> u64 { let s = String::new(); let t = s; s.len() }");
+    assert_eq!(
+        string_moved, moved,
+        "a moved string is refused like a sequence"
     );
-    assert_eq!(string_moved, moved, "a moved string is refused like a sequence");
 }
 
 fn rejected_code(source: &str) -> String {
@@ -567,7 +572,11 @@ int main(void) {
         .arg(&exe)
         .output()
         .unwrap();
-    assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
+    assert!(
+        cc.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cc.stderr)
+    );
     let out = Command::new(&exe).output().unwrap();
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0 0 4800");

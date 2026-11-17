@@ -90,11 +90,7 @@ impl<M: Module> Codegen<'_, '_, M> {
             } else {
                 None
             };
-            slots.push(SeqDropSlot {
-                var,
-                kind,
-                storage,
-            });
+            slots.push(SeqDropSlot { var, kind, storage });
         }
         Ok(slots)
     }
@@ -645,10 +641,7 @@ fn fused_pattern(p: &Pattern) -> bool {
         PatternKind::Constructor { name, fields, .. } => match name.as_str() {
             "Option::Some" | "Some" => {
                 fields.len() == 1
-                    && matches!(
-                        fields[0].1.kind,
-                        PatternKind::Bind(_) | PatternKind::Wild
-                    )
+                    && matches!(fields[0].1.kind, PatternKind::Bind(_) | PatternKind::Wild)
             }
             "Option::None" | "None" => fields.is_empty(),
             _ => false,
@@ -774,12 +767,15 @@ impl<M: Module> Codegen<'_, '_, M> {
         let Some(read) = self.seq_fused(value).cloned() else {
             return Ok(false);
         };
-        if let (
-            Some(read),
-            PatternKind::Constructor { name, fields, .. },
-        ) = (read, &pattern.kind)
+        if let (Some(read), PatternKind::Constructor { name, fields, .. }) = (read, &pattern.kind)
             && name.ends_with("Some")
-            && let Some((_, inner @ Pattern { kind: PatternKind::Bind(_), .. })) = fields.first()
+            && let Some((
+                _,
+                inner @ Pattern {
+                    kind: PatternKind::Bind(_),
+                    ..
+                },
+            )) = fields.first()
         {
             let addr = self.b.use_var(read.addr);
             let element = self.seq_load_elem(addr, &read.elem)?;
