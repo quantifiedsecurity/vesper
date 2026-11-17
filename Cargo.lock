@@ -6356,7 +6356,10 @@ version = "0.1.0"
 name = "vesper-warp-tcp"
 version = "0.1.0"
 dependencies = [
+ "vesper-bench",
  "vesper-ffi",
+ "vesper-port-abi",
+ "vesper-port-harness",
 ]
 
 [[package]]
