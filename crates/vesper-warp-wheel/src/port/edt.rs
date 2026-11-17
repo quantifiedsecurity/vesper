@@ -92,8 +92,18 @@ impl<P> EdtLaunchQueue<P> {
     /// Remove every queued packet, handing `(edt_ns, packet)` to `sink` in
     /// unspecified order.
     pub fn drain(&mut self, mut sink: impl FnMut(u64, P)) {
-        for &[deadline, index] in self.core.drain().as_chunks::<2>().0 {
-            sink(deadline, self.packets.take(index));
+        // Take every payload before calling the sink, so a panicking sink
+        // cannot leave payloads in slots Vesper has already freed.
+        let drained: Vec<_> = self
+            .core
+            .drain()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[deadline, index]| (deadline, self.packets.take(index)))
+            .collect();
+        for (deadline, value) in drained {
+            sink(deadline, value);
         }
     }
 }

@@ -133,8 +133,18 @@ impl<T> Wheel<T> {
     /// outstanding handles become stale. Vesper returns the entries as one
     /// sequence, so this allocates once.
     pub fn drain(&mut self, mut sink: impl FnMut(u64, T)) {
-        for &[deadline, index] in self.core.drain().as_chunks::<2>().0 {
-            sink(deadline, self.payloads.take(index));
+        // Take every payload before calling the sink, so a panicking sink
+        // cannot leave payloads in slots Vesper has already freed.
+        let drained: Vec<_> = self
+            .core
+            .drain()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[deadline, index]| (deadline, self.payloads.take(index)))
+            .collect();
+        for (deadline, value) in drained {
+            sink(deadline, value);
         }
     }
 }

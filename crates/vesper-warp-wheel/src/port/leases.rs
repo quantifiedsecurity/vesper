@@ -113,16 +113,28 @@ impl<L> RetransmitLeases<L> {
     /// handing each to `sink` in unspecified order. Vesper returns the
     /// removed entries as one sequence, so this allocates once.
     pub fn discard_space(&mut self, space: PacketNumberSpace, mut sink: impl FnMut(LeaseKey, L)) {
-        for index in self.core.discard_space(space) {
-            let (key, lease) = self.leases.take(index);
+        // Take every lease before calling the sink (see `Wheel::drain`).
+        let removed: Vec<_> = self
+            .core
+            .discard_space(space)
+            .into_iter()
+            .map(|index| self.leases.take(index))
+            .collect();
+        for (key, lease) in removed {
             sink(key, lease);
         }
     }
 
     /// Remove every lease, handing each to `sink` in unspecified order.
     pub fn drain(&mut self, mut sink: impl FnMut(LeaseKey, L)) {
-        for index in self.core.drain() {
-            let (key, lease) = self.leases.take(index);
+        // Take every lease before calling the sink (see `Wheel::drain`).
+        let removed: Vec<_> = self
+            .core
+            .drain()
+            .into_iter()
+            .map(|index| self.leases.take(index))
+            .collect();
+        for (key, lease) in removed {
             sink(key, lease);
         }
     }
