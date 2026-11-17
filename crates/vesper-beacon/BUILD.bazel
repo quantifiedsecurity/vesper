@@ -30,8 +30,10 @@ vesper_crate(
         ":beacon_vesper_binding",
     ],
     build_script_env = {
-        "VESPER_PORT_OBJECT": "${pwd}/$(execpath :beacon_vesper)",
-        "VESPER_PORT_GENERATED_BINDING": "${pwd}/$(execpath :beacon_vesper_binding)",
+        # `$$` escapes the Make variable syntax; rules_rust replaces the
+        # literal ${pwd} with the execution root.
+        "VESPER_PORT_OBJECT": "$${pwd}/$(execpath :beacon_vesper)",
+        "VESPER_PORT_GENERATED_BINDING": "$${pwd}/$(execpath :beacon_vesper_binding)",
     },
 )
 

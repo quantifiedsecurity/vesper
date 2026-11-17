@@ -12,7 +12,7 @@ Two ways to link the object:
 - A crate whose build.rs calls `vesper_port_harness::Port::build` (a
   port-backed package, see crates/vesper-beacon/BUILD.bazel) passes the object
   and binding to its build script with `build_script_data` and
-  `build_script_env = {"VESPER_PORT_OBJECT": "${pwd}/$(execpath ...)"}`; the
+  `build_script_env = {"VESPER_PORT_OBJECT": "$${pwd}/$(execpath ...)"}`; the
   harness archives and links it and checks the committed binding.
 - A test links it directly with `-Clink-arg=$(location ...)`, as
   crates/vesper-port-pilot/BUILD.bazel does.
