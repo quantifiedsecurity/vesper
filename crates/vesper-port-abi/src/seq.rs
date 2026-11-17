@@ -304,6 +304,30 @@ pub fn with_str<R>(s: &str, call: impl FnOnce(*mut u64) -> R) -> R {
     call(words.as_mut_ptr())
 }
 
+/// Give `s` to Vesper as a `sink String`: `call` runs with a pointer to a
+/// three-word value whose bytes are a copy in a buffer of `rt`'s library.
+/// The callee owns that buffer, so it may keep the string (in a returned
+/// handle, say) after `s` is dropped; it frees the buffer when it drops it.
+pub fn with_string_owned<R>(rt: SeqRuntime, s: &str, call: impl FnOnce(*mut u64) -> R) -> R {
+    // SAFETY: `seq_new(len, 1)` returns a header whose buffer holds `len`
+    // bytes. Its words become the string value; setting the header's
+    // capacity to 0 before `seq_free` frees only the header, so the buffer
+    // passes to the callee.
+    let mut words = unsafe {
+        let handle = (rt.new)(s.len() as i64, 1) as u64;
+        let h = handle as usize as *mut u64;
+        let data = *h.add(2) as usize as *mut u8;
+        if !s.is_empty() {
+            core::ptr::copy_nonoverlapping(s.as_ptr(), data, s.len());
+        }
+        let words = [s.len() as u64, *h.add(1), *h.add(2)];
+        *h.add(1) = 0;
+        (rt.free)(handle as i64);
+        words
+    };
+    call(words.as_mut_ptr())
+}
+
 /// Lend `s` to Vesper as an `inout String`. The value starts out borrowing
 /// the Rust bytes (Vesper copies them before its first write); after the
 /// call the (possibly grown or replaced) string is copied back into `s` and

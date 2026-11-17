@@ -655,6 +655,10 @@ fn compile_entry<M: Module>(
         crate::ir_opt::fip_reuse_pass(world, &mut program)?;
     }
     crate::fip::elaborate_non_fip_drops(world, &mut program);
+    if optimize {
+        // Native only, never the verified backend (Stage 1 perf lane 3).
+        crate::bounds_hoist::run(&mut program);
+    }
     let (ids, trace_entry_id) =
         declare_instances_with_trace(m, world, entry, &instances, linkage, trace_ok)?;
     let trace_entry = trace_entry_id.map(|id| (entry, id));
@@ -4716,6 +4720,17 @@ impl<M: Module> Codegen<'_, '_, M> {
         args: &[Arg],
         site: &Expr,
     ) -> Result<ir::Value, String> {
+        if name == crate::integer_widths::MUL_WIDE && args.len() == 2 {
+            // The reserved prelude product (`integer_widths`): `(low, high)`.
+            let a = self.expr(&args[0].expr)?;
+            let b = self.expr(&args[1].expr)?;
+            let low = self.b.ins().imul(a, b);
+            let high = self.b.ins().umulhi(a, b);
+            let ptr = self.alloc(16);
+            self.b.ins().store(ir::MemFlags::new(), low, ptr, 0);
+            self.b.ins().store(ir::MemFlags::new(), high, ptr, 8);
+            return Ok(ptr);
+        }
         let vars = call_vars(self.world, site, &self.generic_vars);
         let f = concrete(self.world, name, &vars)?;
         let result_layout = Layout::of(self.world, &f.result)?;

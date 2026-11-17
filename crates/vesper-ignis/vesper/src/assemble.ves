@@ -1,0 +1,560 @@
+fn assemble(inout pl: Planner, in g: Graph, inout out: PlanOut) {
+    let n = g.passes.len();
+    let nq = pl.nq;
+    // Barrier slots: texture groups in key order, split into boxes, then
+    // buffer entries in key order.
+    let mut items: ChunkSeq[SlotItem] = ChunkSeq::new[SlotItem]();
+    let mut pending: ChunkSeq[BarrierRec] = ChunkSeq::new[BarrierRec]();
+    sort_dedup(inout pl.tex);
+    let mut i: u64 = 0;
+    loop {
+        let head = match pl.tex.try_get(i) {
+            Option::Some(e) => e,
+            Option::None => {
+                break;
+            },
+        };
+        let mut members: ChunkSeq[u32] = ChunkSeq::new[u32]();
+        let mut coords: ChunkSeq[SubPos] = ChunkSeq::new[SubPos]();
+        let mut j = i;
+        loop {
+            match pl.tex.try_get(j) {
+                Option::Some(e) => {
+                    let same_key = e
+                        .pk0
+                        == head
+                        .pk0
+                        && e
+                        .pk1
+                        == head
+                        .pk1
+                        && e
+                        .pk2
+                        == head
+                        .pk2
+                        && e
+                        .resource
+                        == head
+                        .resource
+                        && e
+                        .sync_before
+                        == head
+                        .sync_before
+                        && e
+                        .sync_after
+                        == head
+                        .sync_after
+                        && e
+                        .access_before
+                        == head
+                        .access_before
+                        && e
+                        .access_after
+                        == head
+                        .access_after
+                        && e
+                        .layout_before
+                        == head
+                        .layout_before
+                        && e
+                        .layout_after
+                        == head
+                        .layout_after;
+                    if !same_key {
+                        break;
+                    }
+                    members.push(e.sub);
+                    coords
+                        .push(
+                        SubPos {
+                            flat: e.sub,
+                            mip: e.mip,
+                            slice: e.slice,
+                            plane: e.plane
+                        }
+                    );
+                    j = wrapping_add(j, 1);
+                },
+                Option::None => {
+                    break;
+                },
+            }
+        }
+        let res = get_resource(in g, widen_u64(head.resource));
+        let ranges = boxes(res, in members, in coords);
+        for k in 0..ranges.len() {
+            match ranges.try_get(k) {
+                Option::Some(range) => file_barrier(
+                    inout items,
+                    inout pending,
+                    head.pk0,
+                    head.pk1,
+                    head.pk2,
+                    BarrierRec {
+                        texture: true,
+                        resource: head.resource,
+                        sync_before: head.sync_before,
+                        sync_after: head.sync_after,
+                        access_before: head.access_before,
+                        access_after: head.access_after,
+                        layout_before: layout_of(head.layout_before),
+                        layout_after: layout_of(head.layout_after),
+                        subresources: range
+                    }
+                ),
+                Option::None => (),
+            }
+        }
+        i = j;
+    }
+    sort_seq(inout pl.buf);
+    for k in 0..pl.buf.len() {
+        match pl.buf.try_get(k) {
+            Option::Some(e) => file_barrier(
+                inout items,
+                inout pending,
+                e.pk0,
+                e.pk1,
+                e.pk2,
+                BarrierRec {
+                    texture: false,
+                    resource: e.resource,
+                    sync_before: e.sync_before,
+                    sync_after: e.sync_after,
+                    access_before: e.access_before,
+                    access_after: e.access_after,
+                    layout_before: Layout::Undefined,
+                    layout_after: Layout::Undefined,
+                    subresources: whole_single()
+                }
+            ),
+            Option::None => (),
+        }
+    }
+    sort_seq(inout items);
+    let mut pre: ChunkSeq[SlotRange] = ChunkSeq::new[SlotRange]();
+    let mut post: ChunkSeq[SlotRange] = ChunkSeq::new[SlotRange]();
+    let mut fin: ChunkSeq[SlotRange] = ChunkSeq::new[SlotRange]();
+    for p in 0..n {
+        pre
+            .push(
+            SlotRange {
+                start: 0,
+                count: 0
+            }
+        );
+        post
+            .push(
+            SlotRange {
+                start: 0,
+                count: 0
+            }
+        );
+    }
+    for q in 0..nq {
+        fin
+            .push(
+            SlotRange {
+                start: 0,
+                count: 0
+            }
+        );
+    }
+    let mut k: u64 = 0;
+    loop {
+        let head = match items.try_get(k) {
+            Option::Some(x) => x,
+            Option::None => {
+                break;
+            },
+        };
+        let mut j = k;
+        loop {
+            match items.try_get(j) {
+                Option::Some(x) => {
+                    if x.slot != head.slot || x.value != head.value {
+                        break;
+                    }
+                    j = wrapping_add(j, 1);
+                },
+                Option::None => {
+                    break;
+                },
+            }
+        }
+        let r = SlotRange {
+            start: k,
+            count: wrapping_sub(j, k)
+        };
+        let at = widen_u64(head.value);
+        if head.slot == 0 {
+            pre.try_set(at, r);
+        } else if head.slot == 1 {
+            post.try_set(at, r);
+        } else {
+            fin.try_set(at, r);
+        }
+        k = j;
+    }
+    // Passes per queue, in order.
+    let mut pass_queue: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    for p in 0..n {
+        pass_queue.push(get_pass(in g, p).queue);
+    }
+    let mut counts: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for q in 0..nq {
+        counts.push(0);
+    }
+    for x in 0..out.order.len() {
+        let p = get32(in out.order, x);
+        let q = widen_u64(get32(in pass_queue, widen_u64(p)));
+        let bumped = wrapping_add(get64(in counts, q), 1);
+        counts.try_set(q, bumped);
+    }
+    let mut q_start: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut acc: u64 = 0;
+    for q in 0..nq {
+        q_start.push(acc);
+        acc = wrapping_add(acc, get64(in counts, q));
+    }
+    q_start.push(acc);
+    let mut by_q: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    for x in 0..n {
+        by_q.push(0);
+    }
+    let mut fill: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for q in 0..nq {
+        fill.push(get64(in q_start, q));
+    }
+    for x in 0..out.order.len() {
+        let p = get32(in out.order, x);
+        let q = widen_u64(get32(in pass_queue, widen_u64(p)));
+        let at = get64(in fill, q);
+        by_q.try_set(at, p);
+        fill.try_set(q, wrapping_add(at, 1));
+    }
+    let mut ck = Clocks {
+        nq: nq,
+        qpos: ChunkSeq::new[u32](),
+        pass_queue: pass_queue,
+        by_q: by_q,
+        q_start: q_start,
+        knowledge: ChunkSeq::new[u32](),
+        clock: ChunkSeq::new[u32](),
+        signaled: ChunkSeq::new[bool]()
+    };
+    for p in 0..n {
+        ck.qpos.push(get32(in pl.qpos, p));
+        ck.signaled.push(false);
+        for q in 0..nq {
+            ck.clock.push(0);
+        }
+    }
+    for x in 0..wrapping_mul(nq, nq) {
+        ck.knowledge.push(0);
+    }
+    let mut waits: ChunkSeq[WaitRec] = ChunkSeq::new[WaitRec]();
+    let mut wait_at: ChunkSeq[SlotRange] = ChunkSeq::new[SlotRange]();
+    for p in 0..n {
+        wait_at
+            .push(
+            SlotRange {
+                start: 0,
+                count: 0
+            }
+        );
+    }
+    for x in 0..out.order.len() {
+        let p = get32(in out.order, x);
+        let q = get32(in ck.pass_queue, widen_u64(p));
+        let producers = producers_of(in pl.cross, p);
+        let w = needed_waits(inout ck, q, in producers);
+        wait_at
+            .try_set(
+            widen_u64(p),
+            SlotRange {
+                start: waits.len(),
+                count: w.len()
+            }
+        );
+        for i in 0..w.len() {
+            match w.try_get(i) {
+                Option::Some(c) => waits
+                    .push(
+                    WaitRec {
+                        pass: p,
+                        queue: c.key,
+                        producer: c.value
+                    }
+                ),
+                Option::None => (),
+            }
+        }
+        let qrow = wrapping_mul(widen_u64(q), nq);
+        ck.knowledge.try_set(wrapping_add(qrow, widen_u64(q)), get32(in ck.qpos, widen_u64(p)));
+        let crow = wrapping_mul(widen_u64(p), nq);
+        for k in 0..nq {
+            ck.clock.try_set(wrapping_add(crow, k), get32(in ck.knowledge, wrapping_add(qrow, k)));
+        }
+    }
+    let mut final_lists: ChunkSeq[Pair] = ChunkSeq::new[Pair]();
+    for q in 0..nq {
+        let producers = producers_of(in pl.final_waits, wrapping_u32(q));
+        if producers.len() > 0 {
+            let w = needed_waits(inout ck, wrapping_u32(q), in producers);
+            for i in 0..w.len() {
+                match w.try_get(i) {
+                    Option::Some(c) => final_lists
+                        .push(
+                        Pair {
+                            key: wrapping_u32(q),
+                            value: c.key
+                        }
+                    ),
+                    Option::None => (),
+                }
+                match w.try_get(i) {
+                    Option::Some(c) => final_lists
+                        .push(
+                        Pair {
+                            key: wrapping_u32(q),
+                            value: c.value
+                        }
+                    ),
+                    Option::None => (),
+                }
+            }
+        }
+    }
+    // Fence values: 1, 2, ... in each queue's stream order.
+    let mut value_of: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for p in 0..n {
+        value_of.push(0);
+    }
+    for q in 0..nq {
+        let mut v: u64 = 0;
+        for x in get64(in ck.q_start, q)..get64(in ck.q_start, wrapping_add(q, 1)) {
+            let p = widen_u64(get32(in ck.by_q, x));
+            if getb(in ck.signaled, p) {
+                v = wrapping_add(v, 1);
+                value_of.try_set(p, v);
+            }
+        }
+    }
+    for q in 0..nq {
+        let q32 = wrapping_u32(q);
+        for x in get64(in ck.q_start, q)..get64(in ck.q_start, wrapping_add(q, 1)) {
+            let p32 = get32(in ck.by_q, x);
+            let p = widen_u64(p32);
+            let wr = get_range(in wait_at, p);
+            for i in wr.start..wrapping_add(wr.start, wr.count) {
+                match waits.try_get(i) {
+                    Option::Some(w) => out
+                        .cmds
+                        .push(
+                        CmdRec {
+                            queue: q32,
+                            tag: 0,
+                            a: widen_u64(w.queue),
+                            b: get64(in value_of, widen_u64(w.producer))
+                        }
+                    ),
+                    Option::None => (),
+                }
+            }
+            emit_slot(inout out, in items, in pending, get_range(in pre, p), q32);
+            out
+                .cmds
+                .push(
+                CmdRec {
+                    queue: q32,
+                    tag: 2,
+                    a: p,
+                    b: 0
+                }
+            );
+            emit_slot(inout out, in items, in pending, get_range(in post, p), q32);
+            if getb(in ck.signaled, p) {
+                out
+                    .cmds
+                    .push(
+                    CmdRec {
+                        queue: q32,
+                        tag: 3,
+                        a: 0,
+                        b: get64(in value_of, p)
+                    }
+                );
+            }
+        }
+        let mut f: u64 = 0;
+        loop {
+            match final_lists.try_get(f) {
+                Option::Some(dq) => match final_lists.try_get(wrapping_add(f, 1)) {
+                    Option::Some(d) => {
+                        if dq.key == q32 {
+                            out
+                                .cmds
+                                .push(
+                                CmdRec {
+                                    queue: q32,
+                                    tag: 0,
+                                    a: widen_u64(dq.value),
+                                    b: get64(in value_of, widen_u64(d.value))
+                                }
+                            );
+                        }
+                    },
+                    Option::None => (),
+                },
+                Option::None => {
+                    break;
+                },
+            }
+            f = wrapping_add(f, 2);
+        }
+        emit_slot(inout out, in items, in pending, get_range(in fin, q), q32);
+    }
+}
+
+// Orders the passes and computes per-queue barrier batches and fence
+// signals and waits (`RenderGraph::plan_with`). The result depends only on
+// the graph.
+pub fn graph_plan(in g: Graph, split_barriers: bool) -> PlanOut {
+    let n = g.passes.len();
+    let nq = g.queues.len();
+    let mut out = PlanOut {
+        fault: PlanFault::None,
+        cycle: ChunkSeq::new[u32](),
+        order: ChunkSeq::new[u32](),
+        deps: ChunkSeq::new[DepRec](),
+        cmds: ChunkSeq::new[CmdRec](),
+        barriers: ChunkSeq::new[BarrierRec]()
+    };
+    let edges = hazard_edges(in g);
+    match topological_order(n, in edges, inout out.order, inout out.cycle) {
+        OrderOutcome::Ordered => (),
+        OrderOutcome::Cyclic => {
+            out.fault = PlanFault::Cycle;
+            out.order.clear();
+            return out;
+        },
+    }
+    let mut pl = Planner {
+        split: split_barriers,
+        nq: nq,
+        qpos: ChunkSeq::new[u32](),
+        gpos: ChunkSeq::new[u32](),
+        has_writer: ChunkSeq::new[bool](),
+        writer: ChunkSeq::new[Rec](),
+        last_touch: ChunkSeq::new[u32](),
+        tex: ChunkSeq::new[TexEntry](),
+        buf: ChunkSeq::new[BufEntry](),
+        cross: ChunkSeq::new[Pair](),
+        final_waits: ChunkSeq::new[Pair](),
+        states: ChunkSeq::new[SubState](),
+        reads: ChunkSeq::new[RecNode](),
+        covs: ChunkSeq::new[CovNode](),
+        segs: ChunkSeq::new[Seg](),
+        base: ChunkSeq::new[u32]()
+    };
+    for p in 0..n {
+        pl.qpos.push(0);
+        pl.gpos.push(0);
+    }
+    let mut counts: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    for q in 0..nq {
+        counts.push(0);
+    }
+    for x in 0..out.order.len() {
+        let p = widen_u64(get32(in out.order, x));
+        pl.gpos.try_set(p, wrapping_u32(x));
+        let q = widen_u64(get_pass(in g, p).queue);
+        let c = wrapping_add(get32(in counts, q), 1);
+        counts.try_set(q, c);
+        pl.qpos.try_set(p, c);
+    }
+    for r in 0..g.resources.len() {
+        let res = get_resource(in g, r);
+        pl.has_writer.push(false);
+        pl.writer.push(empty_rec());
+        for q in 0..nq {
+            pl.last_touch.push(none32());
+        }
+        if res.texture {
+            pl.base.push(wrapping_u32(pl.states.len()));
+            for s in 0..subresource_count(res) {
+                pl.states.push(new_state(true, res.initial_layout));
+            }
+        } else {
+            pl.base.push(wrapping_u32(pl.segs.len()));
+            pl
+                .segs
+                .push(
+                Seg {
+                    start: 0,
+                    end: res.size,
+                    sid: wrapping_u32(pl.states.len()),
+                    next: none32()
+                }
+            );
+            pl.states.push(new_state(false, Layout::Undefined));
+        }
+    }
+    for e in 0..g.explicit.len() {
+        match g.explicit.try_get(e) {
+            Option::Some(x) => {
+                if get_pass(in g, widen_u64(x.before))
+                    .queue
+                    != get_pass(in g, widen_u64(x.after))
+                    .queue {
+                    pl
+                        .cross
+                        .push(
+                        Pair {
+                            key: x.after,
+                            value: x.before
+                        }
+                    );
+                }
+            },
+            Option::None => (),
+        }
+    }
+    for x in 0..out.order.len() {
+        let p = get32(in out.order, x);
+        match plan_pass(inout pl, in g, p) {
+            PlanFault::None => (),
+            f => {
+                out.fault = f;
+                return out;
+            },
+        }
+    }
+    match plan_final_layouts(inout pl, in g) {
+        PlanFault::None => (),
+        f => {
+            out.fault = f;
+            return out;
+        },
+    }
+    for e in 0..edges.len() {
+        match edges.try_get(e) {
+            Option::Some(x) => out
+                .deps
+                .push(
+                DepRec {
+                    before: x.before,
+                    after: x.after,
+                    kind: dep_kind_of(x.kind),
+                    has_resource: x.has_resource == 1,
+                    resource: x.resource,
+                    texture: x.has_resource == 1 && graph_is_texture(in g, widen_u64(x.resource))
+                }
+            ),
+            Option::None => (),
+        }
+    }
+    assemble(inout pl, in g, inout out);
+    out
+}

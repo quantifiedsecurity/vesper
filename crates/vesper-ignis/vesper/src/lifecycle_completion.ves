@@ -1,0 +1,110 @@
+// `validate_completion`: the reported point must be new, reserved, and an
+// original signal whose earlier waits on its stream were all observed.
+pub fn lifecycle_check_completion(in l: Lifecycle, runtime: u64, index: u64, value: u64)
+    -> LifeError {
+    if !owns(in l, runtime, index) {
+        return LifeError::ForeignTimeline;
+    }
+    if value <= get64(in l.observed, index) {
+        return LifeError::StaleCompletion;
+    }
+    if value > get64(in l.reserved, index) {
+        return LifeError::UnknownCompletion;
+    }
+    let point = Point {
+        runtime: runtime,
+        index: index,
+        value: value
+    };
+    for f in 0..l.flights.len() {
+        match l.flights.try_get(f) {
+            Option::Some(fl) => {
+                for c in fl.first_cmd..wrapping_add(fl.first_cmd, fl.cmd_count) {
+                    match l.cmds.try_get(c) {
+                        Option::Some(cmd) => {
+                            if cmd.runtime == runtime && cmd.index == index {
+                                if cmd.signal {
+                                    if same_point(cmd.point, point) {
+                                        return LifeError::None;
+                                    }
+                                } else {
+                                    let w = cmd.point;
+                                    if !owns(in l, w.runtime, w.index) {
+                                        return LifeError::ForeignTimeline;
+                                    }
+                                    if get64(in l.observed, w.index) < w.value {
+                                        return LifeError::WaitNotObserved {
+                                            runtime: w.runtime,
+                                            index: w.index,
+                                            value: w.value
+                                        };
+                                    }
+                                }
+                            }
+                        },
+                        Option::None => (),
+                    }
+                }
+            },
+            Option::None => (),
+        }
+    }
+    LifeError::UnknownCompletion
+}
+
+fn flight_complete(in l: Lifecycle, f: Flight) -> bool {
+    for t in f.first_term..wrapping_add(f.first_term, f.term_count) {
+        match l.terms.try_get(t) {
+            Option::Some(p) => {
+                if get64(in l.observed, p.index) < p.value {
+                    return false;
+                }
+            },
+            Option::None => (),
+        }
+    }
+    true
+}
+
+// Records a checked completion and retires every flight whose terminal
+// signals were all observed, returning their tickets in flight order.
+pub fn lifecycle_complete(inout l: Lifecycle, index: u64, value: u64) -> ChunkSeq[u64] {
+    l.observed.try_set(index, value);
+    let mut retired: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut flights: ChunkSeq[Flight] = ChunkSeq::new[Flight]();
+    let mut cmds: ChunkSeq[FlightCmd] = ChunkSeq::new[FlightCmd]();
+    let mut terms: ChunkSeq[Point] = ChunkSeq::new[Point]();
+    for i in 0..l.flights.len() {
+        match l.flights.try_get(i) {
+            Option::Some(f) => {
+                if flight_complete(in l, f) {
+                    retired.push(f.ticket);
+                } else {
+                    let mut kept = f;
+                    kept.first_cmd = cmds.len();
+                    kept.first_term = terms.len();
+                    for c in f.first_cmd..wrapping_add(f.first_cmd, f.cmd_count) {
+                        match l.cmds.try_get(c) {
+                            Option::Some(x) => cmds.push(x),
+                            Option::None => (),
+                        }
+                    }
+                    for t in f.first_term..wrapping_add(f.first_term, f.term_count) {
+                        match l.terms.try_get(t) {
+                            Option::Some(x) => terms.push(x),
+                            Option::None => (),
+                        }
+                    }
+                    flights.push(kept);
+                }
+            },
+            Option::None => (),
+        }
+    }
+    if retired.len() > 0 {
+        l.flights = flights;
+        l.cmds = cmds;
+        l.terms = terms;
+    }
+    retired
+}

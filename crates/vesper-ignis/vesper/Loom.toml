@@ -1,0 +1,8 @@
+[package]
+name = "@vesper/ignis"
+version = "0.1.0"
+edition = "2026"
+# Port wave P1 lane 12 (#909): the vesper-ignis render-graph planner. The
+# crate builds src/lib.ves as one library (`vesper build --lib`); the Rust
+# wrapper in ../src/port keeps names, strings and backend payloads.
+capability_ceiling = ["Fail"]

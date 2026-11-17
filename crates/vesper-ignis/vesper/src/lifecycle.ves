@@ -1,0 +1,791 @@
+// ---------------------------------------------------------------------------
+// Lifecycle fence protocol (src/lifecycle.rs)
+//
+// The Rust `Runtime` keeps the backend and every owned payload (plans,
+// allocators, resources, scratch); this state machine decides what is
+// valid, which fence values a submission signals and waits for, and which
+// frames retire. Timelines are (runtime id, queue index).
+
+copy struct Limits {
+    max_queues: u64,
+    max_inflight: u64,
+    max_commands: u64,
+    max_scratch: u64,
+    max_poll_events: u64,
+    max_drain_polls: u64
+}
+
+// `LifecycleError`; the `Limit*` variants carry the Rust `Limit` message.
+copy enum LifeError {
+    None,
+    LimitInvalid,
+    LimitQueues,
+    LimitPlanQueues,
+    LimitCommands,
+    LimitBarriers,
+    LimitScratch,
+    LimitInflight,
+    LimitPollEvents,
+    LimitPollBound,
+    LimitDrainPolls,
+    InstanceIdsExhausted,
+    ForeignTimeline,
+    QueueKindMismatch,
+    QueueBinding,
+    AllocatorBinding,
+    ForeignPass,
+    ScratchOnCopyQueue,
+    FenceOverflow,
+    FrameIdsExhausted,
+    SubmissionUncertain,
+    StaleCompletion,
+    UnknownCompletion,
+    WaitNotObserved {
+        runtime: u64,
+        index: u64,
+        value: u64
+    }
+}
+
+// A fence point on timeline (runtime, index).
+copy struct Point {
+    runtime: u64,
+    index: u64,
+    value: u64
+}
+
+// One plan stream: its queue (graph id, index), kind, command count and
+// barrier count.
+copy struct StreamInfo {
+    graph: u32,
+    queue: u32,
+    kind: QueueKind,
+    commands: u64,
+    barriers: u64
+}
+
+// A queue binding with the timeline of its allocator.
+copy struct BindingRec {
+    queue_graph: u32,
+    queue_index: u32,
+    runtime: u64,
+    index: u64,
+    alloc_runtime: u64,
+    alloc_index: u64
+}
+
+// One plan command of stream `stream`: tag 0 `Wait` on queue
+// (graph, index), 1 `Barriers` (`barriers` of them), 2 `Execute` of pass
+// (graph, index), 3 `Signal`.
+copy struct PlanCmd {
+    stream: u32,
+    tag: u32,
+    graph: u32,
+    index: u32,
+    value: u64,
+    barriers: u64
+}
+
+copy struct ScratchRec {
+    pass_graph: u32,
+    pass_index: u32,
+    initialize: bool
+}
+
+// One submission command: tag 0 `Wait(point)`, 1 `Barriers` (plan command
+// `source`), 2 `Scratch` (lease `source`, `initialize`), 3 `Execute`
+// (plan command `source`), 4 `Signal(point)`.
+copy struct SubCmd {
+    stream: u32,
+    tag: u32,
+    point: Point,
+    source: u64,
+    initialize: bool
+}
+
+copy struct Flight {
+    ticket: u64,
+    uncertain: bool,
+    first_cmd: u64,
+    cmd_count: u64,
+    first_term: u64,
+    term_count: u64
+}
+
+// A wait or signal of a flight's stream on timeline (runtime, index).
+copy struct FlightCmd {
+    runtime: u64,
+    index: u64,
+    signal: bool,
+    point: Point
+}
+
+struct Lifecycle {
+    id: u64,
+    limits: Limits,
+    kinds: ChunkSeq[QueueKind],
+    reserved: ChunkSeq[u64],
+    observed: ChunkSeq[u64],
+    next_frame: u64,
+    flights: ChunkSeq[Flight],
+    cmds: ChunkSeq[FlightCmd],
+    terms: ChunkSeq[Point]
+}
+
+// The result of `lifecycle_submit`: the ticket and the translated
+// submission, or why it was refused.
+struct Translation {
+    error: LifeError,
+    ticket: u64,
+    cmds: ChunkSeq[SubCmd],
+    terminal: ChunkSeq[Point]
+}
+
+fn max_fence() -> u64 {
+    0xfffffffffffffffe
+}
+
+copy enum FenceSum {
+    Value(u64),
+    Overflow
+}
+
+fn fence_add(base: u64, increment: u64) -> FenceSum {
+    if base > wrapping_sub(max_u64(), increment) {
+        FenceSum::Overflow
+    } else {
+        let v = wrapping_add(base, increment);
+        if v > max_fence() {
+            FenceSum::Overflow
+        } else {
+            FenceSum::Value(v)
+        }
+    }
+}
+
+fn limits_valid(l: Limits) -> bool {
+    !(
+        l
+            .max_queues
+            == 0
+            || l
+            .max_queues
+            > 64
+            || l
+            .max_inflight
+            == 0
+            || l
+            .max_inflight
+            > 4096
+            || l
+            .max_commands
+            == 0
+            || l
+            .max_commands
+            > 1000000
+            || l
+            .max_scratch
+            > 4096
+            || l
+            .max_poll_events
+            == 0
+            || l
+            .max_poll_events
+            > 65536
+            || l
+            .max_drain_polls
+            > 65536
+    )
+}
+
+// The checks of `Runtime::new` before a runtime id is allocated.
+pub fn lifecycle_check_new(limits: Limits, in initial: Slice[u64]) -> LifeError {
+    if !limits_valid(limits) {
+        return LifeError::LimitInvalid;
+    }
+    if initial.len() == 0 || initial.len() > limits.max_queues {
+        return LifeError::LimitQueues;
+    }
+    for i in 0..initial.len() {
+        match initial.try_get(i) {
+            Option::Some(v) => {
+                if v > max_fence() {
+                    return LifeError::FenceOverflow;
+                }
+            },
+            Option::None => (),
+        }
+    }
+    LifeError::None
+}
+
+pub fn lifecycle_new(id: u64, limits: Limits, in kinds: Slice[QueueKind], in initial: Slice[u64])
+    -> Lifecycle {
+    let mut l = Lifecycle {
+        id: id,
+        limits: limits,
+        kinds: ChunkSeq::new[QueueKind](),
+        reserved: ChunkSeq::new[u64](),
+        observed: ChunkSeq::new[u64](),
+        next_frame: 1,
+        flights: ChunkSeq::new[Flight](),
+        cmds: ChunkSeq::new[FlightCmd](),
+        terms: ChunkSeq::new[Point]()
+    };
+    for i in 0..kinds.len() {
+        match kinds.try_get(i) {
+            Option::Some(k) => l.kinds.push(k),
+            Option::None => (),
+        }
+        let v = match initial.try_get(i) {
+            Option::Some(v) => v,
+            Option::None => 0,
+        };
+        l.reserved.push(v);
+        l.observed.push(v);
+    }
+    l
+}
+
+pub fn lifecycle_queue_count(in l: Lifecycle) -> u64 {
+    l.kinds.len()
+}
+
+fn owns(in l: Lifecycle, runtime: u64, index: u64) -> bool {
+    runtime == l.id && index < l.kinds.len()
+}
+
+pub fn lifecycle_owns(in l: Lifecycle, runtime: u64, index: u64) -> bool {
+    owns(in l, runtime, index)
+}
+
+// The observed value of a timeline, or u64::MAX for a foreign one (never
+// an observed value: original values stop at u64::MAX - 1).
+pub fn lifecycle_observed(in l: Lifecycle, runtime: u64, index: u64) -> u64 {
+    if owns(in l, runtime, index) {
+        get64(in l.observed, index)
+    } else {
+        max_u64()
+    }
+}
+
+pub fn lifecycle_inflight(in l: Lifecycle) -> u64 {
+    l.flights.len()
+}
+
+pub fn lifecycle_pending(in l: Lifecycle) -> ChunkSeq[u64] {
+    let mut out: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for i in 0..l.flights.len() {
+        match l.flights.try_get(i) {
+            Option::Some(f) => out.push(f.ticket),
+            Option::None => (),
+        }
+    }
+    out
+}
+
+pub fn lifecycle_poll_allowed(in l: Lifecycle, max_events: u64) -> bool {
+    max_events != 0 && max_events <= l.limits.max_poll_events
+}
+
+pub fn lifecycle_drain_allowed(in l: Lifecycle, polls: u64) -> bool {
+    polls <= l.limits.max_drain_polls
+}
+
+pub fn lifecycle_max_scratch(in l: Lifecycle) -> u64 {
+    l.limits.max_scratch
+}
+
+fn stream_for(in streams: Slice[StreamInfo], graph: u32, queue: u32) -> u64 {
+    for i in 0..streams.len() {
+        match streams.try_get(i) {
+            Option::Some(s) => {
+                if s.graph == graph && s.queue == queue {
+                    return i;
+                }
+            },
+            Option::None => (),
+        }
+    }
+    streams.len()
+}
+
+// `validate_inputs`: the plan's streams against the bindings and
+// allocators.
+pub fn lifecycle_validate(
+    in l: Lifecycle,
+    in streams: Slice[StreamInfo],
+    in bindings: Slice[BindingRec],
+    allocators: u64
+) -> LifeError {
+    let nq = streams.len();
+    if nq == 0 || nq > l.limits.max_queues {
+        return LifeError::LimitPlanQueues;
+    }
+    if nq != bindings.len() || bindings.len() != allocators {
+        return LifeError::QueueBinding;
+    }
+    let mut count = nq;
+    for i in 0..bindings.len() {
+        match bindings.try_get(i) {
+            Option::Some(b) => {
+                for j in 0..i {
+                    match bindings.try_get(j) {
+                        Option::Some(o) => {
+                            if o.queue_graph == b.queue_graph && o.queue_index == b.queue_index {
+                                return LifeError::QueueBinding;
+                            }
+                            if o.runtime == b.runtime && o.index == b.index {
+                                return LifeError::QueueBinding;
+                            }
+                        },
+                        Option::None => (),
+                    }
+                }
+                if !owns(in l, b.runtime, b.index) {
+                    return LifeError::ForeignTimeline;
+                }
+                let at = stream_for(in streams, b.queue_graph, b.queue_index);
+                let stream = match streams.try_get(at) {
+                    Option::Some(s) => s,
+                    Option::None => {
+                        return LifeError::QueueBinding;
+                    },
+                };
+                let kind = match l.kinds.try_get(b.index) {
+                    Option::Some(k) => k,
+                    Option::None => QueueKind::Direct,
+                };
+                if stream.kind != kind {
+                    return LifeError::QueueKindMismatch;
+                }
+                if b.alloc_runtime != b.runtime || b.alloc_index != b.index {
+                    return LifeError::AllocatorBinding;
+                }
+                count = wrapping_add(wrapping_add(count, stream.commands), stream.barriers);
+            },
+            Option::None => (),
+        }
+    }
+    if count > l.limits.max_commands {
+        return LifeError::LimitCommands;
+    }
+    LifeError::None
+}
+
+// `RecordingBatch::scratch_pass`: the stream that executes the pass must
+// exist, must not be a copy queue, and the batch must have room.
+pub fn scratch_check(
+    in streams: Slice[StreamInfo],
+    in cmds: Slice[PlanCmd],
+    pass_graph: u32,
+    pass_index: u32,
+    leases: u64,
+    max_scratch: u64
+) -> LifeError {
+    let mut stream = streams.len();
+    for i in 0..cmds.len() {
+        match cmds.try_get(i) {
+            Option::Some(c) => {
+                if c
+                    .tag
+                    == 2
+                    && c
+                    .graph
+                    == pass_graph
+                    && c
+                    .index
+                    == pass_index
+                    && widen_u64(c.stream)
+                    < stream {
+                    stream = widen_u64(c.stream);
+                }
+            },
+            Option::None => (),
+        }
+    }
+    let kind = match streams.try_get(stream) {
+        Option::Some(s) => s.kind,
+        Option::None => {
+            return LifeError::ForeignPass;
+        },
+    };
+    if kind == QueueKind::Copy {
+        return LifeError::ScratchOnCopyQueue;
+    }
+    if leases >= max_scratch {
+        return LifeError::LimitScratch;
+    }
+    LifeError::None
+}
+
+fn binding_for(in bindings: Slice[BindingRec], graph: u32, queue: u32) -> u64 {
+    for i in 0..bindings.len() {
+        match bindings.try_get(i) {
+            Option::Some(b) => {
+                if b.queue_graph == graph && b.queue_index == queue {
+                    return i;
+                }
+            },
+            Option::None => (),
+        }
+    }
+    bindings.len()
+}
+
+fn refuse(error: LifeError) -> Translation {
+    Translation {
+        error: error,
+        ticket: 0,
+        cmds: ChunkSeq::new[SubCmd](),
+        terminal: ChunkSeq::new[Point]()
+    }
+}
+
+fn get_binding(in bindings: Slice[BindingRec], i: u64) -> BindingRec {
+    match bindings.try_get(i) {
+        Option::Some(b) => b,
+        Option::None => BindingRec {
+            queue_graph: 0,
+            queue_index: 0,
+            runtime: 0,
+            index: 0,
+            alloc_runtime: 0,
+            alloc_index: 0
+        },
+    }
+}
+
+// `translate`: the plan's commands with fence values offset by each
+// timeline's reserved value, scratch steps before their passes and one
+// terminal signal per stream.
+fn translate(
+    in l: Lifecycle,
+    batch_runtime: u64,
+    ticket: u64,
+    in streams: Slice[StreamInfo],
+    in bindings: Slice[BindingRec],
+    in cmds: Slice[PlanCmd],
+    in scratch: Slice[ScratchRec]
+) -> Translation {
+    if batch_runtime != l.id {
+        return refuse(LifeError::ForeignTimeline);
+    }
+    match lifecycle_validate(in l, in streams, in bindings, bindings.len()) {
+        LifeError::None => (),
+        e => {
+            return refuse(e);
+        },
+    }
+    let max = l.limits.max_commands;
+    let mut work = wrapping_add(streams.len(), scratch.len());
+    for i in 0..streams.len() {
+        match streams.try_get(i) {
+            Option::Some(s) => {
+                work = wrapping_add(wrapping_add(work, s.commands), s.barriers);
+            },
+            Option::None => (),
+        }
+    }
+    if work > max {
+        return refuse(LifeError::LimitCommands);
+    }
+    let mut out = Translation {
+        error: LifeError::None,
+        ticket: ticket,
+        cmds: ChunkSeq::new[SubCmd](),
+        terminal: ChunkSeq::new[Point]()
+    };
+    let mut total: u64 = 0;
+    for si in 0..streams.len() {
+        let stream = match streams.try_get(si) {
+            Option::Some(s) => s,
+            Option::None => {
+                return refuse(LifeError::QueueBinding);
+            },
+        };
+        let s32 = wrapping_u32(si);
+        let own = get_binding(in bindings, binding_for(in bindings, stream.graph, stream.queue));
+        let base = get64(in l.reserved, own.index);
+        let mut high = base;
+        let mut emitted: u64 = 0;
+        for ci in 0..cmds.len() {
+            match cmds.try_get(ci) {
+                Option::Some(c) => {
+                    if c.stream == s32 {
+                        if c.tag == 0 {
+                            let other = get_binding(
+                                in bindings,
+                                binding_for(in bindings, c.graph, c.index)
+                            );
+                            let other_base = get64(in l.reserved, other.index);
+                            match fence_add(other_base, c.value) {
+                                FenceSum::Value(v) => {
+                                    out
+                                        .cmds
+                                        .push(
+                                        SubCmd {
+                                            stream: s32,
+                                            tag: 0,
+                                            point: Point {
+                                                runtime: other.runtime,
+                                                index: other.index,
+                                                value: v
+                                            },
+                                            source: ci,
+                                            initialize: false
+                                        }
+                                    );
+                                    emitted = wrapping_add(emitted, 1);
+                                },
+                                FenceSum::Overflow => {
+                                    return refuse(LifeError::FenceOverflow);
+                                },
+                            }
+                        } else if c.tag == 3 {
+                            match fence_add(base, c.value) {
+                                FenceSum::Value(v) => {
+                                    if v <= high {
+                                        return refuse(LifeError::FenceOverflow);
+                                    }
+                                    high = v;
+                                    out
+                                        .cmds
+                                        .push(
+                                        SubCmd {
+                                            stream: s32,
+                                            tag: 4,
+                                            point: Point {
+                                                runtime: own.runtime,
+                                                index: own.index,
+                                                value: v
+                                            },
+                                            source: ci,
+                                            initialize: false
+                                        }
+                                    );
+                                    emitted = wrapping_add(emitted, 1);
+                                },
+                                FenceSum::Overflow => {
+                                    return refuse(LifeError::FenceOverflow);
+                                },
+                            }
+                        } else if c.tag == 1 {
+                            total = wrapping_add(total, c.barriers);
+                            out
+                                .cmds
+                                .push(
+                                SubCmd {
+                                    stream: s32,
+                                    tag: 1,
+                                    point: Point {
+                                        runtime: 0,
+                                        index: 0,
+                                        value: 0
+                                    },
+                                    source: ci,
+                                    initialize: false
+                                }
+                            );
+                            emitted = wrapping_add(emitted, 1);
+                        } else {
+                            for x in 0..scratch.len() {
+                                match scratch.try_get(x) {
+                                    Option::Some(sc) => {
+                                        if sc.pass_graph == c.graph && sc.pass_index == c.index {
+                                            out
+                                                .cmds
+                                                .push(
+                                                SubCmd {
+                                                    stream: s32,
+                                                    tag: 2,
+                                                    point: Point {
+                                                        runtime: 0,
+                                                        index: 0,
+                                                        value: 0
+                                                    },
+                                                    source: x,
+                                                    initialize: sc.initialize
+                                                }
+                                            );
+                                            emitted = wrapping_add(emitted, 1);
+                                        }
+                                    },
+                                    Option::None => (),
+                                }
+                            }
+                            out
+                                .cmds
+                                .push(
+                                SubCmd {
+                                    stream: s32,
+                                    tag: 3,
+                                    point: Point {
+                                        runtime: 0,
+                                        index: 0,
+                                        value: 0
+                                    },
+                                    source: ci,
+                                    initialize: false
+                                }
+                            );
+                            emitted = wrapping_add(emitted, 1);
+                        }
+                    }
+                },
+                Option::None => (),
+            }
+        }
+        let last = match fence_add(high, 1) {
+            FenceSum::Value(v) => Point {
+                runtime: own.runtime,
+                index: own.index,
+                value: v
+            },
+            FenceSum::Overflow => {
+                return refuse(LifeError::FenceOverflow);
+            },
+        };
+        out
+            .cmds
+            .push(
+            SubCmd {
+                stream: s32,
+                tag: 4,
+                point: last,
+                source: 0,
+                initialize: false
+            }
+        );
+        emitted = wrapping_add(emitted, 1);
+        total = wrapping_add(total, emitted);
+        if total > max {
+            return refuse(LifeError::LimitCommands);
+        }
+        out.terminal.push(last);
+    }
+    out
+}
+
+// `Runtime::submit` up to the backend call: preflight, translation, fence
+// reservation and an in-flight record that stays uncertain until
+// `lifecycle_settle`.
+pub fn lifecycle_submit(
+    inout l: Lifecycle,
+    batch_runtime: u64,
+    in streams: Slice[StreamInfo],
+    in bindings: Slice[BindingRec],
+    in cmds: Slice[PlanCmd],
+    in scratch: Slice[ScratchRec]
+) -> Translation {
+    if l.flights.len() >= l.limits.max_inflight {
+        return refuse(LifeError::LimitInflight);
+    }
+    for i in 0..l.flights.len() {
+        match l.flights.try_get(i) {
+            Option::Some(f) => {
+                if f.uncertain {
+                    return refuse(LifeError::SubmissionUncertain);
+                }
+            },
+            Option::None => (),
+        }
+    }
+    if l.next_frame == max_u64() {
+        return refuse(LifeError::FrameIdsExhausted);
+    }
+    let ticket = l.next_frame;
+    let t = translate(in l, batch_runtime, ticket, in streams, in bindings, in cmds, in scratch);
+    match t.error {
+        LifeError::None => (),
+        _ => {
+            return t;
+        },
+    }
+    for i in 0..t.terminal.len() {
+        match t.terminal.try_get(i) {
+            Option::Some(p) => {
+                l.reserved.try_set(p.index, p.value);
+            },
+            Option::None => (),
+        }
+    }
+    l.next_frame = wrapping_add(l.next_frame, 1);
+    let first_cmd = l.cmds.len();
+    for i in 0..t.cmds.len() {
+        match t.cmds.try_get(i) {
+            Option::Some(c) => {
+                if c.tag == 0 || c.tag == 4 {
+                    let own = match streams.try_get(widen_u64(c.stream)) {
+                        Option::Some(s) => get_binding(
+                            in bindings,
+                            binding_for(in bindings, s.graph, s.queue)
+                        ),
+                        Option::None => get_binding(in bindings, 0),
+                    };
+                    l
+                        .cmds
+                        .push(
+                        FlightCmd {
+                            runtime: own.runtime,
+                            index: own.index,
+                            signal: c.tag == 4,
+                            point: c.point
+                        }
+                    );
+                }
+            },
+            Option::None => (),
+        }
+    }
+    let first_term = l.terms.len();
+    for i in 0..t.terminal.len() {
+        match t.terminal.try_get(i) {
+            Option::Some(p) => l.terms.push(p),
+            Option::None => (),
+        }
+    }
+    let cmd_count = wrapping_sub(l.cmds.len(), first_cmd);
+    l
+        .flights
+        .push(
+        Flight {
+            ticket: ticket,
+            uncertain: true,
+            first_cmd: first_cmd,
+            cmd_count: cmd_count,
+            first_term: first_term,
+            term_count: t.terminal.len()
+        }
+    );
+    t
+}
+
+// The backend's answer for the newest flight: 0 rejected (the flight is
+// dropped; its fence reservation stays a legal gap), 1 uncertain, 2
+// accepted.
+pub fn lifecycle_settle(inout l: Lifecycle, outcome: u64) {
+    let n = l.flights.len();
+    if n == 0 {
+        return;
+    }
+    let last = wrapping_sub(n, 1);
+    match l.flights.try_get(last) {
+        Option::Some(f) => {
+            if outcome == 0 {
+                l.cmds.truncate(f.first_cmd);
+                l.terms.truncate(f.first_term);
+                l.flights.truncate(last);
+            } else if outcome == 2 {
+                let mut g = f;
+                g.uncertain = false;
+                l.flights.try_set(last, g);
+            }
+        },
+        Option::None => (),
+    }
+}
+
+fn same_point(a: Point, b: Point) -> bool {
+    a.runtime == b.runtime && a.index == b.index && a.value == b.value
+}

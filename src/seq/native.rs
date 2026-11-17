@@ -17,6 +17,8 @@ use cranelift_module::{Linkage, Module};
 
 #[path = "aot_runtime.rs"]
 pub(crate) mod aot_runtime;
+#[path = "../bounds_hoist/native.rs"]
+mod hoisted;
 
 const LEN: i32 = 0;
 const CAP: i32 = 8;
@@ -323,6 +325,9 @@ impl<M: Module> Codegen<'_, '_, M> {
         if let SeqOp::Str(op) = op {
             return self.str_op(op, args);
         }
+        if let Some(value) = self.hoisted_seq_op(op, args, arg_types)? {
+            return Ok(value);
+        }
         if op == SeqOp::SubSlice && arg_types.first().is_some_and(crate::strings::is_text) {
             return self.str_op(crate::strings::StrOp::SubStr, args);
         }
@@ -478,7 +483,9 @@ impl<M: Module> Codegen<'_, '_, M> {
                 let (h, start, len) = self.seq_view(arg(0)?, &arg_types[0]);
                 self.seq_slice_value(h, start, len)
             }
-            SeqOp::Str(_) => unreachable!("string operations return above"),
+            SeqOp::Str(_) | SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. } => {
+                unreachable!("string and hoisted operations return above")
+            }
             SeqOp::SubSlice => {
                 let (h, start, len) = self.seq_view(arg(0)?, &arg_types[0]);
                 let lo = arg(1)?;

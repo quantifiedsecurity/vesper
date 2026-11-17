@@ -48,8 +48,9 @@ an inline guard and a direct load.
 **Export ABI v2 by-value sequences and strings** (own commit, see #934). The
 refusal is lifted for `sink ChunkSeq[T]` (the Rust binding takes a `Vec<T>`
 and copies it into a fresh sequence with `seq_from`; the callee frees it) and
-`sink String` (the binding takes a `String` and lends it as borrowed bytes;
-the callee frees any buffer it grows). Handles that own sequences stay refused
+`sink String` (the binding takes a `String` and copies it into a buffer of
+the library with `with_string_owned`, so the callee may keep it in a returned
+handle; the pilot's `note_adopt` tests that). Handles that own sequences stay refused
 by value: native code does not free the sequences inside a dropped handle
 yet. `docs/maintenance/porting-a-crate.md` and the two refusal lists in
 `tests/native_export_v2.rs` and `crates/vesper-port-harness/tests/export.rs`

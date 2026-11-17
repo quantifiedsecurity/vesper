@@ -366,6 +366,7 @@ unsafe extern "C" {
     fn vesper_kit_largest_i64(xs: *mut u64, init: i64) -> i64;
     fn vesper_kit_largest_u64(xs: *mut u64, init: i64) -> i64;
     fn vesper_kit_mean(xs: *mut u64, fail: *mut u64) -> i64;
+    fn vesper_kit_note_adopt(result: *mut u64, text: *mut u64) -> i64;
     fn vesper_kit_note_append(n: *mut u64, more: *mut u64) -> i64;
     fn vesper_kit_note_clear(n: *mut u64) -> i64;
     fn vesper_kit_note_edits(n: *mut u64) -> i64;
@@ -536,6 +537,16 @@ pub fn mean(xs: &[u64]) -> Result<u64, crate::kit::KitError> {
         1 => Err(<crate::kit::KitError as Abi>::get(&fail[1..])),
         status => panic!("invalid failure status {status} from vesper_kit_mean"),
     }
+}
+
+/// Calls `note_adopt` of the Vesper library `kit` (`vesper_kit_note_adopt`).
+pub fn note_adopt(text: String) -> Note {
+    let mut result = [0u64; 4];
+    // SAFETY: `vesper_kit_note_adopt` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_string_owned(RUNTIME, &text, |view_text| unsafe { vesper_kit_note_adopt(result.as_mut_ptr(), view_text) });
+    unsafe { Note::from_words(&result[0..]) }
 }
 
 /// Calls `note_append` of the Vesper library `kit` (`vesper_kit_note_append`).
@@ -756,6 +767,11 @@ impl Counter {
 }
 
 impl Note {
+    /// `note_adopt` (`vesper_kit_note_adopt`).
+    pub fn adopt(text: String) -> Note {
+        note_adopt(text)
+    }
+
     /// `note_append` (`vesper_kit_note_append`).
     pub fn append(&mut self, more: &str) -> () {
         note_append(self, more)

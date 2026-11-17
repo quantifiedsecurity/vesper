@@ -8,8 +8,9 @@
 //! leaks its backend and pending owners; use bounded [`Runtime::shutdown`] to
 //! recover them. Rust `Drop` is not Vesper source-language linear exhaustion.
 
-use crate::{Barrier, Command, PassId, Plan, PlanError, QueueId, QueueKind, RenderGraph};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use crate::engine::lifecycle::{self as engine, Ledger, Settle};
+use crate::{Barrier, PassId, Plan, PlanError, QueueId, QueueKind, RenderGraph};
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -18,16 +19,11 @@ static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
 /// `u64::MAX` is reserved for device-removal/error sentinels in a future D3D12
 /// adapter and can never be issued or accepted as an original fence value.
 pub const MAX_FENCE_VALUE: u64 = u64::MAX - 1;
-fn fence_add(base: u64, increment: u64) -> Result<u64, LifecycleError> {
-    base.checked_add(increment)
-        .filter(|value| *value <= MAX_FENCE_VALUE)
-        .ok_or(LifecycleError::FenceOverflow)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TimelineId {
-    runtime: u64,
-    index: usize,
+    pub(crate) runtime: u64,
+    pub(crate) index: usize,
 }
 impl TimelineId {
     pub fn index(self) -> usize {
@@ -36,8 +32,8 @@ impl TimelineId {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrameTicket {
-    runtime: u64,
-    sequence: u64,
+    pub(crate) runtime: u64,
+    pub(crate) sequence: u64,
 }
 impl FrameTicket {
     pub fn sequence(self) -> u64 {
@@ -83,24 +79,6 @@ impl Default for Limits {
             max_poll_events: 256,
             max_drain_polls: 1024,
         }
-    }
-}
-impl Limits {
-    fn validate(self) -> Result<(), LifecycleError> {
-        if self.max_queues == 0
-            || self.max_queues > 64
-            || self.max_inflight == 0
-            || self.max_inflight > 4096
-            || self.max_commands == 0
-            || self.max_commands > 1_000_000
-            || self.max_scratch > 4096
-            || self.max_poll_events == 0
-            || self.max_poll_events > 65_536
-            || self.max_drain_polls > 65_536
-        {
-            return Err(LifecycleError::Limit("invalid lifecycle limits"));
-        }
-        Ok(())
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,19 +297,7 @@ impl<S, A, R, T> CommandBatch<S, A, R, T> {
 }
 impl<A, R, T> RecordingBatch<A, R, T> {
     fn scratch_pass(&self, pass: PassId) -> Result<(), LifecycleError> {
-        let stream = self
-            .plan()
-            .queues
-            .iter()
-            .find(|q| q.commands.contains(&Command::Execute(pass)))
-            .ok_or(LifecycleError::ForeignPass)?;
-        if stream.kind == QueueKind::Copy {
-            return Err(LifecycleError::ScratchOnCopyQueue);
-        }
-        if self.scratch.len() >= self.max_scratch {
-            return Err(LifecycleError::Limit("scratch per frame"));
-        }
-        Ok(())
+        engine::scratch_check(self.plan(), pass, self.scratch.len(), self.max_scratch)
     }
     pub fn initialize_scratch(
         &mut self,
@@ -495,12 +461,6 @@ pub struct RetiredFrame<A, R, T> {
 struct Flight<A, R, T> {
     batch: ClosedBatch<A, R, T>,
     submission: Submission,
-    uncertain: bool,
-}
-struct Timeline {
-    kind: QueueKind,
-    reserved: u64,
-    observed: u64,
 }
 
 type Retired<B> =
@@ -511,14 +471,32 @@ type RecordingFor<B> =
     RecordingBatch<<B as Backend>::Allocator, <B as Backend>::Resources, <B as Backend>::Scratch>;
 type InputsFor<B> = BatchInputs<<B as Backend>::Allocator, <B as Backend>::Resources>;
 
+/// What a submission carries into the fence ledger: the plan, its queue
+/// bindings, each allocator's timeline and the scratch leases in order.
+pub(crate) struct BatchView<'a> {
+    pub(crate) runtime: u64,
+    pub(crate) plan: &'a Plan,
+    pub(crate) bindings: &'a [QueueBinding],
+    pub(crate) allocators: Vec<TimelineId>,
+    pub(crate) scratch: Vec<(PassId, ScratchAction, [u8; 32])>,
+}
+fn view<A, R>(runtime: u64, inputs: &BatchInputs<A, R>) -> BatchView<'_> {
+    BatchView {
+        runtime,
+        plan: inputs.plan.plan(),
+        bindings: &inputs.bindings,
+        allocators: inputs.allocators.iter().map(|a| a.timeline).collect(),
+        scratch: Vec::new(),
+    }
+}
+
 /// Retains every submitted allocator, resource bundle, and scratch owner.
-/// No mutable backend access is exposed while work is pending.
+/// No mutable backend access is exposed while work is pending. The fence
+/// bookkeeping (reservations, observations, in-flight waits and signals)
+/// lives in the [`Ledger`]; this wrapper owns the payloads.
 pub struct Runtime<B: Backend> {
-    id: u64,
+    ledger: Ledger,
     backend: Option<B>,
-    limits: Limits,
-    queues: Vec<Timeline>,
-    next_frame: u64,
     inflight: VecDeque<Flight<B::Allocator, B::Resources, B::Scratch>>,
 }
 impl<B: Backend> Drop for Runtime<B> {
@@ -539,23 +517,10 @@ impl<B: Backend> Runtime<B> {
         queues: Vec<QueueConfig>,
         limits: Limits,
     ) -> Result<Self, OwnedError<B, LifecycleError>> {
-        let checked = limits.validate().and({
-            if queues.is_empty() || queues.len() > limits.max_queues {
-                Err(LifecycleError::Limit("queues"))
-            } else {
-                Ok(())
-            }
-        });
-        if let Err(error) = checked {
+        if let Err(error) = Ledger::check(&queues, limits) {
             return Err(OwnedError {
                 owner: backend,
                 error,
-            });
-        }
-        if queues.iter().any(|q| q.initial_fence > MAX_FENCE_VALUE) {
-            return Err(OwnedError {
-                owner: backend,
-                error: LifecycleError::FenceOverflow,
             });
         }
         let Ok(id) =
@@ -567,44 +532,26 @@ impl<B: Backend> Runtime<B> {
             });
         };
         Ok(Self {
-            id,
+            ledger: Ledger::new(id, &queues, limits),
             backend: Some(backend),
-            limits,
-            queues: queues
-                .into_iter()
-                .map(|q| Timeline {
-                    kind: q.kind,
-                    reserved: q.initial_fence,
-                    observed: q.initial_fence,
-                })
-                .collect(),
-            next_frame: 1,
             inflight: VecDeque::new(),
         })
     }
     pub fn timeline(&self, index: usize) -> Option<TimelineId> {
-        self.queues.get(index).map(|_| TimelineId {
-            runtime: self.id,
+        (index < self.ledger.queue_count()).then_some(TimelineId {
+            runtime: self.ledger.id(),
             index,
         })
     }
-    fn queue(&self, timeline: TimelineId) -> Result<&Timeline, LifecycleError> {
-        if timeline.runtime != self.id {
-            return Err(LifecycleError::ForeignTimeline);
-        }
-        self.queues
-            .get(timeline.index)
-            .ok_or(LifecycleError::ForeignTimeline)
-    }
     pub fn observed(&self, timeline: TimelineId) -> Result<u64, LifecycleError> {
-        Ok(self.queue(timeline)?.observed)
+        self.ledger.observed(timeline)
     }
     pub fn allocator(
         &self,
         timeline: TimelineId,
         value: B::Allocator,
     ) -> Result<ReadyAllocator<B::Allocator>, OwnedError<B::Allocator, LifecycleError>> {
-        if let Err(error) = self.queue(timeline) {
+        if let Err(error) = self.ledger.observed(timeline) {
             return Err(OwnedError {
                 owner: value,
                 error,
@@ -627,198 +574,39 @@ impl<B: Backend> Runtime<B> {
         &self,
         inputs: InputsFor<B>,
     ) -> Result<RecordingFor<B>, OwnedError<InputsFor<B>, LifecycleError>> {
-        if let Err(error) = self.validate_inputs(&inputs) {
+        if let Err(error) = self.ledger.validate(&view(self.ledger.id(), &inputs)) {
             return Err(OwnedError {
                 owner: inputs,
                 error,
             });
         }
         Ok(CommandBatch {
-            runtime: self.id,
+            runtime: self.ledger.id(),
             inputs,
             scratch: Vec::new(),
-            max_scratch: self.limits.max_scratch,
+            max_scratch: self.ledger.max_scratch(),
             state: PhantomData,
-        })
-    }
-    fn validate_inputs(&self, inputs: &InputsFor<B>) -> Result<(), LifecycleError> {
-        let plan = inputs.plan.plan();
-        if plan.queues.is_empty() || plan.queues.len() > self.limits.max_queues {
-            return Err(LifecycleError::Limit("plan queues"));
-        }
-        if plan.queues.len() != inputs.bindings.len()
-            || inputs.bindings.len() != inputs.allocators.len()
-        {
-            return Err(LifecycleError::QueueBinding);
-        }
-        let mut graph_queues = BTreeSet::new();
-        let mut timelines = BTreeSet::new();
-        let mut count = plan.queues.len(); // terminal signals
-        for (binding, allocator) in inputs.bindings.iter().zip(&inputs.allocators) {
-            if !graph_queues.insert(binding.queue) || !timelines.insert(binding.timeline) {
-                return Err(LifecycleError::QueueBinding);
-            }
-            let queue = self.queue(binding.timeline)?;
-            let stream = plan
-                .queues
-                .iter()
-                .find(|q| q.queue == binding.queue)
-                .ok_or(LifecycleError::QueueBinding)?;
-            if stream.kind != queue.kind {
-                return Err(LifecycleError::QueueKindMismatch);
-            }
-            if allocator.timeline != binding.timeline {
-                return Err(LifecycleError::AllocatorBinding);
-            }
-            count = count
-                .checked_add(stream.commands.len())
-                .ok_or(LifecycleError::Limit("commands"))?;
-            for command in &stream.commands {
-                if let Command::Barriers(barriers) = command {
-                    count = count
-                        .checked_add(barriers.len())
-                        .ok_or(LifecycleError::Limit("barriers"))?;
-                }
-            }
-        }
-        if count > self.limits.max_commands {
-            return Err(LifecycleError::Limit("commands"));
-        }
-        Ok(())
-    }
-    fn translate(
-        &self,
-        batch: &ClosedFor<B>,
-        ticket: FrameTicket,
-    ) -> Result<Submission, LifecycleError> {
-        if batch.runtime != self.id {
-            return Err(LifecycleError::ForeignTimeline);
-        }
-        self.validate_inputs(&batch.inputs)?;
-        let plan = batch.plan();
-        let mut work = plan
-            .queues
-            .len()
-            .checked_add(batch.scratch.len())
-            .ok_or(LifecycleError::Limit("commands"))?;
-        for stream in &plan.queues {
-            work = work
-                .checked_add(stream.commands.len())
-                .ok_or(LifecycleError::Limit("commands"))?;
-            for command in &stream.commands {
-                if let Command::Barriers(barriers) = command {
-                    work = work
-                        .checked_add(barriers.len())
-                        .ok_or(LifecycleError::Limit("barriers"))?;
-                }
-            }
-        }
-        if work > self.limits.max_commands {
-            return Err(LifecycleError::Limit("commands"));
-        }
-        let mut map = BTreeMap::new();
-        for binding in &batch.inputs.bindings {
-            map.insert(
-                binding.queue,
-                (binding.timeline, self.queue(binding.timeline)?.reserved),
-            );
-        }
-        let mut streams = Vec::with_capacity(plan.queues.len());
-        let mut terminal = Vec::with_capacity(plan.queues.len());
-        let mut total: usize = 0;
-        for stream in &plan.queues {
-            let (timeline, base) = map[&stream.queue];
-            let mut commands = Vec::new();
-            let mut max = base;
-            for command in &stream.commands {
-                match command {
-                    Command::Wait { queue, value } => {
-                        let (other, other_base) = map[queue];
-                        let value = fence_add(other_base, *value)?;
-                        commands.push(QueueCommand::Wait(FencePoint {
-                            timeline: other,
-                            value,
-                        }));
-                    }
-                    Command::Signal { value } => {
-                        let value = fence_add(base, *value)?;
-                        if value <= max {
-                            return Err(LifecycleError::FenceOverflow);
-                        }
-                        max = value;
-                        commands.push(QueueCommand::Signal(FencePoint { timeline, value }));
-                    }
-                    Command::Barriers(barriers) => {
-                        total = total
-                            .checked_add(barriers.len())
-                            .ok_or(LifecycleError::Limit("barriers"))?;
-                        commands.push(QueueCommand::Barriers(barriers.clone()));
-                    }
-                    Command::Execute(pass) => {
-                        for (index, scratch) in batch
-                            .scratch
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, s)| s.pass == *pass)
-                        {
-                            commands.push(QueueCommand::Scratch {
-                                index,
-                                action: scratch.action(),
-                                program: *scratch.program(),
-                            });
-                        }
-                        commands.push(QueueCommand::Execute(*pass));
-                    }
-                }
-            }
-            let last = FencePoint {
-                timeline,
-                value: fence_add(max, 1)?,
-            };
-            commands.push(QueueCommand::Signal(last));
-            total = total
-                .checked_add(commands.len())
-                .ok_or(LifecycleError::Limit("commands"))?;
-            if total > self.limits.max_commands {
-                return Err(LifecycleError::Limit("commands"));
-            }
-            terminal.push(last);
-            streams.push(SubmissionStream {
-                timeline,
-                kind: stream.kind,
-                commands,
-            });
-        }
-        Ok(Submission {
-            ticket,
-            streams,
-            terminal,
         })
     }
     pub fn submit(
         &mut self,
         batch: ClosedFor<B>,
     ) -> SubmitResult<B::Allocator, B::Resources, B::Scratch, B::Error> {
-        let preflight = if self.inflight.len() >= self.limits.max_inflight {
-            Err(LifecycleError::Limit("inflight frames"))
-        } else if self.inflight.iter().any(|f| f.uncertain) {
-            Err(LifecycleError::SubmissionUncertain)
-        } else if self.next_frame == u64::MAX {
-            Err(LifecycleError::FrameIdsExhausted)
-        } else {
-            Ok(())
-        };
-        if let Err(error) = preflight {
+        if self.inflight.try_reserve(1).is_err() {
             return SubmitResult::Rejected(OwnedError {
                 owner: batch,
-                error: SubmitError::Lifecycle(error),
+                error: SubmitError::Lifecycle(LifecycleError::Limit("inflight allocation")),
             });
         }
-        let ticket = FrameTicket {
-            runtime: self.id,
-            sequence: self.next_frame,
-        };
-        let submission = match self.translate(&batch, ticket) {
+        let mut batch_view = view(batch.runtime, &batch.inputs);
+        batch_view.scratch = batch
+            .scratch
+            .iter()
+            .map(|s| (s.pass, s.action(), *s.program()))
+            .collect();
+        // Preflight, translation and fence reservation. The ledger records
+        // the flight as uncertain until `settle`.
+        let submission = match self.ledger.begin(&batch_view) {
             Ok(submission) => submission,
             Err(error) => {
                 return SubmitResult::Rejected(OwnedError {
@@ -827,24 +615,11 @@ impl<B: Backend> Runtime<B> {
                 });
             }
         };
-        if self.inflight.try_reserve(1).is_err() {
-            return SubmitResult::Rejected(OwnedError {
-                owner: batch,
-                error: SubmitError::Lifecycle(LifecycleError::Limit("inflight allocation")),
-            });
-        }
+        let ticket = submission.ticket;
         // Publish ownership BEFORE calling the backend. Even backend unwinding
         // cannot drop GPU-visible owners: this uncertain flight is quarantined
         // by Runtime::drop. All allocations precede device publication.
-        for point in &submission.terminal {
-            self.queues[point.timeline.index].reserved = point.value;
-        }
-        self.next_frame += 1;
-        self.inflight.push_back(Flight {
-            batch,
-            submission,
-            uncertain: true,
-        });
+        self.inflight.push_back(Flight { batch, submission });
         let flight = self.inflight.back().expect("reserved flight");
         let owners = OwnerViews {
             allocators: &flight.batch.inputs.allocators,
@@ -860,6 +635,7 @@ impl<B: Backend> Runtime<B> {
             BackendSubmit::Rejected(error) => {
                 // Definite rejection consumes a fence reservation (a legal gap)
                 // but returns all command/allocator/resource/scratch owners.
+                self.ledger.settle(Settle::Rejected);
                 let flight = self.inflight.pop_back().expect("reserved flight");
                 SubmitResult::Rejected(OwnedError {
                     owner: flight.batch,
@@ -868,54 +644,9 @@ impl<B: Backend> Runtime<B> {
             }
             BackendSubmit::Uncertain(error) => SubmitResult::Uncertain { ticket, error },
             BackendSubmit::Accepted => {
-                self.inflight.back_mut().expect("reserved flight").uncertain = false;
+                self.ledger.settle(Settle::Accepted);
                 SubmitResult::Submitted(ticket)
             }
-        }
-    }
-
-    fn validate_completion(&self, point: FencePoint) -> Result<(), LifecycleError> {
-        let queue = self.queue(point.timeline)?;
-        if point.value <= queue.observed {
-            return Err(LifecycleError::StaleCompletion);
-        }
-        if point.value > queue.reserved {
-            return Err(LifecycleError::UnknownCompletion);
-        }
-        let mut found = false;
-        for flight in &self.inflight {
-            for stream in flight
-                .submission
-                .streams
-                .iter()
-                .filter(|s| s.timeline == point.timeline)
-            {
-                for command in &stream.commands {
-                    match command {
-                        QueueCommand::Wait(wait)
-                            if !found && self.queue(wait.timeline)?.observed < wait.value =>
-                        {
-                            return Err(LifecycleError::WaitNotObserved(*wait));
-                        }
-                        QueueCommand::Signal(signal) if *signal == point => {
-                            found = true;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                if found {
-                    break;
-                }
-            }
-            if found {
-                break;
-            }
-        }
-        if found {
-            Ok(())
-        } else {
-            Err(LifecycleError::UnknownCompletion)
         }
     }
     pub fn complete_original(
@@ -923,28 +654,24 @@ impl<B: Backend> Runtime<B> {
         completion: Completion,
     ) -> Result<Vec<Retired<B>>, OwnedError<Completion, LifecycleError>> {
         let point = completion.point;
-        if let Err(error) = self.validate_completion(point) {
+        if let Err(error) = self.ledger.check_completion(point) {
             return Err(OwnedError {
                 owner: completion,
                 error,
             });
         }
-        self.queues[point.timeline.index].observed = point.value;
-        let mut retired = Vec::new();
-        let mut index = 0;
-        while index < self.inflight.len() {
-            let complete = self.inflight[index]
-                .submission
-                .terminal
+        let tickets = self.ledger.complete(point);
+        let mut retired = Vec::with_capacity(tickets.len());
+        for ticket in tickets {
+            let Some(index) = self
+                .inflight
                 .iter()
-                .all(|p| self.queues[p.timeline.index].observed >= p.value);
-            if !complete {
-                index += 1;
+                .position(|f| f.submission.ticket == ticket)
+            else {
                 continue;
-            }
-            let Flight {
-                batch, submission, ..
-            } = self.inflight.remove(index).expect("index exists");
+            };
+            let Flight { batch, submission } = self.inflight.remove(index).expect("index exists");
+            let runtime = self.ledger.id();
             retired.push(RetiredFrame {
                 ticket: submission.ticket,
                 allocators: batch.inputs.allocators,
@@ -952,7 +679,7 @@ impl<B: Backend> Runtime<B> {
                 scratch: batch
                     .scratch
                     .into_iter()
-                    .map(|s| s.retire(self.id))
+                    .map(|s| s.retire(runtime))
                     .collect(),
                 receipt: RetiredFenceReceipt {
                     ticket: submission.ticket,
@@ -965,7 +692,7 @@ impl<B: Backend> Runtime<B> {
     /// Harvest nonblocking completions. Invalid/foreign/out-of-order reports and
     /// all reports after them are returned to the caller for inspection/retry.
     pub fn poll(&mut self, max_events: usize) -> PollReport<B> {
-        if max_events == 0 || max_events > self.limits.max_poll_events {
+        if !self.ledger.poll_allowed(max_events) {
             return PollReport {
                 retired: Vec::new(),
                 unprocessed: Vec::new(),
@@ -1012,7 +739,7 @@ impl<B: Backend> Runtime<B> {
             pending: self.pending(),
             polls: 0,
         };
-        if polls > self.limits.max_drain_polls {
+        if !self.ledger.drain_allowed(polls) {
             report.error = Some(PollError::Lifecycle(LifecycleError::Limit("drain polls")));
             return report;
         }

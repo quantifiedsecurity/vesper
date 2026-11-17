@@ -1,0 +1,398 @@
+// ---------------------------------------------------------------------------
+// Recording backend (src/recording.rs)
+//
+// A deterministic CPU model of queue execution: waits block until their
+// timeline reaches the value, signals advance it, and every earlier
+// submission on a timeline finishes its stream first. The Rust
+// `RecordingBackend` keeps the recorded `Submission` history.
+
+copy enum SubmitMode {
+    Accept,
+    Reject,
+    AcceptUncertain,
+    AcceptFirstQueueUncertain,
+    StallUncertain,
+    PanicAfterAcceptance
+}
+
+copy enum RecordingError {
+    Rejected,
+    Uncertain,
+    HistoryLimit,
+    PendingLimit,
+    PollFailure
+}
+
+// What `submit` did: refused (nothing recorded), stalled (uncertain,
+// nothing recorded), or recorded the submission (`panic` asks the wrapper
+// to unwind after acceptance).
+copy enum RecorderVerdict {
+    Refused(RecordingError),
+    Stalled,
+    Recorded {
+        uncertain: bool,
+        panic: bool
+    }
+}
+
+// One submission stream: its timeline and `count` commands from `first`.
+copy struct SimStream {
+    runtime: u64,
+    index: u64,
+    first: u64,
+    count: u64
+}
+
+// A command of a stream: a wait, a signal, or other work (neither).
+copy struct SimCmd {
+    wait: bool,
+    signal: bool,
+    point: Point
+}
+
+copy struct ActiveStream {
+    runtime: u64,
+    index: u64,
+    first: u64,
+    count: u64,
+    cursor: u64
+}
+
+copy struct ActiveSub {
+    first_stream: u64,
+    stream_count: u64
+}
+
+struct Recorder {
+    history_limit: u64,
+    pending_limit: u64,
+    work_per_poll: u64,
+    active: ChunkSeq[ActiveSub],
+    streams: ChunkSeq[ActiveStream],
+    cmds: ChunkSeq[SimCmd],
+    signals: ChunkSeq[Point],
+    modes: ChunkSeq[SubmitMode],
+    mode_head: u64,
+    poll_errors: ChunkSeq[bool],
+    poll_head: u64
+}
+
+pub fn recorder_bounds_ok(history_limit: u64, pending_limit: u64, work_per_poll: u64) -> bool {
+    !(
+        history_limit
+            == 0
+            || history_limit
+            > 65536
+            || pending_limit
+            == 0
+            || pending_limit
+            > 4096
+            || work_per_poll
+            > 1000000
+    )
+}
+
+pub fn recorder_new(history_limit: u64, pending_limit: u64, work_per_poll: u64) -> Recorder {
+    Recorder {
+        history_limit: history_limit,
+        pending_limit: pending_limit,
+        work_per_poll: work_per_poll,
+        active: ChunkSeq::new[ActiveSub](),
+        streams: ChunkSeq::new[ActiveStream](),
+        cmds: ChunkSeq::new[SimCmd](),
+        signals: ChunkSeq::new[Point](),
+        modes: ChunkSeq::new[SubmitMode](),
+        mode_head: 0,
+        poll_errors: ChunkSeq::new[bool](),
+        poll_head: 0
+    }
+}
+
+pub fn recorder_push_mode(inout r: Recorder, mode: SubmitMode) -> bool {
+    if wrapping_sub(r.modes.len(), r.mode_head) >= r.history_limit {
+        return false;
+    }
+    r.modes.push(mode);
+    true
+}
+
+pub fn recorder_push_poll_failure(inout r: Recorder, fail: bool) -> bool {
+    if wrapping_sub(r.poll_errors.len(), r.poll_head) >= r.history_limit {
+        return false;
+    }
+    r.poll_errors.push(fail);
+    true
+}
+
+fn pop_mode(inout r: Recorder) -> SubmitMode {
+    match r.modes.try_get(r.mode_head) {
+        Option::Some(m) => {
+            r.mode_head = wrapping_add(r.mode_head, 1);
+            if r.mode_head == r.modes.len() {
+                r.modes.clear();
+                r.mode_head = 0;
+            }
+            m
+        },
+        Option::None => SubmitMode::Accept,
+    }
+}
+
+// Whether the next poll reports a failure (`poll_errors.pop_front()`).
+pub fn recorder_pop_poll_failure(inout r: Recorder) -> bool {
+    match r.poll_errors.try_get(r.poll_head) {
+        Option::Some(f) => {
+            r.poll_head = wrapping_add(r.poll_head, 1);
+            if r.poll_head == r.poll_errors.len() {
+                r.poll_errors.clear();
+                r.poll_head = 0;
+            }
+            f
+        },
+        Option::None => false,
+    }
+}
+
+pub fn recorder_submit(
+    inout r: Recorder,
+    history_len: u64,
+    in streams: Slice[SimStream],
+    in cmds: Slice[SimCmd]
+) -> RecorderVerdict {
+    if history_len >= r.history_limit {
+        return RecorderVerdict::Refused(RecordingError::HistoryLimit);
+    }
+    if r.active.len() >= r.pending_limit {
+        return RecorderVerdict::Refused(RecordingError::PendingLimit);
+    }
+    let mode = pop_mode(inout r);
+    if mode == SubmitMode::Reject {
+        return RecorderVerdict::Refused(RecordingError::Rejected);
+    }
+    if mode == SubmitMode::StallUncertain {
+        return RecorderVerdict::Stalled;
+    }
+    let keep: u64 = if mode == SubmitMode::AcceptFirstQueueUncertain {
+        if streams.len() > 0 {
+            1
+        } else {
+            0
+        }
+    } else {
+        streams.len()
+    };
+    let first_stream = r.streams.len();
+    for i in 0..keep {
+        match streams.try_get(i) {
+            Option::Some(s) => {
+                let first = r.cmds.len();
+                for c in s.first..wrapping_add(s.first, s.count) {
+                    match cmds.try_get(c) {
+                        Option::Some(x) => r.cmds.push(x),
+                        Option::None => (),
+                    }
+                }
+                r
+                    .streams
+                    .push(
+                    ActiveStream {
+                        runtime: s.runtime,
+                        index: s.index,
+                        first: first,
+                        count: s.count,
+                        cursor: 0
+                    }
+                );
+            },
+            Option::None => (),
+        }
+    }
+    r
+        .active
+        .push(
+        ActiveSub {
+            first_stream: first_stream,
+            stream_count: keep
+        }
+    );
+    RecorderVerdict::Recorded {
+        uncertain: mode
+            == SubmitMode::AcceptUncertain
+            || mode
+            == SubmitMode::AcceptFirstQueueUncertain,
+        panic: mode == SubmitMode::PanicAfterAcceptance
+    }
+}
+
+fn stream_at(in r: Recorder, i: u64) -> ActiveStream {
+    match r.streams.try_get(i) {
+        Option::Some(s) => s,
+        Option::None => ActiveStream {
+            runtime: 0,
+            index: 0,
+            first: 0,
+            count: 0,
+            cursor: 0
+        },
+    }
+}
+
+fn signal_value(in r: Recorder, runtime: u64, index: u64) -> u64 {
+    for i in 0..r.signals.len() {
+        match r.signals.try_get(i) {
+            Option::Some(p) => {
+                if p.runtime == runtime && p.index == index {
+                    return p.value;
+                }
+            },
+            Option::None => (),
+        }
+    }
+    0
+}
+
+fn set_signal(inout r: Recorder, p: Point) {
+    for i in 0..r.signals.len() {
+        match r.signals.try_get(i) {
+            Option::Some(x) => {
+                if x.runtime == p.runtime && x.index == p.index {
+                    r.signals.try_set(i, p);
+                    return;
+                }
+            },
+            Option::None => (),
+        }
+    }
+    r.signals.push(p);
+}
+
+fn blocked_by_earlier(in r: Recorder, before: u64, runtime: u64, index: u64) -> bool {
+    for e in 0..before {
+        match r.active.try_get(e) {
+            Option::Some(a) => {
+                for s in a.first_stream..wrapping_add(a.first_stream, a.stream_count) {
+                    let q = stream_at(in r, s);
+                    if q.runtime == runtime && q.index == index && q.cursor < q.count {
+                        return true;
+                    }
+                }
+            },
+            Option::None => (),
+        }
+    }
+    false
+}
+
+copy enum Step {
+    Idle,
+    Worked,
+    Signaled(Point)
+}
+
+// Executes the first runnable command (`step`).
+fn step(inout r: Recorder) -> Step {
+    for i in 0..r.active.len() {
+        match r.active.try_get(i) {
+            Option::Some(a) => {
+                for s in a.first_stream..wrapping_add(a.first_stream, a.stream_count) {
+                    let q = stream_at(in r, s);
+                    if q.cursor < q.count {
+                        let cmd = match r.cmds.try_get(wrapping_add(q.first, q.cursor)) {
+                            Option::Some(c) => c,
+                            Option::None => SimCmd {
+                                wait: false,
+                                signal: false,
+                                point: Point {
+                                    runtime: 0,
+                                    index: 0,
+                                    value: 0
+                                }
+                            },
+                        };
+                        let blocked = blocked_by_earlier(in r, i, q.runtime, q.index);
+                        let waiting = cmd
+                            .wait
+                            && signal_value(in r, cmd.point.runtime, cmd.point.index)
+                            < cmd
+                            .point
+                            .value;
+                        if !blocked && !waiting {
+                            let mut next = q;
+                            next.cursor = wrapping_add(q.cursor, 1);
+                            r.streams.try_set(s, next);
+                            if cmd.signal {
+                                set_signal(inout r, cmd.point);
+                                return Step::Signaled(cmd.point);
+                            }
+                            return Step::Worked;
+                        }
+                    }
+                }
+            },
+            Option::None => (),
+        }
+    }
+    Step::Idle
+}
+
+// Runs up to `work_per_poll` steps, reporting at most `max_events` signals,
+// then drops finished submissions.
+pub fn recorder_poll(inout r: Recorder, max_events: u64) -> ChunkSeq[Point] {
+    let mut out: ChunkSeq[Point] = ChunkSeq::new[Point]();
+    for x in 0..r.work_per_poll {
+        if out.len() >= max_events {
+            break;
+        }
+        match step(inout r) {
+            Step::Signaled(p) => out.push(p),
+            Step::Worked => (),
+            Step::Idle => {
+                break;
+            },
+        }
+    }
+    let mut active: ChunkSeq[ActiveSub] = ChunkSeq::new[ActiveSub]();
+    let mut streams: ChunkSeq[ActiveStream] = ChunkSeq::new[ActiveStream]();
+    let mut cmds: ChunkSeq[SimCmd] = ChunkSeq::new[SimCmd]();
+    for i in 0..r.active.len() {
+        match r.active.try_get(i) {
+            Option::Some(a) => {
+                let mut live = false;
+                for s in a.first_stream..wrapping_add(a.first_stream, a.stream_count) {
+                    let q = stream_at(in r, s);
+                    if q.cursor < q.count {
+                        live = true;
+                    }
+                }
+                if live {
+                    let first_stream = streams.len();
+                    for s in a.first_stream..wrapping_add(a.first_stream, a.stream_count) {
+                        let q = stream_at(in r, s);
+                        let first = cmds.len();
+                        for c in q.first..wrapping_add(q.first, q.count) {
+                            match r.cmds.try_get(c) {
+                                Option::Some(x) => cmds.push(x),
+                                Option::None => (),
+                            }
+                        }
+                        let mut moved = q;
+                        moved.first = first;
+                        streams.push(moved);
+                    }
+                    active
+                        .push(
+                        ActiveSub {
+                            first_stream: first_stream,
+                            stream_count: a.stream_count
+                        }
+                    );
+                }
+            },
+            Option::None => (),
+        }
+    }
+    r.active = active;
+    r.streams = streams;
+    r.cmds = cmds;
+    out
+}

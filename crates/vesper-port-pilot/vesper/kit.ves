@@ -297,6 +297,15 @@ pub fn note_new(in text: Str) -> Note {
     }
 }
 
+// A by-value string that the returned handle keeps: the binding copies it
+// into a buffer of this library, which the Note then owns.
+pub fn note_adopt(sink text: String) -> Note {
+    Note {
+        text: text,
+        edits: 0
+    }
+}
+
 pub fn note_append(inout n: Note, in more: Str) {
     n.text.push_str(more);
     n.edits = wrapping_add(n.edits, 1);
