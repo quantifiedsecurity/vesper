@@ -234,7 +234,8 @@ pub struct Options {
     pub optimize: bool,
     pub max_functions: usize,
     pub max_rows: usize,
-    /// AArch64 conditional branches reach ±1 MiB.
+    /// Calls reach ±128 MiB on AArch64 (`bl`) and ±2 GiB elsewhere; a
+    /// function's own branches must stay within ±1 MiB.
     pub max_code_bytes: usize,
     /// Refuse a program whose range certificate ([`certificate`]) is
     /// rejected. Off by default until the certificates track enum payload
@@ -250,7 +251,7 @@ impl Options {
             optimize: true,
             max_functions: 4096,
             max_rows: 1_000_000,
-            max_code_bytes: 1 << 20,
+            max_code_bytes: 1 << 26,
             require_certificate: false,
         }
     }
@@ -349,6 +350,10 @@ pub struct Artifact {
     /// The range certificate of `lir`, or why it was rejected.
     pub certificate: Result<certificate::Certificate, certificate::Rejection>,
 }
+
+/// Bytes of code after which the abort exits are repeated after the
+/// current function (see `Asm::bind_copy`).
+const EXIT_SPACING: usize = 256 * 1024;
 
 /// Compile `entry` (no parameters) and everything it reaches.
 pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact, VerifiedError> {
@@ -467,6 +472,20 @@ pub fn compile(world: &World, entry: &str, options: &Options) -> Result<Artifact
                     "more than {} bytes of code",
                     options.max_code_bytes
                 )));
+            }
+        }
+        // AArch64 conditional branches and RV64 `jal` reach ±1 MiB: repeat
+        // the abort exits after a function that ends far from the last
+        // copy. Every function then starts at most `EXIT_SPACING` past a
+        // copy and, if it ends further than that, is followed by one, so a
+        // trap branch in a function of `n` bytes travels at most
+        // `max(EXIT_SPACING, (EXIT_SPACING + n) / 2)`: under 1 MiB for any
+        // function the branches themselves can span.
+        if a.here() - a.last_exits() > EXIT_SPACING {
+            match options.target.arch {
+                Arch::X86_64 => {}
+                Arch::Aarch64 => aarch64::exits(&mut a, options.target.os),
+                Arch::Riscv64 => riscv64::exits(&mut a),
             }
         }
     }
