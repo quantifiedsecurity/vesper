@@ -249,8 +249,14 @@ fn exports_keep_the_failure_record_at_the_boundary() {
         .arg(dir.join("main"))
         .output()
         .unwrap();
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-    let run = std::process::Command::new(dir.join("main")).output().unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let run = std::process::Command::new(dir.join("main"))
+        .output()
+        .unwrap();
     assert!(run.status.success());
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),

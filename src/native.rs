@@ -901,15 +901,8 @@ fn declare_instances<M: Module>(
     instances: &InstanceMap,
     linkage: DefinitionLinkage,
 ) -> Result<BTreeMap<String, FuncId>, String> {
-    let (ids, _) = declare_instances_with_trace(
-        m,
-        world,
-        entry,
-        instances,
-        linkage,
-        false,
-        &DEFAULT_ABI,
-    )?;
+    let (ids, _) =
+        declare_instances_with_trace(m, world, entry, instances, linkage, false, &DEFAULT_ABI)?;
     Ok(ids)
 }
 fn declare_instances_with_trace<M: Module>(
@@ -1043,7 +1036,10 @@ fn define_instances_observed_with_trace<M: Module>(
                     words * 8,
                     3,
                 ));
-                Some(b.ins().stack_addr(m.target_config().pointer_type(), slot, 0))
+                Some(
+                    b.ins()
+                        .stack_addr(m.target_config().pointer_type(), slot, 0),
+                )
             } else if result_layout.aggregate() {
                 Some(values.remove(0))
             } else {
@@ -4720,7 +4716,12 @@ impl<M: Module> Codegen<'_, '_, M> {
         }
         self.reraise_each(f, record, tag)
     }
-    fn reraise_each(&mut self, f: &Function, record: ir::Value, tag: ir::Value) -> Result<(), String> {
+    fn reraise_each(
+        &mut self,
+        f: &Function,
+        record: ir::Value,
+        tag: ir::Value,
+    ) -> Result<(), String> {
         for (index, effect) in fail_instances(f).enumerate() {
             let failed = self.b.ins().icmp_imm(IntCC::Equal, tag, index as i64 + 1);
             let bad = self.b.create_block();
