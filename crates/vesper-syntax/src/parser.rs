@@ -160,6 +160,7 @@ pub fn parse_with_limits(source: &str, limits: ParseLimits) -> Result<Parse, lex
             diagnostics,
         });
     }
+    let item_names = contextual_item_names(&tokens, source);
     let mut p = Parser {
         source,
         tokens,
@@ -168,7 +169,7 @@ pub fn parse_with_limits(source: &str, limits: ParseLimits) -> Result<Parse, lex
         diagnostics,
         no_struct: false,
         row_names: Default::default(),
-        bound_values: Default::default(),
+        bound_values: item_names,
         model_uses: vec![],
         trait_bounds: vec![],
         uses: vec![],
@@ -462,7 +463,12 @@ impl Parser<'_> {
                 .chain(std::iter::once(height(value)))
                 .max()
                 .unwrap_or(0),
-            ExprKind::Closure { body, .. } => height(body),
+            ExprKind::Closure { body, .. } | ExprKind::Loop(body) => height(body),
+            ExprKind::For { iter, body, .. } => height(iter).max(height(body)),
+            ExprKind::Range { start, end, .. } => height(start).max(height(end)),
+            ExprKind::Break(value) | ExprKind::Return(value) => {
+                value.as_ref().map_or(0, |e| height(e))
+            }
             ExprKind::Handle {
                 state,
                 body,
@@ -1683,6 +1689,11 @@ impl Parser<'_> {
                 continue;
             }
             if self.eat(K::Let) {
+                // `let mut` (manuscript `LetStmt`); `mut` is a contextual word.
+                let mutable = self.at_word(0, "mut") && self.nth(1) != K::Colon;
+                if mutable {
+                    self.bump();
+                }
                 let pat = self.pattern();
                 let ty = if self.eat(K::Colon) {
                     self.ty()
@@ -1697,11 +1708,28 @@ impl Parser<'_> {
                     self.recover_statement();
                 }
                 pattern_bindings(&pat, &mut self.bound_values);
-                statements.push(Statement::Let { pat, ty, value });
+                statements.push(Statement::Let {
+                    pat,
+                    ty,
+                    value,
+                    mutable,
+                });
             } else {
                 let diagnostics_before = self.diagnostics.len();
                 let e = self.expr();
                 if self.eat(K::Semi) {
+                    statements.push(Statement::Expr(e));
+                } else if matches!(
+                    e.kind,
+                    ExprKind::Loop(_)
+                        | ExprKind::For { .. }
+                        | ExprKind::If { .. }
+                        | ExprKind::Match { .. }
+                ) && self.source[..e.span.end.min(self.source.len())].ends_with('}')
+                    && !matches!(self.kind(), K::RBrace | K::Eof)
+                {
+                    // A block-like statement ending in `}` needs no `;` before
+                    // the next statement (manuscript `Stmt`).
                     statements.push(Statement::Expr(e));
                 } else if self.editor
                     && !matches!(self.kind(), K::RBrace | K::Eof)
@@ -1759,11 +1787,96 @@ impl Parser<'_> {
             }
             K::Match => self.match_expr(),
             K::If => self.if_expr(),
+            K::Lower if self.at_word(0, "loop") && self.nth(1) == K::LBrace => self.loop_expr(),
+            K::Lower if self.at_word(0, "for") && self.for_header() => self.for_expr(),
+            K::Lower if self.at_word(0, "break") && !self.bound_values.contains("break") => {
+                self.jump_expr(false)
+            }
+            K::Return => self.jump_expr(true),
             K::Pipe | K::Or => self.closure(),
             _ => self.binary(0),
         };
         self.builder.finish_node();
         e
+    }
+    /// `loop { body }` (manuscript `LoopExpr`).
+    fn loop_expr(&mut self) -> Expr {
+        let start = self.start();
+        self.bump();
+        let body = Box::new(self.block());
+        Expr {
+            kind: ExprKind::Loop(body),
+            span: start..self.end(),
+        }
+    }
+    /// Whether `for` starts a `ForExpr` (`for Pat in`), not a value named `for`.
+    fn for_header(&self) -> bool {
+        !self.bound_values.contains("for")
+            && matches!(
+                self.nth(1),
+                K::Lower | K::Upper | K::LParen | K::Int | K::True | K::False
+            )
+    }
+    /// `for pat in start..end { body }` (manuscript `ForExpr`). The iterable
+    /// is any restricted expression; `a..b` and `a..=b` build a range.
+    fn for_expr(&mut self) -> Expr {
+        let start = self.start();
+        self.bump();
+        let pat = self.pattern();
+        self.expect(K::In);
+        let old = self.no_struct;
+        self.no_struct = true;
+        let first = self.binary(2);
+        let iter = if matches!(self.kind(), K::DotDot | K::DotDotEq) {
+            let inclusive = self.at(K::DotDotEq);
+            self.bump();
+            let end = self.binary(2);
+            let span = first.span.start..end.span.end;
+            self.record_expr(Expr {
+                kind: ExprKind::Range {
+                    start: Box::new(first),
+                    end: Box::new(end),
+                    inclusive,
+                },
+                span,
+            })
+        } else {
+            first
+        };
+        self.no_struct = old;
+        let outer_values = self.bound_values.clone();
+        pattern_bindings(&pat, &mut self.bound_values);
+        let body = Box::new(self.block());
+        self.bound_values = outer_values;
+        Expr {
+            kind: ExprKind::For {
+                pat,
+                iter: Box::new(iter),
+                body,
+            },
+            span: start..self.end(),
+        }
+    }
+    /// `return value?` or `break value?` (manuscript `ReturnExpr`, `BreakExpr`).
+    fn jump_expr(&mut self, ret: bool) -> Expr {
+        let start = self.start();
+        self.bump();
+        let value = if matches!(
+            self.kind(),
+            K::Semi | K::RBrace | K::RParen | K::RBracket | K::Comma | K::Eof
+        ) {
+            None
+        } else {
+            Some(Box::new(self.expr()))
+        };
+        Expr {
+            kind: if ret {
+                ExprKind::Return(value)
+            } else {
+                ExprKind::Break(value)
+            },
+            span: start..self.end(),
+        }
     }
     fn restricted(&mut self) -> Expr {
         let old = self.no_struct;
@@ -2454,4 +2567,27 @@ fn pattern_bindings(p: &Pattern, names: &mut std::collections::BTreeSet<String>)
         }
         _ => {}
     }
+}
+
+/// Top-level functions named after a contextual loop word (`fn break()`)
+/// keep that word an ordinary name in calls, like a local binding does.
+pub(crate) fn contextual_item_names(
+    tokens: &[Token],
+    source: &str,
+) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let mut significant = tokens
+        .iter()
+        .filter(|t| !matches!(t.kind, K::Whitespace | K::Comment | K::BlockComment));
+    let mut previous = None;
+    for t in &mut significant {
+        if previous == Some(K::Fn) && t.kind == K::Lower {
+            let name = &source[t.span.clone()];
+            if matches!(name, "break" | "for" | "loop") {
+                names.insert(name.to_owned());
+            }
+        }
+        previous = Some(t.kind);
+    }
+    names
 }

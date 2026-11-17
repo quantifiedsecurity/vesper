@@ -410,7 +410,10 @@ OpClause       ::= LowerIdent '(' PatList? ')' '=>' Expr ','? ;
 MatchExpr      ::= 'match' Expr '{' ( Pat '=>' Expr ','? )* '}' ;
 IfExpr         ::= 'if' Expr Block ( 'else' ( IfExpr | Block ) )? ;
 LoopExpr       ::= 'loop' Block ;
-ForExpr        ::= 'for' Pat 'in' Expr Block ;
+ForExpr        ::= 'for' Pat 'in' RangeExpr Block ;
+RangeExpr      ::= BinaryExpr ( '..' | '..=' ) BinaryExpr ;
+ReturnExpr     ::= 'return' Expr? ;
+BreakExpr      ::= 'break' Expr? ;
 ClosureExpr    ::= ( '||' | '|' ClosureParams '|' ) ( '@' ModeSpec )?
                    ( '->' Type )? EffClause? Expr ;
 ClosureParams  ::= ( 'cap' LowerIdent | Param ) ( ',' ClosureParams )? ;
@@ -446,6 +449,8 @@ FieldPatList   ::= ( LowerIdent ( ':' Pat )? ) ( ',' FieldPatList )? ;
 UpperIdent     ::= /[A-Z][A-Za-z0-9_]*/ ;
 LowerIdent     ::= /[a-z_][A-Za-z0-9_]*/ ;
 ```
+
+*Loops and early exits.* `loop`, `for`, `break` and `return` are contextual keywords outside their statement positions, and a statement-position `loop`, `for`, `if` or `match` ending in `}` needs no `;`. `loop B` has the join of its `break` values as its type, or `Never` when it has no `break`; `for p in a..b B` and `a..=b` bind successive values of one integer type to the irrefutable pattern `p`, have type `()`, and accept `break` without a value only. The closed range leaves at its bound before incrementing, so `for b in 0..=255` over `u8` does not overflow. `return e` leaves the innermost function or closure, including from inside a handled block (skipping the handler's return clause), and is rejected inside handler clauses and region blocks (`E0213`). A linear value live at a `break` or `return` that would drop it is rejected (`E0302`), as is a linear value moved by one iteration and needed by the next (`E0312`). Assigning to a `let` binding, or passing it `inout`, requires `let mut` (`E0313`); parameters stay assignable, since `mut` is not part of parameter syntax. `for` over `Slice` and `ChunkSeq` waits for the port-readiness Slice lane.
 
 *Integer kinds.* The ten integer `PrimType`s are distinct types with no implicit conversions; `usize` and `isize` are 64 bits wide on every target. Under the checked-arithmetic contract `vesper.arith.checked/1`, `+`, `-`, `*`, negation and signed `MIN / -1` raise `Fail[ArithOverflow]`, and division by zero raises `Fail[RuntimeError]`. `&`, `|`, `^` and prefix `~` are total; `a << n` and `a >> n` accept an amount `n` of any integer kind and raise `Fail[ArithOverflow]` unless `0 <= n < bits(a)` (`>>` is arithmetic on signed kinds). Conversions are explicit calls named after the target kind `k`: `widen_k` (accepted only when lossless), `narrow_k` (checked, `Fail[ArithOverflow]`) and `wrapping_k` (modulo `2^bits(k)`). `rotate_left`/`rotate_right` and the byte-order functions `to_le_bytes_k`, `to_be_bytes_k`, `from_le_bytes_k`, `from_be_bytes_k` (over tuples of `u8`) are total.
 
