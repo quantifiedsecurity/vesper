@@ -613,16 +613,20 @@ Claim #844 (lane V2 of the verified-compiler plan; references #582, #583).
   - `CodegenRv64Encoding.lean`:
     - models the new RV64 sequences, and `heap_ok` proves them well formed,
       so `emit_decodes` covers them;
-    - 64 listing samples (with `trap region`, `ldh 3`, `sth 3`, `ldh 300`
+    - 65 listing samples (with `trap region`, `ldh 3`, `sth 3`, `ldh 300`
       and `sth 300`) match `riscv64::encoding_listing()`.
   - `CodegenA64Encoding.lean` (milestone 6, merged from main):
     - models the AArch64 `ldh`/`sth` sequences, and maps `trap region` to
       label 3;
     - `emit_ok` covers them (heap offsets below 4096, which
       `MAX_PAYLOAD_WORDS` guarantees), so `emit_decodes` does too;
-    - its 66 listing samples match `aarch64::encoding_listing()`.
-  - The x86-64 encoding model (#860) is not on main yet. Whichever of #857
-    and #860 merges second adds `ldh`/`sth` and `trap region` to it.
+    - its 67 listing samples match `aarch64::encoding_listing()`.
+  - `CodegenX64Encoding.lean` (milestone 9, merged from main): new
+    instructions `movR11` (`41 BB id`) and `heapLd`/`heapSt` (`49 8B|89 84
+    CB disp32`) round-trip through the specification decoder. `ldh`/`sth`
+    and `trap region` are in `emit`, `emit_ok` and the listing (69 lines).
+  - All three encoding models set `firstFree := 4` (`TrapKind::Region` is
+    label 3).
   - `CodegenValidation.lean`:
     - a heap load gives no range fact, and a heap store forgets every heap
       fact;
