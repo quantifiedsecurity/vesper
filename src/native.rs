@@ -91,21 +91,22 @@ fn signature_with_trace<M: Module>(
     f: &Function,
     trace_fail: bool,
 ) -> Result<ir::Signature, String> {
-    signature_with_status(m, world, f, trace_fail, false)
+    signature_with_abi(m, world, f, trace_fail, FnAbi::default())
 }
-/// [`signature_with_trace`], plus the failure status as a second `i64`
-/// return value when `status` is set (the register-status Fail ABI, see
-/// [`status_abi_keys`]).
-fn signature_with_status<M: Module>(
+/// [`signature_with_trace`] for an instance compiled with `abi`
+/// ([`NativeAbi`]): a register-status function returns its failure status as
+/// a last `i64` value, and a register-result function returns its small
+/// aggregate result as `i64` words instead of through a leading pointer.
+fn signature_with_abi<M: Module>(
     m: &M,
     world: &World,
     f: &Function,
     trace_fail: bool,
-    status: bool,
+    abi: FnAbi,
 ) -> Result<ir::Signature, String> {
     let mut sig = m.make_signature();
     let result = Layout::of(world, &f.result)?;
-    if result.aggregate() {
+    if result.aggregate() && abi.result_words.is_none() {
         sig.params
             .push(AbiParam::new(m.target_config().pointer_type()));
     }
@@ -127,12 +128,18 @@ fn signature_with_status<M: Module>(
         sig.params
             .push(AbiParam::new(m.target_config().pointer_type()));
     }
-    sig.returns.push(AbiParam::new(if result.aggregate() {
-        types::I64
+    if let Some(words) = abi.result_words {
+        for _ in 0..words {
+            sig.returns.push(AbiParam::new(types::I64));
+        }
     } else {
-        scalar(&f.result, &f.generics)?
-    }));
-    if status {
+        sig.returns.push(AbiParam::new(if result.aggregate() {
+            types::I64
+        } else {
+            scalar(&f.result, &f.generics)?
+        }));
+    }
+    if abi.status {
         sig.returns.push(AbiParam::new(types::I64));
     }
     Ok(sig)
@@ -438,40 +445,90 @@ fn fail_record_size(world: &World, f: &Function) -> Result<u32, String> {
     }
     Ok(8 + payload.div_ceil(8) * 8)
 }
-/// Instances compiled with the register-status Fail ABI (Stage 1 perf lane
-/// 5, #935). Such a `fail_only` function returns its failure status as a
-/// second `i64` value: 0 for success, `k` when it raised the `k`-th `Fail` of
-/// its row. The hidden pointer it takes is caller storage for the error
-/// payload only (at the same offset as in a failure record), so a successful
-/// call stores nothing: the caller neither zeroes a record before the call
-/// nor loads a tag after it, and tests the returned register instead.
-///
-/// Only optimized builds use it (a native-only change behind `optimize`, so
-/// the Stage 1 corpus, built unoptimized, keeps its Cranelift artifacts).
-/// Boundary symbols keep the failure-record ABI: `is_boundary` names the
-/// entry or the library exports, which foreign callers reach with a record
-/// whose status word they read. Capability-ABI functions
-/// ([`CAPABILITY_ABI`]) keep their documented record too.
-fn status_abi_keys(
-    world: &World,
-    instances: &InstanceMap,
-    optimize: bool,
-    is_boundary: impl Fn(&str) -> bool,
-) -> Result<BTreeSet<String>, String> {
-    let mut out = BTreeSet::new();
-    if !optimize {
-        return Ok(out);
-    }
-    for (key, (name, vars)) in instances {
-        let f = concrete(world, name, vars)?;
-        if fail_only(world, &f) && !capability_abi(world, &f) && !is_boundary(key) {
-            out.insert(key.clone());
-        }
-    }
-    Ok(out)
+/// How one instance is called, beyond the default ABI ([`NativeAbi`]).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct FnAbi {
+    /// Register-status Fail ABI: the failure status is the last return value.
+    status: bool,
+    /// Register-result ABI: the aggregate result is returned as this many
+    /// `i64` words (1 or 2) instead of through a leading result pointer.
+    result_words: Option<u32>,
 }
-/// The empty [`status_abi_keys`] set: every function keeps the record ABI.
-static NO_STATUS_ABI: BTreeSet<String> = BTreeSet::new();
+/// The internal calling conventions of one compilation (Stage 1 perf lane
+/// 5, #935). Only optimized builds use them (a native-only change behind
+/// `optimize`, so the Stage 1 corpus, built unoptimized, keeps its Cranelift
+/// artifacts), and never for boundary symbols: `is_boundary` names the entry
+/// or the library exports, which foreign callers reach with the documented
+/// export ABI.
+///
+/// * Register status: a `fail_only` function returns its failure status as
+///   a last `i64` value, 0 for success and `k` when it raised the `k`-th
+///   `Fail` of its row. The hidden pointer it takes is caller storage for
+///   the error payload only (at the same offset as in a failure record), so
+///   a successful call stores nothing: the caller neither zeroes a record
+///   before the call nor loads a tag after it, and tests the returned
+///   register instead. Capability-ABI functions ([`CAPABILITY_ABI`]) keep
+///   their documented record.
+/// * Register result: a function that does not fail and returns a copy
+///   aggregate of at most two words (a small `Result` or `Option`, a pair)
+///   returns its words in registers. The caller receives them into
+///   uninitialized stack storage instead of zeroing a result buffer for the
+///   callee to fill. Two `i64` returns fit the return registers of every
+///   calling convention Cranelift targets here (`rax`/`rdx`, `x0`/`x1`).
+#[derive(Default)]
+struct NativeAbi {
+    functions: BTreeMap<String, FnAbi>,
+}
+impl NativeAbi {
+    fn plan(
+        world: &World,
+        instances: &InstanceMap,
+        optimize: bool,
+        is_boundary: impl Fn(&str) -> bool,
+    ) -> Result<Self, String> {
+        let mut functions = BTreeMap::new();
+        if !optimize {
+            return Ok(Self { functions });
+        }
+        for (key, (name, vars)) in instances {
+            if is_boundary(key) {
+                continue;
+            }
+            let f = concrete(world, name, vars)?;
+            let mut abi = FnAbi::default();
+            if fail_only(world, &f) && !capability_abi(world, &f) {
+                abi.status = true;
+            } else if f.effects.instances.is_empty() && f.effects.tail.is_none() {
+                abi.result_words = register_result_words(world, &f)?;
+            }
+            if abi != FnAbi::default() {
+                functions.insert(key.clone(), abi);
+            }
+        }
+        Ok(Self { functions })
+    }
+    fn of(&self, key: &str) -> FnAbi {
+        self.functions.get(key).copied().unwrap_or_default()
+    }
+}
+/// Words of `f`'s result when it can be returned in registers: an aggregate
+/// of one or two words that holds no function value and is not built in a
+/// caller-provided `Box` slot.
+fn register_result_words(world: &World, f: &Function) -> Result<Option<u32>, String> {
+    let layout = Layout::of(world, &f.result)?;
+    if !layout.aggregate()
+        || layout.size == 0
+        || layout.size > 16
+        || contains_function(world, &f.result)
+        || crate::fip::uses_caller_slot(world, f)
+        || f.fip
+    {
+        return Ok(None);
+    }
+    Ok(Some(layout.size.div_ceil(8)))
+}
+/// No internal conventions: every function keeps the default ABI.
+static DEFAULT_ABI: std::sync::LazyLock<NativeAbi> = std::sync::LazyLock::new(NativeAbi::default);
 type InstanceMap = BTreeMap<String, (String, BTreeMap<String, Type>)>;
 fn instances(world: &World, entry: &str) -> Result<InstanceMap, String> {
     instances_for_entry(world, entry, false)
@@ -713,9 +770,9 @@ fn compile_entry<M: Module>(
         // Native only, never the verified backend (Stage 1 perf lane 3).
         crate::bounds_hoist::run(&mut program);
     }
-    let status = status_abi_keys(world, &instances, optimize, |key| key == entry)?;
+    let abi = NativeAbi::plan(world, &instances, optimize, |key| key == entry)?;
     let (ids, trace_entry_id) =
-        declare_instances_with_trace(m, world, entry, &instances, linkage, trace_ok, &status)?;
+        declare_instances_with_trace(m, world, entry, &instances, linkage, trace_ok, &abi)?;
     let trace_entry = trace_entry_id.map(|id| (entry, id));
     let clif = define_instances_observed_with_trace(
         m,
@@ -730,7 +787,7 @@ fn compile_entry<M: Module>(
         trace_ok,
         trace_entry,
         optimize,
-        &status,
+        &abi,
     )?;
     let mut abi = Vec::new();
     for (key, (name, vars)) in &instances {
@@ -851,7 +908,7 @@ fn declare_instances<M: Module>(
         instances,
         linkage,
         false,
-        &NO_STATUS_ABI,
+        &DEFAULT_ABI,
     )?;
     Ok(ids)
 }
@@ -862,7 +919,7 @@ fn declare_instances_with_trace<M: Module>(
     instances: &InstanceMap,
     linkage: DefinitionLinkage,
     trace_host: bool,
-    status: &BTreeSet<String>,
+    abi: &NativeAbi,
 ) -> Result<(BTreeMap<String, FuncId>, Option<FuncId>), String> {
     let mut ids = BTreeMap::new();
     let mut trace_entry_id = None;
@@ -892,7 +949,7 @@ fn declare_instances_with_trace<M: Module>(
                 .declare_function(
                     &symbol,
                     linkage.function(key == entry),
-                    &signature_with_status(m, world, &f, pass_trace, status.contains(key))?,
+                    &signature_with_abi(m, world, &f, pass_trace, abi.of(key))?,
                 )
                 .map_err(|e| e.to_string())?;
             ids.insert(key.clone(), id);
@@ -923,7 +980,7 @@ fn define_instances<M: Module>(
         false,
         None,
         optimize,
-        &NO_STATUS_ABI,
+        &DEFAULT_ABI,
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -940,7 +997,7 @@ fn define_instances_observed_with_trace<M: Module>(
     trace_host: bool,
     trace_entry: Option<(&str, FuncId)>,
     operands_only: bool,
-    status: &BTreeSet<String>,
+    abi: &NativeAbi,
 ) -> Result<String, String> {
     let mut clif = String::new();
     let denorm = crate::capability_effects::const_denorm_spans(world);
@@ -956,8 +1013,8 @@ fn define_instances_observed_with_trace<M: Module>(
             ids[key]
         };
         let mut ctx = m.make_context();
-        let status_return = status.contains(key);
-        ctx.func.signature = signature_with_status(m, world, &f, pass_trace, status_return)?;
+        let own_abi = abi.of(key);
+        ctx.func.signature = signature_with_abi(m, world, &f, pass_trace, own_abi)?;
         let mut fbctx = FunctionBuilderContext::new();
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
@@ -977,7 +1034,17 @@ fn define_instances_observed_with_trace<M: Module>(
                 None
             };
             let result_layout = Layout::of(world, &f.result)?;
-            let sret = if result_layout.aggregate() {
+            let own_abi = abi.of(key);
+            let sret = if let Some(words) = own_abi.result_words {
+                // Register result: build the value in a local buffer and
+                // return its words.
+                let slot = b.create_sized_stack_slot(ir::StackSlotData::new(
+                    ir::StackSlotKind::ExplicitSlot,
+                    words * 8,
+                    3,
+                ));
+                Some(b.ins().stack_addr(m.target_config().pointer_type(), slot, 0))
+            } else if result_layout.aggregate() {
                 Some(values.remove(0))
             } else {
                 None
@@ -1040,8 +1107,9 @@ fn define_instances_observed_with_trace<M: Module>(
                 source_locations: options.source_locations,
                 srcloc: ir::SourceLoc::default(),
                 operands_only,
-                status_keys: status,
-                status_return,
+                abi,
+                own_abi,
+                result_buffer: own_abi.result_words.and(sret),
             };
             c.set_location(f.span.start);
             // Function-value parameters bound to top-level functions by
@@ -1759,11 +1827,12 @@ struct Codegen<'a, 'b, M: Module> {
     /// Reading every value at every instruction gives each block a phi for
     /// each value of the graph, which inlining makes quadratic.
     operands_only: bool,
-    /// Instances compiled with the register-status Fail ABI
-    /// ([`status_abi_keys`]); calls to them test the returned status.
-    status_keys: &'b BTreeSet<String>,
-    /// The function being compiled returns its failure status in a register.
-    status_return: bool,
+    /// The internal calling conventions of this compilation ([`NativeAbi`]).
+    abi: &'b NativeAbi,
+    /// The convention of the function being compiled.
+    own_abi: FnAbi,
+    /// The local buffer a register-result function builds its value in.
+    result_buffer: Option<ir::Value>,
 }
 /// The Cranelift source location of source byte `offset`. Locations are
 /// byte offsets into the checked module's source; the all-ones value is
@@ -4628,7 +4697,7 @@ impl<M: Module> Codegen<'_, '_, M> {
     /// After a call to a `fail_only` function, raise its recorded failure
     /// through the capability selected for that effect instance.
     /// `tag` is the record's status word, or the status register of a
-    /// register-status call ([`status_abi_keys`]). The error payload is at
+    /// register-status call ([`NativeAbi`]). The error payload is at
     /// offset 8 of `record` either way.
     fn reraise_status(
         &mut self,
@@ -5017,7 +5086,11 @@ impl<M: Module> Codegen<'_, '_, M> {
                     .get(&key)
                     .ok_or_else(|| format!("missing monomorphized function '{key}'"))?,
             };
-            let output = if result_layout.aggregate() {
+            let callee_abi = self.abi.of(&key);
+            let output = if callee_abi.result_words.is_some() {
+                // Register result: the callee returns the words.
+                None
+            } else if result_layout.aggregate() {
                 Some(self.alloc(result_layout.size))
             } else {
                 None
@@ -5028,7 +5101,7 @@ impl<M: Module> Codegen<'_, '_, M> {
             if let Some(slot_ptr) = call_slot_arg {
                 values.push(slot_ptr);
             }
-            let status_call = self.status_keys.contains(&key);
+            let status_call = callee_abi.status;
             let record = if fail_only(self.world, &f) {
                 let size = fail_record_size(self.world, &f)?;
                 // A status-ABI callee writes only the error payload, and
@@ -5068,7 +5141,18 @@ impl<M: Module> Codegen<'_, '_, M> {
                 return Err(format!("native call ABI mismatch in '{name}'"));
             }
             let call = self.b.ins().call(fun, &values);
-            let result = output.unwrap_or_else(|| self.b.inst_results(call)[0]);
+            let result = if let Some(words) = callee_abi.result_words {
+                let buffer = self.alloc_uninit(words * 8);
+                for word in 0..words {
+                    let value = self.b.inst_results(call)[word as usize];
+                    self.b
+                        .ins()
+                        .store(ir::MemFlags::new(), value, buffer, (word * 8) as i32);
+                }
+                buffer
+            } else {
+                output.unwrap_or_else(|| self.b.inst_results(call)[0])
+            };
             if pass_trace {
                 self.check_trace_failed();
             }
@@ -5284,7 +5368,7 @@ impl<M: Module> Codegen<'_, '_, M> {
             .cloned()
             .ok_or("native failure exit names an unknown instance")?;
         let tag = self.b.ins().iconst(types::I64, index + 1);
-        if !self.status_return {
+        if !self.own_abi.status {
             self.b.ins().store(ir::MemFlags::new(), tag, record, 0);
         }
         let payload = self.offset(record, 8);
@@ -5295,7 +5379,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         } else {
             self.b.ins().iconst(returns, 0)
         };
-        if self.status_return {
+        if self.own_abi.status {
             // The register-status ABI: the status is the second return value.
             self.b.ins().return_(&[placeholder, tag]);
         } else {
@@ -5530,7 +5614,20 @@ impl<M: Module> Codegen<'_, '_, M> {
     /// Return `value` from the function being compiled, with a zero
     /// (success) status when it uses the register-status Fail ABI.
     fn return_value(&mut self, value: ir::Value) {
-        if self.status_return {
+        if let (Some(words), Some(buffer)) = (self.own_abi.result_words, self.result_buffer) {
+            let mut out = vec![];
+            for word in 0..words {
+                out.push(self.b.ins().load(
+                    types::I64,
+                    ir::MemFlags::new(),
+                    buffer,
+                    (word * 8) as i32,
+                ));
+            }
+            self.b.ins().return_(&out);
+            return;
+        }
+        if self.own_abi.status {
             let ok = self.b.ins().iconst(types::I64, 0);
             self.b.ins().return_(&[value, ok]);
         } else {

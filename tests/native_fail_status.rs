@@ -258,3 +258,23 @@ fn exports_keep_the_failure_record_at_the_boundary() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Register results: a function with an empty row that returns a copy
+/// aggregate of at most two words returns its words in registers in
+/// optimized builds.
+#[test]
+fn small_aggregate_results_return_in_registers() {
+    let source = "struct Pair { x: i64, y: i64 } \
+                  fn find(n: i64, k: i64) -> Option[i64] { if n == 0 { if k > 0 { Option::Some(k) } else { Option::None } } else { find(wrapping_sub(n, 1), k) } } \
+                  fn swap(n: i64, p: Pair) -> Pair { if n == 0 { Pair { x: p.y, y: p.x } } else { swap(wrapping_sub(n, 1), Pair { x: p.y, y: p.x }) } } \
+                  fn main() -> i64 { let a = match find(3, 9) { Option::Some(v) => v, Option::None => 0 }; \
+                  let b = match find(3, 0) { Option::Some(v) => v, Option::None => 5 }; \
+                  let p = swap(3, Pair { x: 1, y: 2 }); wrapping_add(wrapping_add(wrapping_mul(a, 100), wrapping_mul(b, 10)), wrapping_add(wrapping_mul(p.x, 1000), p.y)) }";
+    agree(source, "1952");
+    let optimized = return_counts(source, true);
+    assert!(
+        optimized.iter().any(|(n, r)| n == "find" && *r == 2)
+            && optimized.iter().any(|(n, r)| n == "swap" && *r == 2),
+        "{optimized:?}"
+    );
+}

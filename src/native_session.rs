@@ -936,8 +936,9 @@ fn compile_session_with_linkage<M: Module>(
             source_locations: true,
             srcloc: cranelift_codegen::ir::SourceLoc::default(),
             operands_only: optimize,
-            status_keys: &super::NO_STATUS_ABI,
-            status_return: false,
+            abi: &super::DEFAULT_ABI,
+            own_abi: super::FnAbi::default(),
+            result_buffer: None,
             session: Some(SessionCodegen {
                 ctx: context,
                 park,

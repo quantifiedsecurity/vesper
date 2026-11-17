@@ -1057,8 +1057,8 @@ fn compile_exports<M: Module>(
         crate::bounds_hoist::run(&mut program);
     }
     // Exported symbols keep the failure-record ABI that foreign callers and
-    // the v2 glue use; internal calls test a status register (#935).
-    let status = status_abi_keys(world, &all, optimize, |key| exports.contains_key(key))?;
+    // the v2 glue use; internal calls use the register conventions of [`NativeAbi`] (#935).
+    let abi = NativeAbi::plan(world, &all, optimize, |key| exports.contains_key(key))?;
     let mut ids = BTreeMap::new();
     for (i, (key, (name, vars))) in all.iter().enumerate() {
         let f = concrete(world, name, vars)?;
@@ -1066,7 +1066,7 @@ fn compile_exports<M: Module>(
             Some(symbol) => (symbol.clone(), Linkage::Export),
             None => (format!("vesper_function_{i}"), Linkage::Local),
         };
-        let sig = signature_with_status(m, world, &f, false, status.contains(key))?;
+        let sig = signature_with_abi(m, world, &f, false, abi.of(key))?;
         let id = m
             .declare_function(&symbol, linkage, &sig)
             .map_err(|e| e.to_string())?;
@@ -1085,7 +1085,7 @@ fn compile_exports<M: Module>(
         false,
         None,
         optimize,
-        &status,
+        &abi,
     )?;
     if interface.is_v2() {
         glue::define(m, world, interface)?;
