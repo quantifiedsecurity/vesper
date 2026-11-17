@@ -5625,6 +5625,10 @@ dependencies = [
 [[package]]
 name = "vesper-aura"
 version = "0.1.0"
+dependencies = [
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
 
 [[package]]
 name = "vesper-aura-gtk"
