@@ -2,8 +2,8 @@
 //! string is a typed error, an incomplete frame or a request (port wave P1
 //! lane 14, #911). The inputs are deterministic mutations of valid requests.
 use vesper_prism::{
-    Decoder, Limits,
-    connection::{Connection, ConnectionLimits, RequestEvent, Response},
+    Decoder, Error, Limits,
+    connection::{Connection, ConnectionError, ConnectionLimits, RequestEvent, Response},
     target::{Target, TargetLimits},
 };
 
@@ -123,4 +123,42 @@ fn mutated_pipelines_keep_the_connection_consistent() {
         }
         let _ = connection.shutdown();
     }
+}
+
+#[test]
+fn unsatisfiable_in_flight_limit_is_a_typed_error() {
+    let limits = ConnectionLimits {
+        max_in_flight: usize::MAX,
+        ..ConnectionLimits::default()
+    };
+    assert_eq!(
+        Connection::new(limits).err(),
+        Some(ConnectionError::Decoder(Error::AllocationFailed))
+    );
+}
+
+/// The wire queue never empties: one response stays queued while the one in
+/// front of it is written, for many more requests than any internal batch.
+#[test]
+fn a_never_empty_wire_queue_keeps_responses_in_order() {
+    let mut connection = Connection::new(ConnectionLimits::default()).unwrap();
+    for i in 0..1000u32 {
+        connection
+            .receive(b"GET /x HTTP/1.1\r\nHost: a\r\n\r\n")
+            .unwrap();
+        let RequestEvent::Request(inbound) = connection.poll_request() else {
+            panic!("request {i} was not issued");
+        };
+        let body = i.to_string().into_bytes();
+        connection
+            .submit(inbound.id, Response::new(200, body))
+            .unwrap();
+        if i > 0 {
+            let front = connection.pending_output().to_vec();
+            assert!(front.ends_with(format!("\r\n\r\n{}", i - 1).as_bytes()));
+            connection.advance_output(front.len()).unwrap();
+        }
+        assert_eq!(connection.in_flight(), 0);
+    }
+    assert!(connection.pending_output().ends_with(b"\r\n\r\n999"));
 }

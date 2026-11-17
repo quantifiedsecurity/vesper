@@ -174,7 +174,7 @@ pub fn connection_core_new(connection: u64, max_in_flight: u64, max_outbound: u6
         max_total: max_total,
         base_sequence: 0,
         next_sequence: 0,
-        slots: ChunkSeq::with_capacity[Slot](max_in_flight),
+        slots: ChunkSeq::new[Slot](),
         outbound: ChunkSeq::new[Chunk](),
         out_head: 0,
         cursor: 0,
@@ -487,6 +487,15 @@ pub fn connection_core_advance(inout c: ConnectionCore, written: u64) -> Advance
         c.cursor = 0;
         if c.out_head == c.outbound.len() {
             c.outbound.clear();
+            c.out_head = 0;
+        } else if c.out_head >= 64 && c.out_head >= outbound_len(in c) {
+            // Drop the written prefix once it outnumbers the queued chunks,
+            // so a connection that never drains fully stays bounded.
+            let mut kept: ChunkSeq[Chunk] = ChunkSeq::new[Chunk]();
+            for i in c.out_head..c.outbound.len() {
+                kept.push(chunk_at(in c, i));
+            }
+            c.outbound = kept;
             c.out_head = 0;
         }
         return Advance::Advanced {
