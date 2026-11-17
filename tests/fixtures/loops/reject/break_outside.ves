@@ -1,0 +1,5 @@
+// E0213: `break` outside a loop.
+fn main() -> i64 {
+    break;
+    0
+}

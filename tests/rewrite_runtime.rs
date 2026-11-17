@@ -135,6 +135,15 @@ fn visit<'a>(expression: &'a Expr, callback: &mut impl FnMut(&'a Expr)) {
             }
         }
         ExprKind::Closure { body, .. } => visit(body, callback),
+        kind @ (ExprKind::Loop(_)
+        | ExprKind::For { .. }
+        | ExprKind::Range { .. }
+        | ExprKind::Break(_)
+        | ExprKind::Return(_)) => {
+            for child in kind.control_children().unwrap_or_default() {
+                visit(child, callback);
+            }
+        }
         ExprKind::Handle {
             state,
             body,

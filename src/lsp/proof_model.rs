@@ -494,6 +494,10 @@ impl Builder<'_> {
             ExprKind::Match { .. } => unsupported("a match expression"),
             ExprKind::Handle { .. } => unsupported("a handler"),
             ExprKind::Closure { .. } => unsupported("a closure"),
+            ExprKind::Loop(_) | ExprKind::For { .. } | ExprKind::Range { .. } => {
+                unsupported("a loop")
+            }
+            ExprKind::Break(_) | ExprKind::Return(_) => unsupported("an early exit"),
             ExprKind::Struct { .. } | ExprKind::Tuple(_) => unsupported("an aggregate value"),
             ExprKind::Field(..) | ExprKind::Index(..) => unsupported("a projection"),
             ExprKind::Try(_) => unsupported("'?'"),
@@ -626,7 +630,7 @@ impl Builder<'_> {
         };
         let depth = scope.frames.len() - 1;
         let (name, value) = match first {
-            Statement::Let { pat, ty, value } => {
+            Statement::Let { pat, ty, value, .. } => {
                 let PatternKind::Bind(name) = &pat.kind else {
                     return Err("a destructuring let is outside the scalar model".into());
                 };
