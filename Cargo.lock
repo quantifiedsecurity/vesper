@@ -6384,6 +6384,11 @@ dependencies = [
 [[package]]
 name = "vesper-warp-wheel"
 version = "0.1.0"
+dependencies = [
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
 
 [[package]]
 name = "vmm-sys-util"

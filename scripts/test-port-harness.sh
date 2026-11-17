@@ -115,3 +115,5 @@ done
 grep -q 'test bbr::tests::inflight_at_loss_solves_for_the_threshold_crossing ... ok' "$log" || { cat "$log"; echo "the divergent warp-bbr port failed an unchanged test" >&2; exit 1; }
 echo "divergent warp-bbr port detected (one failure per ported module)"
 crates/vesper-warp-tcp/scripts/test-port.sh
+# Port wave P1 lane 3 (#900): vesper-warp-wheel.
+sh crates/vesper-warp-wheel/port/test-port.sh
