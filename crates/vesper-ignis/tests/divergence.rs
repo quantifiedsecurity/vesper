@@ -48,6 +48,15 @@ fn divergent_port_fails_one_test_per_module() {
         let Some(binary) = std::env::var_os(variable) else {
             continue;
         };
+        // Cargo may print the binary relative to the workspace root, while
+        // this test runs in the crate directory (Bazel's paths are relative
+        // to the runfiles directory, the current one).
+        let mut binary = std::path::PathBuf::from(binary);
+        if !binary.exists() {
+            binary = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(binary);
+        }
         let output = Command::new(&binary)
             .arg("--test-threads=1")
             .output()
