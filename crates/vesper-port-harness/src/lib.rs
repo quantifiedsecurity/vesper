@@ -150,9 +150,14 @@ impl Port {
                     ));
                 }
                 let prebuilt = PathBuf::from(prebuilt);
+                println!("cargo:rerun-if-changed={}", prebuilt.display());
                 std::fs::copy(&prebuilt, &object)
                     .map_err(|e| format!("{}: {e}", prebuilt.display()))?;
-                std::env::var_os(GENERATED_BINDING_ENV).map(PathBuf::from)
+                let generated = std::env::var_os(GENERATED_BINDING_ENV).map(PathBuf::from);
+                if let Some(path) = &generated {
+                    println!("cargo:rerun-if-changed={}", path.display());
+                }
+                generated
             }
             None => {
                 let compiler = compiler()?;
@@ -428,10 +433,15 @@ fn compiler() -> Result<PathBuf, String> {
         println!("cargo:rerun-if-changed={}", root.join(input).display());
     }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    // An explicit host triple: the compiler runs here, whatever target the
+    // outer build (or CARGO_BUILD_TARGET) selects, and its path is then
+    // always `<target dir>/<host>/debug`.
+    let host = env("HOST")?;
     let mut command = Command::new(&cargo);
     command
         .current_dir(&root)
         .args(["build", "--locked", "-p", "vesper", "--bin", "vesper"])
+        .args(["--target", &host])
         .arg("--target-dir")
         .arg(&target_dir)
         .env(IN_COMPILER_BUILD_ENV, "1")
@@ -440,7 +450,7 @@ fn compiler() -> Result<PathBuf, String> {
         .env_remove("CARGO_TARGET_DIR");
     run(&mut command, Path::new(&cargo))?;
     let exe = format!("vesper{}", std::env::consts::EXE_SUFFIX);
-    Ok(target_dir.join("debug").join(exe))
+    Ok(target_dir.join(host).join("debug").join(exe))
 }
 
 fn run(command: &mut Command, program: &Path) -> Result<(), String> {

@@ -119,7 +119,7 @@ Sequences and strings get added to the ABI once P0 lanes 3 and 7 land.
       `vesper build --lib <package dir> --target $TARGET ... --rust-binding`.
       CI builds `cargo build --locked --bin vesper` once and sets this.
    3. Nothing set: the harness builds the in-tree compiler itself with
-      `cargo build -p vesper --bin vesper --target-dir <target>/vesper-port-compiler`
+      `cargo build -p vesper --bin vesper --target <host> --target-dir <target>/vesper-port-compiler`
       (about two minutes the first time, a no-op afterwards), so a plain
       `cargo test -p <crate>` works. Set `VESPER_PORT_COMPILER` to skip it.
 
