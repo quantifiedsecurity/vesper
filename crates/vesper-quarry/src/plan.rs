@@ -1,10 +1,10 @@
 #[cfg(not(feature = "vesper-port"))]
 use crate::parse::{Expr, Select, Table};
 #[cfg(not(feature = "vesper-port"))]
+use crate::Result;
+#[cfg(not(feature = "vesper-port"))]
 use crate::{add, bound, identifier, Error, ErrorKind};
 use crate::{ColumnDef, HermeticCatalog, Limits, ParamDef, ScalarType, Value};
-#[cfg(not(feature = "vesper-port"))]
-use crate::Result;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A comparison operator of a checked predicate.

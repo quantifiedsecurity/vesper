@@ -1,5 +1,5 @@
 //! The Rust SQL lexer and parser (the default build; the `vesper-port`
-//! build uses vesper/quarry.ves instead).
+//! build uses vesper/src/lib.ves instead).
 pub(crate) use crate::plan::Cmp;
 use crate::{
     add, bound, identifier, ColumnDef, Error, ErrorKind, JoinKind, Limits, Result, ScalarType,

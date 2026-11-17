@@ -1,5 +1,8 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("//tools/bazel:defs.bzl", "vesper_crate")
+load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_package", "vesper_port_object")
 
+# The Rust build (default features), with its tests.
 vesper_crate(
     # tests/lean_model.rs reads lean/QuarryWal.lean; Lean rejects symlinked
     # runfiles outside --root, so it runs in a regular copy.
@@ -8,4 +11,129 @@ vesper_crate(
     # Every crash point of a workload with two secondary indexes is
     # recovered (about 90 s in a local debug build).
     test_timeouts = {"test/store_crash": "long"},
+)
+
+# The Vesper build (port wave P1 lane 7, #904): the SQL front end, optimizer,
+# row executor and access planner in the Loom package vesper/, linked
+# through the committed binding port/binding.rs. The tests that exercise
+# them run unchanged against it.
+vesper_package(
+    name = "port_package",
+    srcs = glob(["vesper/src/**/*.ves"]),
+    manifest = "vesper/Loom.toml",
+)
+
+vesper_port_object(
+    name = "quarry_vesper",
+    library = "quarry",
+    package = ":port_package",
+    target = VESPER_TARGET,
+)
+
+filegroup(
+    name = "quarry_vesper_binding",
+    srcs = [":quarry_vesper"],
+    output_group = "rust_binding",
+)
+
+# The divergence checks: one divergent object per ported Rust module, with
+# the edits of DIVERGENT in build.rs that belong to it.
+# :port_divergence_detected expects each to fail its test.
+PORT_DIVERGENT = {
+    "lex": ("vesper/src/lex.ves", {"op = 3;": "op = 2;"}),
+    "ddl": ("vesper/src/ddl.ves", {"fail_name(inout q, 3, \"table \"": "fail_name(inout q, 2, \"table \""}),
+    "plan": ("vesper/src/plan.ves", {
+        "if b.kind == 1 || b.kind == 3 {": "if b.kind == 3 {",
+        "if (x.a == 0 || x.a == 1) && deps_within(in q, p, x.b) {": "if (x.a == 0 || x.a == 1 || x.a == 3) && deps_within(in q, p, x.b) {",
+    }),
+    "values": ("vesper/src/values.ves", {"if a == 1 || b == 1 {": "if a == 1 && b == 1 {"}),
+    "stats": ("vesper/src/stats.ves", {
+        "                    } else if op == 4 {\n                        2": "                    } else if op == 4 {\n                        4",
+    }),
+}
+
+[
+    vesper_port_object(
+        name = "quarry_vesper_divergent_" + module,
+        edit_src = spec[0],
+        edits = spec[1],
+        library = "quarry",
+        package = ":port_package",
+        target = VESPER_TARGET,
+    )
+    for module, spec in PORT_DIVERGENT.items()
+]
+
+rust_library(
+    name = "port",
+    srcs = glob(["src/**/*.rs"]) + ["port/binding.rs"],
+    crate_features = ["vesper-port"],
+    crate_name = "vesper_quarry",
+    crate_root = "src/lib.rs",
+    edition = "2021",
+    deps = [
+        "//crates/vesper-port-abi",
+        "//crates/vesper-simd",
+    ],
+)
+
+# Port test binaries run from the runfiles root, so the fixtures are found
+# relative to it.
+PORT_TEST_ENV = {"CARGO_MANIFEST_DIR": "crates/vesper-quarry"}
+
+PORT_TEST_DATA = glob(["tests/fixtures/planner/**"])
+
+[
+    rust_test(
+        name = name,
+        srcs = [src],
+        compile_data = [obj],
+        crate_features = ["vesper-port"],
+        crate_name = crate,
+        data = PORT_TEST_DATA,
+        edition = "2021",
+        rustc_env = PORT_TEST_ENV,
+        rustc_flags = ["-Clink-arg=$(location %s)" % obj],
+        tags = tags,
+        deps = [":port"],
+    )
+    for name, src, crate, obj, tags in [
+        ("port_sql_test", "tests/sql.rs", "sql", ":quarry_vesper", []),
+        ("port_planner_spec_test", "tests/planner_spec.rs", "planner_spec", ":quarry_vesper", []),
+        ("port_vector_test", "tests/vector.rs", "vector", ":quarry_vesper", []),
+        ("port_vector_join_test", "tests/vector_join.rs", "vector_join", ":quarry_vesper", []),
+        ("port_memory_test", "tests/port_memory.rs", "port_memory", ":quarry_vesper", []),
+    ] + [
+        (
+            "_port_%s_divergent.bin" % module,
+            "tests/%s.rs" % test,
+            "%s_divergent_%s" % (test, module),
+            ":quarry_vesper_divergent_" + module,
+            ["manual"],
+        )
+        for module, test in [
+            ("lex", "planner_spec"),
+            ("ddl", "sql"),
+            ("plan", "sql"),
+            ("values", "sql"),
+            ("stats", "planner_spec"),
+        ]
+    ]
+]
+
+rust_test(
+    name = "port_divergence_detected",
+    srcs = ["tests/port_bazel.rs"],
+    data = [
+        "port/binding.rs",
+        ":quarry_vesper_binding",
+    ] + [":_port_%s_divergent.bin" % m for m in PORT_DIVERGENT] + PORT_TEST_DATA,
+    edition = "2021",
+    env = dict(
+        {"VESPER_QUARRY_BINDING": "$(rootpath :quarry_vesper_binding)"},
+        **{
+            "VESPER_QUARRY_DIVERGENT_" + m.upper(): "$(rootpath :_port_%s_divergent.bin)" % m
+            for m in PORT_DIVERGENT
+        }
+    ),
 )

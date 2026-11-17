@@ -1,0 +1,273 @@
+// Module paths of @vesper/quarry (see lib.ves).
+use self::{
+    CCol,
+    Q
+};
+use self::util::{
+    ceil_div,
+    cw,
+    ex,
+    fail_name,
+    new_q,
+    node,
+    none
+};
+use self::check::{
+    ex_end
+};
+use self::plan::{
+    decode_plan,
+    has_binding
+};
+use self::values::{
+    dtab,
+    find_data,
+    val_at
+};
+use self::rows::{
+    load_catalog_ex,
+    load_data
+};
+use self::stats::{
+    analyze,
+    bound_kind,
+    bounds_of,
+    column_of,
+    continue_none,
+    height,
+    index_column,
+    index_rows,
+    name_before,
+    pages
+};
+
+// Collect the scans (by binding) and, for each join, its right-hand scan:
+// scans[binding] = node; joins records (rhs binding, join node).
+// Scans of plan n by binding into `aux` (pre-filled with none), and
+// (right binding, join node) pairs into `aux2`.
+pub fn collect(inout q: Q, n: u64) {
+    let x = node(in q, n);
+    if x.kind == 0 {
+        q.aux.try_set(x.c, n);
+    } else if x.kind == 1 {
+        collect(inout q, x.b);
+    } else {
+        collect(inout q, x.b);
+        collect(inout q, x.c);
+        let r = node(in q, x.c);
+        if r.kind == 0 {
+            q.aux2.push(r.c);
+            q.aux2.push(n);
+        }
+    }
+}
+
+// The equality conjuncts `b.c = a.d` of the condition at p, as
+// (slot of b, binding of a, slot of a) triples appended to `aux4`.
+pub fn join_keys(inout q: Q, p: u64, b: u64) {
+    let tag = ex(in q, p);
+    if tag == 4 {
+        let a = wrapping_add(p, 3);
+        join_keys(inout q, a, b);
+        let e = ex_end(in q, a);
+        join_keys(inout q, e, b);
+    } else if tag == 3 && ex(in q, wrapping_add(p, 3)) == 0 {
+        let x = wrapping_add(p, 4);
+        let y = ex_end(in q, x);
+        if ex(in q, x) == 0 && ex(in q, y) == 0 {
+            let xb = ex(in q, wrapping_add(x, 4));
+            let yb = ex(in q, wrapping_add(y, 4));
+            if xb == b && yb != b {
+                let xs = ex(in q, wrapping_add(x, 3));
+                let ys = ex(in q, wrapping_add(y, 3));
+                q.aux4.push(xs);
+                q.aux4.push(yb);
+                q.aux4.push(ys);
+            } else if yb == b && xb != b {
+                let xs = ex(in q, wrapping_add(x, 3));
+                let ys = ex(in q, wrapping_add(y, 3));
+                q.aux4.push(ys);
+                q.aux4.push(xb);
+                q.aux4.push(xs);
+            }
+        }
+    }
+}
+
+// The access paths of an optimized plan. prog is
+//   plan, nbinds, (name off, name len, value)*, catalog, data,
+//   nindexes, (name off, name len, table off, table len, column off,
+//   column len)*
+// with ranges into text. On success words holds, per binding in FROM
+// order, [kind, index off, index len, bound kind, outer binding,
+// outer slot, rows, cost]: kind is scan 0, index 1, index_join 2.
+pub fn access_paths_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
+    let mut q = new_q();
+    q.pool.extend(in text);
+    q.ex.extend(in prog);
+    let (root, plan_end) = decode_plan(inout q, 0);
+    let mut p = plan_end;
+    let nbinds = ex(in q, p);
+    p = wrapping_add(p, 1);
+    for k in 0..nbinds {
+        let v = val_at(in q, in q.ex, wrapping_add(p, 2));
+        let d = CCol {
+            noff: ex(in q, p),
+            nlen: ex(in q, wrapping_add(p, 1)),
+            ty: q.vals.len(),
+            nullable: false,
+            used: false
+        };
+        q.vals.push(v);
+        q.params.push(d);
+        p = wrapping_add(p, 5);
+    }
+    p = load_catalog_ex(inout q, p);
+    p = load_data(inout q, p);
+    let nidx = ex(in q, p);
+    // rows[0] records where the index list starts in `ex`.
+    q.rows.push(wrapping_add(p, 1));
+    // aux: scans by binding; aux2: joins; aux3: the rows estimate of each
+    // binding's chosen path; aux4: join keys.
+    for i in 0..q.plan.len() {
+        q.aux.push(none());
+    }
+    collect(inout q, root);
+    for b in 0..q.aux.len() {
+        let s = cw(in q.aux, b);
+        if s == none() {
+            break;
+        }
+        let x = node(in q, s);
+        let d = find_data(in q, x.a, x.b);
+        if d == none() {
+            fail_name(inout q, 8, "missing data for ", x.a, x.b);
+            return q;
+        }
+        let n = dtab(in q, d).n;
+        // Scan.
+        let mut kind: u64 = 0;
+        let mut ioff: u64 = 0;
+        let mut ilen: u64 = 0;
+        let mut bkind: u64 = 0;
+        let mut outer = none();
+        let mut outer_slot = none();
+        let mut rows = n;
+        let mut cost = wrapping_add(wrapping_mul(1000, pages(n)), wrapping_mul(10, n));
+        let base = cw(in q.rows, 0);
+        // Index paths.
+        for i in 0..nidx {
+            let k = index_column(in q, x, i);
+            if k == none() {
+                continue_none();
+            } else {
+                let slot = ex(in q, wrapping_add(x.d, k));
+                let bd = bounds_of(in q, x, slot);
+                if bd.has_lo || bd.has_hi {
+                    let st = analyze(inout q, d, k);
+                    let bk = bound_kind(in q, bd);
+                    let m = index_rows(in q, bd, bk, st, n);
+                    let c = wrapping_add(wrapping_mul(1000, height(n)), wrapping_mul(1010, m));
+                    let at = wrapping_add(base, wrapping_mul(i, 6));
+                    let no = ex(in q, at);
+                    let nl = ex(in q, wrapping_add(at, 1));
+                    if c
+                        < cost
+                        || (c == cost && kind == 1 && name_before(in q, no, nl, ioff, ilen)) {
+                        kind = 1;
+                        ioff = no;
+                        ilen = nl;
+                        bkind = bk;
+                        rows = m;
+                        cost = c;
+                    }
+                }
+            }
+        }
+        // Index nested-loop join paths, for the right side of INNER and
+        // LEFT joins.
+        let mut j: u64 = 0;
+        loop {
+            if wrapping_add(j, 1) >= q.aux2.len() {
+                break;
+            }
+            if cw(in q.aux2, j) == b {
+                let jn = node(in q, cw(in q.aux2, wrapping_add(j, 1)));
+                if jn.a == 0 || jn.a == 1 {
+                    q.aux4.truncate(0);
+                    join_keys(inout q, jn.d, b);
+                    let mut t: u64 = 0;
+                    loop {
+                        if t >= q.aux4.len() {
+                            break;
+                        }
+                        let bslot = cw(in q.aux4, t);
+                        let ab = cw(in q.aux4, wrapping_add(t, 1));
+                        let aslot = cw(in q.aux4, wrapping_add(t, 2));
+                        t = wrapping_add(t, 3);
+                        if !has_binding(in q, jn.b, ab) {
+                            continue_none();
+                        } else {
+                            let k = column_of(in q, x, bslot);
+                            let an = node(in q, cw(in q.aux, ab));
+                            let ad = find_data(in q, an.a, an.b);
+                            let ak = column_of(in q, an, aslot);
+                            if k != none() && ad != none() && ak != none() {
+                                let ast = analyze(inout q, ad, ak);
+                                let mut kk = cw(in q.aux3, ab);
+                                if kk > ast.distinct {
+                                    kk = ast.distinct;
+                                }
+                                for i in 0..nidx {
+                                    if index_column(in q, x, i) == k {
+                                        let st = analyze(inout q, d, k);
+                                        let probe = if st.distinct == 0 {
+                                            0
+                                        } else {
+                                            ceil_div(wrapping_mul(kk, st.nonnull), st.distinct)
+                                        };
+                                        let c = wrapping_add(
+                                            wrapping_mul(wrapping_mul(1000, height(n)), kk),
+                                            wrapping_mul(1010, probe)
+                                        );
+                                        let at = wrapping_add(base, wrapping_mul(i, 6));
+                                        let no = ex(in q, at);
+                                        let nl = ex(in q, wrapping_add(at, 1));
+                                        if c
+                                            < cost
+                                            || (
+                                            c
+                                                == cost
+                                                && kind
+                                                == 2
+                                                && name_before(in q, no, nl, ioff, ilen)
+                                        ) {
+                                            kind = 2;
+                                            ioff = no;
+                                            ilen = nl;
+                                            outer = ab;
+                                            outer_slot = aslot;
+                                            rows = probe;
+                                            cost = c;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            j = wrapping_add(j, 2);
+        }
+        q.aux3.push(rows);
+        q.words.push(kind);
+        q.words.push(ioff);
+        q.words.push(ilen);
+        q.words.push(bkind);
+        q.words.push(outer);
+        q.words.push(outer_slot);
+        q.words.push(rows);
+        q.words.push(cost);
+    }
+    q
+}

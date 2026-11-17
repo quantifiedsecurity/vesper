@@ -1,0 +1,306 @@
+// Module values of @vesper/quarry (see lib.ves).
+use self::{
+    CTab,
+    Q,
+    Val
+};
+use self::util::{
+    bool_val,
+    bound,
+    cw,
+    ex,
+    fail,
+    lim,
+    none,
+    null_val,
+    order,
+    param,
+    same,
+    vat
+};
+use self::check::{
+    ex_end
+};
+
+// Values and the row executor (src/execute.rs).
+
+pub fn val_at(in q: Q, in s: ChunkSeq[u64], p: u64) -> Val {
+    Val {
+        t: cw(in s, p),
+        a: cw(in s, wrapping_add(p, 1)),
+        b: cw(in s, wrapping_add(p, 2))
+    }
+}
+
+// `Value::bytes`: the payload length of text and bytes, 8 otherwise.
+pub fn vbytes(v: Val) -> u64 {
+    if v.t == 5 || v.t == 6 {
+        v.b
+    } else {
+        8
+    }
+}
+
+// The heap bytes `row_bytes` adds besides `size_of::<Value>()`.
+pub fn vheap(v: Val) -> u64 {
+    if v.t == 5 || v.t == 6 {
+        v.b
+    } else {
+        0
+    }
+}
+
+pub fn finite(bits: u64) -> bool {
+    ((bits >> 52) & 2047) != 2047
+}
+
+// `Value::valid` for a column or parameter type and nullability.
+pub fn valid(v: Val, ty: u64, nullable: bool) -> bool {
+    if v.t == 0 {
+        nullable
+    } else if v.t == 3 && !finite(v.a) {
+        false
+    } else {
+        v.t == wrapping_add(ty, 1)
+    }
+}
+
+pub fn size_value(in q: Q) -> u64 {
+    lim(in q, 14)
+}
+
+pub fn size_vec(in q: Q) -> u64 {
+    lim(in q, 15)
+}
+
+// A total order key for a finite f64 (-0.0 equals 0.0).
+pub fn f64_key(bits: u64) -> u64 {
+    let b = if bits == 9223372036854775808 {
+        0
+    } else {
+        bits
+    };
+    if (b >> 63) == 1 {
+        ~b
+    } else {
+        b | 9223372036854775808
+    }
+}
+
+// Order of two non-null values of one tag: 0 less, 1 equal, 2 greater;
+// 3 when the tags differ.
+pub fn compare_vals(in q: Q, x: Val, y: Val) -> u64 {
+    if x.t != y.t {
+        return 3;
+    }
+    let (a, b) = if x.t == 2 {
+        // Signed: flip the sign bit so unsigned order is signed order.
+        (x.a ^ 9223372036854775808, y.a ^ 9223372036854775808)
+    } else if x.t == 3 {
+        (f64_key(x.a), f64_key(y.a))
+    } else {
+        (x.a, y.a)
+    };
+    if x.t == 5 || x.t == 6 {
+        return order(in q.pool, x.a, x.b, y.a, y.b);
+    }
+    if a < b {
+        0
+    } else if a > b {
+        2
+    } else {
+        1
+    }
+}
+
+pub fn tick(inout q: Q, n: u64) {
+    q.work = wrapping_add(q.work, n);
+    let w = q.work;
+    bound(inout q, w, 9, "execution work limit");
+}
+
+pub fn row_val(in q: Q, row: u64, slot: u64) -> Val {
+    val_at(in q, in q.rows, wrapping_add(row, wrapping_mul(slot, 3)))
+}
+
+pub fn width(in q: Q) -> u64 {
+    ex(in q, 16)
+}
+
+// `Budget::row`.
+pub fn charge_row(inout q: Q, row: u64) {
+    let w = width(in q);
+    let mut heap: u64 = size_vec(in q);
+    let mut payload: u64 = w;
+    for k in 0..w {
+        let v = row_val(in q, row, k);
+        heap = wrapping_add(wrapping_add(heap, size_value(in q)), vheap(v));
+        payload = wrapping_add(payload, vbytes(v));
+    }
+    q.brows = wrapping_add(q.brows, 1);
+    q.bbytes = wrapping_add(q.bbytes, heap);
+    let r = q.brows;
+    let b = q.bbytes;
+    if !bound(inout q, r, 10, "cumulative intermediate row limit") {
+        return;
+    }
+    if !bound(inout q, b, 11, "cumulative intermediate byte limit") {
+        return;
+    }
+    tick(inout q, payload);
+}
+
+// The parameter value bound to a name.
+pub fn bind_val(in q: Q, off: u64, len: u64) -> Val {
+    for i in 0..q.params.len() {
+        let d = param(in q, i);
+        if same(in q.pool, d.noff, d.nlen, off, len) {
+            return vat(in q, d.ty);
+        }
+    }
+    null_val()
+}
+
+// `truth`: 0 unknown (NULL), 1 false, 2 true; a Type error otherwise.
+pub fn truth(inout q: Q, v: Val) -> u64 {
+    if v.t == 0 {
+        0
+    } else if v.t == 4 {
+        if v.a != 0 {
+            2
+        } else {
+            1
+        }
+    } else {
+        fail(inout q, 5, "non-boolean checked predicate");
+        0
+    }
+}
+
+pub fn three(t: u64) -> Val {
+    if t == 0 {
+        null_val()
+    } else {
+        bool_val(t == 2)
+    }
+}
+
+// `eval` of the expression at p over the row starting at `row`.
+pub fn eval(inout q: Q, p: u64, row: u64) -> Val {
+    tick(inout q, 1);
+    if q.err != 0 {
+        return null_val();
+    }
+    let tag = ex(in q, p);
+    if tag == 0 {
+        let v = row_val(in q, row, ex(in q, wrapping_add(p, 3)));
+        tick(inout q, vbytes(v));
+        v
+    } else if tag == 1 {
+        let v = bind_val(in q, ex(in q, wrapping_add(p, 3)), ex(in q, wrapping_add(p, 4)));
+        tick(inout q, vbytes(v));
+        v
+    } else if tag == 2 {
+        let v = val_at(in q, in q.ex, wrapping_add(p, 3));
+        tick(inout q, vbytes(v));
+        v
+    } else if tag == 3 {
+        let op = ex(in q, wrapping_add(p, 3));
+        let ap = wrapping_add(p, 4);
+        let bp = ex_end(in q, ap);
+        let a = eval(inout q, ap, row);
+        let b = eval(inout q, bp, row);
+        if q.err != 0 {
+            return null_val();
+        }
+        if a.t == 0 || b.t == 0 {
+            return null_val();
+        }
+        let o = compare_vals(in q, a, b);
+        if o == 3 {
+            fail(inout q, 5, "comparison mismatch");
+            return null_val();
+        }
+        bool_val(
+            if op == 0 {
+                o == 1
+            } else if op == 1 {
+                o != 1
+            } else if op == 2 {
+                o == 0
+            } else if op == 3 {
+                o != 2
+            } else if op == 4 {
+                o == 2
+            } else {
+                o != 0
+            }
+        )
+    } else if tag == 4 || tag == 5 {
+        let ap = wrapping_add(p, 3);
+        let bp = ex_end(in q, ap);
+        let av = eval(inout q, ap, row);
+        let a = truth(inout q, av);
+        let bv = eval(inout q, bp, row);
+        let b = truth(inout q, bv);
+        if q.err != 0 {
+            return null_val();
+        }
+        if tag == 4 {
+            if a == 1 || b == 1 {
+                bool_val(false)
+            } else if a == 2 && b == 2 {
+                bool_val(true)
+            } else {
+                null_val()
+            }
+        } else if a == 2 || b == 2 {
+            bool_val(true)
+        } else if a == 1 && b == 1 {
+            bool_val(false)
+        } else {
+            null_val()
+        }
+    } else if tag == 6 {
+        let xv = eval(inout q, wrapping_add(p, 3), row);
+        let x = truth(inout q, xv);
+        if x == 0 {
+            null_val()
+        } else {
+            bool_val(x == 1)
+        }
+    } else {
+        let negated = ex(in q, wrapping_add(p, 3)) != 0;
+        let v = eval(inout q, wrapping_add(p, 4), row);
+        bool_val((v.t == 0) != negated)
+    }
+}
+
+// Whether a predicate holds (`truth(eval(..)) == Some(true)`).
+pub fn holds(inout q: Q, p: u64, row: u64) -> bool {
+    let v = eval(inout q, p, row);
+    let t = truth(inout q, v);
+    q.err == 0 && t == 2
+}
+
+pub fn dtab(in q: Q, i: u64) -> CTab {
+    match q.dtabs.try_get(i) {
+        Option::Some(t) => t,
+        Option::None => CTab {
+            noff: 0,
+            nlen: 0,
+            start: 0,
+            n: 0
+        },
+    }
+}
+
+pub fn find_data(in q: Q, off: u64, len: u64) -> u64 {
+    for i in 0..q.dtabs.len() {
+        let t = dtab(in q, i);
+        if same(in q.pool, t.noff, t.nlen, off, len) {
+            return i;
+        }
+    }
+    none()
+}

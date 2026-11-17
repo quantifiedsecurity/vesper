@@ -1,0 +1,257 @@
+// Module entry of @vesper/quarry (see lib.ves).
+use self::{
+    CCol,
+    CTab,
+    Q
+};
+use self::util::{
+    bound,
+    cw,
+    empty_col,
+    ex,
+    fail,
+    fail_name,
+    identifier,
+    load_limits,
+    new_q,
+    none,
+    param,
+    same,
+    sw,
+    vat
+};
+use self::check::{
+    ex_end
+};
+use self::plan::{
+    decode_plan
+};
+use self::values::{
+    dtab,
+    eval,
+    size_value,
+    size_vec,
+    tick,
+    val_at,
+    valid,
+    vbytes,
+    vheap
+};
+use self::rows::{
+    check_inputs,
+    load_catalog_ex,
+    load_data,
+    run,
+    table_bytes,
+    validate_rows
+};
+
+// `PreparedQuery::execute` after the Rust snapshot check. prog is
+//   limits (16 words), width, plan, nproj, projection expressions..,
+//   ndecl, (name off, name len, ty, nullable)*,
+//   nbinds, (name off, name len, value)*, catalog, data
+// with ranges into text. On success words holds
+// [work, nrows, (values of one output row)*].
+pub fn execute_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
+    let mut q = new_q();
+    q.pool.extend(in text);
+    q.ex.extend(in prog);
+    let nlim: u64 = 16;
+    for i in 0..nlim {
+        q.lim.push(sw(in prog, i));
+    }
+    let (root, plan_end) = decode_plan(inout q, 17);
+    let nproj = ex(in q, plan_end);
+    let mut p = wrapping_add(plan_end, 1);
+    for k in 0..nproj {
+        q.aux2.push(p);
+        p = ex_end(in q, p);
+    }
+    let ndecl = ex(in q, p);
+    p = wrapping_add(p, 1);
+    for k in 0..ndecl {
+        let d = CCol {
+            noff: ex(in q, p),
+            nlen: ex(in q, wrapping_add(p, 1)),
+            ty: ex(in q, wrapping_add(p, 2)),
+            nullable: ex(in q, wrapping_add(p, 3)) != 0,
+            used: false
+        };
+        q.decls.push(d);
+        p = wrapping_add(p, 4);
+    }
+    let nbinds = ex(in q, p);
+    p = wrapping_add(p, 1);
+    for k in 0..nbinds {
+        let v = val_at(in q, in q.ex, wrapping_add(p, 2));
+        let d = CCol {
+            noff: ex(in q, p),
+            nlen: ex(in q, wrapping_add(p, 1)),
+            ty: q.vals.len(),
+            nullable: false,
+            used: false
+        };
+        q.vals.push(v);
+        q.params.push(d);
+        p = wrapping_add(p, 5);
+    }
+    p = load_catalog_ex(inout q, p);
+    load_data(inout q, p);
+    if nbinds != ndecl {
+        fail(inout q, 8, "parameter set differs from declarations");
+        return q;
+    }
+    let mut parameter_bytes: u64 = 0;
+    for k in 0..ndecl {
+        let d = match q.decls.try_get(k) {
+            Option::Some(d) => d,
+            Option::None => empty_col(),
+        };
+        let mut found = none();
+        for i in 0..q.params.len() {
+            let b = param(in q, i);
+            if same(in q.pool, b.noff, b.nlen, d.noff, d.nlen) {
+                found = i;
+            }
+        }
+        if found == none() {
+            fail_name(inout q, 8, "missing parameter :", d.noff, d.nlen);
+            return q;
+        }
+        let v = vat(in q, param(in q, found).ty);
+        if !valid(v, d.ty, d.nullable) {
+            fail_name(inout q, 5, "parameter :", d.noff, d.nlen);
+            return q;
+        }
+        parameter_bytes = wrapping_add(wrapping_add(parameter_bytes, size_value(in q)), vbytes(v));
+    }
+    if !bound(inout q, parameter_bytes, 8, "parameter byte limit") {
+        return q;
+    }
+    let mut count: u64 = 0;
+    let mut bytes = parameter_bytes;
+    for i in 0..q.dtabs.len() {
+        let t = dtab(in q, i);
+        count = wrapping_add(count, t.n);
+        bytes = wrapping_add(bytes, table_bytes(in q, t));
+        if !bound(inout q, count, 7, "input row limit") {
+            return q;
+        }
+        if !bound(inout q, bytes, 8, "input byte limit") {
+            return q;
+        }
+        validate_rows(inout q, t);
+        let mut at = t.start;
+        for r in 0..t.n {
+            if q.err != 0 {
+                return q;
+            }
+            let nvals = ex(in q, at);
+            tick(inout q, wrapping_add(1, nvals));
+            at = wrapping_add(wrapping_add(at, 1), wrapping_mul(nvals, 3));
+        }
+        if q.err != 0 {
+            return q;
+        }
+    }
+    // Missing input must fail even if an optimizer could eliminate its rows.
+    check_inputs(inout q, root);
+    if q.err != 0 {
+        return q;
+    }
+    let (s, e) = run(inout q, root);
+    if q.err != 0 {
+        return q;
+    }
+    q.words.push(0);
+    q.words.push(0);
+    let mut out: u64 = 0;
+    let mut output_bytes: u64 = 0;
+    for i in s..e {
+        let row = cw(in q.rowset, i);
+        let bn = wrapping_add(out, 1);
+        if !bound(inout q, bn, 12, "output row limit") {
+            return q;
+        }
+        let mut heap = size_vec(in q);
+        for k in 0..nproj {
+            let e = cw(in q.aux2, k);
+            let v = eval(inout q, e, row);
+            if q.err != 0 {
+                return q;
+            }
+            heap = wrapping_add(wrapping_add(heap, size_value(in q)), vheap(v));
+            q.words.push(v.t);
+            q.words.push(v.a);
+            q.words.push(v.b);
+        }
+        output_bytes = wrapping_add(output_bytes, heap);
+        if !bound(inout q, output_bytes, 13, "output byte limit") {
+            return q;
+        }
+        out = bn;
+    }
+    let w = q.work;
+    q.words.try_set(0, w);
+    q.words.try_set(1, out);
+    q
+}
+
+// `DataSet::set_rows` checks. prog is
+//   limits (16 words), table name off, table name len, catalog,
+//   nrows, (nvals, values..)*, nother, (name off, name len, nrows,
+//   (nvals, values..)*)*
+// with ranges into text (other tables' text values carry only their
+// length). On success words holds the normalized table name range.
+pub fn set_rows_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
+    let mut q = new_q();
+    q.pool.extend(in text);
+    q.ex.extend(in prog);
+    if !load_limits(inout q, prog) {
+        return q;
+    }
+    let toff = ex(in q, 16);
+    let tlen = ex(in q, 17);
+    let mut p = load_catalog_ex(inout q, 18);
+    let name = identifier(inout q, toff, tlen);
+    if q.err != 0 {
+        return q;
+    }
+    let nrows = ex(in q, p);
+    let rows = CTab {
+        noff: name,
+        nlen: tlen,
+        start: wrapping_add(p, 1),
+        n: nrows
+    };
+    if !bound(inout q, nrows, 7, "input row limit") {
+        return q;
+    }
+    validate_rows(inout q, rows);
+    if q.err != 0 {
+        return q;
+    }
+    let mut count = nrows;
+    let mut bytes = table_bytes(in q, rows);
+    let mut e = wrapping_add(p, 1);
+    for r in 0..nrows {
+        e = wrapping_add(wrapping_add(e, 1), wrapping_mul(ex(in q, e), 3));
+    }
+    load_data(inout q, e);
+    for i in 0..q.dtabs.len() {
+        let t = dtab(in q, i);
+        if !same(in q.pool, t.noff, t.nlen, name, tlen) {
+            count = wrapping_add(count, t.n);
+            bytes = wrapping_add(bytes, table_bytes(in q, t));
+        }
+    }
+    if !bound(inout q, count, 7, "input row limit") {
+        return q;
+    }
+    if !bound(inout q, bytes, 8, "input byte limit") {
+        return q;
+    }
+    q.words.push(name);
+    q.words.push(tlen);
+    q
+}

@@ -1,0 +1,257 @@
+// Module lex of @vesper/quarry (see lib.ves).
+use self::{
+    Q,
+    Tok
+};
+use self::util::{
+    bound,
+    fail,
+    identifier,
+    put,
+    put_u64,
+    sb
+};
+use self::parse::{
+    keyword
+};
+
+// Lexer (src/parse.rs `lex`).
+
+pub fn byte(in s: Slice[u8], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(x) => widen_u64(x),
+        Option::None => 0,
+    }
+}
+
+pub fn is_space(c: u64) -> bool {
+    c == 32 || c == 9 || c == 10 || c == 12 || c == 13
+}
+
+pub fn is_word_byte(c: u64) -> bool {
+    (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
+}
+
+pub fn is_digit(c: u64) -> bool {
+    c >= 48 && c <= 57
+}
+
+pub fn lex(inout q: Q, in sql: Slice[u8]) {
+    let bn = sql.len();
+    if !bound(inout q, bn, 0, "SQL byte limit") {
+        return;
+    }
+    // The SQL text is copied after the input text so identifiers can be
+    // normalized from the pool.
+    let base = q.pool.len();
+    q.pool.extend(in sql);
+    let n = sql.len();
+    let mut i: u64 = 0;
+    loop {
+        if i >= n || q.err != 0 {
+            break;
+        }
+        let c = byte(in sql, i);
+        if is_space(c) {
+            i = wrapping_add(i, 1);
+        } else {
+            let bn = wrapping_add(q.toks.len(), 1);
+            if !bound(inout q, bn, 1, "SQL token limit") {
+                return;
+            }
+            let start = i;
+            if (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95 || c == 58 {
+                let is_param = c == 58;
+                if is_param {
+                    i = wrapping_add(i, 1);
+                }
+                let word_start = i;
+                loop {
+                    if i >= n || !is_word_byte(byte(in sql, i)) {
+                        break;
+                    }
+                    i = wrapping_add(i, 1);
+                }
+                let len = wrapping_sub(i, word_start);
+                let off = identifier(inout q, wrapping_add(base, word_start), len);
+                if q.err != 0 {
+                    return;
+                }
+                let kw = if is_param {
+                    0
+                } else {
+                    keyword(in q.pool, off, len)
+                };
+                q
+                    .toks
+                    .push(
+                    Tok {
+                        kind: if is_param {
+                            2
+                        } else {
+                            1
+                        },
+                        a: off,
+                        b: len,
+                        kw: kw
+                    }
+                );
+            } else if is_digit(c) || c == 45 {
+                i = wrapping_add(i, 1);
+                loop {
+                    if i >= n || !is_digit(byte(in sql, i)) {
+                        break;
+                    }
+                    i = wrapping_add(i, 1);
+                }
+                // Parse sql[start..i] as an i64.
+                let neg = c == 45;
+                let first = if neg {
+                    wrapping_add(start, 1)
+                } else {
+                    start
+                };
+                let mut ok = first < i;
+                let mut m: u64 = 0;
+                let mut j = first;
+                loop {
+                    if j >= i || !ok {
+                        break;
+                    }
+                    if m > 922337203685477580 {
+                        ok = false;
+                    } else {
+                        m = wrapping_add(wrapping_mul(m, 10), wrapping_sub(byte(in sql, j), 48));
+                        if m > 9223372036854775808 {
+                            ok = false;
+                        }
+                    }
+                    j = wrapping_add(j, 1);
+                }
+                if ok && !neg && m > 9223372036854775807 {
+                    ok = false;
+                }
+                if !ok {
+                    fail(inout q, 1, "invalid or overflowing i64 literal");
+                    return;
+                }
+                let v = if neg {
+                    wrapping_sub(0, m)
+                } else {
+                    m
+                };
+                q
+                    .toks
+                    .push(
+                    Tok {
+                        kind: 3,
+                        a: v,
+                        b: 0,
+                        kw: 0
+                    }
+                );
+            } else if c == 39 {
+                i = wrapping_add(i, 1);
+                let off = q.pool.len();
+                let mut part = i;
+                loop {
+                    if i == n {
+                        fail(inout q, 1, "unterminated string");
+                        return;
+                    }
+                    if byte(in sql, i) == 39 {
+                        for k in part..i {
+                            q.pool.push(sb(in sql, k));
+                        }
+                        i = wrapping_add(i, 1);
+                        if i < n && byte(in sql, i) == 39 {
+                            q.pool.push(39);
+                            i = wrapping_add(i, 1);
+                            part = i;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        i = wrapping_add(i, 1);
+                    }
+                }
+                q
+                    .toks
+                    .push(
+                    Tok {
+                        kind: 4,
+                        a: off,
+                        b: wrapping_sub(q.pool.len(), off),
+                        kw: 0
+                    }
+                );
+            } else if c == 61 {
+                i = wrapping_add(i, 1);
+                q
+                    .toks
+                    .push(
+                    Tok {
+                        kind: 6,
+                        a: 0,
+                        b: 0,
+                        kw: 0
+                    }
+                );
+            } else if c == 60 || c == 62 || c == 33 {
+                i = wrapping_add(i, 1);
+                let second = if i < n {
+                    byte(in sql, i)
+                } else {
+                    0
+                };
+                let mut op: u64 = 0;
+                if c == 60 && second == 61 {
+                    i = wrapping_add(i, 1);
+                    op = 3;
+                } else if c == 62 && second == 61 {
+                    i = wrapping_add(i, 1);
+                    op = 5;
+                } else if (c == 60 && second == 62) || (c == 33 && second == 61) {
+                    i = wrapping_add(i, 1);
+                    op = 1;
+                } else if c == 60 {
+                    op = 2;
+                } else if c == 62 {
+                    op = 4;
+                } else {
+                    fail(inout q, 1, "unsupported operator");
+                    return;
+                }
+                q
+                    .toks
+                    .push(
+                    Tok {
+                        kind: 6,
+                        a: op,
+                        b: 0,
+                        kw: 0
+                    }
+                );
+            } else if c == 40 || c == 41 || c == 44 || c == 46 || c == 59 || c == 42 {
+                i = wrapping_add(i, 1);
+                q
+                    .toks
+                    .push(
+                    Tok {
+                        kind: 5,
+                        a: c,
+                        b: 0,
+                        kw: 0
+                    }
+                );
+            } else {
+                if q.err == 0 {
+                    q.err = 1;
+                    put(inout q.msg, "unsupported token at byte ");
+                    put_u64(inout q.msg, i);
+                }
+                return;
+            }
+        }
+    }
+}

@@ -2,9 +2,11 @@
 use crate::parse::Cmp;
 #[cfg(not(feature = "vesper-port"))]
 use crate::plan::ExprNode;
+use crate::{
+    add, Error, ErrorKind, HermeticCatalog, Limits, PreparedQuery, RelPlan, Result, Value,
+};
 #[cfg(not(feature = "vesper-port"))]
 use crate::{bound, identifier, JoinKind, TypedExpr};
-use crate::{add, Error, ErrorKind, HermeticCatalog, Limits, PreparedQuery, RelPlan, Result, Value};
 #[cfg(not(feature = "vesper-port"))]
 use std::cmp::Ordering;
 use std::collections::BTreeMap;

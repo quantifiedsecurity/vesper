@@ -1,5 +1,5 @@
 //! The `vesper-port` build: the SQL front end, catalog DDL replay,
-//! optimizer and row executor run in Vesper (`vesper/quarry.ves`), reached
+//! optimizer and row executor run in Vesper (`vesper/src/lib.ves`), reached
 //! through the generated `port/binding.rs` (port wave P1 lane 7, #904).
 //!
 //! The crate's types stay in Rust (the vectorized executor and the store
@@ -7,7 +7,7 @@
 //! one text pool, and rebuilds the crate's types from the streams the port
 //! returns. Every text field is an `(offset, length)` range of a pool.
 //!
-//! Encodings (shared with the comments in `vesper/quarry.ves`):
+//! Encodings (shared with the comments in `vesper/src/lib.ves`):
 //! * scalar type: its index (`U64` 0 .. `Bytes` 5); a type word is 0 for
 //!   none and the index plus one otherwise;
 //! * value: `[tag, a, b]` with tags `Null` 0, `U64` 1, `I64` 2, `F64` 3
@@ -24,8 +24,8 @@
 use crate::execute::{DataSet, QueryResult};
 use crate::parse::Cmp;
 use crate::plan::{
-    AccessPath, AccessPlan, BindingPath, BoundColumn, ExprNode, IndexBound, JoinKind, PreparedQuery,
-    RelPlan, TypedExpr,
+    AccessPath, AccessPlan, BindingPath, BoundColumn, ExprNode, IndexBound, JoinKind,
+    PreparedQuery, RelPlan, TypedExpr,
 };
 use crate::{
     ColumnDef, DdlChange, Error, ErrorKind, HermeticCatalog, Limits, ParamDef, Result, ScalarType,
@@ -395,7 +395,10 @@ impl Dec<'_> {
 fn checked(q: binding::Q) -> Result<binding::Q> {
     let (err, message) = {
         let r = q.as_ref();
-        (r.err(), String::from_utf8_lossy(&r.msg().to_vec()).into_owned())
+        (
+            r.err(),
+            String::from_utf8_lossy(&r.msg().to_vec()).into_owned(),
+        )
     };
     match err {
         0 => Ok(q),
@@ -688,7 +691,6 @@ pub(crate) fn access_plan(
 }
 
 /// Live Vesper allocations (for leak tests).
-#[cfg(test)]
 pub(crate) fn live_allocations() -> i64 {
     binding::live_allocations()
 }

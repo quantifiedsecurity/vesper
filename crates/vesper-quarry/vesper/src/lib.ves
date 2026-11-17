@@ -1,0 +1,264 @@
+// @vesper/quarry: Vesper port of the vesper-quarry SQL front end (port wave P1 lane 7, #904):
+// the lexer and parser (src/parse.rs), the catalog DDL replay and the
+// checker (src/lib.rs, src/plan.rs), the predicate-placing optimizer, the
+// reference row executor (src/execute.rs) and the index-selecting access
+// path planner of spec/planner-ddl.md.
+//
+// Every entry point returns one `Q` handle. `err` is 0 on success, or the
+// failed `ErrorKind` plus one (Syntax = 1 .. Unsupported = 10) with the
+// message in `msg`. Results are flat word streams in `words` whose text
+// fields are `(offset, length)` ranges of `pool`; the Rust wrapper
+// (src/port.rs) rebuilds the crate's own types from them. The encodings are
+// documented in src/port.rs.
+//
+// Errors are sticky: the first `fail` wins, and every step returns early
+// once `err` is set. Fail[E] cannot be used here, because an abortable
+// effect may not cross an active `inout` parameter (E0402).
+//
+// Shared codes:
+//   ScalarType: U64 0, I64 1, F64 2, Bool 3, Text 4, Bytes 5. A type word is
+//     0 for "none" and the type plus one otherwise.
+//   Value tags: Null 0, U64 1, I64 2, F64 3, Bool 4, Text 5, Bytes 6, so a
+//     non-null value's type word equals its tag.
+//   Cmp: Eq 0, Ne 1, Lt 2, Le 3, Gt 4, Ge 5. JoinKind: Inner 0, Left 1,
+//     Right 2, Full 3.
+//   Limits: the 14 fields of `Limits` in declaration order, then the byte
+//     sizes of a Rust `Value` and a Rust `Vec<Value>` (the row executor
+//     charges them exactly as the Rust executor did).
+
+use self::util::{
+    ex,
+    lim,
+    raw
+};
+use self::ddl::{
+    ddl_apply_q
+};
+use self::plan::{
+    optimize_q,
+    prepare_q
+};
+use self::entry::{
+    execute_q,
+    set_rows_q
+};
+use self::paths::{
+    access_paths_q
+};
+
+// One SQL token. kind: Word 1 (a, b = pool range of the lowercase word),
+// Param 2 (same), Int 3 (a = the i64 bits), Text 4 (a, b = pool range),
+// Sym 5 (a = the ASCII byte), Op 6 (a = Cmp).
+pub copy struct Tok {
+    kind: u64,
+    a: u64,
+    b: u64,
+    // For a Word: its reserved keyword id (1 select .. 31 using, in the
+    // order of `keyword`), or 0.
+    kw: u64
+}
+
+// One parsed (unchecked) expression. kind: Column 0 (a, b = qualifier range,
+// a = none when unqualified; c, d = name range), Param 1 (a, b = name),
+// Literal 2 (a = value tag, b, c = value words), Compare 3 (a = Cmp,
+// b, c = operands), And 4 and Or 5 (b, c), Not 6 (b), IsNull 7 (a = negated,
+// b = operand).
+pub copy struct Raw {
+    kind: u64,
+    a: u64,
+    b: u64,
+    c: u64,
+    d: u64
+}
+
+// A projection item: `expr` is none for `*`; the alias range has `aoff` none
+// when absent.
+pub copy struct Sel {
+    expr: u64,
+    aoff: u64,
+    alen: u64
+}
+
+// A FROM or JOIN binding (kind is the JoinKind of a join, `on` its raw
+// condition).
+pub copy struct Bind {
+    kind: u64,
+    noff: u64,
+    nlen: u64,
+    aoff: u64,
+    alen: u64,
+    on: u64
+}
+
+// A catalog table: name range and its columns `cols[start .. start + n]`.
+pub copy struct CTab {
+    noff: u64,
+    nlen: u64,
+    start: u64,
+    n: u64
+}
+
+// A column or parameter definition. `used` marks referenced parameters.
+pub copy struct CCol {
+    noff: u64,
+    nlen: u64,
+    ty: u64,
+    nullable: bool,
+    used: bool
+}
+
+// A checked column identity (`BoundColumn`).
+pub copy struct BCol {
+    aoff: u64,
+    alen: u64,
+    coff: u64,
+    clen: u64,
+    binding: u64,
+    slot: u64,
+    ty: u64,
+    nullable: bool
+}
+
+// A pool range.
+pub copy struct Rng {
+    off: u64,
+    len: u64
+}
+
+// A logical plan node. kind: Scan 0 (a, b = table range, c = binding,
+// d = position of the slot words in `ex`, e = slot count, f/g = first/last
+// predicate link or none), Filter 1 (a = predicate position in `ex`,
+// b = input node), Join 2 (a = JoinKind, b = lhs, c = rhs, d = condition
+// position in `ex`).
+pub copy struct Node {
+    kind: u64,
+    a: u64,
+    b: u64,
+    c: u64,
+    d: u64,
+    e: u64,
+    f: u64,
+    g: u64
+}
+
+// A scan predicate list link: the predicate position in `ex` and the next
+// link (or none).
+pub copy struct Link {
+    expr: u64,
+    next: u64
+}
+
+// A value: tag and two payload words (see the header). F64 carries its bits
+// in `a`; Text and Bytes carry a pool range.
+pub copy struct Val {
+    t: u64,
+    a: u64,
+    b: u64
+}
+
+// Access path statistics of one analyzed column (planner).
+pub copy struct Stat {
+    binding: u64,
+    slot: u64,
+    // Index name range, or none when the column has no index.
+    ioff: u64,
+    ilen: u64,
+    nonnull: u64,
+    distinct: u64,
+    // The column's analyzed values, sorted, at `vals[start .. start + n]`
+    // with their counts in `counts`.
+    start: u64,
+    n: u64
+}
+
+// A sargable bound collected for one column during access selection.
+pub copy struct Bound {
+    has_lo: bool,
+    lo: Val,
+    lo_incl: bool,
+    has_hi: bool,
+    hi: Val,
+    hi_incl: bool,
+    // A bound value is NULL: the path yields no rows.
+    null: bool,
+    // A bound value is a parameter with no value at planning.
+    unknown: bool,
+    // Every bound came from an `=` predicate.
+    only_eq: bool
+}
+
+// Everything one call needs; returned to Rust as the result handle.
+pub struct Q {
+    err: u64,
+    msg: ChunkSeq[u8],
+    words: ChunkSeq[u64],
+    pool: ChunkSeq[u8],
+    lim: ChunkSeq[u64],
+    toks: ChunkSeq[Tok],
+    pos: u64,
+    nodes: u64,
+    raw: ChunkSeq[Raw],
+    sels: ChunkSeq[Sel],
+    binds: ChunkSeq[Bind],
+    filter: u64,
+    tabs: ChunkSeq[CTab],
+    cols: ChunkSeq[CCol],
+    params: ChunkSeq[CCol],
+    bcols: ChunkSeq[BCol],
+    aliases: ChunkSeq[Rng],
+    nbindings: u64,
+    ex: ChunkSeq[u64],
+    plan: ChunkSeq[Node],
+    links: ChunkSeq[Link],
+    rows: ChunkSeq[u64],
+    rowset: ChunkSeq[u64],
+    flags: ChunkSeq[bool],
+    work: u64,
+    brows: u64,
+    bbytes: u64,
+    dtabs: ChunkSeq[CTab],
+    decls: ChunkSeq[CCol],
+    stats: ChunkSeq[Stat],
+    vals: ChunkSeq[Val],
+    counts: ChunkSeq[u64],
+    // Scratch sequences. Locals are not freed by native code yet, so
+    // every function-local sequence lives here.
+    aux: ChunkSeq[u64],
+    aux2: ChunkSeq[u64],
+    aux3: ChunkSeq[u64],
+    aux4: ChunkSeq[u64],
+    bits: ChunkSeq[bool]
+}
+
+// The exported API. Each entry point is documented where it is implemented.
+
+pub fn ddl_apply(
+    in meta: Slice[u64],
+    in text: Slice[u8],
+    revision: u64,
+    in sql: Slice[u8],
+    in limits: Slice[u64]
+) -> Q {
+    ddl_apply_q(in meta, in text, revision, in sql, in limits)
+}
+
+pub fn optimize(in plan: Slice[u64]) -> Q {
+    optimize_q(in plan)
+}
+
+pub fn prepare(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in limits: Slice[u64])
+    -> Q {
+    prepare_q(in meta, in text, in sql, in limits)
+}
+
+pub fn execute(in prog: Slice[u64], in text: Slice[u8]) -> Q {
+    execute_q(in prog, in text)
+}
+
+pub fn set_rows(in prog: Slice[u64], in text: Slice[u8]) -> Q {
+    set_rows_q(in prog, in text)
+}
+
+pub fn access_paths(in prog: Slice[u64], in text: Slice[u8]) -> Q {
+    access_paths_q(in prog, in text)
+}

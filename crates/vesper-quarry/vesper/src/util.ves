@@ -1,0 +1,545 @@
+// Module util of @vesper/quarry (see lib.ves).
+use self::{
+    BCol,
+    Bind,
+    CCol,
+    CTab,
+    Link,
+    Node,
+    Q,
+    Raw,
+    Rng,
+    Sel,
+    Stat,
+    Tok,
+    Val
+};
+
+// Small helpers.
+
+pub fn none() -> u64 {
+    18446744073709551615
+}
+
+pub fn new_q() -> Q {
+    Q {
+        err: 0,
+        msg: ChunkSeq::new[u8](),
+        words: ChunkSeq::new[u64](),
+        pool: ChunkSeq::new[u8](),
+        lim: ChunkSeq::new[u64](),
+        toks: ChunkSeq::new[Tok](),
+        pos: 0,
+        nodes: 0,
+        raw: ChunkSeq::new[Raw](),
+        sels: ChunkSeq::new[Sel](),
+        binds: ChunkSeq::new[Bind](),
+        filter: none(),
+        tabs: ChunkSeq::new[CTab](),
+        cols: ChunkSeq::new[CCol](),
+        params: ChunkSeq::new[CCol](),
+        bcols: ChunkSeq::new[BCol](),
+        aliases: ChunkSeq::new[Rng](),
+        nbindings: 0,
+        ex: ChunkSeq::new[u64](),
+        plan: ChunkSeq::new[Node](),
+        links: ChunkSeq::new[Link](),
+        rows: ChunkSeq::new[u64](),
+        rowset: ChunkSeq::new[u64](),
+        flags: ChunkSeq::new[bool](),
+        work: 0,
+        brows: 0,
+        bbytes: 0,
+        dtabs: ChunkSeq::new[CTab](),
+        decls: ChunkSeq::new[CCol](),
+        stats: ChunkSeq::new[Stat](),
+        vals: ChunkSeq::new[Val](),
+        counts: ChunkSeq::new[u64](),
+        aux: ChunkSeq::new[u64](),
+        aux2: ChunkSeq::new[u64](),
+        aux3: ChunkSeq::new[u64](),
+        aux4: ChunkSeq::new[u64](),
+        bits: ChunkSeq::new[bool]()
+    }
+}
+
+pub fn sw(in s: Slice[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+pub fn sb(in s: Slice[u8], i: u64) -> u8 {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+pub fn cw(in s: ChunkSeq[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+pub fn cb(in s: ChunkSeq[u8], i: u64) -> u8 {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+pub fn lim(in q: Q, i: u64) -> u64 {
+    match q.lim.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+pub fn ex(in q: Q, i: u64) -> u64 {
+    match q.ex.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+pub fn tok(in q: Q, i: u64) -> Tok {
+    match q.toks.try_get(i) {
+        Option::Some(t) => t,
+        Option::None => Tok {
+            kind: 0,
+            a: 0,
+            b: 0,
+            kw: 0
+        },
+    }
+}
+
+pub fn raw(in q: Q, i: u64) -> Raw {
+    match q.raw.try_get(i) {
+        Option::Some(r) => r,
+        Option::None => Raw {
+            kind: 0,
+            a: 0,
+            b: 0,
+            c: 0,
+            d: 0
+        },
+    }
+}
+
+pub fn node(in q: Q, i: u64) -> Node {
+    match q.plan.try_get(i) {
+        Option::Some(n) => n,
+        Option::None => Node {
+            kind: 0,
+            a: 0,
+            b: 0,
+            c: 0,
+            d: 0,
+            e: 0,
+            f: none(),
+            g: none()
+        },
+    }
+}
+
+pub fn link(in q: Q, i: u64) -> Link {
+    match q.links.try_get(i) {
+        Option::Some(l) => l,
+        Option::None => Link {
+            expr: 0,
+            next: none()
+        },
+    }
+}
+
+pub fn bcol(in q: Q, i: u64) -> BCol {
+    match q.bcols.try_get(i) {
+        Option::Some(c) => c,
+        Option::None => BCol {
+            aoff: 0,
+            alen: 0,
+            coff: 0,
+            clen: 0,
+            binding: 0,
+            slot: 0,
+            ty: 0,
+            nullable: false
+        },
+    }
+}
+
+pub fn empty_col() -> CCol {
+    CCol {
+        noff: 0,
+        nlen: 0,
+        ty: 0,
+        nullable: false,
+        used: false
+    }
+}
+
+pub fn ccol(in q: Q, i: u64) -> CCol {
+    match q.cols.try_get(i) {
+        Option::Some(c) => c,
+        Option::None => empty_col(),
+    }
+}
+
+pub fn param(in q: Q, i: u64) -> CCol {
+    match q.params.try_get(i) {
+        Option::Some(c) => c,
+        Option::None => empty_col(),
+    }
+}
+
+pub fn ctab(in q: Q, i: u64) -> CTab {
+    match q.tabs.try_get(i) {
+        Option::Some(t) => t,
+        Option::None => CTab {
+            noff: 0,
+            nlen: 0,
+            start: 0,
+            n: 0
+        },
+    }
+}
+
+pub fn null_val() -> Val {
+    Val {
+        t: 0,
+        a: 0,
+        b: 0
+    }
+}
+
+pub fn bool_val(b: bool) -> Val {
+    Val {
+        t: 4,
+        a: if b {
+            1
+        } else {
+            0
+        },
+        b: 0
+    }
+}
+
+pub fn vat(in q: Q, i: u64) -> Val {
+    match q.vals.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => null_val(),
+    }
+}
+
+pub fn bflag(in q: Q, i: u64) -> bool {
+    match q.flags.try_get(i) {
+        Option::Some(b) => b,
+        Option::None => false,
+    }
+}
+
+// `(v / d, v % d)`, and `(0, 0)` when `d` is 0.
+pub fn div_rem(v: u64, d: u64) -> (u64, u64) {
+    if d == 0 {
+        return (0, 0);
+    }
+    handle Fail[RuntimeError] in {
+        (v / d, v % d)
+    } with {
+        return q => q,
+        raise(e, k) => (0, 0),
+    }
+}
+
+// ceil(a / b) for b > 0.
+pub fn ceil_div(a: u64, b: u64) -> u64 {
+    let (d, r) = div_rem(a, b);
+    if r == 0 {
+        d
+    } else {
+        wrapping_add(d, 1)
+    }
+}
+
+pub fn put(inout m: ChunkSeq[u8], in s: Str) {
+    for i in 0..s.len() {
+        match s.try_byte_at(i) {
+            Option::Some(b) => m.push(b),
+            Option::None => (),
+        }
+    }
+}
+
+pub fn put_range(inout m: ChunkSeq[u8], in p: ChunkSeq[u8], off: u64, len: u64) {
+    for i in 0..len {
+        m.push(cb(in p, wrapping_add(off, i)));
+    }
+}
+
+pub fn put_u64(inout m: ChunkSeq[u8], x: u64) {
+    let from = m.len();
+    let mut v = x;
+    loop {
+        let (d, r) = div_rem(v, 10);
+        m.push(wrapping_u8(wrapping_add(r, 48)));
+        v = d;
+        if v == 0 {
+            break;
+        }
+    }
+    let mut i = from;
+    let mut j = m.len();
+    loop {
+        if j <= i {
+            break;
+        }
+        j = wrapping_sub(j, 1);
+        if j <= i {
+            break;
+        }
+        let a = cb(in m, i);
+        let b = cb(in m, j);
+        m.try_set(i, b);
+        m.try_set(j, a);
+        i = wrapping_add(i, 1);
+    }
+}
+
+// Whether pool[off .. off + len] is the literal `s`.
+pub fn is_lit(in p: ChunkSeq[u8], off: u64, len: u64, in s: Str) -> bool {
+    if len != s.len() {
+        return false;
+    }
+    for i in 0..len {
+        let b = match s.try_byte_at(i) {
+            Option::Some(b) => b,
+            Option::None => 0,
+        };
+        if cb(in p, wrapping_add(off, i)) != b {
+            return false;
+        }
+    }
+    true
+}
+
+// Whether two pool ranges hold the same bytes.
+pub fn same(in p: ChunkSeq[u8], ao: u64, al: u64, bo: u64, bl: u64) -> bool {
+    if al != bl {
+        return false;
+    }
+    for i in 0..al {
+        if cb(in p, wrapping_add(ao, i)) != cb(in p, wrapping_add(bo, i)) {
+            return false;
+        }
+    }
+    true
+}
+
+// Byte-wise order of two pool ranges: 0 less, 1 equal, 2 greater.
+pub fn order(in p: ChunkSeq[u8], ao: u64, al: u64, bo: u64, bl: u64) -> u64 {
+    let n = if al < bl {
+        al
+    } else {
+        bl
+    };
+    for i in 0..n {
+        let x = cb(in p, wrapping_add(ao, i));
+        let y = cb(in p, wrapping_add(bo, i));
+        if x < y {
+            return 0;
+        }
+        if x > y {
+            return 2;
+        }
+    }
+    if al < bl {
+        0
+    } else if al > bl {
+        2
+    } else {
+        1
+    }
+}
+
+// ---------------------------------------------------------------------
+// Errors.
+
+// Record the first error (kind is ErrorKind + 1); later ones are ignored.
+pub fn fail(inout q: Q, kind: u64, in m: Str) {
+    if q.err == 0 {
+        q.err = kind;
+        put(inout q.msg, m);
+    }
+}
+
+// Record the first error as `prefix` followed by a pool range.
+pub fn fail_name(inout q: Q, kind: u64, in prefix: Str, off: u64, len: u64) {
+    if q.err == 0 {
+        q.err = kind;
+        put(inout q.msg, prefix);
+        put_range(inout q.msg, in q.pool, off, len);
+    }
+}
+
+pub fn syntax(inout q: Q, in m: Str) {
+    if q.err == 0 {
+        q.err = 1;
+        put(inout q.msg, m);
+        put(inout q.msg, " near token ");
+        put_u64(inout q.msg, q.pos);
+    }
+}
+
+// `bound(n, max, what)`: a Limit error when n > max.
+pub fn bound(inout q: Q, n: u64, li: u64, in what: Str) -> bool {
+    if n > lim(in q, li) {
+        fail(inout q, 6, what);
+        false
+    } else {
+        true
+    }
+}
+
+pub fn hard(i: u64) -> u64 {
+    if i == 0 {
+        65536
+    } else if i == 1 {
+        8192
+    } else if i == 2 {
+        512
+    } else if i == 3 {
+        32
+    } else if i == 4 {
+        64
+    } else if i == 5 {
+        128
+    } else if i == 6 {
+        16
+    } else if i == 7 {
+        10000
+    } else if i == 8 {
+        4194304
+    } else if i == 9 {
+        1000000
+    } else if i == 10 {
+        10000
+    } else if i == 11 {
+        8388608
+    } else if i == 12 {
+        10000
+    } else {
+        4194304
+    }
+}
+
+// Copy the limits in and check them against the hard ceilings
+// (`Limits::validate`).
+pub fn load_limits(inout q: Q, in limits: Slice[u64]) -> bool {
+    let all: u64 = 16;
+    for i in 0..all {
+        q.lim.push(sw(in limits, i));
+    }
+    let n: u64 = 14;
+    for i in 0..n {
+        if lim(in q, i) > hard(i) {
+            fail(inout q, 6, "limit exceeds hard ceiling");
+            return false;
+        }
+    }
+    true
+}
+
+// `identifier(pool[off..off+len])`: appends the lowercase copy to the pool
+// and returns its offset, or records the Syntax error.
+pub fn identifier(inout q: Q, off: u64, len: u64) -> u64 {
+    let mut ok = len > 0 && len <= 128;
+    for i in 0..len {
+        let c = match q.pool.try_get(wrapping_add(off, i)) {
+            Option::Some(c) => c,
+            Option::None => 0,
+        };
+        let alpha = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95;
+        let digit = c >= 48 && c <= 57;
+        if i == 0 {
+            if !alpha {
+                ok = false;
+            }
+        } else if !alpha && !digit {
+            ok = false;
+        }
+    }
+    if !ok {
+        fail(inout q, 1, "expected ASCII identifier of at most 128 bytes");
+        return 0;
+    }
+    let start = q.pool.len();
+    for i in 0..len {
+        let c = match q.pool.try_get(wrapping_add(off, i)) {
+            Option::Some(c) => c,
+            Option::None => 0,
+        };
+        let lower = if c >= 65 && c <= 90 {
+            wrapping_add(c, 32)
+        } else {
+            c
+        };
+        q.pool.push(lower);
+    }
+    start
+}
+
+// ---------------------------------------------------------------------
+// Catalog input: [ntables, (name off, name len, ncols,
+// (off, len, ty, nullable)*)*], ranges into the input text, which is the
+// start of the pool.
+
+pub fn load_catalog(inout q: Q, in meta: Slice[u64], at: u64) -> u64 {
+    let n = sw(in meta, at);
+    let mut p = wrapping_add(at, 1);
+    for t in 0..n {
+        let noff = sw(in meta, p);
+        let nlen = sw(in meta, wrapping_add(p, 1));
+        let nc = sw(in meta, wrapping_add(p, 2));
+        p = wrapping_add(p, 3);
+        q
+            .tabs
+            .push(
+            CTab {
+                noff: noff,
+                nlen: nlen,
+                start: q.cols.len(),
+                n: nc
+            }
+        );
+        for c in 0..nc {
+            q
+                .cols
+                .push(
+                CCol {
+                    noff: sw(in meta, p),
+                    nlen: sw(in meta, wrapping_add(p, 1)),
+                    ty: sw(in meta, wrapping_add(p, 2)),
+                    nullable: sw(in meta, wrapping_add(p, 3)) != 0,
+                    used: false
+                }
+            );
+            p = wrapping_add(p, 4);
+        }
+    }
+    p
+}
+
+// The catalog table named by a pool range, or none.
+pub fn find_table(in q: Q, off: u64, len: u64) -> u64 {
+    for i in 0..q.tabs.len() {
+        let t = ctab(in q, i);
+        if same(in q.pool, t.noff, t.nlen, off, len) {
+            return i;
+        }
+    }
+    none()
+}

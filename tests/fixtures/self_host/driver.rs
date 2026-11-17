@@ -326,6 +326,9 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("tests/fixtures/seq")
                     || path.ends_with("tests/fixtures/strings")
                     || path.ends_with("packages/vesper-std")
+                    // The Quarry port (#904) uses `use`-free syntax the
+                    // Stage 1 parser lacks (#880); it joins with the others.
+                    || path.ends_with("crates/vesper-quarry/vesper")
                     || path.ends_with("crates/vesper-port-build/vesper")
                     || path.ends_with("crates/vesper-beacon/vesper")
                 {

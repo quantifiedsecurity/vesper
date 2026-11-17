@@ -1,0 +1,334 @@
+// Module rows of @vesper/quarry (see lib.ves).
+use self::{
+    CCol,
+    CTab,
+    Q,
+    Val
+};
+use self::util::{
+    ccol,
+    ctab,
+    cw,
+    ex,
+    fail_name,
+    find_table,
+    link,
+    node,
+    none,
+    put,
+    put_range
+};
+use self::values::{
+    charge_row,
+    dtab,
+    find_data,
+    holds,
+    row_val,
+    size_value,
+    size_vec,
+    tick,
+    val_at,
+    valid,
+    vheap,
+    width
+};
+
+// The scan slots of the plan below n, in order (`RelPlan::slots`).
+// The slots scanned under plan n, appended to `aux`.
+pub fn slots_of(inout q: Q, n: u64) {
+    let x = node(in q, n);
+    if x.kind == 0 {
+        for k in 0..x.e {
+            let slot = ex(in q, wrapping_add(x.d, k));
+            q.aux.push(slot);
+        }
+    } else if x.kind == 1 {
+        slots_of(inout q, x.b);
+    } else {
+        slots_of(inout q, x.b);
+        slots_of(inout q, x.c);
+    }
+}
+
+// A new all-NULL row at the end of `rows`.
+pub fn new_row(inout q: Q) -> u64 {
+    let start = q.rows.len();
+    let w = width(in q);
+    for k in 0..w {
+        q.rows.push(0);
+        q.rows.push(0);
+        q.rows.push(0);
+    }
+    start
+}
+
+pub fn set_val(inout q: Q, row: u64, slot: u64, v: Val) {
+    let at = wrapping_add(row, wrapping_mul(slot, 3));
+    q.rows.try_set(at, v.t);
+    q.rows.try_set(wrapping_add(at, 1), v.a);
+    q.rows.try_set(wrapping_add(at, 2), v.b);
+}
+
+// `run`: the rows of plan n, as a range of `rowset`.
+pub fn run(inout q: Q, n: u64) -> (u64, u64) {
+    let x = node(in q, n);
+    if q.err != 0 {
+        return (0, 0);
+    }
+    if x.kind == 0 {
+        let first = q.rowset.len();
+        let t = dtab(in q, find_data(in q, x.a, x.b));
+        let mut p = t.start;
+        for r in 0..t.n {
+            if q.err != 0 {
+                break;
+            }
+            let nvals = ex(in q, p);
+            let row = new_row(inout q);
+            let m = if nvals < x.e {
+                nvals
+            } else {
+                x.e
+            };
+            for k in 0..m {
+                let v = val_at(in q, in q.ex, wrapping_add(wrapping_add(p, 1), wrapping_mul(k, 3)));
+                let slot = ex(in q, wrapping_add(x.d, k));
+                set_val(inout q, row, slot, v);
+            }
+            p = wrapping_add(wrapping_add(p, 1), wrapping_mul(nvals, 3));
+            // Charge rejected rows too: scanning and expression evaluation
+            // remain bounded.
+            charge_row(inout q, row);
+            let mut keep = true;
+            let mut l = x.f;
+            loop {
+                if l == none() || q.err != 0 {
+                    break;
+                }
+                let k = link(in q, l);
+                if !holds(inout q, k.expr, row) {
+                    keep = false;
+                    break;
+                }
+                l = k.next;
+            }
+            if keep && q.err == 0 {
+                q.rowset.push(row);
+            } else {
+                q.rows.truncate(row);
+            }
+        }
+        (first, q.rowset.len())
+    } else if x.kind == 1 {
+        let (s, e) = run(inout q, x.b);
+        let first = q.rowset.len();
+        for i in s..e {
+            if q.err != 0 {
+                break;
+            }
+            let row = cw(in q.rowset, i);
+            if holds(inout q, x.a, row) {
+                q.rowset.push(row);
+            }
+        }
+        (first, q.rowset.len())
+    } else {
+        let (ls, le) = run(inout q, x.b);
+        let (rs, re) = run(inout q, x.c);
+        // Recursive runs are done, so the join owns the scratch tails.
+        let sbase = q.aux.len();
+        slots_of(inout q, x.c);
+        let send = q.aux.len();
+        let mbase = q.bits.len();
+        for j in rs..re {
+            q.bits.push(false);
+        }
+        let w = width(in q);
+        let first = q.rowset.len();
+        for i in ls..le {
+            if q.err != 0 {
+                break;
+            }
+            let l = cw(in q.rowset, i);
+            let mut matched_left = false;
+            for j in rs..re {
+                if q.err != 0 {
+                    break;
+                }
+                let r = cw(in q.rowset, j);
+                tick(inout q, wrapping_add(1, w));
+                let row = new_row(inout q);
+                for k in 0..w {
+                    let v = row_val(in q, l, k);
+                    set_val(inout q, row, k, v);
+                }
+                for k in sbase..send {
+                    let slot = cw(in q.aux, k);
+                    let v = row_val(in q, r, slot);
+                    set_val(inout q, row, slot, v);
+                }
+                charge_row(inout q, row);
+                if q.err == 0 && holds(inout q, x.d, row) {
+                    matched_left = true;
+                    q.bits.try_set(wrapping_add(mbase, wrapping_sub(j, rs)), true);
+                    q.rowset.push(row);
+                } else {
+                    q.rows.truncate(row);
+                }
+            }
+            if q.err == 0 && !matched_left && (x.a == 1 || x.a == 3) {
+                charge_row(inout q, l);
+                q.rowset.push(l);
+            }
+        }
+        if x.a == 2 || x.a == 3 {
+            for j in rs..re {
+                if q.err != 0 {
+                    break;
+                }
+                let m = match q.bits.try_get(wrapping_add(mbase, wrapping_sub(j, rs))) {
+                    Option::Some(b) => b,
+                    Option::None => false,
+                };
+                if !m {
+                    let r = cw(in q.rowset, j);
+                    charge_row(inout q, r);
+                    q.rowset.push(r);
+                }
+            }
+        }
+        q.aux.truncate(sbase);
+        q.bits.truncate(mbase);
+        (first, q.rowset.len())
+    }
+}
+
+// `check_inputs`: every scanned table has data, in plan order.
+pub fn check_inputs(inout q: Q, n: u64) {
+    let x = node(in q, n);
+    if q.err != 0 {
+        return;
+    }
+    if x.kind == 0 {
+        if find_data(in q, x.a, x.b) == none() {
+            fail_name(inout q, 8, "missing data for ", x.a, x.b);
+        }
+    } else if x.kind == 1 {
+        check_inputs(inout q, x.b);
+    } else {
+        check_inputs(inout q, x.b);
+        check_inputs(inout q, x.c);
+    }
+}
+
+// Load data tables at p of `ex`: [ndata, (name off, name len, nrows,
+// (nvals, values..)*)*]. Returns the end.
+pub fn load_data(inout q: Q, p: u64) -> u64 {
+    let n = ex(in q, p);
+    let mut at = wrapping_add(p, 1);
+    for t in 0..n {
+        let noff = ex(in q, at);
+        let nlen = ex(in q, wrapping_add(at, 1));
+        let nrows = ex(in q, wrapping_add(at, 2));
+        at = wrapping_add(at, 3);
+        q
+            .dtabs
+            .push(
+            CTab {
+                noff: noff,
+                nlen: nlen,
+                start: at,
+                n: nrows
+            }
+        );
+        for r in 0..nrows {
+            at = wrapping_add(wrapping_add(at, 1), wrapping_mul(ex(in q, at), 3));
+        }
+    }
+    at
+}
+
+// `rows_bytes` of a data table.
+pub fn table_bytes(in q: Q, t: CTab) -> u64 {
+    let mut bytes: u64 = 0;
+    let mut p = t.start;
+    for r in 0..t.n {
+        let nvals = ex(in q, p);
+        bytes = wrapping_add(bytes, size_vec(in q));
+        for k in 0..nvals {
+            let v = val_at(in q, in q.ex, wrapping_add(wrapping_add(p, 1), wrapping_mul(k, 3)));
+            bytes = wrapping_add(wrapping_add(bytes, size_value(in q)), vheap(v));
+        }
+        p = wrapping_add(wrapping_add(p, 1), wrapping_mul(nvals, 3));
+    }
+    bytes
+}
+
+// `validate_rows` of data table t against the catalog.
+pub fn validate_rows(inout q: Q, t: CTab) {
+    let c = find_table(in q, t.noff, t.nlen);
+    if c == none() {
+        fail_name(inout q, 2, "data table ", t.noff, t.nlen);
+        return;
+    }
+    let tab = ctab(in q, c);
+    let mut p = t.start;
+    for r in 0..t.n {
+        let nvals = ex(in q, p);
+        if nvals != tab.n {
+            fail_name(inout q, 8, "row width for ", t.noff, t.nlen);
+            return;
+        }
+        for k in 0..nvals {
+            let v = val_at(in q, in q.ex, wrapping_add(wrapping_add(p, 1), wrapping_mul(k, 3)));
+            let col = ccol(in q, wrapping_add(tab.start, k));
+            if !valid(v, col.ty, col.nullable) {
+                if q.err == 0 {
+                    q.err = 8;
+                    put(inout q.msg, "invalid value for ");
+                    put_range(inout q.msg, in q.pool, t.noff, t.nlen);
+                    q.msg.push(46);
+                    put_range(inout q.msg, in q.pool, col.noff, col.nlen);
+                }
+                return;
+            }
+        }
+        p = wrapping_add(wrapping_add(p, 1), wrapping_mul(nvals, 3));
+    }
+}
+
+// Load the catalog encoding stored in `ex` at p (the same layout as the
+// `meta` input of `prepare`). Returns the end.
+pub fn load_catalog_ex(inout q: Q, p: u64) -> u64 {
+    let n = ex(in q, p);
+    let mut at = wrapping_add(p, 1);
+    for t in 0..n {
+        let noff = ex(in q, at);
+        let nlen = ex(in q, wrapping_add(at, 1));
+        let nc = ex(in q, wrapping_add(at, 2));
+        at = wrapping_add(at, 3);
+        let start = q.cols.len();
+        q
+            .tabs
+            .push(
+            CTab {
+                noff: noff,
+                nlen: nlen,
+                start: start,
+                n: nc
+            }
+        );
+        for c in 0..nc {
+            let col = CCol {
+                noff: ex(in q, at),
+                nlen: ex(in q, wrapping_add(at, 1)),
+                ty: ex(in q, wrapping_add(at, 2)),
+                nullable: ex(in q, wrapping_add(at, 3)) != 0,
+                used: false
+            };
+            q.cols.push(col);
+            at = wrapping_add(at, 4);
+        }
+    }
+    at
+}

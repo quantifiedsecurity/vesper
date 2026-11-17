@@ -210,15 +210,15 @@ impl Abi for Val {
 /// Owned handle of a Vesper `Q` value: its words, which own the Vesper
 /// allocations they point to. Dropping it calls `vesper_quarry_Q_drop`.
 pub struct Q {
-    words: [u64; 32],
+    words: [u64; 37],
 }
 
 impl Q {
     /// # Safety
     /// `words` must hold a `Q` value of this library that the caller owns.
     unsafe fn from_words(words: &[u64]) -> Self {
-        let mut owned = [0u64; 32];
-        owned.copy_from_slice(&words[..32]);
+        let mut owned = [0u64; 37];
+        owned.copy_from_slice(&words[..37]);
         Self { words: owned }
     }
 
@@ -382,6 +382,26 @@ impl<'a> QRef<'a> {
         let w: &'a [u64] = self.words;
         unsafe { vesper_port_abi::SeqRef::from_handle(w[31]) }
     }
+    pub fn aux(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[32]) }
+    }
+    pub fn aux2(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[33]) }
+    }
+    pub fn aux3(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[34]) }
+    }
+    pub fn aux4(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[35]) }
+    }
+    pub fn bits(&self) -> vesper_port_abi::SeqRef<'a, bool> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[36]) }
+    }
 }
 
 const _: () = assert!(<BCol as Abi>::WORDS == 8);
@@ -424,7 +444,7 @@ pub fn live_allocations() -> i64 {
 
 /// Calls `access_paths` of the Vesper library `quarry` (`vesper_quarry_access_paths`).
 pub fn access_paths(prog: &[u64], text: &[u8]) -> Q {
-    let mut result = [0u64; 32];
+    let mut result = [0u64; 37];
     // SAFETY: `vesper_quarry_access_paths` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
@@ -434,7 +454,7 @@ pub fn access_paths(prog: &[u64], text: &[u8]) -> Q {
 
 /// Calls `ddl_apply` of the Vesper library `quarry` (`vesper_quarry_ddl_apply`).
 pub fn ddl_apply(meta: &[u64], text: &[u8], revision: u64, sql: &[u8], limits: &[u64]) -> Q {
-    let mut result = [0u64; 32];
+    let mut result = [0u64; 37];
     // SAFETY: `vesper_quarry_ddl_apply` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
@@ -444,7 +464,7 @@ pub fn ddl_apply(meta: &[u64], text: &[u8], revision: u64, sql: &[u8], limits: &
 
 /// Calls `execute` of the Vesper library `quarry` (`vesper_quarry_execute`).
 pub fn execute(prog: &[u64], text: &[u8]) -> Q {
-    let mut result = [0u64; 32];
+    let mut result = [0u64; 37];
     // SAFETY: `vesper_quarry_execute` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
@@ -454,7 +474,7 @@ pub fn execute(prog: &[u64], text: &[u8]) -> Q {
 
 /// Calls `optimize` of the Vesper library `quarry` (`vesper_quarry_optimize`).
 pub fn optimize(plan: &[u64]) -> Q {
-    let mut result = [0u64; 32];
+    let mut result = [0u64; 37];
     // SAFETY: `vesper_quarry_optimize` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
@@ -464,7 +484,7 @@ pub fn optimize(plan: &[u64]) -> Q {
 
 /// Calls `prepare` of the Vesper library `quarry` (`vesper_quarry_prepare`).
 pub fn prepare(meta: &[u64], text: &[u8], sql: &[u8], limits: &[u64]) -> Q {
-    let mut result = [0u64; 32];
+    let mut result = [0u64; 37];
     // SAFETY: `vesper_quarry_prepare` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
@@ -474,7 +494,7 @@ pub fn prepare(meta: &[u64], text: &[u8], sql: &[u8], limits: &[u64]) -> Q {
 
 /// Calls `set_rows` of the Vesper library `quarry` (`vesper_quarry_set_rows`).
 pub fn set_rows(prog: &[u64], text: &[u8]) -> Q {
-    let mut result = [0u64; 32];
+    let mut result = [0u64; 37];
     // SAFETY: `vesper_quarry_set_rows` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.

@@ -370,7 +370,11 @@ fn literal(s: &str) -> Value {
                 .collect(),
         )
     } else if let Some(t) = s.strip_prefix('\'') {
-        Value::Text(t.strip_suffix('\'').expect("closing quote").replace("''", "'"))
+        Value::Text(
+            t.strip_suffix('\'')
+                .expect("closing quote")
+                .replace("''", "'"),
+        )
     } else if let Some(u) = s.strip_suffix('u') {
         Value::U64(u.parse().unwrap())
     } else if s.contains(['.', 'e']) {
@@ -476,11 +480,8 @@ fn front_end_transcript(text: &str) -> String {
                 out.push_str(&outcome(&r, |_| format!("ok {:?}\n", d.tables())));
             }
             "query" => {
-                let defs: Vec<ParamDef> = params
-                    .iter()
-                    .filter(|p| p.2)
-                    .map(|p| p.0.clone())
-                    .collect();
+                let defs: Vec<ParamDef> =
+                    params.iter().filter(|p| p.2).map(|p| p.0.clone()).collect();
                 let binds: BTreeMap<String, Value> = params
                     .iter()
                     .filter(|p| p.3)
@@ -593,7 +594,9 @@ fn planner_chooses_the_golden_access_paths() {
                 }
             }
             Err(e) => {
-                assert!(cfg!(not(feature = "vesper-port")), "{}: {e}", case.name);
+                // Only the Rust build lacks the access planner.
+                let port = cfg!(feature = "vesper-port");
+                assert!(!port, "{}: {e}", case.name);
                 assert_eq!(e.kind, ErrorKind::Unsupported);
             }
         }

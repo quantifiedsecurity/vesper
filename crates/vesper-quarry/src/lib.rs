@@ -30,6 +30,16 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub use execute::{DataSet, QueryResult};
+
+/// Live allocations of the Vesper port (sequences and boxes), for leak
+/// tests; always 0 in the Rust build.
+#[doc(hidden)]
+pub fn port_live_allocations() -> i64 {
+    #[cfg(feature = "vesper-port")]
+    return port::live_allocations();
+    #[cfg(not(feature = "vesper-port"))]
+    0
+}
 pub use plan::{
     AccessPath, AccessPlan, BindingPath, BoundColumn, IndexBound, JoinKind, PreparedQuery, RelPlan,
     TypedExpr,
@@ -301,7 +311,12 @@ impl HermeticCatalog {
         self.prepare_rust(sql, params, limits)
     }
     #[cfg(not(feature = "vesper-port"))]
-    fn prepare_rust(&self, sql: &str, params: &[ParamDef], limits: Limits) -> Result<PreparedQuery> {
+    fn prepare_rust(
+        &self,
+        sql: &str,
+        params: &[ParamDef],
+        limits: Limits,
+    ) -> Result<PreparedQuery> {
         limits.validate()?;
         bound(self.tables.len(), limits.tables, "catalog table limit")?;
         for cols in self.tables.values() {
