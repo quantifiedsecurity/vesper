@@ -4,7 +4,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     #[cfg(feature = "vesper-port")]
     {
-        let port = vesper_port_harness::Port::new("aura", "vesper/aura.ves").binding("port/binding.rs");
+        let port = vesper_port_harness::Port::new("aura", "vesper").binding("port/binding.rs");
         #[cfg(feature = "vesper-port-divergent")]
         let port = EDITS
             .iter()
