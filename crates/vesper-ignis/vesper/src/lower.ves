@@ -1,0 +1,642 @@
+// ---------------------------------------------------------------------------
+// Multi-backend barrier lowering (src/multi_backend.rs)
+//
+// Vulkan `VkPipelineStageFlagBits2`: DRAW_INDIRECT 1<<1, VERTEX_INPUT 1<<2,
+// VERTEX_SHADER 1<<3, FRAGMENT_SHADER 1<<7, EARLY_FRAGMENT_TESTS 1<<8,
+// LATE_FRAGMENT_TESTS 1<<9, COLOR_ATTACHMENT_OUTPUT 1<<10,
+// COMPUTE_SHADER 1<<11, ALL_TRANSFER 1<<12, ALL_GRAPHICS 1<<15,
+// ALL_COMMANDS 1<<16, RAY_TRACING_SHADER 1<<21,
+// FRAGMENT_SHADING_RATE_ATTACHMENT 1<<22, TRANSFORM_FEEDBACK 1<<24,
+// ACCELERATION_STRUCTURE_BUILD 1<<25, ACCELERATION_STRUCTURE_COPY 1<<28,
+// RESOLVE 1<<33, CLEAR 1<<35, VERTEX_ATTRIBUTE_INPUT 1<<37,
+// PRE_RASTERIZATION_SHADERS 1<<38.
+//
+// Vulkan `VkAccessFlagBits2`: INDIRECT_COMMAND_READ 1<<0, INDEX_READ 1<<1,
+// VERTEX_ATTRIBUTE_READ 1<<2, UNIFORM_READ 1<<3, SHADER_READ 1<<5,
+// SHADER_WRITE 1<<6, COLOR_ATTACHMENT_READ 1<<7, COLOR_ATTACHMENT_WRITE 1<<8,
+// DEPTH_STENCIL_ATTACHMENT_READ 1<<9, DEPTH_STENCIL_ATTACHMENT_WRITE 1<<10,
+// TRANSFER_READ 1<<11, TRANSFER_WRITE 1<<12, MEMORY_READ 1<<15,
+// MEMORY_WRITE 1<<16, ACCELERATION_STRUCTURE_READ 1<<21,
+// ACCELERATION_STRUCTURE_WRITE 1<<22,
+// FRAGMENT_SHADING_RATE_ATTACHMENT_READ 1<<23, TRANSFORM_FEEDBACK_WRITE 1<<25.
+//
+// Metal 4 `MTLStages`: VERTEX 1<<0, FRAGMENT 1<<1, TILE 1<<2,
+// DISPATCH 1<<27, BLIT 1<<28, ACCELERATION_STRUCTURE 1<<29.
+
+copy enum GpuApiTarget {
+    D3D12Agility1620,
+    Vulkan14,
+    Metal4
+}
+
+copy enum StageBits {
+    Mapped(u64),
+    Unmapped(u32)
+}
+
+copy enum AccessBits {
+    Mapped(u64),
+    Unmapped(u32)
+}
+
+fn vk_stage_bits_lossy(sync: u32) -> u64 {
+    let bits = sync & 0x7fffffff;
+    let mut out: u64 = 0;
+    if (bits & 0x1) != 0 {
+        out = out | 0x10000;
+    }
+    if (bits & 0x2) != 0 {
+        out = out | 0x8000;
+    }
+    if (bits & 0x4) != 0 {
+        out = out | 0x4;
+    }
+    if (bits & 0x8) != 0 {
+        out = out | 0x8 | 0x2000000000;
+    }
+    if (bits & 0x10) != 0 {
+        out = out | 0x80;
+    }
+    if (bits & 0x20) != 0 {
+        out = out | 0x100 | 0x200;
+    }
+    if (bits & 0x40) != 0 {
+        out = out | 0x400;
+    }
+    if (bits & 0x80) != 0 {
+        out = out | 0x800;
+    }
+    if (bits & 0x100) != 0 {
+        out = out | 0x200000;
+    }
+    if (bits & 0x800000) != 0 {
+        out = out | 0x2000000;
+    }
+    if (bits & (0x1000000 | 0x4000)) != 0 {
+        out = out | 0x10000000;
+    }
+    if (bits & 0x200) != 0 {
+        out = out | 0x1000;
+    }
+    if (bits & 0x400) != 0 {
+        out = out | 0x200000000;
+    }
+    if (bits & 0x800) != 0 {
+        out = out | 0x2;
+    }
+    if (bits & 0x1000) != 0 {
+        out = out | 0x4000000000 | 0x2000000000 | 0x80 | 0x800;
+    }
+    if (bits & 0x2000) != 0 {
+        out = out | 0x4000000000 | 0x2000000000 | 0x800;
+    }
+    if (bits & 0x8000) != 0 {
+        out = out | 0x800000000;
+    }
+    out
+}
+
+// Every sync bit the Vulkan mapping knows.
+fn mapped_sync() -> u32 {
+    0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000 | 0x4000 | 0x8000 | 0x800000 | 0x1000000
+}
+
+pub fn vk_stage_bits(sync: u32) -> u64 {
+    vk_stage_bits_lossy(sync)
+}
+
+pub fn try_vk_stage_bits(sync: u32) -> StageBits {
+    let rest = (sync & 0x7fffffff) & ~mapped_sync();
+    if rest != 0 {
+        StageBits::Unmapped(rest)
+    } else {
+        StageBits::Mapped(vk_stage_bits_lossy(sync))
+    }
+}
+
+fn vk_access_bits_lossy(access: u32) -> u64 {
+    if access == no_access() {
+        return 0;
+    }
+    if access == 0 {
+        return 0x8000 | 0x10000;
+    }
+    let mut out: u64 = 0;
+    if (access & 0x200) != 0 {
+        out = out | 0x1;
+    }
+    if (access & 0x4) != 0 {
+        out = out | 0x2;
+    }
+    if (access & 0x1) != 0 {
+        out = out | 0x4;
+    }
+    if (access & 0x2) != 0 {
+        out = out | 0x8;
+    }
+    if (access & 0x80) != 0 {
+        out = out | 0x20;
+    }
+    if (access & 0x10) != 0 {
+        out = out | 0x20 | 0x40;
+    }
+    if (access & 0x8) != 0 {
+        out = out | 0x80 | 0x100;
+    }
+    if (access & 0x40) != 0 {
+        out = out | 0x200;
+    }
+    if (access & 0x20) != 0 {
+        out = out | 0x200 | 0x400;
+    }
+    if (access & 0x100) != 0 {
+        out = out | 0x2000000;
+    }
+    if (access & (0x800 | 0x2000)) != 0 {
+        out = out | 0x800;
+    }
+    if (access & (0x400 | 0x1000)) != 0 {
+        out = out | 0x1000;
+    }
+    if (access & 0x4000) != 0 {
+        out = out | 0x200000;
+    }
+    if (access & 0x8000) != 0 {
+        out = out | 0x400000;
+    }
+    if (access & 0x10000) != 0 {
+        out = out | 0x800000;
+    }
+    out
+}
+
+pub fn vk_access_bits(access: u32) -> u64 {
+    vk_access_bits_lossy(access)
+}
+
+pub fn try_vk_access_bits(access: u32) -> AccessBits {
+    if access == no_access() || access == 0 {
+        return AccessBits::Mapped(vk_access_bits_lossy(access));
+    }
+    let rest = access & ~known_access();
+    if rest != 0 {
+        AccessBits::Unmapped(rest)
+    } else {
+        AccessBits::Mapped(vk_access_bits_lossy(access))
+    }
+}
+
+// UAV output of operations outside shader stages (post-build info, UAV
+// clears) is a transfer write (`vk_access_bits_for_sync`).
+pub fn vk_access_bits_for_sync(access: u32, sync: u32) -> u64 {
+    let base = vk_access_bits(access);
+    if (access & 0x10) == 0 || access == 0 || access == no_access() {
+        return base;
+    }
+    let sync_bits = sync & 0x7fffffff;
+    if (sync_bits & (0x4000 | 0x8000)) == 0 {
+        return base;
+    }
+    let shader_or_all: u32 = 0x1 | 0x2 | 0x8 | 0x10 | 0x80 | 0x100 | 0x1000 | 0x2000;
+    let mut adjusted = base;
+    if (sync_bits & shader_or_all) == 0 {
+        let remaining = access & ~0x10;
+        adjusted = if remaining == 0 {
+            0
+        } else {
+            vk_access_bits_lossy(remaining)
+        };
+    }
+    adjusted | 0x1000
+}
+
+fn vk_stage_bits_for_access(sync: u32, access: u32) -> u64 {
+    let mut out = vk_stage_bits(sync);
+    if out != 0 {
+        if (access & 0x100) != 0 {
+            out = out | 0x1000000;
+        }
+        if (access & 0x10000) != 0 {
+            out = out | 0x400000;
+        }
+    }
+    out
+}
+
+pub fn mtl4_stage_bits(sync: u32) -> u32 {
+    let bits = sync & 0x7fffffff;
+    if bits == 0 {
+        return 0;
+    }
+    let vertex: u32 = 0x1;
+    let fragment: u32 = 0x2;
+    let tile: u32 = 0x4;
+    let dispatch: u32 = 0x8000000;
+    let blit: u32 = 0x10000000;
+    let accel: u32 = 0x20000000;
+    let mut out: u32 = 0;
+    if (bits & 0x1) != 0 {
+        out = out | vertex | fragment | tile | dispatch | blit | accel;
+    }
+    if (bits & 0x2) != 0 {
+        out = out | vertex | fragment | tile;
+    }
+    if (bits & (0x4 | 0x8)) != 0 {
+        out = out | vertex;
+    }
+    if (bits & (0x10 | 0x20 | 0x40)) != 0 {
+        out = out | fragment;
+    }
+    if (bits & 0x400) != 0 {
+        out = out | fragment | blit;
+    }
+    if (bits & 0x800) != 0 {
+        out = out | vertex | dispatch;
+    }
+    if (bits & (0x80 | 0x100)) != 0 {
+        out = out | dispatch;
+    }
+    if (bits & 0x8000) != 0 {
+        out = out | dispatch | blit;
+    }
+    if (bits & 0x200) != 0 {
+        out = out | blit;
+    }
+    if (bits & (0x800000 | 0x1000000 | 0x4000)) != 0 {
+        out = out | accel;
+    }
+    if (bits & 0x1000) != 0 {
+        out = out | vertex | fragment | tile | dispatch;
+    }
+    if (bits & 0x2000) != 0 {
+        out = out | vertex | dispatch;
+    }
+    out
+}
+
+// A lowered barrier. Handles, subresources and layouts of the Vulkan forms
+// come from the planner barrier it lowers, which the wrapper still holds;
+// `D3D12` is that barrier unchanged.
+copy enum Native {
+    Elided,
+    D3D12,
+    BufferBarrier2 {
+        src_stage_mask: u64,
+        dst_stage_mask: u64,
+        src_access_mask: u64,
+        dst_access_mask: u64
+    },
+    ImageBarrier2 {
+        src_stage_mask: u64,
+        dst_stage_mask: u64,
+        src_access_mask: u64,
+        dst_access_mask: u64
+    },
+    SplitEventSignal {
+        event_id: u32,
+        src_stage_mask: u64
+    },
+    SplitEventWait {
+        event_id: u32,
+        dst_stage_mask: u64,
+        src_access_mask: u64,
+        dst_access_mask: u64
+    },
+    Metal4StageBarrier {
+        after_stages_mask: u32,
+        before_stages_mask: u32
+    }
+}
+
+fn masked_access(stage: u64, access: u32, sync: u32) -> u64 {
+    if stage == 0 {
+        0
+    } else {
+        vk_access_bits_for_sync(access, sync)
+    }
+}
+
+// `lower_barrier_with_split_hint`.
+pub fn lower_barrier(
+    target: GpuApiTarget,
+    queue_kind: QueueKind,
+    b: BarrierRec,
+    split_event_id: u32,
+    has_producer: bool,
+    producer_sync: u32
+) -> Native {
+    match target {
+        GpuApiTarget::D3D12Agility1620 => Native::D3D12,
+        GpuApiTarget::Vulkan14 => {
+            let collapse = queue_kind == QueueKind::Copy;
+            if (b.sync_after & split_bit()) == split_bit() {
+                if collapse {
+                    Native::Elided
+                } else {
+                    Native::SplitEventSignal {
+                        event_id: split_event_id,
+                        src_stage_mask: vk_stage_bits_for_access(b.sync_before, b.access_before)
+                    }
+                }
+            } else if (b.sync_before & split_bit()) == split_bit() && !collapse {
+                let before = if has_producer {
+                    producer_sync
+                } else {
+                    0x1
+                };
+                let dst = vk_stage_bits_for_access(b.sync_after, b.access_after);
+                Native::SplitEventWait {
+                    event_id: split_event_id,
+                    dst_stage_mask: dst,
+                    src_access_mask: vk_access_bits_for_sync(b.access_before, before),
+                    dst_access_mask: masked_access(dst, b.access_after, b.sync_after)
+                }
+            } else {
+                let before = if (b.sync_before & split_bit()) == split_bit() {
+                    if has_producer {
+                        producer_sync
+                    } else {
+                        0x1
+                    }
+                } else {
+                    b.sync_before
+                };
+                let src = vk_stage_bits_for_access(before, b.access_before);
+                let dst = vk_stage_bits_for_access(b.sync_after, b.access_after);
+                if b.texture {
+                    Native::ImageBarrier2 {
+                        src_stage_mask: src,
+                        dst_stage_mask: dst,
+                        src_access_mask: masked_access(src, b.access_before, before),
+                        dst_access_mask: masked_access(dst, b.access_after, b.sync_after)
+                    }
+                } else {
+                    Native::BufferBarrier2 {
+                        src_stage_mask: src,
+                        dst_stage_mask: dst,
+                        src_access_mask: masked_access(src, b.access_before, before),
+                        dst_access_mask: masked_access(dst, b.access_after, b.sync_after)
+                    }
+                }
+            }
+        },
+        GpuApiTarget::Metal4 => {
+            if (b.sync_after & split_bit()) == split_bit() {
+                return Native::Elided;
+            }
+            let before = if (b.sync_before & split_bit()) == split_bit() {
+                if has_producer {
+                    producer_sync
+                } else {
+                    0x80
+                }
+            } else {
+                b.sync_before
+            };
+            if before == 0 && (b.access_before == no_access() || b.access_before == 0) {
+                return Native::Elided;
+            }
+            let after_stages = mtl4_stage_bits(before);
+            let before_stages = mtl4_stage_bits(b.sync_after);
+            if after_stages == 0 || before_stages == 0 {
+                Native::Elided
+            } else {
+                Native::Metal4StageBarrier {
+                    after_stages_mask: after_stages,
+                    before_stages_mask: before_stages
+                }
+            }
+        },
+    }
+}
+
+// A planner barrier and the graph its handle belongs to.
+copy struct KeyedBarrier {
+    graph: u32,
+    barrier: BarrierRec
+}
+
+// A lowered command: `source` is the input command it lowers (waits,
+// executes and signals are unchanged); a `Barriers` command (tag 1) holds
+// `count` natives from `start`.
+copy struct LoweredRec {
+    stream: u32,
+    tag: u32,
+    source: u64,
+    start: u64,
+    count: u64
+}
+
+copy struct NativeRec {
+    source: u64,
+    native: Native
+}
+
+struct LoweredOut {
+    cmds: ChunkSeq[LoweredRec],
+    natives: ChunkSeq[NativeRec]
+}
+
+copy struct ActiveSplit {
+    graph: u32,
+    texture: bool,
+    resource: u32,
+    range: SubresourceRange,
+    event_id: u32,
+    producer_sync: u32
+}
+
+fn same_split(a: ActiveSplit, kb: KeyedBarrier) -> bool {
+    let b = kb.barrier;
+    a
+        .graph
+        == kb
+        .graph
+        && a
+        .texture
+        == b
+        .texture
+        && a
+        .resource
+        == b
+        .resource
+        && (!b.texture || a.range == b.subresources)
+}
+
+fn next_id(id: u32) -> u32 {
+    if id == 0xffffffff {
+        id
+    } else {
+        wrapping_add(id, 1)
+    }
+}
+
+// Lowers every queue stream of a plan (`lower_plan`). `cmds` are the plan's
+// commands (`queue` is the stream index), `barriers` its barriers.
+pub fn lower_plan(
+    target: GpuApiTarget,
+    in kinds: Slice[QueueKind],
+    in cmds: Slice[CmdRec],
+    in barriers: Slice[KeyedBarrier]
+) -> LoweredOut {
+    let mut out = LoweredOut {
+        cmds: ChunkSeq::new[LoweredRec](),
+        natives: ChunkSeq::new[NativeRec]()
+    };
+    let mut next_event: u32 = 1;
+    for stream in 0..kinds.len() {
+        let kind = match kinds.try_get(stream) {
+            Option::Some(k) => k,
+            Option::None => QueueKind::Direct,
+        };
+        let s32 = wrapping_u32(stream);
+        let mut active: ChunkSeq[ActiveSplit] = ChunkSeq::new[ActiveSplit]();
+        let event_ids = target == GpuApiTarget::Vulkan14 && kind != QueueKind::Copy;
+        for c in 0..cmds.len() {
+            match cmds.try_get(c) {
+                Option::Some(cmd) => {
+                    if cmd.queue == s32 {
+                        if cmd.tag != 1 {
+                            out
+                                .cmds
+                                .push(
+                                LoweredRec {
+                                    stream: s32,
+                                    tag: cmd.tag,
+                                    source: c,
+                                    start: 0,
+                                    count: 0
+                                }
+                            );
+                        } else {
+                            let start = out.natives.len();
+                            for bi in cmd.a..wrapping_add(cmd.a, cmd.b) {
+                                match barriers.try_get(bi) {
+                                    Option::Some(kb) => {
+                                        let b = kb.barrier;
+                                        let mut event_id: u32 = 0;
+                                        let mut has_producer = false;
+                                        let mut producer_sync: u32 = 0;
+                                        if (b.sync_after & split_bit()) == split_bit() {
+                                            if event_ids {
+                                                event_id = next_event;
+                                                next_event = next_id(next_event);
+                                            }
+                                            let mut replaced = false;
+                                            for a in 0..active.len() {
+                                                match active.try_get(a) {
+                                                    Option::Some(x) => {
+                                                        if !replaced && same_split(x, kb) {
+                                                            let mut y = x;
+                                                            y.event_id = event_id;
+                                                            y.producer_sync = b.sync_before;
+                                                            active.try_set(a, y);
+                                                            replaced = true;
+                                                        }
+                                                    },
+                                                    Option::None => (),
+                                                }
+                                            }
+                                            if !replaced {
+                                                active
+                                                    .push(
+                                                    ActiveSplit {
+                                                        graph: kb.graph,
+                                                        texture: b.texture,
+                                                        resource: b.resource,
+                                                        range: b.subresources,
+                                                        event_id: event_id,
+                                                        producer_sync: b.sync_before
+                                                    }
+                                                );
+                                            }
+                                        } else if (b.sync_before & split_bit()) == split_bit() {
+                                            let mut found = active.len();
+                                            for a in 0..active.len() {
+                                                match active.try_get(a) {
+                                                    Option::Some(x) => {
+                                                        if found
+                                                            == active
+                                                            .len()
+                                                            && same_split(x, kb) {
+                                                            found = a;
+                                                        }
+                                                    },
+                                                    Option::None => (),
+                                                }
+                                            }
+                                            if found < active.len() {
+                                                match active.try_get(found) {
+                                                    Option::Some(x) => {
+                                                        event_id = x.event_id;
+                                                        has_producer = true;
+                                                        producer_sync = x.producer_sync;
+                                                    },
+                                                    Option::None => (),
+                                                }
+                                                remove_split(inout active, found);
+                                            } else if event_ids {
+                                                event_id = next_event;
+                                                next_event = next_id(next_event);
+                                            }
+                                        }
+                                        match lower_barrier(
+                                            target,
+                                            kind,
+                                            b,
+                                            event_id,
+                                            has_producer,
+                                            producer_sync
+                                        ) {
+                                            Native::Elided => (),
+                                            native => out
+                                                .natives
+                                                .push(
+                                                NativeRec {
+                                                    source: bi,
+                                                    native: native
+                                                }
+                                            ),
+                                        }
+                                    },
+                                    Option::None => (),
+                                }
+                            }
+                            let count = wrapping_sub(out.natives.len(), start);
+                            if count > 0 {
+                                out
+                                    .cmds
+                                    .push(
+                                    LoweredRec {
+                                        stream: s32,
+                                        tag: 1,
+                                        source: c,
+                                        start: start,
+                                        count: count
+                                    }
+                                );
+                            }
+                        }
+                    }
+                },
+                Option::None => (),
+            }
+        }
+    }
+    out
+}
+
+fn remove_split(inout s: ChunkSeq[ActiveSplit], at: u64) {
+    let n = s.len();
+    for i in at..n {
+        match s.try_get(wrapping_add(i, 1)) {
+            Option::Some(x) => {
+                s.try_set(i, x);
+            },
+            Option::None => (),
+        }
+    }
+    if n > 0 {
+        s.truncate(wrapping_sub(n, 1));
+    }
+}

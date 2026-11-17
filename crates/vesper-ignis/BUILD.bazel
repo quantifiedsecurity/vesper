@@ -1,3 +1,106 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("//tools/bazel:defs.bzl", "vesper_crate")
+load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_port_object")
 
+# The Rust build (default features), with its tests.
 vesper_crate()
+
+# The Vesper build (port wave P1 lane 12, #909). The library is split over
+# the files of vesper/src/ (`vesper fmt` formats at most 8192 tokens per
+# file); they are joined in the order of SOURCES in build.rs.
+SOURCES = [
+    "d3d12.ves",
+    "graph.ves",
+    "plan_order.ves",
+    "plan_state.ves",
+    "plan_passes.ves",
+    "assemble_slots.ves",
+    "assemble.ves",
+    "lower.ves",
+    "lifecycle.ves",
+    "lifecycle_completion.ves",
+    "recording.ves",
+]
+
+genrule(
+    name = "ignis_source",
+    srcs = ["vesper/src/" + name for name in SOURCES],
+    outs = ["ignis.ves"],
+    cmd = "cat $(SRCS) > $@",
+)
+
+vesper_port_object(
+    name = "ignis_vesper",
+    src = ":ignis_source",
+    library = "ignis",
+    target = VESPER_TARGET,
+)
+
+# The divergence check: the edits of EDITS in build.rs, one per ported
+# module. :port_divergence_detected expects each named test to fail.
+vesper_port_object(
+    name = "ignis_vesper_divergent",
+    src = ":ignis_source",
+    edits = {
+        "bits = bits | 0x8 | 0x80;": "bits = bits | 0x8 | 0x10 | 0x80;",
+        "let differ = a.has_layout && b.has_layout && a.layout != b.layout;": "let differ = false;",
+        "has_other: has_prior && access_is_write(access),": "has_other: false,",
+        "b: get64(in value_of, p)": "b: wrapping_add(get64(in value_of, p), 1)",
+        "out = out | blit;": "out = out | dispatch;",
+        "if value <= get64(in l.observed, index) {": "if value < get64(in l.observed, index) {",
+        "let keep: u64 = if mode == SubmitMode::AcceptFirstQueueUncertain {": "let keep: u64 = if mode == SubmitMode::StallUncertain {",
+    },
+    library = "ignis",
+    target = VESPER_TARGET,
+)
+
+rust_library(
+    name = "port",
+    srcs = glob(["src/**/*.rs"]) + ["port/binding.rs"],
+    crate_features = ["vesper-port"],
+    crate_name = "vesper_ignis",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = ["//crates/vesper-port-abi"],
+)
+
+# Every test file against the Vesper build, and against the divergent one.
+[
+    rust_test(
+        name = name,
+        srcs = ["tests/%s.rs" % test],
+        compile_data = [obj],
+        crate_features = ["vesper-port"],
+        crate_name = crate,
+        edition = "2024",
+        rustc_flags = ["-Clink-arg=$(location %s)" % obj],
+        tags = tags,
+        deps = [":port"],
+    )
+    for test in [
+        "planner",
+        "lifecycle",
+        "multi_backend",
+        "multi_backend_unit",
+    ]
+    for name, crate, obj, tags in [
+        ("port_%s_test" % test, test, ":ignis_vesper", []),
+        ("_port_%s_divergent.bin" % test, test + "_divergent", ":ignis_vesper_divergent", ["manual"]),
+    ]
+]
+
+rust_test(
+    name = "port_divergence_detected",
+    srcs = ["tests/divergence.rs"],
+    data = [
+        ":_port_lifecycle_divergent.bin",
+        ":_port_multi_backend_divergent.bin",
+        ":_port_planner_divergent.bin",
+    ],
+    edition = "2024",
+    env = {
+        "VESPER_IGNIS_DIVERGENT_LIFECYCLE": "$(rootpath :_port_lifecycle_divergent.bin)",
+        "VESPER_IGNIS_DIVERGENT_MULTI_BACKEND": "$(rootpath :_port_multi_backend_divergent.bin)",
+        "VESPER_IGNIS_DIVERGENT_PLANNER": "$(rootpath :_port_planner_divergent.bin)",
+    },
+)

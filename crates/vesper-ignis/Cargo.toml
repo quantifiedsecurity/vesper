@@ -4,5 +4,18 @@ version = "0.1.0"
 edition = "2024"
 description = "Vesper Ignis GPU-independent render graph and D3D12 enhanced-barrier planner (design section 19)"
 publish = false
+build = "build.rs"
+
+[features]
+# Forward the planner, lowering, lifecycle ledger and recording backend to
+# the Vesper build of vesper/src/lib.ves (port wave P1 lane 12, #909).
+vesper-port = ["dep:vesper-port-abi", "dep:vesper-port-harness"]
+# A deliberately wrong Vesper build, one edit per ported module: the port
+# test run must fail the named tests (scripts/test-port-harness.sh).
+vesper-port-divergent = ["vesper-port"]
 
 [dependencies]
+vesper-port-abi = { path = "../vesper-port-abi", optional = true }
+
+[build-dependencies]
+vesper-port-harness = { path = "../vesper-port-harness", optional = true }

@@ -1,0 +1,793 @@
+// ---------------------------------------------------------------------------
+// Sorting helpers (stable merge sort over copy elements)
+
+fn less[T: mod copy](a: T, b: T) -> bool where T: Ord {
+    match a.cmp(b) {
+        Less => true,
+        _ => false,
+    }
+}
+
+fn sort_seq[T: mod copy](inout s: ChunkSeq[T]) where T: Ord {
+    let n = s.len();
+    if n < 2 {
+        return;
+    }
+    let mut src: ChunkSeq[T] = ChunkSeq::new[T]();
+    let mut dst: ChunkSeq[T] = ChunkSeq::new[T]();
+    for i in 0..n {
+        match s.try_get(i) {
+            Option::Some(v) => {
+                src.push(v);
+                dst.push(v);
+            },
+            Option::None => (),
+        }
+    }
+    let mut width: u64 = 1;
+    loop {
+        if width >= n {
+            break;
+        }
+        let mut lo: u64 = 0;
+        loop {
+            if lo >= n {
+                break;
+            }
+            let mid = if wrapping_add(lo, width) < n {
+                wrapping_add(lo, width)
+            } else {
+                n
+            };
+            let hi = if wrapping_add(mid, width) < n {
+                wrapping_add(mid, width)
+            } else {
+                n
+            };
+            let mut i = lo;
+            let mut j = mid;
+            let mut k = lo;
+            loop {
+                if k >= hi {
+                    break;
+                }
+                let take_left = if i >= mid {
+                    false
+                } else if j >= hi {
+                    true
+                } else {
+                    match src.try_get(i) {
+                        Option::Some(x) => match src.try_get(j) {
+                            Option::Some(y) => !less(y, x),
+                            Option::None => true,
+                        },
+                        Option::None => false,
+                    }
+                };
+                let from = if take_left {
+                    i
+                } else {
+                    j
+                };
+                match src.try_get(from) {
+                    Option::Some(v) => {
+                        dst.try_set(k, v);
+                    },
+                    Option::None => (),
+                }
+                if take_left {
+                    i = wrapping_add(i, 1);
+                } else {
+                    j = wrapping_add(j, 1);
+                }
+                k = wrapping_add(k, 1);
+            }
+            lo = hi;
+        }
+        for x in 0..n {
+            match dst.try_get(x) {
+                Option::Some(v) => {
+                    src.try_set(x, v);
+                },
+                Option::None => (),
+            }
+        }
+        width = wrapping_mul(width, 2);
+    }
+    for x in 0..n {
+        match src.try_get(x) {
+            Option::Some(v) => {
+                s.try_set(x, v);
+            },
+            Option::None => (),
+        }
+    }
+}
+
+// Sorts and removes adjacent duplicates (a `BTreeSet` in the Rust code).
+fn sort_dedup[T: mod copy](inout s: ChunkSeq[T]) where T: Ord {
+    sort_seq(inout s);
+    let n = s.len();
+    if n < 2 {
+        return;
+    }
+    let mut w: u64 = 1;
+    for r in 1..n {
+        match s.try_get(r) {
+            Option::Some(v) => match s.try_get(wrapping_sub(w, 1)) {
+                Option::Some(prev) => match v.cmp(prev) {
+                    Equal => (),
+                    _ => {
+                        s.try_set(w, v);
+                        w = wrapping_add(w, 1);
+                    },
+                },
+                Option::None => (),
+            },
+            Option::None => (),
+        }
+    }
+    s.truncate(w);
+}
+
+fn get32(in s: ChunkSeq[u32], i: u64) -> u32 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => none32(),
+    }
+}
+
+fn get64(in s: ChunkSeq[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+fn getb(in s: ChunkSeq[bool], i: u64) -> bool {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => false,
+    }
+}
+
+fn max32(a: u32, b: u32) -> u32 {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+fn layout_ord(l: Layout) -> u32 {
+    match l {
+        Layout::Undefined => 0,
+        Layout::Common => 1,
+        Layout::GenericRead => 2,
+        Layout::RenderTarget => 3,
+        Layout::UnorderedAccess => 4,
+        Layout::DepthStencilWrite => 5,
+        Layout::DepthStencilRead => 6,
+        Layout::ShaderResource => 7,
+        Layout::CopySource => 8,
+        Layout::CopyDest => 9,
+        Layout::ResolveSource => 10,
+        Layout::ResolveDest => 11,
+        Layout::ShadingRateSource => 12,
+        Layout::DirectQueueCommon => 13,
+        Layout::DirectQueueGenericRead => 14,
+        Layout::DirectQueueUnorderedAccess => 15,
+        Layout::DirectQueueShaderResource => 16,
+        Layout::DirectQueueCopySource => 17,
+        Layout::DirectQueueCopyDest => 18,
+        Layout::ComputeQueueCommon => 19,
+        Layout::ComputeQueueGenericRead => 20,
+        Layout::ComputeQueueUnorderedAccess => 21,
+        Layout::ComputeQueueShaderResource => 22,
+        Layout::ComputeQueueCopySource => 23,
+        Layout::ComputeQueueCopyDest => 24,
+    }
+}
+
+fn layout_of(o: u32) -> Layout {
+    match o {
+        0 => Layout::Undefined,
+        1 => Layout::Common,
+        2 => Layout::GenericRead,
+        3 => Layout::RenderTarget,
+        4 => Layout::UnorderedAccess,
+        5 => Layout::DepthStencilWrite,
+        6 => Layout::DepthStencilRead,
+        7 => Layout::ShaderResource,
+        8 => Layout::CopySource,
+        9 => Layout::CopyDest,
+        10 => Layout::ResolveSource,
+        11 => Layout::ResolveDest,
+        12 => Layout::ShadingRateSource,
+        13 => Layout::DirectQueueCommon,
+        14 => Layout::DirectQueueGenericRead,
+        15 => Layout::DirectQueueUnorderedAccess,
+        16 => Layout::DirectQueueShaderResource,
+        17 => Layout::DirectQueueCopySource,
+        18 => Layout::DirectQueueCopyDest,
+        19 => Layout::ComputeQueueCommon,
+        20 => Layout::ComputeQueueGenericRead,
+        21 => Layout::ComputeQueueUnorderedAccess,
+        22 => Layout::ComputeQueueShaderResource,
+        23 => Layout::ComputeQueueCopySource,
+        _ => Layout::ComputeQueueCopyDest,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hazard planner (src/plan.rs)
+
+// `DependencyKind`, in the Rust enum's order.
+copy enum DependencyKind {
+    ReadAfterWrite,
+    WriteAfterRead,
+    WriteAfterWrite,
+    ReadOrder,
+    Explicit
+}
+
+fn dep_kind_ord(k: DependencyKind) -> u32 {
+    match k {
+        DependencyKind::ReadAfterWrite => 0,
+        DependencyKind::WriteAfterRead => 1,
+        DependencyKind::WriteAfterWrite => 2,
+        DependencyKind::ReadOrder => 3,
+        DependencyKind::Explicit => 4,
+    }
+}
+
+fn dep_kind_of(o: u32) -> DependencyKind {
+    match o {
+        0 => DependencyKind::ReadAfterWrite,
+        1 => DependencyKind::WriteAfterRead,
+        2 => DependencyKind::WriteAfterWrite,
+        3 => DependencyKind::ReadOrder,
+        _ => DependencyKind::Explicit,
+    }
+}
+
+// An ordering edge, ordered as the Rust `(before, after, kind, resource)`
+// tuple (`has_resource` 0 sorts first, as `None` does).
+copy struct Edge {
+    before: u32,
+    after: u32,
+    kind: u32,
+    has_resource: u32,
+    resource: u32
+}
+
+impl Ord for Edge {}
+
+impl Eq for Edge {}
+
+// A `Dependency` of the plan; `texture` says which handle kind `resource`
+// names.
+copy struct DepRec {
+    before: u32,
+    after: u32,
+    kind: DependencyKind,
+    has_resource: bool,
+    resource: u32,
+    texture: bool
+}
+
+// A barrier of the plan (`Barrier::Buffer` or `Barrier::Texture`).
+copy struct BarrierRec {
+    texture: bool,
+    resource: u32,
+    sync_before: u32,
+    sync_after: u32,
+    access_before: u32,
+    access_after: u32,
+    layout_before: Layout,
+    layout_after: Layout,
+    subresources: SubresourceRange
+}
+
+// One step of a queue stream. `tag` 0 is `Wait { queue: a, value: b }`, 1
+// `Barriers` (`b` barriers from index `a`), 2 `Execute(a)`, 3
+// `Signal { value: b }`.
+copy struct CmdRec {
+    queue: u32,
+    tag: u32,
+    a: u64,
+    b: u64
+}
+
+copy enum PlanFault {
+    None,
+    Cycle,
+    NoLayoutForAccess {
+        pass: u32,
+        resource: u32,
+        subresource: u32,
+        access: u32
+    },
+    UnsupportedQueueHandoff {
+        pass: u32,
+        resource: u32,
+        subresource: u32,
+        from: Layout,
+        to: Layout
+    },
+    FinalLayoutUnreachable {
+        resource: u32,
+        subresource: u32,
+        from: Layout,
+        to: Layout
+    }
+}
+
+// The plan, or the fault that stopped it (`cycle` holds the passes of a
+// `Cycle`).
+struct PlanOut {
+    fault: PlanFault,
+    cycle: ChunkSeq[u32],
+    order: ChunkSeq[u32],
+    deps: ChunkSeq[DepRec],
+    cmds: ChunkSeq[CmdRec],
+    barriers: ChunkSeq[BarrierRec]
+}
+
+fn get_pass(in g: Graph, p: u64) -> PassInfo {
+    match g.passes.try_get(p) {
+        Option::Some(x) => x,
+        Option::None => PassInfo {
+            queue: 0,
+            first_use: 0,
+            use_count: 0
+        },
+    }
+}
+
+fn get_resource(in g: Graph, r: u64) -> Resource {
+    match g.resources.try_get(r) {
+        Option::Some(x) => x,
+        Option::None => Resource {
+            texture: false,
+            size: 0,
+            mips: 1,
+            slices: 1,
+            planes: 1,
+            initial_layout: Layout::Undefined,
+            has_final: false,
+            final_layout: Layout::Undefined
+        },
+    }
+}
+
+fn get_queue(in g: Graph, q: u64) -> QueueKind {
+    match g.queues.try_get(q) {
+        Option::Some(k) => k,
+        Option::None => QueueKind::Direct,
+    }
+}
+
+// Pairwise hazards in declaration order plus explicit edges, sorted.
+fn hazard_edges(in g: Graph) -> ChunkSeq[Edge] {
+    let mut edges: ChunkSeq[Edge] = ChunkSeq::new[Edge]();
+    let n = g.passes.len();
+    for j in 0..n {
+        let pj = get_pass(in g, j);
+        for i in 0..j {
+            let pi = get_pass(in g, i);
+            for x in 0..pi.use_count {
+                let a = get_use(in g.uses, wrapping_add(pi.first_use, x));
+                for y in 0..pj.use_count {
+                    let b = get_use(in g.uses, wrapping_add(pj.first_use, y));
+                    if a.resource == b.resource {
+                        let aw = access_is_write(a.access);
+                        let bw = access_is_write(b.access);
+                        let buffer_writers = a.bytes && aw && bw;
+                        if buffer_writers || uses_overlap(a, b) {
+                            let kind: u32 = if aw && bw {
+                                2
+                            } else if aw {
+                                0
+                            } else if bw {
+                                1
+                            } else if a
+                                .bytes
+                                || (a.has_layout && b.has_layout && a.layout == b.layout) {
+                                5
+                            } else {
+                                3
+                            };
+                            if kind != 5 {
+                                edges
+                                    .push(
+                                    Edge {
+                                        before: wrapping_u32(i),
+                                        after: wrapping_u32(j),
+                                        kind: kind,
+                                        has_resource: 1,
+                                        resource: a.resource
+                                    }
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for e in 0..g.explicit.len() {
+        match g.explicit.try_get(e) {
+            Option::Some(x) => edges
+                .push(
+                Edge {
+                    before: x.before,
+                    after: x.after,
+                    kind: 4,
+                    has_resource: 0,
+                    resource: 0
+                }
+            ),
+            Option::None => (),
+        }
+    }
+    sort_dedup(inout edges);
+    edges
+}
+
+copy enum OrderOutcome {
+    Ordered,
+    Cyclic
+}
+
+// Distinct (before, after) pairs of `edges`, sorted by `(key, other)`.
+fn pairs_by(in edges: ChunkSeq[Edge], by_after: bool) -> ChunkSeq[Edge2] {
+    let mut out: ChunkSeq[Edge2] = ChunkSeq::new[Edge2]();
+    for i in 0..edges.len() {
+        match edges.try_get(i) {
+            Option::Some(e) => {
+                if by_after {
+                    out
+                        .push(
+                        Edge2 {
+                            before: e.after,
+                            after: e.before
+                        }
+                    );
+                } else {
+                    out
+                        .push(
+                        Edge2 {
+                            before: e.before,
+                            after: e.after
+                        }
+                    );
+                }
+            },
+            Option::None => (),
+        }
+    }
+    sort_dedup(inout out);
+    out
+}
+
+impl Ord for Edge2 {}
+
+impl Eq for Edge2 {}
+
+// Start offset of each key in pairs sorted by key (n + 1 entries).
+fn offsets(in pairs: ChunkSeq[Edge2], n: u64) -> ChunkSeq[u64] {
+    let mut starts: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut k: u64 = 0;
+    for v in 0..n {
+        loop {
+            match pairs.try_get(k) {
+                Option::Some(p) => {
+                    if widen_u64(p.before) < v {
+                        k = wrapping_add(k, 1);
+                    } else {
+                        break;
+                    }
+                },
+                Option::None => {
+                    break;
+                },
+            }
+        }
+        starts.push(k);
+    }
+    starts.push(pairs.len());
+    starts
+}
+
+// Kahn's algorithm taking the lowest ready index, or the cycle that blocks
+// it (`topological_order`).
+fn topological_order(
+    n: u64,
+    in edges: ChunkSeq[Edge],
+    inout order: ChunkSeq[u32],
+    inout cycle: ChunkSeq[u32]
+) -> OrderOutcome {
+    let succ = pairs_by(in edges, false);
+    let pred = pairs_by(in edges, true);
+    let succ_at = offsets(in succ, n);
+    let pred_at = offsets(in pred, n);
+    let mut indegree: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut done: ChunkSeq[bool] = ChunkSeq::new[bool]();
+    for p in 0..n {
+        indegree.push(wrapping_sub(get64(in pred_at, wrapping_add(p, 1)), get64(in pred_at, p)));
+        done.push(false);
+    }
+    loop {
+        let mut pick = n;
+        for p in 0..n {
+            if pick == n && !getb(in done, p) && get64(in indegree, p) == 0 {
+                pick = p;
+            }
+        }
+        if pick == n {
+            break;
+        }
+        done.try_set(pick, true);
+        order.push(wrapping_u32(pick));
+        for k in get64(in succ_at, pick)..get64(in succ_at, wrapping_add(pick, 1)) {
+            match succ.try_get(k) {
+                Option::Some(e) => {
+                    let s = widen_u64(e.after);
+                    let left = wrapping_sub(get64(in indegree, s), 1);
+                    indegree.try_set(s, left);
+                },
+                Option::None => (),
+            }
+        }
+    }
+    if order.len() == n {
+        return OrderOutcome::Ordered;
+    }
+    // Every remaining node has a remaining predecessor; walk the smallest
+    // ones until a node repeats.
+    let mut start = n;
+    for p in 0..n {
+        if start == n && get64(in indegree, p) > 0 {
+            start = p;
+        }
+    }
+    let mut walk: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    walk.push(start);
+    let mut cur = start;
+    loop {
+        let mut next = n;
+        for k in get64(in pred_at, cur)..get64(in pred_at, wrapping_add(cur, 1)) {
+            match pred.try_get(k) {
+                Option::Some(e) => {
+                    let b = widen_u64(e.after);
+                    if next == n && get64(in indegree, b) > 0 {
+                        next = b;
+                    }
+                },
+                Option::None => (),
+            }
+        }
+        let mut pos = walk.len();
+        for w in 0..walk.len() {
+            if pos == walk.len() && get64(in walk, w) == next {
+                pos = w;
+            }
+        }
+        if pos < walk.len() || next == n {
+            // walk[pos..] reversed, rotated to start at its smallest pass.
+            let mut rev: ChunkSeq[u64] = ChunkSeq::new[u64]();
+            let mut i = walk.len();
+            loop {
+                if i <= pos {
+                    break;
+                }
+                i = wrapping_sub(i, 1);
+                rev.push(get64(in walk, i));
+            }
+            let mut min_at: u64 = 0;
+            for x in 0..rev.len() {
+                if get64(in rev, x) < get64(in rev, min_at) {
+                    min_at = x;
+                }
+            }
+            for x in 0..rev.len() {
+                let mut at = wrapping_add(min_at, x);
+                if at >= rev.len() {
+                    at = wrapping_sub(at, rev.len());
+                }
+                cycle.push(wrapping_u32(get64(in rev, at)));
+            }
+            return OrderOutcome::Cyclic;
+        }
+        walk.push(next);
+        cur = next;
+    }
+    OrderOutcome::Cyclic
+}
+
+// One access recorded against a subresource or byte segment.
+copy struct Rec {
+    pass: u32,
+    queue: u32,
+    sync: u32,
+    access: u32
+}
+
+// Which later accesses on a queue are already ordered after `last_write`:
+// a barrier with this after-scope (sync, access) followed it, or a fence
+// wait did.
+copy enum Covered {
+    Scope(u32, u32),
+    Full
+}
+
+copy struct RecNode {
+    rec: Rec,
+    next: u32
+}
+
+copy struct CovNode {
+    queue: u32,
+    cov: Covered,
+    next: u32
+}
+
+// A subresource or segment state. Reads and coverage are linked lists in
+// the planner's pools.
+copy struct SubState {
+    has_layout: bool,
+    layout: Layout,
+    has_write: bool,
+    write: Rec,
+    reads_head: u32,
+    reads_tail: u32,
+    cov_head: u32
+}
+
+copy struct Seg {
+    start: u64,
+    end: u64,
+    sid: u32,
+    next: u32
+}
+
+// A pending texture barrier for one subresource, ordered by its key
+// (placement, resource, scopes, layout ordinals), then the subresource.
+// Placement: `pk0` 0/1/2 is `Single(Pre/Post/Final(pk1))`, 4 is
+// `Split { begin_after: pk1, end_before: pk2 }`.
+copy struct TexEntry {
+    pk0: u32,
+    pk1: u32,
+    pk2: u32,
+    resource: u32,
+    sync_before: u32,
+    sync_after: u32,
+    access_before: u32,
+    access_after: u32,
+    layout_before: u32,
+    layout_after: u32,
+    sub: u32,
+    mip: u32,
+    slice: u32,
+    plane: u32
+}
+
+impl Ord for TexEntry {}
+
+// A subresource: its flat index and its (mip, slice, plane).
+copy struct SubPos {
+    flat: u32,
+    mip: u32,
+    slice: u32,
+    plane: u32
+}
+
+fn no_sub() -> SubPos {
+    SubPos {
+        flat: 0,
+        mip: 0,
+        slice: 0,
+        plane: 0
+    }
+}
+
+impl Eq for TexEntry {}
+
+copy struct BufEntry {
+    pk0: u32,
+    pk1: u32,
+    pk2: u32,
+    resource: u32,
+    sync_before: u32,
+    sync_after: u32,
+    access_before: u32,
+    access_after: u32
+}
+
+impl Ord for BufEntry {}
+
+impl Eq for BufEntry {}
+
+copy struct Pair {
+    key: u32,
+    value: u32
+}
+
+impl Ord for Pair {}
+
+impl Eq for Pair {}
+
+copy struct Placement {
+    pk0: u32,
+    pk1: u32,
+    pk2: u32
+}
+
+copy struct Req {
+    access: u32,
+    sync: u32,
+    has_layout: bool,
+    layout: Layout,
+    has_other: bool,
+    other: Rec
+}
+
+struct Planner {
+    split: bool,
+    nq: u64,
+    qpos: ChunkSeq[u32],
+    gpos: ChunkSeq[u32],
+    has_writer: ChunkSeq[bool],
+    writer: ChunkSeq[Rec],
+    last_touch: ChunkSeq[u32],
+    tex: ChunkSeq[TexEntry],
+    buf: ChunkSeq[BufEntry],
+    cross: ChunkSeq[Pair],
+    final_waits: ChunkSeq[Pair],
+    states: ChunkSeq[SubState],
+    reads: ChunkSeq[RecNode],
+    covs: ChunkSeq[CovNode],
+    segs: ChunkSeq[Seg],
+    base: ChunkSeq[u32]
+}
+
+fn empty_rec() -> Rec {
+    Rec {
+        pass: none32(),
+        queue: none32(),
+        sync: 0,
+        access: no_access()
+    }
+}
+
+fn new_state(has_layout: bool, layout: Layout) -> SubState {
+    SubState {
+        has_layout: has_layout,
+        layout: layout,
+        has_write: false,
+        write: empty_rec(),
+        reads_head: none32(),
+        reads_tail: none32(),
+        cov_head: none32()
+    }
+}
+
+fn state_at(in pl: Planner, s: u32) -> SubState {
+    match pl.states.try_get(widen_u64(s)) {
+        Option::Some(x) => x,
+        Option::None => new_state(false, Layout::Undefined),
+    }
+}
+
+fn seg_at(in pl: Planner, s: u32) -> Seg {
+    match pl.segs.try_get(widen_u64(s)) {
+        Option::Some(x) => x,
+        Option::None => Seg {
+            start: 0,
+            end: 0,
+            sid: none32(),
+            next: none32()
+        },
+    }
+}

@@ -1,0 +1,363 @@
+fn plan_texture(inout pl: Planner, in g: Graph, p: u32, queue: u32, resource: u32, pass: PassInfo)
+    -> PlanFault {
+    let res = get_resource(in g, widen_u64(resource));
+    let mut entries: ChunkSeq[ReqEntry] = ChunkSeq::new[ReqEntry]();
+    let mut seq: u64 = 0;
+    for x in 0..pass.use_count {
+        let u = get_use(in g.uses, wrapping_add(pass.first_use, x));
+        if u.resource == resource {
+            let r = u.range;
+            for pl_i in 0..r.plane_count {
+                for s_i in 0..r.slice_count {
+                    for m_i in 0..r.mip_count {
+                        let mip = wrapping_add(r.first_mip, m_i);
+                        let slice = wrapping_add(r.first_slice, s_i);
+                        let plane = wrapping_add(r.first_plane, pl_i);
+                        let sub = flat_index(res, mip, slice, plane);
+                        entries
+                            .push(
+                            ReqEntry {
+                                sub: sub,
+                                seq: seq,
+                                access: u.access,
+                                sync: u.sync,
+                                has_layout: if u.has_layout {
+                                    1
+                                } else {
+                                    0
+                                },
+                                layout: layout_ord(u.layout),
+                                mip: mip,
+                                slice: slice,
+                                plane: plane
+                            }
+                        );
+                        seq = wrapping_add(seq, 1);
+                    }
+                }
+            }
+        }
+    }
+    sort_seq(inout entries);
+    let base = get32(in pl.base, widen_u64(resource));
+    let mut i: u64 = 0;
+    loop {
+        let first = match entries.try_get(i) {
+            Option::Some(e) => e,
+            Option::None => {
+                break;
+            },
+        };
+        let mut access = first.access;
+        let mut sync = first.sync;
+        let mut has_layout = first.has_layout == 1;
+        let mut layout = layout_of(first.layout);
+        let mut j = wrapping_add(i, 1);
+        loop {
+            match entries.try_get(j) {
+                Option::Some(e) => {
+                    if e.sub != first.sub {
+                        break;
+                    }
+                    access = access | e.access;
+                    sync = sync | e.sync;
+                    if !has_layout && e.has_layout == 1 {
+                        has_layout = true;
+                        layout = layout_of(e.layout);
+                    }
+                    j = wrapping_add(j, 1);
+                },
+                Option::None => {
+                    break;
+                },
+            }
+        }
+        let index = wrapping_add(base, first.sub);
+        let st = state_at(in pl, index);
+        let req = Req {
+            access: access,
+            sync: sync,
+            has_layout: has_layout,
+            layout: layout,
+            has_other: false,
+            other: empty_rec()
+        };
+        let pos = SubPos {
+            flat: first.sub,
+            mip: first.mip,
+            slice: first.slice,
+            plane: first.plane
+        };
+        match process(inout pl, in g, p, queue, resource, true, pos, st, req) {
+            StepOutcome::Done(next) => {
+                pl.states.try_set(widen_u64(index), next);
+            },
+            StepOutcome::Failed(f) => {
+                return f;
+            },
+        }
+        i = j;
+    }
+    PlanFault::None
+}
+
+fn plan_buffer(inout pl: Planner, in g: Graph, p: u32, queue: u32, resource: u32, pass: PassInfo)
+    -> PlanFault {
+    for x in 0..pass.use_count {
+        let u = get_use(in g.uses, wrapping_add(pass.first_use, x));
+        if u.resource == resource {
+            split_segments(inout pl, resource, u.start);
+            split_segments(inout pl, resource, u.end);
+        }
+    }
+    let r = widen_u64(resource);
+    let mut has_prior = getb(in pl.has_writer, r);
+    let prior = match pl.writer.try_get(r) {
+        Option::Some(w) => w,
+        Option::None => empty_rec(),
+    };
+    if prior.pass == p {
+        has_prior = false;
+    }
+    let mut s = get32(in pl.base, r);
+    loop {
+        if s == none32() {
+            break;
+        }
+        let seg = seg_at(in pl, s);
+        let mut found = false;
+        let mut access: u32 = 0;
+        let mut sync: u32 = 0;
+        for x in 0..pass.use_count {
+            let u = get_use(in g.uses, wrapping_add(pass.first_use, x));
+            if u.resource == resource && u.start < seg.end && seg.start < u.end {
+                if found {
+                    access = access | u.access;
+                    sync = sync | u.sync;
+                } else {
+                    found = true;
+                    access = u.access;
+                    sync = u.sync;
+                }
+            }
+        }
+        if found {
+            let req = Req {
+                access: access,
+                sync: sync,
+                has_layout: false,
+                layout: Layout::Undefined,
+                has_other: has_prior && access_is_write(access),
+                other: prior
+            };
+            let current = state_at(in pl, seg.sid);
+            match process(inout pl, in g, p, queue, resource, false, no_sub(), current, req) {
+                StepOutcome::Done(next) => {
+                    pl.states.try_set(widen_u64(seg.sid), next);
+                },
+                StepOutcome::Failed(f) => {
+                    return f;
+                },
+            }
+        }
+        s = seg.next;
+    }
+    let mut any_write = false;
+    let mut wsync: u32 = 0;
+    let mut waccess = no_access();
+    for x in 0..pass.use_count {
+        let u = get_use(in g.uses, wrapping_add(pass.first_use, x));
+        if u.resource == resource && access_is_write(u.access) {
+            any_write = true;
+            wsync = sync_union(wsync, u.sync);
+            waccess = access_union(waccess, u.access);
+        }
+    }
+    if any_write {
+        pl.has_writer.try_set(r, true);
+        pl
+            .writer
+            .try_set(
+            r,
+            Rec {
+                pass: p,
+                queue: queue,
+                sync: wsync,
+                access: waccess
+            }
+        );
+    }
+    PlanFault::None
+}
+
+fn plan_pass(inout pl: Planner, in g: Graph, p: u32) -> PlanFault {
+    let pass = get_pass(in g, widen_u64(p));
+    let queue = pass.queue;
+    let mut touched: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    for x in 0..pass.use_count {
+        touched.push(get_use(in g.uses, wrapping_add(pass.first_use, x)).resource);
+    }
+    sort_dedup(inout touched);
+    for t in 0..touched.len() {
+        let resource = get32(in touched, t);
+        let res = get_resource(in g, widen_u64(resource));
+        let fault = if res.texture {
+            plan_texture(inout pl, in g, p, queue, resource, pass)
+        } else {
+            plan_buffer(inout pl, in g, p, queue, resource, pass)
+        };
+        match fault {
+            PlanFault::None => (),
+            f => {
+                return f;
+            },
+        }
+        let at = wrapping_add(wrapping_mul(widen_u64(resource), pl.nq), widen_u64(queue));
+        pl.last_touch.try_set(at, p);
+    }
+    PlanFault::None
+}
+
+copy struct Recency {
+    neg_gpos: u64,
+    seq: u64,
+    queue: u32
+}
+
+impl Ord for Recency {}
+
+impl Eq for Recency {}
+
+fn plan_final_layouts(inout pl: Planner, in g: Graph) -> PlanFault {
+    for r in 0..g.resources.len() {
+        let res = get_resource(in g, r);
+        if res.texture && res.has_final {
+            let fin = res.final_layout;
+            let base = get32(in pl.base, r);
+            for fp in 0..res.planes {
+                for fs in 0..res.slices {
+                    for fm in 0..res.mips {
+                        let flat = flat_index(res, fm, fs, fp);
+                        let pos = SubPos {
+                            flat: flat,
+                            mip: fm,
+                            slice: fs,
+                            plane: fp
+                        };
+                        let index = wrapping_add(base, flat);
+                        let st = state_at(in pl, index);
+                        let cur = st.layout;
+                        if cur != fin {
+                            let recs = state_recs(in pl, st);
+                            // Prefer the queue of the most recently executed access.
+                            let mut recency: ChunkSeq[Recency] = ChunkSeq::new[Recency]();
+                            for i in 0..recs.len() {
+                                match recs.try_get(i) {
+                                    Option::Some(x) => recency
+                                        .push(
+                                        Recency {
+                                            neg_gpos: wrapping_sub(
+                                                max_u64(),
+                                                widen_u64(get32(in pl.gpos, widen_u64(x.pass)))
+                                            ),
+                                            seq: i,
+                                            queue: x.queue
+                                        }
+                                    ),
+                                    Option::None => (),
+                                }
+                            }
+                            sort_seq(inout recency);
+                            let mut candidates: ChunkSeq[u32] = ChunkSeq::new[u32]();
+                            for i in 0..recency.len() {
+                                match recency.try_get(i) {
+                                    Option::Some(x) => {
+                                        if !contains32(in candidates, x.queue) {
+                                            candidates.push(x.queue);
+                                        }
+                                    },
+                                    Option::None => (),
+                                }
+                            }
+                            for q in 0..pl.nq {
+                                if !contains32(in candidates, wrapping_u32(q)) {
+                                    candidates.push(wrapping_u32(q));
+                                }
+                            }
+                            let mut chosen = none32();
+                            for i in 0..candidates.len() {
+                                let q = get32(in candidates, i);
+                                if chosen
+                                    == none32()
+                                    && queue_can_transition(
+                                    get_queue(in g, widen_u64(q)),
+                                    cur,
+                                    fin
+                                ) {
+                                    chosen = q;
+                                }
+                            }
+                            if chosen == none32() {
+                                return PlanFault::FinalLayoutUnreachable {
+                                    resource: wrapping_u32(r),
+                                    subresource: flat,
+                                    from: cur,
+                                    to: fin
+                                };
+                            }
+                            let mut same: ChunkSeq[Rec] = ChunkSeq::new[Rec]();
+                            for i in 0..recs.len() {
+                                match recs.try_get(i) {
+                                    Option::Some(x) => {
+                                        if x.queue == chosen {
+                                            same.push(x);
+                                        } else {
+                                            pl
+                                                .final_waits
+                                                .push(
+                                                Pair {
+                                                    key: chosen,
+                                                    value: x.pass
+                                                }
+                                            );
+                                        }
+                                    },
+                                    Option::None => (),
+                                }
+                            }
+                            let sync_before = fold_sync(in same);
+                            let access_before = fold_access(in same);
+                            push_pending(
+                                inout pl,
+                                wrapping_u32(r),
+                                true,
+                                pos,
+                                single(2, chosen),
+                                sync_before,
+                                access_before,
+                                0,
+                                no_access(),
+                                true,
+                                cur,
+                                fin
+                            );
+                            let mut next = st;
+                            next.layout = fin;
+                            pl.states.try_set(widen_u64(index), next);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    PlanFault::None
+}
+
+fn contains32(in s: ChunkSeq[u32], v: u32) -> bool {
+    for i in 0..s.len() {
+        if get32(in s, i) == v {
+            return true;
+        }
+    }
+    false
+}

@@ -336,6 +336,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("crates/vesper-warp-tcp/vesper")
                     // The warp-wheel port's files form one library (#900).
                     || path.ends_with("crates/vesper-warp-wheel/vesper")
+                    // Port P1 lane 12 (#909): its fragments need `use` (#880).
+                    || path.ends_with("crates/vesper-ignis/vesper")
                 {
                     continue;
                 }

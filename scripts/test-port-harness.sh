@@ -119,3 +119,4 @@ echo "divergent warp-bbr port detected (one failure per ported module)"
 crates/vesper-warp-tcp/scripts/test-port.sh
 # Port wave P1 lane 3 (#900): vesper-warp-wheel.
 sh crates/vesper-warp-wheel/port/test-port.sh
+sh crates/vesper-ignis/port/check.sh  # port P1 lane 12 (#909): vesper-ignis, both builds and the divergence check
