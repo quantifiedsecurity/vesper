@@ -1586,7 +1586,7 @@ fn bind_drop_slots(
     }
 }
 
-fn op_reads_value(op: &crate::ir::Op, target: ValueId) -> bool {
+pub(crate) fn op_reads_value(op: &crate::ir::Op, target: ValueId) -> bool {
     use crate::ir::Op;
     match op {
         Op::Bind { value, .. }
@@ -2126,4 +2126,141 @@ pub fn elaborate_non_fip_drops(world: &World, program: &mut crate::ir::Program) 
             exit_slots[b] = slots;
         }
     }
+}
+
+/// What a native sequence drop frees ([`seq_drop_plan`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeqDrop {
+    /// A `ChunkSeq[T]` handle: its header and the buffer it owns.
+    Seq,
+    /// An inline `String` value: the buffer it owns (a literal owns none).
+    Str,
+}
+
+/// The function-local `ChunkSeq` and `String` slots that native code frees
+/// itself (§13), with what each frees: `let` bindings and by-value (`sink`)
+/// parameters that the function owns. `in` and `inout` parameters belong to
+/// the caller.
+///
+/// Native code keeps the drop state in the slot. A slot starts empty; a
+/// sequence moved out of it (a `sink` read: returned, passed by value,
+/// stored into an aggregate or bound elsewhere) empties it; binding or
+/// assigning it frees the sequence it held; every exit of the function
+/// (return, `return` from a nested block, a `Fail` exit) frees what it
+/// holds. A sequence is therefore freed once, by its last owner.
+///
+/// A string slot cannot be emptied that way (its value lives inline in the
+/// frame), so a string is only planned when its slot is never moved from,
+/// assigned or captured: its last owner is then the function. Elements are
+/// not freed: a `ChunkSeq` of sequences or strings frees its own buffer only.
+///
+/// Slots a closure names (by alias or move) or a handler captures by move,
+/// external captures, partial moves and bindings inside a destructuring
+/// pattern are never planned; they keep today's behavior (freed at JIT teardown, never in
+/// executables). `@fip` functions are never planned.
+pub fn seq_drop_plan(world: &World, f: &crate::ir::FunctionIr) -> BTreeMap<String, SeqDrop> {
+    use crate::ir::Op;
+    let mut plan = BTreeMap::new();
+    if world.functions.get(&f.name).is_some_and(|src| src.fip) {
+        return plan;
+    }
+    for (name, ty) in &f.locals {
+        let kind = if crate::seq::is_seq_type(ty) {
+            SeqDrop::Seq
+        } else if crate::strings::is_string_type(ty) {
+            SeqDrop::Str
+        } else {
+            continue;
+        };
+        if f.external_captures.contains(name) {
+            continue;
+        }
+        if let Some(p) = f.params.iter().find(|p| &p.name == name)
+            && p.pass != Pass::Sink
+        {
+            continue;
+        }
+        plan.insert(name.clone(), kind);
+    }
+    if plan.is_empty() {
+        return plan;
+    }
+    let mut refused = BTreeSet::new();
+    let defs: BTreeMap<ValueId, &Op> = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .map(|i| (i.dest, &i.op))
+        .collect();
+    fn pattern_names(p: &Pattern, out: &mut Vec<String>) {
+        match &p.kind {
+            PatternKind::Bind(n) => out.push(n.clone()),
+            PatternKind::Tuple(ps) => ps.iter().for_each(|p| pattern_names(p, out)),
+            PatternKind::Constructor { fields, .. } => {
+                fields.iter().for_each(|(_, p)| pattern_names(p, out));
+            }
+            PatternKind::Wild | PatternKind::Literal(_) => {}
+        }
+    }
+    for inst in f.blocks.iter().flat_map(|b| &b.instructions) {
+        match &inst.op {
+            Op::Read {
+                root, path, pass, ..
+            } if *pass == Pass::Sink => {
+                if !path.is_empty() || plan.get(root) == Some(&SeqDrop::Str) {
+                    refused.insert(root.clone());
+                }
+            }
+            Op::Write { place, op, .. } => {
+                let root = place.split('.').next().unwrap_or("");
+                if place != root || op != "=" || plan.get(root) == Some(&SeqDrop::Str) {
+                    refused.insert(root.to_owned());
+                }
+            }
+            Op::Bind { pattern, value } => {
+                if let PatternKind::Bind(n) = &pattern.kind {
+                    // A binding owns its value unless the value is a borrow.
+                    if matches!(defs.get(value), Some(Op::Read { pass, .. }) if *pass != Pass::Sink)
+                    {
+                        refused.insert(n.clone());
+                    }
+                } else {
+                    let mut names = vec![];
+                    pattern_names(pattern, &mut names);
+                    refused.extend(names);
+                }
+            }
+            Op::Closure { aliases, moves, .. } => {
+                refused.extend(aliases.keys().cloned());
+                refused.extend(aliases.values().cloned());
+                refused.extend(moves.iter().map(|p| p.root.clone()));
+            }
+            // A handled block and its clauses are graphs emitted inside this
+            // function that name its slots through aliases; their sequence
+            // moves and assignments update the same slots. A string they
+            // name, and places moved into the handler, are not tracked.
+            Op::Handle { aliases, moves, .. } => {
+                refused.extend(moves.iter().map(|p| p.root.clone()));
+                refused.extend(
+                    aliases
+                        .values()
+                        .filter(|slot| plan.get(*slot) == Some(&SeqDrop::Str))
+                        .cloned(),
+                );
+            }
+            _ => {}
+        }
+    }
+    // A match arm binds through its pattern, not a `let`.
+    for b in &f.blocks {
+        if let crate::ir::Terminator::Match { arms, .. } = &b.terminator {
+            for (p, _) in arms {
+                let mut names = vec![];
+                pattern_names(p, &mut names);
+                refused.extend(names);
+            }
+        }
+    }
+    plan.retain(|name, _| !refused.contains(name));
+    plan
 }

@@ -5,6 +5,11 @@
 //! is a 24-byte value `{handle, start, len}`. Only allocation and growth call
 //! the runtime (`vesper_seq_new`, `vesper_seq_grow`); every other operation,
 //! including bounds checks that raise `Fail[RuntimeError]`, is inline.
+//!
+//! Drops: the slots of [`crate::fip::seq_drop_plan`] are freed on every exit
+//! of their function (`vesper_seq_free`, `vesper_str_release`), when they
+//! are bound or assigned again, and a sequence moved out of its slot empties
+//! it, so each sequence is freed once by its last owner.
 use super::*;
 use crate::seq::{self, SeqOp};
 use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, condcodes::IntCC, types};
@@ -16,6 +21,16 @@ pub(crate) mod aot_runtime;
 const LEN: i32 = 0;
 const CAP: i32 = 8;
 const DATA: i32 = 16;
+
+/// A slot the current function frees on exit ([`crate::fip::seq_drop_plan`]).
+#[derive(Clone)]
+pub(super) struct SeqDropSlot {
+    var: Variable,
+    kind: crate::fip::SeqDrop,
+    /// A `let`-bound string's own storage: the slot is bound to it so that
+    /// a later binding can free the string it replaces.
+    storage: Option<ir::Value>,
+}
 
 impl<M: Module> Codegen<'_, '_, M> {
     pub(super) fn seq_runtime_call(
@@ -44,6 +59,130 @@ impl<M: Module> Codegen<'_, '_, M> {
             .map_err(|e| e.to_string())?;
         let reference = self.m.declare_func_in_func(id, self.b.func);
         self.b.ins().call(reference, args);
+        Ok(())
+    }
+
+    /// The drop slots of graph `f`, a function's own graph, with their
+    /// string storage allocated and emptied.
+    pub(super) fn seq_drop_slots(
+        &mut self,
+        f: &crate::ir::FunctionIr,
+    ) -> Result<Vec<SeqDropSlot>, String> {
+        let mut slots = vec![];
+        let jit = std::any::type_name::<M>().contains("JITModule");
+        if !jit && self.m.isa().triple().operating_system == target_lexicon::OperatingSystem::None_
+        {
+            // A freestanding image has no allocator to return buffers to.
+            return Ok(slots);
+        }
+        for (name, kind) in crate::fip::seq_drop_plan(self.world, f) {
+            let Some(&var) = self.vars.get(&name) else {
+                continue;
+            };
+            let param = f.params.iter().any(|p| p.name == name);
+            let storage = if kind == crate::fip::SeqDrop::Str && !param {
+                let storage = self.alloc(crate::seq::HEADER_BYTES as u32);
+                let zero = self.zero();
+                for offset in [LEN, CAP, DATA] {
+                    self.seq_set_word(storage, offset, zero);
+                }
+                Some(storage)
+            } else {
+                None
+            };
+            slots.push(SeqDropSlot {
+                var,
+                kind,
+                storage,
+            });
+        }
+        Ok(slots)
+    }
+
+    /// The drop slot that the local `name` names in the graphs being emitted
+    /// (a handled block names its function's slots through aliases).
+    fn seq_drop_slot(&self, name: &str) -> Option<SeqDropSlot> {
+        let var = *self.vars.get(name)?;
+        self.exits
+            .iter()
+            .flat_map(|t| &t.drops)
+            .find(|d| d.var == var)
+            .cloned()
+    }
+
+    /// Frees what drop `slot` holds now.
+    fn seq_drop_free(&mut self, slot: &SeqDropSlot) -> Result<(), String> {
+        let (value, function) = match (slot.kind, slot.storage) {
+            (crate::fip::SeqDrop::Seq, _) => (self.use_var(slot.var), "vesper_seq_free"),
+            (crate::fip::SeqDrop::Str, Some(storage)) => (storage, "vesper_str_release"),
+            (crate::fip::SeqDrop::Str, None) => (self.use_var(slot.var), "vesper_str_release"),
+        };
+        // An empty slot (never bound, or moved from) holds 0.
+        let present = self.b.ins().icmp_imm(IntCC::NotEqual, value, 0);
+        let free = self.b.create_block();
+        let done = self.b.create_block();
+        self.branch(present, free, &[], done, &[]);
+        self.b.switch_to_block(free);
+        self.seq_runtime_call(function, &[value])?;
+        self.jump(done, &[]);
+        self.b.switch_to_block(done);
+        Ok(())
+    }
+
+    /// Frees every drop slot of the graphs from `depth` outward: an exit
+    /// from graph `depth` and the graphs nested in it.
+    pub(super) fn seq_drop_exit(&mut self, depth: usize) -> Result<(), String> {
+        let slots: Vec<SeqDropSlot> = self
+            .exits
+            .iter()
+            .skip(depth)
+            .flat_map(|t| t.drops.clone())
+            .collect();
+        for slot in &slots {
+            self.seq_drop_free(slot)?;
+        }
+        Ok(())
+    }
+
+    /// A sequence moved out of local `name` leaves its slot empty.
+    pub(super) fn seq_drop_moved(&mut self, name: &str) {
+        if let Some(slot) = self.seq_drop_slot(name)
+            && slot.kind == crate::fip::SeqDrop::Seq
+        {
+            let zero = self.zero();
+            self.def_var(slot.var, zero);
+        }
+    }
+
+    /// Binding a drop slot frees what it held. A string is copied into the
+    /// slot's own storage, which the binding then names; returns the value
+    /// to bind.
+    pub(super) fn seq_drop_rebind(
+        &mut self,
+        pattern: &Pattern,
+        value: ir::Value,
+    ) -> Result<ir::Value, String> {
+        let PatternKind::Bind(name) = &pattern.kind else {
+            return Ok(value);
+        };
+        let Some(slot) = self.seq_drop_slot(name) else {
+            return Ok(value);
+        };
+        self.seq_drop_free(&slot)?;
+        Ok(match slot.storage {
+            Some(storage) => {
+                self.copy_bytes(value, storage, crate::seq::HEADER_BYTES as u32);
+                storage
+            }
+            None => value,
+        })
+    }
+
+    /// Assigning a whole drop slot frees what it held.
+    pub(super) fn seq_drop_overwrite(&mut self, place: &str) -> Result<(), String> {
+        if let Some(slot) = self.seq_drop_slot(place) {
+            self.seq_drop_free(&slot)?;
+        }
         Ok(())
     }
 
@@ -331,9 +470,12 @@ impl<M: Module> Codegen<'_, '_, M> {
                 self.zero()
             }
             SeqOp::Finish => {
-                let len = self.seq_word(arg(0)?, LEN);
+                let h = arg(0)?;
+                let len = self.seq_word(h, LEN);
                 let empty = self.b.ins().icmp_imm(IntCC::Equal, len, 0);
                 self.seq_guard(empty)?;
+                // `finish` consumes the drained sequence.
+                self.seq_runtime_call("vesper_seq_free", &[h])?;
                 self.zero()
             }
             SeqOp::AsSlice => {
@@ -483,5 +625,167 @@ impl<M: Module> Codegen<'_, '_, M> {
             let result = self.ty(e);
             self.seq_op(op, &values, &types, &result)
         })())
+    }
+}
+
+/// A `try_get` whose `Option` result lives in two SSA variables, whether the
+/// index is in bounds and the element address, instead of in memory: the
+/// `match` that consumes it branches on the bounds check and its `Some` arm
+/// loads the element directly.
+#[derive(Clone)]
+pub(super) struct FusedRead {
+    valid: Variable,
+    addr: Variable,
+    elem: Type,
+}
+
+fn fused_pattern(p: &Pattern) -> bool {
+    match &p.kind {
+        PatternKind::Wild => true,
+        PatternKind::Constructor { name, fields, .. } => match name.as_str() {
+            "Option::Some" | "Some" => {
+                fields.len() == 1
+                    && matches!(
+                        fields[0].1.kind,
+                        PatternKind::Bind(_) | PatternKind::Wild
+                    )
+            }
+            "Option::None" | "None" => fields.is_empty(),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// The `try_get` results of graph `f` that only its own block's `match` and
+/// that match's arm bindings consume (`Some(x)`, `Some(_)`, `None`, `_`).
+pub(super) fn fused_reads(
+    f: &crate::ir::FunctionIr,
+) -> BTreeMap<crate::ir::ValueId, Option<FusedRead>> {
+    use crate::ir::{Op, Terminator};
+    let mut out = BTreeMap::new();
+    for block in &f.blocks {
+        let Terminator::Match { value, arms } = &block.terminator else {
+            continue;
+        };
+        let Some(read) = block.instructions.iter().find(|i| i.dest == *value) else {
+            continue;
+        };
+        if !matches!(
+            read.op,
+            Op::Seq {
+                op: SeqOp::TryGet,
+                ..
+            }
+        ) || !arms.iter().all(|(p, _)| fused_pattern(p))
+        {
+            continue;
+        }
+        let only_arm_binds = f.blocks.iter().all(|b| {
+            let terminator_ok = match &b.terminator {
+                Terminator::Return(v) | Terminator::Branch { condition: v, .. } => v != value,
+                Terminator::Jump { args, .. } => !args.contains(value),
+                Terminator::Match { value: v, .. } => v != value || std::ptr::eq(b, block),
+                Terminator::Unreachable => true,
+            };
+            terminator_ok
+                && !b.params.contains(value)
+                && b.instructions.iter().all(|i| {
+                    !crate::fip::op_reads_value(&i.op, *value)
+                        || matches!(&i.op, Op::Bind { pattern, value: v } if v == value && fused_pattern(pattern))
+                })
+        });
+        if only_arm_binds {
+            out.insert(*value, None);
+        }
+    }
+    out
+}
+
+impl<M: Module> Codegen<'_, '_, M> {
+    fn seq_fused(&self, value: crate::ir::ValueId) -> Option<&Option<FusedRead>> {
+        self.exits.last().and_then(|t| t.fused.get(&value))
+    }
+
+    /// Whether `try_get` result `value` of the graph being emitted is fused.
+    pub(super) fn seq_is_fused(&self, value: crate::ir::ValueId) -> bool {
+        self.seq_fused(value).is_some()
+    }
+
+    /// Lowers fused `try_get` `dest` on `(receiver, index)`: a bounds check
+    /// and an element address, no `Option` value.
+    pub(super) fn seq_fused_try_get(
+        &mut self,
+        dest: crate::ir::ValueId,
+        [receiver, i]: [ir::Value; 2],
+        receiver_type: &Type,
+    ) -> Result<ir::Value, String> {
+        let elem = seq::elem(receiver_type)
+            .cloned()
+            .ok_or("native try_get lacks its element type")?;
+        let elem = crate::numeric::default_type(&elem);
+        let stride = self.seq_stride(&elem)?;
+        let (h, start, len) = self.seq_view(receiver, receiver_type);
+        let valid = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+        let valid = self.b.ins().uextend(types::I64, valid);
+        let addr = self.seq_elem_addr(h, start, i, stride);
+        let valid_var = self.b.declare_var(types::I64);
+        self.b.def_var(valid_var, valid);
+        let addr_var = self.b.declare_var(types::I64);
+        self.b.def_var(addr_var, addr);
+        if let Some(t) = self.exits.last_mut() {
+            t.fused.insert(
+                dest,
+                Some(FusedRead {
+                    valid: valid_var,
+                    addr: addr_var,
+                    elem,
+                }),
+            );
+        }
+        Ok(self.zero())
+    }
+
+    /// The condition of match arm `p` on fused read `value`.
+    pub(super) fn seq_fused_condition(
+        &mut self,
+        value: crate::ir::ValueId,
+        p: &Pattern,
+    ) -> Option<ir::Value> {
+        let read = self.seq_fused(value)?.clone()?;
+        let valid = self.b.use_var(read.valid);
+        Some(match &p.kind {
+            PatternKind::Constructor { name, .. } if name.ends_with("Some") => {
+                self.b.ins().icmp_imm(IntCC::NotEqual, valid, 0)
+            }
+            PatternKind::Constructor { .. } => self.b.ins().icmp_imm(IntCC::Equal, valid, 0),
+            _ => self.b.ins().iconst(types::I8, 1),
+        })
+    }
+
+    /// Binds arm pattern `pattern` on fused read `value`: `Some(x)` loads the
+    /// element into `x`. Returns whether `value` is fused.
+    pub(super) fn seq_fused_bind(
+        &mut self,
+        dest: crate::ir::ValueId,
+        pattern: &Pattern,
+        value: crate::ir::ValueId,
+    ) -> Result<bool, String> {
+        let Some(read) = self.seq_fused(value).cloned() else {
+            return Ok(false);
+        };
+        if let (
+            Some(read),
+            PatternKind::Constructor { name, fields, .. },
+        ) = (read, &pattern.kind)
+            && name.ends_with("Some")
+            && let Some((_, inner @ Pattern { kind: PatternKind::Bind(_), .. })) = fields.first()
+        {
+            let addr = self.b.use_var(read.addr);
+            let element = self.seq_load_elem(addr, &read.elem)?;
+            let mut slot_index = 0;
+            self.bind_ir(dest, &mut slot_index, false, inner, element, &read.elem)?;
+        }
+        Ok(true)
     }
 }

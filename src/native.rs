@@ -41,6 +41,7 @@ mod regions;
 /// `ChunkSeq[T]` and `Slice[T]` native lowering (§13).
 #[path = "seq/native.rs"]
 mod seq_native;
+use seq_native::SeqDropSlot;
 /// Checked source entries with declared linear external effects compiled to
 /// ABI v2 fiber entries that park through `vesper-fiber-abi`.
 #[path = "native_session.rs"]
@@ -1608,6 +1609,12 @@ struct ExitTarget {
     join: Option<ir::Block>,
     sret: Option<ir::Value>,
     result: Type,
+    /// The sequence and string slots this graph frees on exit
+    /// ([`crate::fip::seq_drop_plan`]).
+    drops: Vec<SeqDropSlot>,
+    /// `try_get` reads of this graph that its `match` consumes without an
+    /// `Option` in memory ([`seq_native::fused_reads`]).
+    fused: BTreeMap<crate::ir::ValueId, Option<seq_native::FusedRead>>,
 }
 struct Codegen<'a, 'b, M: Module> {
     b: FunctionBuilder<'a>,
@@ -2526,11 +2533,20 @@ impl<M: Module> Codegen<'_, '_, M> {
             ));
         }
         let result_type = crate::numeric::default_type(&substitute(&f.result, &self.generic_vars));
+        // Sequence and string drops: only a function's own graph owns slots
+        // (a nested or inlined graph shares its caller's).
+        let drops = if return_to.is_none() && !self.in_fip_fn {
+            self.seq_drop_slots(f)?
+        } else {
+            vec![]
+        };
         self.exits.push(ExitTarget {
             owner: f.name.clone(),
             join: return_to,
             sret,
             result: result_type,
+            drops,
+            fused: seq_native::fused_reads(f),
         });
         for i in order {
             let block = &f.blocks[i];
@@ -2607,7 +2623,11 @@ impl<M: Module> Codegen<'_, '_, M> {
                         {
                             self.address(&e)?
                         } else {
-                            self.expr(&e)?
+                            let value = self.expr(&e)?;
+                            if *pass == Pass::Sink && path.is_empty() {
+                                self.seq_drop_moved(root);
+                            }
+                            value
                         }
                     }
                     Op::Bind { pattern, value } => {
@@ -2616,17 +2636,14 @@ impl<M: Module> Codegen<'_, '_, M> {
                             &self.generic_vars,
                         ));
                         let mut slot_index = 0;
-                        self.bind_ir(
-                            inst.dest,
-                            &mut slot_index,
-                            false,
-                            pattern,
-                            values[value],
-                            &t,
-                        )?;
+                        if !self.seq_fused_bind(inst.dest, pattern, *value)? {
+                            let bound = self.seq_drop_rebind(pattern, values[value])?;
+                            self.bind_ir(inst.dest, &mut slot_index, false, pattern, bound, &t)?;
+                        }
                         self.zero()
                     }
                     Op::Write { place, op, value } => {
+                        self.seq_drop_overwrite(place)?;
                         let mut path = place.split('.');
                         let p = crate::check::Place {
                             root: path.next().ok_or("empty IR place")?.into(),
@@ -2798,6 +2815,16 @@ impl<M: Module> Codegen<'_, '_, M> {
                             .collect::<Result<Vec<_>, String>>()?;
                         self.tiled_op(op, &operands, capability.as_deref())?
                     }
+                    Op::Seq { args, .. } if self.seq_is_fused(inst.dest) => {
+                        let receiver = args.first().ok_or("native try_get lacks a receiver")?;
+                        let index = args.get(1).ok_or("native try_get lacks an index")?;
+                        let operands = [values[&receiver.value], values[&index.value]];
+                        let receiver_type = crate::numeric::default_type(&substitute(
+                            &f.values[&receiver.value],
+                            &self.generic_vars,
+                        ));
+                        self.seq_fused_try_get(inst.dest, operands, &receiver_type)?
+                    }
                     Op::Seq { op, args } => {
                         let mut operands = Vec::new();
                         let mut operand_types = Vec::new();
@@ -2895,6 +2922,7 @@ impl<M: Module> Codegen<'_, '_, M> {
             }
             match &block.terminator {
                 Terminator::Return(id) => {
+                    self.seq_drop_exit(self.exits.len() - 1)?;
                     let ty =
                         crate::numeric::default_type(&substitute(&f.result, &self.generic_vars));
                     let value = if f.values[id].name() == "Never" {
@@ -2985,7 +3013,10 @@ impl<M: Module> Codegen<'_, '_, M> {
                     ));
                     for (p, target) in arms {
                         let next = self.b.create_block();
-                        let condition = self.pattern_condition(p, values[value], &ty)?;
+                        let condition = match self.seq_fused_condition(*value, p) {
+                            Some(condition) => condition,
+                            None => self.pattern_condition(p, values[value], &ty)?,
+                        };
                         let mut arm_args = Vec::new();
                         if let Some(joins) = f.fip_join_slots.get(target) {
                             for join in joins {
@@ -3021,6 +3052,12 @@ impl<M: Module> Codegen<'_, '_, M> {
             .find(|t| t.owner == owner)
             .cloned()
             .ok_or_else(|| format!("native 'return' target '{owner}' is not being emitted"))?;
+        let depth = self
+            .exits
+            .iter()
+            .rposition(|t| t.owner == owner)
+            .unwrap_or(0);
+        self.seq_drop_exit(depth)?;
         let value = if ty.name() == "Never" {
             self.default_value(&target.result)?
         } else {
@@ -5101,6 +5138,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         self.b.ins().store(ir::MemFlags::new(), tag, record, 0);
         let payload = self.offset(record, 8);
         self.store(payload, values[0], &ty)?;
+        self.seq_drop_exit(0)?;
         let returns = self.b.func.signature.returns[0].value_type;
         let placeholder = if is_float_type(returns) {
             self.float_const(returns, 0.0)
@@ -5326,6 +5364,8 @@ impl<M: Module> Codegen<'_, '_, M> {
         Ok(result)
     }
     fn return_trace_placeholder(&mut self) {
+        // A trace failure leaves the whole function; it cannot fail here.
+        let _ = self.seq_drop_exit(0);
         let returns = self.b.func.signature.returns[0].value_type;
         let placeholder = if is_float_type(returns) {
             self.float_const(returns, 0.0)
