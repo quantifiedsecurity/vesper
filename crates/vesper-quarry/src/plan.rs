@@ -1,9 +1,22 @@
-use crate::parse::{Cmp, Expr, Select, Table};
-use crate::{
-    add, bound, identifier, ColumnDef, Error, ErrorKind, HermeticCatalog, Limits, ParamDef, Result,
-    ScalarType, Value,
-};
+#[cfg(not(feature = "vesper-port"))]
+use crate::parse::{Expr, Select, Table};
+#[cfg(not(feature = "vesper-port"))]
+use crate::{add, bound, identifier, Error, ErrorKind};
+use crate::{ColumnDef, HermeticCatalog, Limits, ParamDef, ScalarType, Value};
+#[cfg(not(feature = "vesper-port"))]
+use crate::Result;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// A comparison operator of a checked predicate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cmp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JoinKind {
@@ -26,8 +39,8 @@ pub struct BoundColumn {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypedExpr {
     pub(crate) node: ExprNode,
-    ty: Option<ScalarType>,
-    nullable: bool,
+    pub(crate) ty: Option<ScalarType>,
+    pub(crate) nullable: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ExprNode {
@@ -110,6 +123,7 @@ impl RelPlan {
             }
         }
     }
+    #[cfg(not(feature = "vesper-port"))]
     fn optimize(self) -> Self {
         match self {
             Self::Filter { predicate, input } => {
@@ -131,6 +145,7 @@ impl RelPlan {
         }
     }
 }
+#[cfg(not(feature = "vesper-port"))]
 fn place(predicate: TypedExpr, input: RelPlan) -> RelPlan {
     if let ExprNode::And(a, b) = predicate.node {
         return place(*b, place(*a, input));
@@ -215,10 +230,18 @@ impl PreparedQuery {
     }
     pub fn optimized(&self) -> Self {
         let mut p = self.clone();
-        p.plan = p.plan.optimize();
+        #[cfg(not(feature = "vesper-port"))]
+        {
+            p.plan = p.plan.optimize();
+        }
+        #[cfg(feature = "vesper-port")]
+        {
+            p.plan = crate::port::optimize(&p.plan);
+        }
         p
     }
 }
+#[cfg(not(feature = "vesper-port"))]
 struct Checker {
     columns: Vec<BoundColumn>,
     aliases: BTreeSet<String>,
@@ -226,6 +249,7 @@ struct Checker {
     used_params: BTreeSet<String>,
     bindings: usize,
 }
+#[cfg(not(feature = "vesper-port"))]
 impl Checker {
     fn table(&mut self, t: Table, catalog: &HermeticCatalog) -> Result<RelPlan> {
         if !self.aliases.insert(t.alias.clone()) {
@@ -385,6 +409,7 @@ impl Checker {
         })
     }
 }
+#[cfg(not(feature = "vesper-port"))]
 pub(crate) fn prepare(
     catalog: &HermeticCatalog,
     raw: Select,

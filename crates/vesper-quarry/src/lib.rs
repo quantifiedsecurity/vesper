@@ -1,11 +1,22 @@
 //! Bounded host SQL execution (row and vectorized), checked slotted pages,
 //! recoverable page pins, and a durable WAL-recovered record store.
 //! See the crate README for grammar, resource accounting, and integration boundaries.
-#![forbid(unsafe_code)]
+// The Rust build has no unsafe code. The `vesper-port` build allows it
+// only in the generated binding (src/port.rs), which calls the port.
+#![cfg_attr(not(feature = "vesper-port"), forbid(unsafe_code))]
+#![cfg_attr(feature = "vesper-port", deny(unsafe_code))]
 
 mod execute;
+#[cfg(not(feature = "vesper-port"))]
 mod parse;
+#[cfg(feature = "vesper-port")]
+mod parse {
+    //! The parser is the Vesper port's; the operator type stays shared.
+    pub(crate) use crate::plan::Cmp;
+}
 mod plan;
+#[cfg(feature = "vesper-port")]
+mod port;
 
 pub mod device;
 pub mod durable;
@@ -157,6 +168,7 @@ impl Default for Limits {
     }
 }
 impl Limits {
+    #[cfg(not(feature = "vesper-port"))]
     pub(crate) fn validate(self) -> Result<()> {
         let hard = Self::default();
         let pairs = [
@@ -235,6 +247,13 @@ impl HermeticCatalog {
         sql: &str,
         limits: Limits,
     ) -> Result<Vec<DdlChange>> {
+        #[cfg(feature = "vesper-port")]
+        return port::apply_ddl(self, sql, limits);
+        #[cfg(not(feature = "vesper-port"))]
+        self.apply_ddl_changes_rust(sql, limits)
+    }
+    #[cfg(not(feature = "vesper-port"))]
+    fn apply_ddl_changes_rust(&mut self, sql: &str, limits: Limits) -> Result<Vec<DdlChange>> {
         limits.validate()?;
         let statements = parse::ddl(sql, limits)?;
         let mut next = self.clone();
@@ -273,6 +292,13 @@ impl HermeticCatalog {
         Self { tables, revision }
     }
     pub fn prepare(&self, sql: &str, params: &[ParamDef], limits: Limits) -> Result<PreparedQuery> {
+        #[cfg(feature = "vesper-port")]
+        return port::prepare(self, sql, params, limits);
+        #[cfg(not(feature = "vesper-port"))]
+        self.prepare_rust(sql, params, limits)
+    }
+    #[cfg(not(feature = "vesper-port"))]
+    fn prepare_rust(&self, sql: &str, params: &[ParamDef], limits: Limits) -> Result<PreparedQuery> {
         limits.validate()?;
         bound(self.tables.len(), limits.tables, "catalog table limit")?;
         for cols in self.tables.values() {

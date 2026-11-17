@@ -1,0 +1,146 @@
+# Front-end transcript: every line runs one step against one catalog and
+# one dataset, and tests/planner_spec.rs renders the outcome (the result,
+# or the error kind and message) into front_end.golden. Both builds (Rust
+# and the vesper-port build) must render it byte for byte.
+#
+#   ddl: SQL                      HermeticCatalog::apply_ddl
+#   rows: TABLE ROW; ROW; ..      DataSet::set_rows (values: 5 i64, 5u u64,
+#                                 1.5 f64, true, null, 'text', x'0aff')
+#   limits: field=N, ..           limits for the next step only
+#   params: name:TYPE=VALUE, ..   parameters for the next query (a name
+#                                 ending in ? is declared only, one starting
+#                                 with + is bound only)
+#   query: SQL                    prepare, optimized, execute
+ddl: CREATE TABLE t (id I64 NOT NULL, u U64, f F64, b BOOL, s TEXT, x BYTES)
+ddl: create table T2 (Id bigint not null, label text null, w double); CREATE TABLE gone (a I64)
+ddl: DROP TABLE gone; CREATE TABLE m (a I64)
+ddl: DROP TABLE gone
+ddl: CREATE TABLE t (id I64)
+ddl: CREATE TABLE z (a I64, A TEXT)
+ddl: CREATE TABLE z (a NUMBER)
+ddl: CREATE TABLE z (a 5)
+ddl: CREATE TABLE z (a I64 NOT 5)
+ddl: CREATE TABLE z a I64
+ddl: CREATE TABLE z (a I64) CREATE TABLE y (b I64)
+ddl: ALTER TABLE t
+ddl: CREATE TABLE select (a I64)
+ddl: CREATE TABLE
+ddl: CREATE TABLE z (a I64); CREATE TABLE z (b I64)
+limits: tables=2
+ddl: CREATE TABLE z (a I64)
+limits: columns_per_table=1
+ddl: CREATE TABLE z (a I64, b I64)
+limits: work=2000000
+ddl: CREATE TABLE z (a I64)
+limits: sql_bytes=10
+ddl: CREATE TABLE z (a I64)
+limits: tokens=3
+ddl: CREATE TABLE z (a I64)
+limits: nodes=1
+ddl: CREATE TABLE z (a I64); CREATE TABLE y (b I64)
+rows: t 1, 7u, 1.5, true, 'one', x'01'; 2, null, -0.0, false, 'two', x''; 3, 9u, 2.25, null, 'O''Neil', null; -4, 0u, 1e300, true, null, x'ff00'
+rows: T2 1, 'a', 1.0; 2, null, null; 3, 'c', -2.5; 5, 'e', 0.0
+rows: t 1, 2u
+rows: nope 1
+rows: t 1, 7u, 1.5, true, 'one', 5
+rows: t null, 7u, 1.5, true, 'one', x'01'
+rows: 9t 1
+limits: input_rows=3
+rows: t2 1, 'a', 1.0; 2, null, null; 3, 'c', -2.5; 5, 'e', 0.0
+limits: input_bytes=100
+rows: t2 1, 'a', 1.0
+query: SELECT * FROM t
+query: SELECT id, s FROM t WHERE u > 5u AND f < 2.0e0
+query: SELECT id FROM t WHERE f >= 1.5
+query: SELECT id, s AS name FROM t WHERE s >= 'one' OR s IS NULL
+query: SELECT t.id, t2.label FROM t JOIN t2 ON t2.id = t.id
+query: SELECT a.id, b.id AS bid FROM t a LEFT JOIN t2 b ON b.id = a.id WHERE b.label IS NULL
+query: SELECT a.id, b.id AS bid FROM t a RIGHT OUTER JOIN t2 b ON b.id = a.id WHERE a.u <> 9u
+query: SELECT a.id, b.id AS bid FROM t a FULL JOIN t2 b ON b.id = a.id AND b.w > -3
+query: SELECT a.id, b.id AS bid FROM t a INNER JOIN t b ON a.id < b.id WHERE NOT (a.b = b.b) AND a.x <= b.x
+query: SELECT id, b IS NOT NULL AS known, NOT b AS nb, (b OR NULL) AS o FROM t WHERE TRUE;
+query: SELECT id FROM t WHERE (((id = 1)))
+query: SELECT id FROM t WHERE x = x'01'
+params: k:I64=2, s:TEXT='two'
+query: SELECT id FROM t WHERE id >= :k AND s = :S
+params: k:I64=null
+query: SELECT id, :k AS kk FROM t WHERE id = :k OR id > 0
+params: k:U64=3
+query: SELECT id FROM t WHERE u = :k
+params: k:I64=1
+query: SELECT id FROM t
+params: k:I64=1, k:I64=2
+query: SELECT id FROM t WHERE id = :k
+params: 2k:I64=1
+query: SELECT id FROM t WHERE id = :k
+query: SELECT id FROM t WHERE id = :missing
+query: SELECT a FROM m
+params: +k:I64=1
+query: SELECT id FROM t
+params: k?:I64=1, +j:I64=1
+query: SELECT id FROM t WHERE id = :k
+query: SELECT id FROM t WHERE id = 'x'
+query: SELECT id FROM t WHERE id AND b
+query: SELECT id FROM t WHERE NOT id
+query: SELECT id FROM t WHERE (id = 1) = 5
+query: SELECT NULL AS n FROM t
+query: SELECT id = 1 FROM t
+query: SELECT * AS x FROM t
+query: SELECT id, id FROM t
+query: SELECT a.id FROM t a JOIN t a ON a.id = a.id
+query: SELECT id FROM t a JOIN t2 b ON b.id = a.id
+query: SELECT q.id FROM t
+query: SELECT nope FROM t
+query: SELECT id FROM nope
+query: SELECT id FROM t ORDER BY id
+query: SELECT id FROM t WHERE id = 99999999999999999999
+query: SELECT id FROM t WHERE id = -9223372036854775808
+query: SELECT id FROM t WHERE id = 9223372036854775808
+query: SELECT id FROM t WHERE id = -
+query: SELECT id FROM t WHERE s = 'open
+query: SELECT id FROM t WHERE id ! 1
+query: SELECT id FROM t WHERE id != 1 AND id <> 2 AND id <= 3 AND id >= -5 AND id < 4 AND id > -9
+query: SELECT id FROM t WHERE id @ 1
+query: SELECT id FROM t WHERE
+query: SELECT id FROM
+query: SELECT FROM t
+query: SELECT id FROM t WHERE id IS 5
+query: SELECT id FROM t JOIN t2
+query: SELECT id FROM t, t2
+query: SELECT t.select FROM t
+query: SELECT id FROM t WHERE id = 1;;
+query: SELECT id FROM t WHERE :
+limits: nesting=2
+query: SELECT id FROM t WHERE ((id = 1))
+limits: nesting=2
+query: SELECT id FROM t WHERE NOT NOT NOT b
+limits: nodes=3
+query: SELECT id FROM t WHERE id = 1 AND id = 2
+limits: nodes=2
+query: SELECT id, s, u FROM t
+limits: nodes=3
+query: SELECT * FROM t
+limits: relations=1
+query: SELECT t.id FROM t JOIN t2 ON t2.id = t.id
+limits: tables=1
+query: SELECT id FROM t
+limits: columns_per_table=3
+query: SELECT id FROM t
+limits: work=40
+query: SELECT id FROM t
+limits: work=2000000
+query: SELECT id FROM t
+limits: intermediate_rows=3
+query: SELECT id FROM t
+limits: intermediate_bytes=200
+query: SELECT id FROM t
+limits: output_rows=1
+query: SELECT id FROM t
+limits: output_bytes=60
+query: SELECT s FROM t
+limits: input_rows=7
+query: SELECT id FROM t
+limits: input_bytes=300
+query: SELECT id FROM t
+ddl: DROP TABLE t2
+query: SELECT id FROM t
