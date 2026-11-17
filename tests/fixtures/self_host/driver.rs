@@ -319,7 +319,12 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                 // (lane F0, #873; follow-up #880) and slice intervals `p[a..b]`
                 // (lane F1, #874; follow-up #887). These fixtures join the corpus once
                 // packages/vesper-compiler parses them.
-                if path.ends_with("tests/fixtures/packages") || path.ends_with("tests/fixtures/seq")
+                // Each port's Loom package (`crates/<crate>/vesper`, port wave P1)
+                // imports with `use` too, so ports list it here, one line each.
+                if path.ends_with("tests/fixtures/packages")
+                    || path.ends_with("tests/fixtures/seq")
+                    || path.ends_with("crates/vesper-port-build/vesper")
+                    || path.ends_with("crates/vesper-beacon/vesper")
                 {
                     continue;
                 }
