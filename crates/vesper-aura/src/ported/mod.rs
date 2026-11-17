@@ -20,6 +20,11 @@ pub use recording::RecordingBackend;
 pub use session::{CloseDecision, PreparedUpdate, Session};
 pub use sim_aura::{SimAura, audit_view_tree, encode_view_tree};
 
+/// The allocation counter is process-wide, so every unit test that calls
+/// into the port holds this lock while the leak test measures.
+#[cfg(test)]
+pub(crate) static PORT_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::binding::live_allocations;
@@ -73,6 +78,7 @@ mod tests {
     // handles returns the live count to where it started.
     #[test]
     fn port_frees_every_allocation_it_makes() {
+        let _serial = super::PORT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let ui = UiThread::claim_current();
         let before = live_allocations();
         let backend = RecordingBackend::new(&ui, Limits::default());

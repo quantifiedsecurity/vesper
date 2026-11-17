@@ -315,6 +315,9 @@ mod tests {
     // through the Vesper reconciler instead of private fields.
     #[test]
     fn exhausted_ids_and_revision_fail_without_mounted_changes() {
+        let _serial = super::super::PORT_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let ui = UiThread::claim_current();
         let limits = Limits::default();
         let mut app =
