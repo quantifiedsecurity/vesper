@@ -180,6 +180,7 @@ impl NativeBatch {
             &ids,
             &program,
             DefinitionLinkage::Jit,
+            false,
         )?;
         module.finalize_definitions().map_err(|e| e.to_string())?;
         let mut compiled = BTreeMap::new();
