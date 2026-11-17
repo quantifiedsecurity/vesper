@@ -4,9 +4,11 @@ This is the recipe that every crate port follows. A port keeps the Rust crate,
 adds a Vesper implementation of its public API beside it, and runs the crate's
 existing tests against both builds until the Vesper build is the only one left.
 The survey that orders the ports is `docs/maintenance/vesper-port-survey.md`
-(#869). The tools come from port wave P0 lane 6 (#878).
+(#869). The tools come from port wave P0 lane 6 (#878); the build modes,
+package inputs and the seed-copy rule come from port wave P1 lane 2 (#899).
 
-The worked example is `crates/vesper-port-pilot`.
+The worked example is `crates/vesper-port-pilot`. A crate the compiler itself
+links follows "Crates the compiler links" below, shown on `crates/vesper-beacon`.
 
 ## The pieces
 
@@ -16,8 +18,9 @@ The worked example is `crates/vesper-port-pilot`.
 | Interface file | `--interface out.json` | Describes every symbol and type at the boundary (schema `vesper.native.export-abi/1`). |
 | Rust binding | `--rust-binding out.rs` | `extern "C"` declarations plus a safe wrapper per function. |
 | `vesper-port-abi` | `crates/vesper-port-abi` | The `Abi` trait the bindings use, `ArithOverflow` and `RuntimeError`. It has no dependencies. |
-| `vesper-port-harness` | `crates/vesper-port-harness` | The `build.rs` helper. It compiles the port with the in-tree compiler, archives and links it, and checks the committed binding. |
-| `vesper_port_object` | `tools/bazel/vesper_port.bzl` | The same compile step in Bazel, using `//:bin/vesper`. |
+| `vesper-port-harness` | `crates/vesper-port-harness` | The `build.rs` helper. It runs a `vesper` executable on the port (it does not link the compiler library), archives and links the object, sets `cfg(vesper_port)`, and checks the committed binding. |
+| `vesper_package`, `vesper_port_object` | `tools/bazel/vesper_port.bzl` | The same compile step in Bazel, using `//:bin/vesper`, on a Loom package with its path dependencies or on one file. |
+| `vesper-port-build` | `crates/vesper-port-build` | Fixture: a multi-file package with a path dependency, built both ways. |
 
 ## The ABI
 
@@ -67,7 +70,10 @@ Sequences and strings get added to the ABI once P0 lanes 3 and 7 land.
 1. **Claim the port.** Check open issues and PRs for the crate, then open a
    claim issue and link it from the PR.
 
-2. **Write the Vesper source** at `<crate>/vesper/<name>.ves`. Give every
+2. **Write the Vesper source** as a Loom package in `<crate>/vesper/`
+   (`Loom.toml` named `@vesper/<short-name>`, root module `src/lib.ves`, more
+   modules under `src/`, other packages as path dependencies). A single
+   `<crate>/vesper/<name>.ves` file also works, as in the pilot. Give every
    public Rust function a `pub fn` with the same name and an equivalent
    signature, and keep helpers private. Each public Rust type that crosses the
    boundary gets a Vesper `copy` type with the same name. Field and variant
@@ -92,12 +98,30 @@ Sequences and strings get added to the ABI once P0 lanes 3 and 7 land.
    ```rust
    fn main() {
        #[cfg(feature = "vesper-port")]
-       vesper_port_harness::Port::new("<name>", "vesper/<name>.ves")
+       vesper_port_harness::Port::new("<name>", "vesper")
            .binding("port/binding.rs")
            .rust_types("crate")
            .build();
    }
    ```
+
+   The second argument is the package directory (or the `.ves` file). The
+   harness emits `cargo:rerun-if-changed` for every package directory of the
+   closure, so editing any module or dependency rebuilds the port. It also
+   sets `cfg(vesper_port)` on the crate.
+
+   **Where the compiler comes from.** The harness never links the `vesper`
+   library. It takes the object from the first of:
+
+   1. `VESPER_PORT_OBJECT` (and `VESPER_PORT_GENERATED_BINDING`): a prebuilt
+      object. Bazel passes these through `build_script_env`.
+   2. `VESPER_PORT_COMPILER`: a `vesper` executable, run as
+      `vesper build --lib <package dir> --target $TARGET ... --rust-binding`.
+      CI builds `cargo build --locked --bin vesper` once and sets this.
+   3. Nothing set: the harness builds the in-tree compiler itself with
+      `cargo build -p vesper --bin vesper --target-dir <target>/vesper-port-compiler`
+      (about two minutes the first time, a no-op afterwards), so a plain
+      `cargo test -p <crate>` works. Set `VESPER_PORT_COMPILER` to skip it.
 
 4. **Generate the binding.** Run
    `VESPER_PORT_BLESS=1 cargo test -p <crate> --features vesper-port` once and
@@ -136,10 +160,26 @@ Sequences and strings get added to the ABI once P0 lanes 3 and 7 land.
    test first.
 
 7. **Add CI.**
-   - Bazel: copy the `vesper_port_object`, `rust_library` (with
-     `port/binding.rs` in `srcs`) and `rust_test` targets from `crates/vesper-port-pilot/BUILD.bazel`, so that Linux runs the
-     port tests.
-   - macOS and Windows: add the crate to `scripts/test-port-harness.sh`.
+   - Bazel (Linux): declare the package with `vesper_package` (its manifest,
+     `glob(["vesper/src/**/*.ves"])`, and a `vesper_package` per path
+     dependency in `deps`), build it with `vesper_port_object(package = ...)`,
+     and then either
+     - hand the object to the crate's build script, as
+       `crates/vesper-beacon/BUILD.bazel` and `crates/vesper-port-build/BUILD.bazel`
+       do (`build_script_data` plus `VESPER_PORT_OBJECT` and
+       `VESPER_PORT_GENERATED_BINDING` in `build_script_env`, both
+       `"${pwd}/$(execpath ...)"`), so every generated target links the port;
+       or
+     - for an optional `vesper-port` feature, copy the `rust_library` (with
+       `port/binding.rs` in `srcs`) and `rust_test` targets from
+       `crates/vesper-port-pilot/BUILD.bazel`.
+     Run `python3 tools/bazel/sync_build_files.py` for a new crate.
+   - macOS and Windows: append the crate's lines to
+     `scripts/test-port-harness.sh`. CI passes the prebuilt compiler in
+     `VESPER_PORT_COMPILER`.
+   - Add the port's `vesper/` directory to the skip predicate in `fixtures()`
+     in `tests/fixtures/self_host/driver.rs` while the self-hosted parser
+     cannot parse `use` (#880).
 
 ## The unit-test rule
 
@@ -167,7 +207,11 @@ deliberately divergent port from its real source:
 - In Cargo, `Port::edit` makes the change under the `vesper-port-divergent`
   feature.
 - In Bazel, the `edits` attribute of `vesper_port_object` makes the same
-  change.
+  change. For a package, `edit_src` names the root-package file to edit; the
+  rule copies the package closure with its layout and edits the copy. In
+  Cargo, `Port::edit` on a package edits a copy of the closure in `OUT_DIR`,
+  and the text must occur exactly once across the root package's `.ves`
+  files. `crates/vesper-port-build` (feature `divergent`) shows both.
 
 CI asserts that the API tests fail on exactly the changed function and pass on
 the rest:
@@ -176,3 +220,74 @@ the rest:
 - macOS and Windows: `scripts/test-port-harness.sh`.
 
 Larger ports should add one such divergence check per module they port.
+
+## Crates the compiler links
+
+Ten port-first crates are in the compiler's own dependency closure
+(`cargo tree -p vesper -e normal,build`): `vesper-alloc`, `vesper-beacon`,
+`vesper-crucible`, `vesper-grammar`, `vesper-loom-calculus`,
+`vesper-loom-solver`, `vesper-semver`, `vesper-serde`, `vesper-simpulse` and
+`vesper-tensor`. Building their port needs a `vesper` compiler, so the
+compiler cannot itself link the port, or it would need itself to build. Two
+mechanisms keep that apart.
+
+**The harness does not link the compiler.** With the P0 harness, which linked
+the `vesper` library, a port in any of these crates failed with
+`error: cyclic package dependency` (`vesper -> vesper-beacon -> [build]
+vesper-port-harness -> vesper`). The harness now runs a `vesper` executable
+(see step 3), so there is no package cycle.
+
+**The seed-copy rule.** A Cargo feature cannot keep the compiler on the Rust
+build: resolver 2 unifies the features of a package across the whole build,
+so if any crate enabled `vesper-port` on a shared crate, the compiler would
+get the port too. Use two package identities instead:
+
+- The **seed package** `crates/<crate>/seed/`, package `<crate>-seed`, with
+  the same library name, builds the frozen Rust code: `[lib] path =
+  "../src/lib.rs"`, no build script, `[[test]]` entries pointing at
+  `../tests/*.rs`, and `check-cfg = ["cfg(vesper_port)"]`. Its Rust code takes
+  bug fixes only until self-hosting Stage 2 moves the compiler's own use of
+  the crate. Its `BUILD.bazel` is written by hand (sources live in the parent
+  package), as in `crates/vesper-beacon/seed/BUILD.bazel`.
+- The **original package** `<crate>` is the port-backed build: its `build.rs`
+  always calls `Port::build`, which sets `cfg(vesper_port)`, and its public
+  functions forward to the binding under `#[cfg(vesper_port)]`, keeping the
+  Rust body under `#[cfg(not(vesper_port))]` for the seed. The crate's own
+  tests run against both packages (`cargo test -p <crate> -p <crate>-seed`).
+- Every crate **inside** `cargo tree -p vesper -e normal,build` depends on
+  the seed by rename, so its code does not change:
+
+  ```toml
+  vesper-beacon = { path = "crates/vesper-beacon/seed", package = "vesper-beacon-seed" }
+  ```
+
+  Every crate **outside** the closure keeps depending on `<crate>` and so
+  links the port. Make this switch in its own commit.
+- Both packages document the same library, so `cargo doc` cannot take both in
+  one invocation (`document output filename collision`); document them one
+  at a time.
+
+`crates/vesper-beacon` shows the rule with a stub port of one function
+(`FastLogHistogram::bucket_index`): `vesper` links `vesper-beacon-seed`
+(`IMPLEMENTATION == "rust"`), and `vesper-beacon-arrow`, outside the closure,
+links the port (`IMPLEMENTATION == "vesper"`,
+`crates/vesper-beacon-arrow/tests/beacon_build.rs`).
+
+**The guard.** Two checks fail CI if a port-backed package (one whose build
+script runs `vesper-port-harness`) enters the normal or build dependency
+closure of `vesper` or of `vesper-codegen-verified` (which links no
+Vesper-built code at all):
+
+- Cargo: `crates/vesper-port-harness/tests/closure_guard.rs` reads
+  `cargo metadata`. Its `guard_fails_when_the_compiler_links_a_port` test
+  points the compiler's Beacon dependency at the port in the metadata and
+  checks that the guard reports it.
+- Bazel: `//crates/vesper-port-harness:compiler_closure_has_no_ports` reads
+  `genquery` results for `kind('vesper_port_object', deps(...))` of `//:vesper`
+  and `//crates/vesper-codegen-verified`, with `//crates/vesper-beacon-arrow`
+  as the positive control.
+
+A port that slips into the compiler's closure anyway also fails at build
+time: the harness's nested compiler build sets
+`VESPER_PORT_IN_COMPILER_BUILD`, and a port build script that sees it stops
+with a message pointing here instead of recursing.
