@@ -410,9 +410,12 @@ fn aborts_respect_linear_values_state_and_continuations() {
         "linear effect Ask { fn ask() -> i64; } fn bad(x: i64) -> i64 eff [Fail[ArithOverflow]] { handle Ask in { Ask::ask() } with { return v => v, ask(k) => { let y = x + 1; k(y) }, } }",
         "E0402",
     );
-    rejects(
-        "fn bad(inout x: i64) eff [Fail[ArithOverflow]] { x += 1; }",
-        "E0402",
+    // Keep-writes (#935): a checked failure may cross a stationary `inout`;
+    // the caller's place keeps the last write.
+    assert!(
+        checked("fn bump(inout x: i64) eff [Fail[ArithOverflow]] { x += 1; }")
+            .diagnostics
+            .is_empty()
     );
     // After the continuation is consumed, checked arithmetic is allowed, and
     // a linear value consumed before the failure is safe.

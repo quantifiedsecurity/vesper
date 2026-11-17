@@ -25,11 +25,10 @@
 //! is a three-word value `{handle, start, len}`. The Lean model is `Array T`.
 //!
 //! Element indexing (`get`, `set`, `s[i]`) and `finish` raise
-//! `Fail[RuntimeError]` `IndexOutOfBounds` on every backend. The place
-//! discipline forbids an abortable effect while an `inout` parameter or
-//! argument loan is live (`E0402`), so code that updates an `inout` sequence
-//! or slice uses the total `try_get` (an `Option[T]`) and `try_set` (a
-//! `bool`). An interval `s[a..b]` is evaluated while its sibling loans are
+//! `Fail[RuntimeError]` `IndexOutOfBounds` on every backend. An abortable
+//! effect may cross a live `inout` sequence or slice (keep-writes, #935): the
+//! caller keeps every write made before the failure. The total `try_get` (an
+//! `Option[T]`) and `try_set` (a `bool`) avoid the failure altogether. An interval `s[a..b]` is evaluated while its sibling loans are
 //! live, so an interval outside `0 <= a <= b <= len` is a run-time fault
 //! like a `TiledSeq` bounds fault: the evaluator and the JIT report an error
 //! and an executable exits with [`FAULT_STATUS`].

@@ -439,6 +439,12 @@ impl Binding {
         });
     }
 }
+#[derive(Debug, Clone)]
+struct HandlerFrame {
+    cap: usize,
+    outer: BTreeMap<String, Span>,
+    kept: BTreeMap<String, Span>,
+}
 #[derive(Debug, Clone, Default)]
 struct Env {
     bindings: BTreeMap<String, Binding>,
@@ -544,6 +550,7 @@ pub(crate) fn check_core(
             caps: vec![],
             cap_aliases: BTreeMap::new(),
             loans: vec![],
+            handler_frames: vec![],
             slice_args: BTreeMap::new(),
             effect_inference: vec![],
             traits,
@@ -640,6 +647,11 @@ struct Checker<'a> {
     caps: Vec<Effect>,
     cap_aliases: BTreeMap<String, String>,
     loans: Vec<(Place, Pass, Span)>,
+    /// Lexical handlers being checked: the capability index each installs,
+    /// the declaration span of every binding declared outside it, and the
+    /// outer linear bindings that were live at an abortable checkpoint this
+    /// handler catches.
+    handler_frames: Vec<HandlerFrame>,
     /// Spans of call arguments that may be slice views (`s[a..b]`).
     slice_args: BTreeMap<(usize, usize), Pass>,
     effect_inference: Vec<(bool, usize, Effects, String)>,
@@ -3160,25 +3172,58 @@ impl Checker<'_> {
                 self.help("An abortable checkpoint may discard the suspended continuation and its owned linear state.");
             }
         }
-        if self.loans.iter().any(|(_, mode, _)| *mode == Pass::Inout) {
+        // Keep-writes (manuscript §4.3, `PostCall_abort`): an abortable effect
+        // may cross a stationary `inout` loan or parameter. The borrowed place
+        // stays in the caller and holds the last value written before the
+        // abort. A sibling argument that aborts before the callee is entered
+        // (`f(inout x, g()?)`) has written nothing yet. What stays rejected is
+        // a borrowed place with an open move-out hole: unwinding would hand
+        // the caller a torn value. Every `inout` in this checker is
+        // stationary (no `~>` typestate transitions exist yet), so the hole
+        // is the only condition left to check here.
+        let torn = self
+            .loans
+            .iter()
+            .filter(|(place, mode, _)| {
+                *mode == Pass::Inout
+                    && env.bindings.get(&place.root).is_some_and(|b| {
+                        b.moved
+                            .iter()
+                            .any(|m| m.starts_with(&place.path) || place.path.starts_with(m))
+                    })
+            })
+            .take(8)
+            .map(|(_, _, origin)| origin.clone())
+            .collect::<Vec<_>>();
+        if !torn.is_empty() {
             self.error(
                 "E0402",
-                "abortable effect crosses an active inout argument loan",
+                "abortable effect crosses an inout argument loan with a moved-out part",
                 span.clone(),
             );
-            let origins = self
-                .loans
-                .iter()
-                .filter(|(_, mode, _)| *mode == Pass::Inout)
-                .take(8)
-                .map(|(_, _, origin)| origin.clone())
-                .collect::<Vec<_>>();
-            for origin in origins {
+            for origin in torn {
                 self.related(origin, "inout argument access requested here");
             }
-            self.help("An abortable checkpoint cannot cross an active exclusive argument loan.");
+            self.help("Reinitialize the moved part before an abortable checkpoint: an abort keeps the borrowed place, so it must be whole.");
         }
+        // An abort caught by a lexical handler in this frame does not unwind
+        // bindings declared outside that handler: control continues after
+        // the `handle` expression with them still in scope. The handler
+        // checks afterwards that the body did not consume them.
+        let catcher = target.and_then(|t| self.handler_frames.iter().rposition(|h| h.cap == t));
         for (n, b) in &env.bindings {
+            if b.pass == Pass::Sink
+                && self.mode(&b.ty) == Mode::Linear
+                && !b.moved.iter().any(Vec::is_empty)
+                && let Some(frame) = catcher
+                && self.handler_frames[frame].outer.get(n) == Some(&b.span)
+            {
+                self.handler_frames[frame]
+                    .kept
+                    .entry(n.clone())
+                    .or_insert_with(|| span.clone());
+                continue;
+            }
             if b.pass == Pass::Sink
                 && self.mode(&b.ty) == Mode::Linear
                 && !b.moved.iter().any(Vec::is_empty)
@@ -3187,11 +3232,11 @@ impl Checker<'_> {
                 self.related(b.span.clone(), "live linear binding introduced here");
                 self.help("An abortable checkpoint may discard a continuation that still owns this linear binding.");
             }
-            if b.pass == Pass::Inout {
-                self.error("E0402",format!("potentially abortable effect '{effect}' crosses active inout parameter '{n}'"),span.clone());
-                self.related(b.span.clone(), "active inout parameter declared here");
+            if b.pass == Pass::Inout && !b.moved.is_empty() {
+                self.error("E0402",format!("potentially abortable effect '{effect}' crosses inout parameter '{n}' while part of it is moved out"),span.clone());
+                self.related(b.span.clone(), "inout parameter declared here");
                 self.help(
-                    "An abortable checkpoint cannot cross an active exclusive parameter borrow.",
+                    "An abort keeps the caller's place (keep-writes), so every inout parameter must be whole at an abortable checkpoint.",
                 );
             }
         }
@@ -3763,6 +3808,15 @@ impl Checker<'_> {
                 .insert(label.clone(), cap.label.clone().unwrap());
         }
         self.caps.push(cap.clone());
+        self.handler_frames.push(HandlerFrame {
+            cap: self.caps.len() - 1,
+            outer: env
+                .bindings
+                .iter()
+                .map(|(n, b)| (n.clone(), b.span.clone()))
+                .collect(),
+            kept: BTreeMap::new(),
+        });
         let guarded = self.mode(&state_type) == Mode::Linear;
         if guarded {
             self.state_guards.push((
@@ -3784,6 +3838,23 @@ impl Checker<'_> {
         outgoing.instances.retain(|e| e.label != cap.label);
         if guarded {
             self.state_guards.pop();
+        }
+        // The catch edge keeps an outer linear value as it was at the
+        // checkpoint; the normal edge sees what the body did with it. They
+        // agree only if the body left it as it found it.
+        let frame = self.handler_frames.pop().expect("handler frame");
+        for (n, checkpoint) in frame.kept {
+            if let (Some(before), Some(after)) = (outer.bindings.get(&n), env.bindings.get(&n))
+                && before.moved != after.moved
+            {
+                self.error(
+                    "E0402",
+                    format!("linear value '{n}' is consumed inside a handled body that may abort before consuming it"),
+                    checkpoint,
+                );
+                self.related(before.span.clone(), "live linear binding introduced here");
+                self.help("Consume the linear value after the handle expression, where the normal and the abort paths join.");
+            }
         }
         self.caps.pop();
         self.cap_aliases = aliases;
@@ -3807,6 +3878,24 @@ impl Checker<'_> {
                     "lexical effect capability escapes its handler",
                     span.clone(),
                 );
+            }
+        }
+        // Handler clauses capture snapshots taken at handler entry, so their
+        // facts stay valid. After an abortable handler, though, the code that
+        // follows joins the normal edge with the catch edge, and an abort may
+        // skip writes the body made after its checkpoint (or keep a write an
+        // `inout` callee made before it): forget the body's facts about every
+        // place the body wrote.
+        if !decl.linear {
+            for (n, b) in env.bindings.iter_mut() {
+                if outer
+                    .bindings
+                    .get(n)
+                    .is_some_and(|o| !Arc::ptr_eq(&o.mutation, &b.mutation))
+                {
+                    b.integer = None;
+                    b.nonzero = false;
+                }
             }
         }
         let mut clause_env = Env::default();

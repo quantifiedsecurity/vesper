@@ -169,22 +169,12 @@ fn abortable_checkpoint_labels_live_linear_and_active_inout_origins() {
     assert_eq!(d.span, span(source, "Ask::ask()"));
     assert_eq!(texts(source, d), ["sink tx:Tx"]);
     assert!(errors("linear struct Tx{} linear effect Ask{fn ask();} fn good(sink tx:Tx) eff[Ask]{Ask::ask();let Tx{}=tx;}").is_empty());
-    let source = "effect Ask{fn ask()->i64;} fn both(inout x:i64,in y:i64){} fn bad(inout x:i64) eff[Ask]{both(inout x,Ask::ask());}";
+    // Keep-writes (#935): an abortable effect may cross an `inout` loan and
+    // an `inout` parameter.
+    let source = "effect Ask{fn ask()->i64;} fn both(inout x:i64,in y:i64){} fn ok(inout x:i64) eff[Ask]{both(inout x,Ask::ask());}";
     let diagnostics = errors(source);
     validate(source, &diagnostics);
-    let d = one(
-        &diagnostics,
-        "E0402",
-        "abortable effect crosses an active inout argument loan",
-    );
-    let argument = source.find("both(inout x,").unwrap() + "both(inout ".len();
-    assert_eq!(d.related[0].span, argument..argument + 1);
-    let d = one(
-        &diagnostics,
-        "E0402",
-        "potentially abortable effect 'Ask' crosses active inout parameter 'x'",
-    );
-    assert_eq!(texts(source, d), ["inout x:i64"]);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }
 #[test]
 fn abortable_checkpoint_labels_actual_linear_handler_state_initializer() {
@@ -229,16 +219,10 @@ fn evidence_caps_and_primary_deduplication_do_not_claim_complete_history() {
     );
     let diagnostics = errors(&source);
     validate(&source, &diagnostics);
-    let d = one(
-        &diagnostics,
-        "E0402",
-        "abortable effect crosses an active inout argument loan",
-    );
-    assert_eq!(d.related.len(), 8);
+    // Keep-writes (#935): ten live `inout` loans may cross the abort.
     assert!(
-        d.related
-            .iter()
-            .all(|l| source[l.span.clone()].starts_with('p'))
+        diagnostics.iter().all(|d| d.code != "E0402"),
+        "{diagnostics:?}"
     );
 }
 
@@ -351,17 +335,11 @@ fn rejected_argument_accesses_do_not_claim_a_successful_loan() {
         let diagnostics = errors(&source);
         validate(&source, &diagnostics);
         assert!(diagnostics.iter().any(|d| d.code == code));
-        let d = one(
-            &diagnostics,
-            "E0402",
-            "abortable effect crosses an active inout argument loan",
+        // Keep-writes (#935): the loan, rejected or not, is no abort error.
+        assert!(
+            diagnostics.iter().all(|d| d.code != "E0402"),
+            "{diagnostics:?}"
         );
-        let origin = source.find(&format!("both({explicit} x,")).unwrap()
-            + "both(".len()
-            + explicit.len()
-            + 1;
-        assert_eq!(d.related[0].span, origin..origin + 1);
-        assert_eq!(d.related[0].message, "inout argument access requested here");
     }
 }
 
