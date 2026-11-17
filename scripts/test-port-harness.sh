@@ -95,6 +95,7 @@ for t in pacing::tests::pacing_delay_is_ceiling_and_defined_at_zero filter::test
 done
 grep -q 'test bbr::tests::inflight_at_loss_solves_for_the_threshold_crossing ... ok' "$log" || { cat "$log"; echo "the divergent warp-bbr port failed an unchanged test" >&2; exit 1; }
 echo "divergent warp-bbr port detected (one failure per ported module)"
+crates/vesper-warp-tcp/scripts/test-port.sh
 # Quarry planner port (port wave P1 lane 7, #904): the port's tests, and one
 # failing test per ported module on the divergent build (DIVERGENT in
 # crates/vesper-quarry/build.rs).
