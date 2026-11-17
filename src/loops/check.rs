@@ -197,7 +197,7 @@ impl Checker<'_> {
         for n in names {
             env.bindings.remove(&n);
         }
-        env.bindings.extend(shadowed);
+        env.bindings.extend(shadowed.clone());
         if t.name() != "Never" {
             self.back_edge(&entry, env, &span);
         }
@@ -215,6 +215,24 @@ impl Checker<'_> {
                 self.constrain_literals(v, &result);
             }
         }
+        // A `break` leaves the `for` pattern's scope: the outer bindings it
+        // shadowed come back.
+        let mut exits = exits
+            .into_iter()
+            .map(|mut exit| {
+                for (name, old) in &shadowed {
+                    exit.bindings
+                        .entry(name.clone())
+                        .or_insert_with(|| old.clone());
+                }
+                exit
+            })
+            .collect::<Vec<_>>();
+        if !value {
+            // A `for` loop also ends when its range is exhausted, at the
+            // header of any iteration.
+            exits.insert(0, entry);
+        }
         let mut exits = exits.into_iter();
         if let Some(first) = exits.next() {
             *env = first;
@@ -223,12 +241,8 @@ impl Checker<'_> {
                 self.merge(env, &previous, &exit, span.clone());
             }
             if value { result } else { Type::unit() }
-        } else if value {
-            Type::named("Never")
         } else {
-            // A `for` loop ends when its range is exhausted.
-            *env = entry;
-            Type::unit()
+            Type::named("Never")
         }
     }
 
@@ -500,12 +514,14 @@ impl Checker<'_> {
             .find(|f| matches!(f, ControlFrame::Function { .. }))
         {
             let previous = returned.clone();
+            // An annotated result already checked `actual`; an inferred one
+            // joins every early return (E0200 on a mismatch).
             let joined = if previous.name() == "Never" {
                 actual
-            } else if compatible(&previous, &actual) {
+            } else if expected != Type::Infer && compatible(&previous, &actual) {
                 previous
             } else {
-                actual
+                self.join_types(&previous, &actual, span.clone())
             };
             if let Some(ControlFrame::Function { returned, .. }) = self
                 .control

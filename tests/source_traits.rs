@@ -164,7 +164,7 @@ impl Step[Log] for Counter {
     fn step(inout self) -> i64 eff [Log] { Log::log(self.n); self.n = wrapping_add(self.n, 1); self.n }
 }
 fn main() -> i64 {
-    let c = Counter { n: 1 };
+    let mut c = Counter { n: 1 };
     handle Log in {
         let a = c.step();
         let b = c.step();

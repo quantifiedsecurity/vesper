@@ -203,3 +203,94 @@ fn backends_without_loops_refuse_them() {
         "{ebpf}"
     );
 }
+
+fn diagnostics(source: &str) -> Vec<String> {
+    let p = parser::parse(source);
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    check::check(&p.module)
+        .diagnostics
+        .into_iter()
+        .map(|d| d.code)
+        .collect()
+}
+
+#[test]
+fn for_pattern_shadow_returns_after_break() {
+    let out = differential(
+        "fn main() -> i64 {
+            let i = 42;
+            for i in 0..3 {
+                break;
+            }
+            i
+        }",
+    );
+    assert_eq!(out, "42");
+}
+
+#[test]
+fn empty_range_joins_the_loop_exit() {
+    // The range may be empty, so `x` may still be zero after the loop: the
+    // division needs its failure effect.
+    let codes = diagnostics(
+        "fn main() -> i64 {
+            let mut x = 0;
+            for _ in 0..0 {
+                x = 1;
+                break;
+            }
+            1 / x
+        }",
+    );
+    assert!(codes.iter().any(|c| c == "E0401"), "{codes:?}");
+}
+
+#[test]
+fn inferred_closure_returns_must_agree() {
+    let codes = diagnostics(
+        "fn main() -> i64 {
+            let f = |b: bool| {
+                if b {
+                    return true;
+                }
+                return 2;
+            };
+            f(true)
+        }",
+    );
+    assert!(codes.iter().any(|c| c == "E0200"), "{codes:?}");
+}
+
+#[test]
+fn optimized_early_return_of_a_forwarded_local() {
+    assert_eq!(differential("fn main() -> i64 { let x = 42; return x; }"), "42");
+}
+
+#[test]
+fn functions_named_like_loop_words_stay_callable() {
+    let out = differential(
+        "fn for(x: i64) -> i64 { x }
+        fn break() -> i64 { 3 }
+        fn main() -> i64 { wrapping_add(break(), for(4)) }",
+    );
+    assert_eq!(out, "7");
+}
+
+#[test]
+fn native_refuses_boxes_across_loops() {
+    let c = world(
+        "copy struct P { x: i64 }
+        fn main() -> i64 {
+            let mut total = 0;
+            for i in 0..3 {
+                let b = Box::new(P { x: i });
+                let Box(p) = b;
+                total = wrapping_add(total, p.x);
+            }
+            total
+        }",
+    );
+    assert_eq!(evaluate(&c), "3");
+    let error = native::jit(&c.world, "main").unwrap_err();
+    assert!(error.contains(vesper::loops::BOX_REFUSAL), "{error}");
+}

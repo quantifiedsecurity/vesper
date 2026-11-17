@@ -385,7 +385,7 @@ fn pure_children_inside_barriers_rewrite_without_moving_effect_or_failure_order(
     };
     assert_eq!(args[0].expr.kind, ExprKind::Literal(Literal::Int(42)));
     agree(
-        "fn next(inout n: i64) -> i64 { n = wrapping_add(n, 1); n } fn main() -> i64 { let n = 0; let a = wrapping_mul(next(inout n), 0); let b = next(inout n); wrapping_add(wrapping_mul(n, 100), wrapping_add(wrapping_mul(a, 10), b)) }",
+        "fn next(inout n: i64) -> i64 { n = wrapping_add(n, 1); n } fn main() -> i64 { let mut n = 0; let a = wrapping_mul(next(inout n), 0); let b = next(inout n); wrapping_add(wrapping_mul(n, 100), wrapping_add(wrapping_mul(a, 10), b)) }",
         "202",
     );
     for (operands, expected) in [

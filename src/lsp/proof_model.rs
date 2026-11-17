@@ -1241,7 +1241,7 @@ fn negate(x: i64) -> i64 eff [Fail[ArithOverflow]] {
 }
 
 fn counted(x: u32) -> u32 eff [Fail[ArithOverflow]] {
-    let total = x;
+    let mut total = x;
     total += 1;
     if total > 10 {
         total - 10

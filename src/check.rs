@@ -350,6 +350,9 @@ struct Binding {
     nonzero: bool,
     // Identity changes on actual writes/invalidation, never on branch refinement.
     mutation: Arc<()>,
+    /// Bound by `let` without `mut`: assignment and `inout` borrows are
+    /// rejected (E0313).
+    frozen: bool,
 }
 impl Binding {
     fn remember_move(&mut self, path: &[String], span: Span) {
@@ -896,6 +899,7 @@ impl Checker<'_> {
                         move_causes: vec![],
                         span: p.span.clone(),
                         mutation: Arc::new(()),
+                        frozen: false,
                         integer: None,
                         nonzero: false,
                     },
@@ -1022,6 +1026,18 @@ impl Checker<'_> {
             self.error("E0201", format!("unknown binding '{}'", p.root), span);
             return Type::Infer;
         };
+        if b.frozen && matches!(usage, Usage::Borrow(Pass::Inout)) {
+            self.error(
+                "E0313",
+                format!(
+                    "cannot mutate '{}': it is bound by 'let' without 'mut'",
+                    p.root
+                ),
+                span.clone(),
+            );
+            self.related(b.span.clone(), "binding introduced here");
+            self.help("Declare the binding with 'let mut' to assign to it or pass it 'inout'.");
+        }
         let mut transfer_allowed = true;
         if b.moved
             .iter()
@@ -1291,7 +1307,13 @@ impl Checker<'_> {
                         break;
                     }
                     match s {
-                        Statement::Let { pat, ty, value, .. } => {
+                        Statement::Let {
+                            pat,
+                            ty,
+                            value,
+                            mutable,
+                            ..
+                        } => {
                             let ty = &self.region_annotation(ty);
                             self.valid_type(ty, &self.generics.clone(), value.span.clone());
                             let actual = self.expr_expected(value, env, Usage::Own, ty);
@@ -1327,6 +1349,11 @@ impl Checker<'_> {
                                 let binding = env.bindings.get_mut(n).unwrap();
                                 binding.integer = fact;
                                 binding.nonzero = nonzero;
+                            }
+                            for n in pattern_names(pat) {
+                                if let Some(binding) = env.bindings.get_mut(&n) {
+                                    binding.frozen = !*mutable;
+                                }
                             }
                         }
                         Statement::Expr(e) => {
@@ -3314,6 +3341,7 @@ impl Checker<'_> {
                         move_causes: vec![],
                         span: p.span.clone(),
                         mutation: Arc::new(()),
+                        frozen: false,
                         integer: None,
                         nonzero: false,
                     },
@@ -3479,6 +3507,7 @@ impl Checker<'_> {
                     move_causes: vec![],
                     span: p.span.clone(),
                     mutation: Arc::new(()),
+                    frozen: false,
                     integer: None,
                     nonzero: false,
                 },

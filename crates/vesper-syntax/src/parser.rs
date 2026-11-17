@@ -160,6 +160,7 @@ pub fn parse_with_limits(source: &str, limits: ParseLimits) -> Result<Parse, lex
             diagnostics,
         });
     }
+    let item_names = contextual_item_names(&tokens, source);
     let mut p = Parser {
         source,
         tokens,
@@ -168,7 +169,7 @@ pub fn parse_with_limits(source: &str, limits: ParseLimits) -> Result<Parse, lex
         diagnostics,
         no_struct: false,
         row_names: Default::default(),
-        bound_values: Default::default(),
+        bound_values: item_names,
         model_uses: vec![],
         trait_bounds: vec![],
         pending_bounds: vec![],
@@ -2438,4 +2439,27 @@ fn pattern_bindings(p: &Pattern, names: &mut std::collections::BTreeSet<String>)
         }
         _ => {}
     }
+}
+
+/// Top-level functions named after a contextual loop word (`fn break()`)
+/// keep that word an ordinary name in calls, like a local binding does.
+pub(crate) fn contextual_item_names(
+    tokens: &[Token],
+    source: &str,
+) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    let mut significant = tokens
+        .iter()
+        .filter(|t| !matches!(t.kind, K::Whitespace | K::Comment | K::BlockComment));
+    let mut previous = None;
+    for t in &mut significant {
+        if previous == Some(K::Fn) && t.kind == K::Lower {
+            let name = &source[t.span.clone()];
+            if matches!(name, "break" | "for" | "loop") {
+                names.insert(name.to_owned());
+            }
+        }
+        previous = Some(t.kind);
+    }
+    names
 }

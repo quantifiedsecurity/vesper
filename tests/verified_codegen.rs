@@ -455,7 +455,7 @@ fn checked_arithmetic_boundaries() {
         "fn neg(a: i64) -> i64 eff [Fail[ArithOverflow]] { -a }\nfn main() -> i64 eff [Fail[ArithOverflow]] { neg(-9223372036854775808) }".into(),
     );
     cases.push(
-        "fn main() -> i64 eff [Fail[ArithOverflow]] { let x = 9223372036854775806; let y = x; y += 1; y += 1; y }".into(),
+        "fn main() -> i64 eff [Fail[ArithOverflow]] { let x = 9223372036854775806; let mut y = x; y += 1; y += 1; y }".into(),
     );
     assert!(cases.len() > 90);
     for case in &cases {

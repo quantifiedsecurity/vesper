@@ -176,6 +176,12 @@ pub fn is_box_pattern(world: &World, pat: &Pattern) -> bool {
         )
 }
 
+/// Whether `ty` holds a built-in `Box[T]` anywhere (used by backends that
+/// cannot yet reclaim boxes across loops and early exits).
+pub fn mentions_box(world: &World, ty: &Type) -> bool {
+    active(world) && type_mentions_box(ty)
+}
+
 fn type_mentions_box(t: &Type) -> bool {
     match t {
         Type::Named(n, args) => n == BOX_TYPE || args.iter().any(type_mentions_box),

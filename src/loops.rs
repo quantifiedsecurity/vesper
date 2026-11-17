@@ -26,6 +26,11 @@
 pub const LEAN_REFUSAL: &str = "Lean extraction does not model loop, for, break or return yet; \
     write the iteration as a tail-recursive function";
 
+/// The native backends' typed refusal for `Box[T]` values in a function
+/// with loops or early exits, whose drops are not elaborated yet.
+pub const BOX_REFUSAL: &str = "Box values in a function with loop, for, break or return \
+    are not reclaimed natively yet; move the loop into a function without boxes";
+
 /// The Wasm backend's typed refusal ([`crate::wasm_backend::Unsupported::Operation`]).
 pub const WASM_REFUSAL: &str = "loop, for, break and return are not lowered to Wasm yet; \
     write the iteration as a tail-recursive function";
@@ -34,3 +39,42 @@ pub const WASM_REFUSAL: &str = "loop, for, break and return are not lowered to W
 /// from a handled body (see [`crate::ir::Op::Loop`] and
 /// [`crate::ir::Op::Exit`]).
 pub const LOOP_MARKER: &str = "loop";
+
+/// Whether a parsed module uses this feature's syntax (`loop`, `for`,
+/// `break`, `return`, or `let mut`). The self-hosted Stage 1 front end in
+/// `packages/vesper-compiler` does not parse it yet, so its differential
+/// tests leave such sources out until it does.
+pub fn uses_loop_syntax(module: &crate::ast::Module) -> bool {
+    use crate::ast::{ExprKind, Function, Item, Statement};
+    let mut found = false;
+    let mut visit = |f: &Function| {
+        if let Some(body) = &f.body {
+            crate::regions::visit_expr(body, &mut |e| match &e.kind {
+                ExprKind::Loop(_)
+                | ExprKind::For { .. }
+                | ExprKind::Range { .. }
+                | ExprKind::Break(_)
+                | ExprKind::Return(_) => found = true,
+                ExprKind::Block { statements, .. } => {
+                    if statements
+                        .iter()
+                        .any(|s| matches!(s, Statement::Let { mutable: true, .. }))
+                    {
+                        found = true;
+                    }
+                }
+                _ => {}
+            });
+        }
+    };
+    for item in &module.items {
+        match item {
+            Item::Function(f) => visit(f),
+            Item::Impl { methods, .. } => methods.iter().for_each(&mut visit),
+            Item::Trait(t) => t.methods.iter().for_each(&mut visit),
+            Item::Conformance(c) => c.methods.iter().for_each(&mut visit),
+            Item::Adt(_) | Item::Effect(_) => {}
+        }
+    }
+    found
+}

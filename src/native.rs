@@ -2490,6 +2490,23 @@ impl<M: Module> Codegen<'_, '_, M> {
             postorder
         });
         order.extend(unreached);
+        // Box drop elaboration (`fip::elaborate_non_fip_drops`) assumes a
+        // forward-only graph without early exits; refuse rather than leak.
+        if f.blocks
+            .iter()
+            .flat_map(|b| &b.instructions)
+            .any(|i| matches!(i.op, Op::Loop | Op::Exit { .. }))
+            && f.values
+                .values()
+                .chain(f.locals.values())
+                .any(|t| crate::fip::mentions_box(self.world, t))
+        {
+            return Err(format!(
+                "native '{}': {}",
+                f.name,
+                crate::loops::BOX_REFUSAL
+            ));
+        }
         let result_type = crate::numeric::default_type(&substitute(&f.result, &self.generic_vars));
         self.exits.push(ExitTarget {
             owner: f.name.clone(),
