@@ -39,6 +39,9 @@ pub mod session;
 /// AoSoA `tiled(N) struct` and `TiledSeq[T]` native lowering (§12.5).
 #[path = "tiled/native.rs"]
 mod tiled;
+/// `ChunkSeq[T]` and `Slice[T]` native lowering (§13).
+#[path = "seq/native.rs"]
+mod seq_native;
 /// Windows x64 COFF objects with unwind tables, and the MSVC link driver.
 #[path = "native_windows.rs"]
 pub mod windows;
@@ -61,6 +64,7 @@ fn scalar(t: &Type, generics: &[Generic]) -> Result<ir::Type, String> {
         Type::Named(n, _) if crate::regions::is_handle_name(n) => Ok(types::I64),
         Type::Named(n, args) if n == crate::fip::BOX_TYPE && args.len() == 1 => Ok(types::I64),
         t if crate::tiled::is_seq_type(t) => Ok(types::I64),
+        t if crate::seq::is_seq_type(t) => Ok(types::I64),
         _ => Err(format!(
             "native backend does not yet lower aggregate type {t}"
         )),
@@ -1109,6 +1113,7 @@ pub(crate) fn register_jit_runtime_symbols(builder: &mut JITBuilder, trace_host:
         builder.symbols(crate::trace_effects::native_runtime::symbols());
     }
     builder.symbols(crate::tiled::native_runtime::symbols());
+    builder.symbols(crate::seq::native_runtime::symbols());
     builder.symbols(crate::fip::native_runtime::symbols());
 }
 fn jit_run_entry(
@@ -1204,9 +1209,11 @@ fn jit_run_entry(
             }
         }
     };
+    let sequences = crate::seq::native_runtime::finish();
     crate::regions::native_runtime::finish().map_err(|e| format!("native region fault: {e}"))?;
     crate::tiled::native_runtime::finish().map_err(|e| format!("native tiled fault: {e}"))?;
     crate::fip::native_runtime::finish();
+    sequences?;
     Ok(value)
 }
 pub fn object(world: &World, entry: &str) -> Result<(Vec<u8>, String), String> {
@@ -2604,10 +2611,14 @@ impl<M: Module> Codegen<'_, '_, M> {
                         let es = args
                             .iter()
                             .map(|a| {
-                                let expr = if a.pass == Pass::Inout
-                                    || (a.pass == Pass::In
-                                        && !self.world.functions.contains_key(callee)
-                                        && a.place.is_some())
+                                // A slice view argument is a value, not a place.
+                                let view = a.place.is_none()
+                                    && f.values.get(&a.value).is_some_and(crate::seq::is_slice_type);
+                                let expr = if !view
+                                    && (a.pass == Pass::Inout
+                                        || (a.pass == Pass::In
+                                            && !self.world.functions.contains_key(callee)
+                                            && a.place.is_some()))
                                 {
                                     ir_place_expr(
                                         a.place
@@ -2696,6 +2707,20 @@ impl<M: Module> Codegen<'_, '_, M> {
                             })
                             .collect::<Result<Vec<_>, String>>()?;
                         self.tiled_op(op, &operands, capability.as_deref())?
+                    }
+                    Op::Seq { op, args } => {
+                        let mut operands = Vec::new();
+                        let mut operand_types = Vec::new();
+                        for a in args {
+                            operands.push(values.get(&a.value).copied().ok_or_else(|| {
+                                format!("undefined native IR value %{}", a.value)
+                            })?);
+                            operand_types.push(crate::numeric::default_type(&substitute(
+                                f.values.get(&a.value).ok_or("IR value lacks a type")?,
+                                &self.generic_vars,
+                            )));
+                        }
+                        self.seq_op(*op, &operands, &operand_types, &ty)?
                     }
                     Op::Fip { op, args } => {
                         let operands = args
@@ -3426,6 +3451,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                     value
                 }
             }
+            ExprKind::Index(..) if let Some(result) = self.seq_ast_expr(e) => result?,
             ExprKind::Index(base, index) => {
                 let layout = Layout::of(self.world, &self.ty(base))?;
                 let LayoutKind::Product(fs) = layout.kind else {
@@ -3745,6 +3771,9 @@ impl<M: Module> Codegen<'_, '_, M> {
                 types: instance,
             } => {
                 if let Some(result) = self.tiled_ast_call(callee, instance, args, e) {
+                    return result;
+                }
+                if let Some(result) = self.seq_ast_expr(e) {
                     return result;
                 }
                 if let ExprKind::Name(n) = &callee.kind {
@@ -4331,7 +4360,10 @@ impl<M: Module> Codegen<'_, '_, M> {
         let mut restores = vec![];
         for (arg, param) in args.iter().zip(&f.params) {
             let layout = Layout::of(self.world, &param.ty)?;
-            if param.pass == Pass::Inout {
+            if param.pass == Pass::Inout && crate::seq::is_slice_type(&param.ty) {
+                // A slice view is passed as the address of its value.
+                values.push(self.expr(&arg.expr)?);
+            } else if param.pass == Pass::Inout {
                 let ptr = self.address(&arg.expr)?;
                 if !layout.aggregate()
                     && let ExprKind::Name(n) = &arg.expr.kind

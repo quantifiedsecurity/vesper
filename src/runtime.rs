@@ -10,6 +10,8 @@ pub mod resource_trace;
 mod resource_trace_acceptance;
 #[path = "tiled/eval.rs"]
 mod tiled;
+#[path = "seq/eval.rs"]
+mod seq;
 use resource_trace::{
     ResourceConsume, ResourceIdentity, ResourceTraceCompletion, ResourceTraceConfig,
     ResourceTraceEngine, ResourceTraceError, ResourceTraceFailure, ResourceTraceObserver,
@@ -93,6 +95,14 @@ pub enum Value {
     Bound(Rc<BoundCallable>),
     Continuation(Rc<RefCell<Option<Continuation>>>),
     TiledSeq(Rc<RefCell<tiled::TiledSeqState>>),
+    /// A `ChunkSeq[T]` (§13).
+    Seq(seq::SeqCell),
+    /// A `Slice[T]` view `[start, start + len)` of a sequence (§13).
+    Slice {
+        seq: seq::SeqCell,
+        start: usize,
+        len: usize,
+    },
 }
 #[derive(Clone)]
 pub struct Closure {
@@ -174,6 +184,8 @@ impl fmt::Display for Value {
                 let state = seq.borrow();
                 write!(f, "<TiledSeq[{}] len={}>", state.adt, state.rows.len())
             }
+            Self::Seq(cell) => write!(f, "<ChunkSeq len={}>", cell.borrow().len()),
+            Self::Slice { start, len, .. } => write!(f, "<Slice {start}..{}>", start + len),
         }
     }
 }
@@ -1168,6 +1180,23 @@ impl<'a> Runtime<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 self.tiled_op(&op, values, &state.env)?
             }
+            Op::Seq { op, args } => {
+                let values = args
+                    .into_iter()
+                    .map(|a| get(a.value))
+                    .collect::<Result<Vec<_>, _>>()?;
+                match self.seq_op(op, values, &instruction.span)? {
+                    seq::SeqOutcome::Value(v) => v,
+                    seq::SeqOutcome::OutOfBounds => {
+                        return self.primitive_failure(
+                            state,
+                            instruction.dest,
+                            instruction.ty,
+                            Failure::IndexOutOfBounds,
+                        );
+                    }
+                }
+            }
             Op::Fip { args, .. } => {
                 let inner = args
                     .into_iter()
@@ -2061,10 +2090,12 @@ impl<'a> Runtime<'a> {
                 for (i, (p, v)) in f.params.iter().zip(args).enumerate() {
                     let v = self.qualify_value(v, &p.ty, &env, true);
                     let slot = if p.pass == Pass::Inout {
-                        refs.get(i)
-                            .cloned()
-                            .flatten()
-                            .ok_or("inout argument requires place")?
+                        match refs.get(i).cloned().flatten() {
+                            Some(slot) => slot,
+                            // A slice view shares its sequence's cell.
+                            None if matches!(v, Value::Slice { .. }) => Slot::new(v),
+                            None => return Err("inout argument requires place".into()),
+                        }
                     } else {
                         Slot::new(v)
                     };
@@ -2106,10 +2137,12 @@ impl<'a> Runtime<'a> {
                 for (i, (p, v)) in c.params.iter().zip(args).enumerate() {
                     let v = self.qualify_value(v, &p.ty, &env, true);
                     let slot = if p.pass == Pass::Inout {
-                        refs.get(i)
-                            .cloned()
-                            .flatten()
-                            .ok_or("inout argument requires place")?
+                        match refs.get(i).cloned().flatten() {
+                            Some(slot) => slot,
+                            // A slice view shares its sequence's cell.
+                            None if matches!(v, Value::Slice { .. }) => Slot::new(v),
+                            None => return Err("inout argument requires place".into()),
+                        }
                     } else {
                         Slot::new(v)
                     };

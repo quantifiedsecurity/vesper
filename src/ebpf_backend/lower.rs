@@ -127,6 +127,7 @@ fn op_name(op: &Op) -> &'static str {
         Op::Tuple(_) => "tuple",
         Op::Vector { .. } => "vector operation",
         Op::Tiled { .. } => "tiled AoSoA sequence operation",
+        Op::Seq { .. } => "ChunkSeq or Slice operation",
         Op::Fip { .. } => "FIP Box operation",
         Op::Data(..) => "struct or variant value",
         Op::Project(..) => "field projection",
@@ -148,7 +149,7 @@ fn op_uses(op: &Op) -> Vec<ValueId> {
         Op::Tuple(v) | Op::Vector { args: v, .. } => v.clone(),
         Op::Data(_, f) => f.iter().map(|(_, v)| *v).collect(),
         Op::Project(v, _) => vec![*v],
-        Op::Call { args, .. } | Op::Tiled { args, .. } | Op::Fip { args, .. } => {
+        Op::Call { args, .. } | Op::Tiled { args, .. } | Op::Seq { args, .. } | Op::Fip { args, .. } => {
             args.iter().map(|a| a.value).collect()
         }
         Op::Indirect { callee, args } => {

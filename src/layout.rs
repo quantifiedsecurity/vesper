@@ -56,6 +56,7 @@ impl Layout {
             )
             || crate::regions::is_handle_type(ty)
             || crate::tiled::is_seq_type(ty)
+            || crate::seq::is_seq_type(ty)
             || crate::fip::is_box_type(world, ty)
             || *ty == Type::unit()
         {
@@ -64,6 +65,18 @@ impl Layout {
                 size: 8,
                 kind: LayoutKind::Scalar,
             });
+        }
+        // A slice is the view `{handle, start, len}` (§13).
+        if crate::seq::is_slice_type(ty) {
+            let word = Type::named("u64");
+            let mut view = Self::build(
+                world,
+                &Type::Tuple(vec![word.clone(), word.clone(), word]),
+                seen,
+                depth + 1,
+            )?;
+            view.ty = ty.clone();
+            return Ok(view);
         }
         if let Type::Tuple(ts) = ty {
             let mut offset = 0;

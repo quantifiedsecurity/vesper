@@ -1562,7 +1562,7 @@ fn op_reads_value(op: &crate::ir::Op, target: ValueId) -> bool {
             state_value: Some(value),
             ..
         } => *value == target,
-        Op::Call { args, .. } | Op::Tiled { args, .. } | Op::Fip { args, .. } => {
+        Op::Call { args, .. } | Op::Tiled { args, .. } | Op::Seq { args, .. } | Op::Fip { args, .. } => {
             args.iter().any(|a| a.value == target)
         }
         Op::Indirect { callee, args } => {
@@ -1931,7 +1931,7 @@ pub fn elaborate_non_fip_drops(world: &World, program: &mut crate::ir::Program) 
                                 owned_values.insert(inst.dest, inst.ty.clone());
                             }
                         }
-                        Op::Call { args, .. } | Op::Tiled { args, .. } | Op::Fip { args, .. } => {
+                        Op::Call { args, .. } | Op::Tiled { args, .. } | Op::Seq { args, .. } | Op::Fip { args, .. } => {
                             for a in args {
                                 if a.pass == Pass::Sink {
                                     owned_values.remove(&a.value);
