@@ -1,0 +1,218 @@
+// Request matching: the backtracking path search and the 405/404 outcomes.
+use self::{
+    RouterCore,
+    Resolved,
+    none,
+    work_exhausted,
+    byte,
+    byte_of,
+    word,
+    node_at,
+    term_at,
+    terms_of,
+    static_child
+};
+
+fn segment_lo(in ends: Slice[u64], k: u64) -> u64 {
+    if k == 0 {
+        0
+    } else {
+        word(in ends, wrapping_sub(k, 1))
+    }
+}
+
+// Depth first, static before parameter: the first complete path found is the
+// highest-precedence one. The matched node, `none()`, or `work_exhausted()`.
+pub fn find_path(
+    in r: RouterCore,
+    node: u64,
+    in segments: Slice[u8],
+    in ends: Slice[u64],
+    trailing: bool,
+    depth: u64,
+    inout captured: ChunkSeq[u64],
+    inout work: u64
+) -> u64 {
+    work = wrapping_add(work, 1);
+    if work > r.limits.max_match_work {
+        return work_exhausted();
+    }
+    let current = node_at(in r, node);
+    if depth >= ends.len() {
+        if terms_of(current, trailing) != none() {
+            return node;
+        }
+        return none();
+    }
+    let lo = segment_lo(in ends, depth);
+    let hi = word(in ends, depth);
+    let child = static_child(in r, node, in segments, lo, hi);
+    if child != none() {
+        let found = find_path(
+            in r,
+            child,
+            in segments,
+            in ends,
+            trailing,
+            wrapping_add(depth, 1),
+            inout captured,
+            inout work
+        );
+        if found != none() {
+            return found;
+        }
+    }
+    if current.param_child != none() {
+        captured.push(depth);
+        let found = find_path(
+            in r,
+            current.param_child,
+            in segments,
+            in ends,
+            trailing,
+            wrapping_add(depth, 1),
+            inout captured,
+            inout work
+        );
+        if found != none() {
+            return found;
+        }
+        captured.pop();
+    }
+    none()
+}
+
+pub fn is_lit(in s: Slice[u8], lo: u64, hi: u64, in lit: Str) -> bool {
+    if wrapping_sub(hi, lo) != lit.len() {
+        return false;
+    }
+    for i in 0..lit.len() {
+        match lit.try_byte_at(i) {
+            Option::Some(b) => if byte(in s, wrapping_add(lo, i)) != b {
+                return false;
+            },
+            Option::None => (),
+        }
+    }
+    true
+}
+
+// Byte order of two methods; a `none()` term stands for `HEAD`.
+fn method_less(in r: RouterCore, a: u64, b: u64) -> bool {
+    let mut head: ChunkSeq[u8] = ChunkSeq::new[u8]();
+    head.push(72);
+    head.push(69);
+    head.push(65);
+    head.push(68);
+    let ta = term_at(in r, a);
+    let tb = term_at(in r, b);
+    let (alo, ahi) = if a == none() {
+        (0, 4)
+    } else {
+        (ta.method_lo, ta.method_hi)
+    };
+    let (blo, bhi) = if b == none() {
+        (0, 4)
+    } else {
+        (tb.method_lo, tb.method_hi)
+    };
+    let al = wrapping_sub(ahi, alo);
+    let bl = wrapping_sub(bhi, blo);
+    let n = if al < bl {
+        al
+    } else {
+        bl
+    };
+    for i in 0..n {
+        let x = if a == none() {
+            byte_of(in head, i)
+        } else {
+            byte_of(in r.methods, wrapping_add(alo, i))
+        };
+        let y = if b == none() {
+            byte_of(in head, i)
+        } else {
+            byte_of(in r.methods, wrapping_add(blo, i))
+        };
+        if x != y {
+            return x < y;
+        }
+    }
+    al < bl
+}
+
+pub fn not_allowed(in r: RouterCore, first: u64) -> Resolved {
+    let mut order: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut get = false;
+    let mut head = false;
+    let mut t = first;
+    loop {
+        if t == none() {
+            break;
+        }
+        let term = term_at(in r, t);
+        if is_lit(in r.methods.as_slice(), term.method_lo, term.method_hi, "GET") {
+            get = true;
+        }
+        if is_lit(in r.methods.as_slice(), term.method_lo, term.method_hi, "HEAD") {
+            head = true;
+        }
+        order.push(t);
+        t = term.next;
+    }
+    if get && !head {
+        order.push(none());
+    }
+    // Insertion sort by method bytes.
+    let n = order.len();
+    for i in 1..n {
+        let mut j = i;
+        loop {
+            if j == 0 {
+                break;
+            }
+            let a = match order.try_get(wrapping_sub(j, 1)) {
+                Option::Some(v) => v,
+                Option::None => 0,
+            };
+            let b = match order.try_get(j) {
+                Option::Some(v) => v,
+                Option::None => 0,
+            };
+            if !method_less(in r, b, a) {
+                break;
+            }
+            order.try_set(wrapping_sub(j, 1), b);
+            order.try_set(j, a);
+            j = wrapping_sub(j, 1);
+        }
+    }
+    let mut allowed: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for i in 0..n {
+        match order.try_get(i) {
+            Option::Some(v) => if v == none() {
+                allowed.push(none());
+            } else {
+                allowed.push(term_at(in r, v).route);
+            },
+            Option::None => (),
+        }
+    }
+    Resolved {
+        kind: 1,
+        route: none(),
+        head_fallback: false,
+        captured: ChunkSeq::new[u64](),
+        allowed: allowed
+    }
+}
+
+pub fn not_found() -> Resolved {
+    Resolved {
+        kind: 2,
+        route: none(),
+        head_fallback: false,
+        captured: ChunkSeq::new[u64](),
+        allowed: ChunkSeq::new[u64]()
+    }
+}

@@ -116,6 +116,12 @@ impl Generator<'_> {
         if let SeqOp::Str(op) = op {
             return Err(crate::strings::lean_refusal(op));
         }
+        if matches!(op, SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. }) {
+            return Err(format!(
+                "the Lean model has no native-only ChunkSeq::{}",
+                op.name()
+            ));
+        }
         if op == SeqOp::SubSlice
             && es
                 .first()
@@ -214,7 +220,9 @@ impl Generator<'_> {
                 global(&["Array", "extract"]),
                 [at(0), nat(at(1)), nat(at(2))],
             ),
-            SeqOp::SliceSet | SeqOp::Str(_) => unreachable!("refused above"),
+            SeqOp::SliceSet | SeqOp::Str(_) | SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. } => {
+                unreachable!("refused above")
+            }
         })
     }
 }

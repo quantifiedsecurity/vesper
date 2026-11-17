@@ -81,6 +81,8 @@ divergent "package port" root_package_modules_are_linked dependency_modules_are_
     -p vesper-port-build --features divergent --test package
 cargo test --locked -p vesper-beacon -p vesper-beacon-seed
 cargo test --locked -p vesper-beacon-arrow --test beacon_build
+# Port wave P1 lane 14 (#911): vesper-prism against its Vesper port.
+sh crates/vesper-prism/test-port.sh
 # vesper-aura (port wave P1 lane 13, #910): both builds pass the crate's
 # tests, and one divergent edit per ported module fails that module's test.
 cargo test --locked -p vesper-aura
@@ -115,3 +117,5 @@ done
 grep -q 'test bbr::tests::inflight_at_loss_solves_for_the_threshold_crossing ... ok' "$log" || { cat "$log"; echo "the divergent warp-bbr port failed an unchanged test" >&2; exit 1; }
 echo "divergent warp-bbr port detected (one failure per ported module)"
 crates/vesper-warp-tcp/scripts/test-port.sh
+# Port wave P1 lane 3 (#900): vesper-warp-wheel.
+sh crates/vesper-warp-wheel/port/test-port.sh
