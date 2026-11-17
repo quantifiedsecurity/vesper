@@ -1051,6 +1051,10 @@ fn compile_exports<M: Module>(
         crate::ir_opt::fip_reuse_pass(world, &mut program)?;
     }
     crate::fip::elaborate_non_fip_drops(world, &mut program);
+    if optimize {
+        // Native only, never the verified backend (Stage 1 perf lane 3).
+        crate::bounds_hoist::run(&mut program);
+    }
     let mut ids = BTreeMap::new();
     for (i, (key, (name, vars))) in all.iter().enumerate() {
         let f = concrete(world, name, vars)?;

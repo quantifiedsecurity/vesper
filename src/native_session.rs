@@ -860,6 +860,10 @@ fn compile_session_with_linkage<M: Module>(
         crate::ir_opt::fip_reuse_pass(world, &mut program)?;
     }
     crate::fip::elaborate_non_fip_drops(world, &mut program);
+    if optimize {
+        // Native only, never the verified backend (Stage 1 perf lane 3).
+        crate::bounds_hoist::run(&mut program);
+    }
     let ids = super::declare_instances(m, world, &plan.entry, &instances, linkage)?;
     let mut text = super::define_instances(m, world, &instances, &ids, &program, linkage)?;
     let ptr = m.target_config().pointer_type();
