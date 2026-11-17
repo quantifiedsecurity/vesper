@@ -297,3 +297,17 @@ fn native_refuses_boxes_across_loops() {
     let error = native::jit(&c.world, "main").unwrap_err();
     assert!(error.contains(vesper::loops::BOX_REFUSAL), "{error}");
 }
+
+#[test]
+fn loops_pass_through_the_package_loader() {
+    // A `for` pattern and loop bodies are scopes for the loader's renamer:
+    // `i` in `main` stays the local, `sum` resolves to `util::sum`.
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/loops/package");
+    let assembled = vesper::packages::load(&dir).unwrap();
+    assert!(assembled.ok(), "{:?}", assembled.diagnostics);
+    let c = check::check(&assembled.module);
+    assert!(c.diagnostics.is_empty(), "{:?}", c.diagnostics);
+    // 10 + 21 + 100 + 3
+    assert_eq!(evaluate(&c), "134");
+    assert_eq!(native::jit(&c.world, "main").unwrap().to_string(), "134");
+}
