@@ -21,15 +21,15 @@
 //! `Q` handles own their Vesper allocations and are freed on drop.
 #![allow(unsafe_code)]
 
-use crate::execute::{DataSet, QueryResult};
+use crate::execute::{rows_bytes, validate_rows, DataSet, QueryResult};
 use crate::parse::Cmp;
 use crate::plan::{
     AccessPath, AccessPlan, BindingPath, BoundColumn, ExprNode, IndexBound, JoinKind,
     PreparedQuery, RelPlan, TypedExpr,
 };
 use crate::{
-    ColumnDef, DdlChange, Error, ErrorKind, HermeticCatalog, Limits, ParamDef, Result, ScalarType,
-    Value,
+    bound, identifier, ColumnDef, DdlChange, Error, ErrorKind, HermeticCatalog, Limits, ParamDef,
+    Result, ScalarType, Value,
 };
 use std::collections::BTreeMap;
 use std::mem::size_of;
@@ -539,6 +539,28 @@ pub(crate) fn optimize(plan: &RelPlan) -> RelPlan {
 /// `DataSet::set_rows` checks through the port; returns the normalized
 /// table name.
 pub(crate) fn set_rows(
+    data: &DataSet,
+    table: &str,
+    rows: &[Vec<Value>],
+    limits: Limits,
+) -> Result<String> {
+    // Input over its own budget is rejected on borrowed data before
+    // anything is copied into the ABI, with the Rust build's checks in its
+    // order (every path below returns an error for such input).
+    let own_bytes = rows_bytes(rows);
+    if rows.len() > limits.input_rows
+        || own_bytes.as_ref().map_or(true, |&b| b > limits.input_bytes)
+    {
+        limits.validate()?;
+        let table = identifier(table)?;
+        bound(rows.len(), limits.input_rows, "input row limit")?;
+        validate_rows(&data.catalog, &table, rows)?;
+        bound(own_bytes?, limits.input_bytes, "input byte limit")?;
+    }
+    set_rows_encoded(data, table, rows, limits)
+}
+
+fn set_rows_encoded(
     data: &DataSet,
     table: &str,
     rows: &[Vec<Value>],

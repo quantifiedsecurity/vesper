@@ -181,7 +181,6 @@ impl Default for Limits {
     }
 }
 impl Limits {
-    #[cfg(not(feature = "vesper-port"))]
     pub(crate) fn validate(self) -> Result<()> {
         let hard = Self::default();
         let pairs = [

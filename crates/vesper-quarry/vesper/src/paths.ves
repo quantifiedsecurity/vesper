@@ -119,6 +119,8 @@ pub fn access_paths_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
             used: false
         };
         q.vals.push(v);
+        // `analyze` indexes `counts` like `vals`.
+        q.counts.push(0);
         q.params.push(d);
         p = wrapping_add(p, 5);
     }

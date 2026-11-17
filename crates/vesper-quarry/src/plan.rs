@@ -619,6 +619,12 @@ impl PreparedQuery {
         indexes: &BTreeMap<String, (String, String)>,
         params: &BTreeMap<String, Value>,
     ) -> crate::Result<AccessPlan> {
+        if data.catalog != self.catalog {
+            return Err(crate::Error::new(
+                crate::ErrorKind::Stale,
+                "prepared query or data schema snapshot differs in revision/content",
+            ));
+        }
         #[cfg(feature = "vesper-port")]
         return crate::port::access_plan(self, data, indexes, params);
         #[cfg(not(feature = "vesper-port"))]

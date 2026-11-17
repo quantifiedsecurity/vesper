@@ -604,3 +604,58 @@ fn planner_chooses_the_golden_access_paths() {
     s.commit(t).unwrap();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// A bound parameter's value must not shift the per-value counts of the
+/// statistics: with `t.a` always 1, `a = :p` (p = 1) selects every row, so
+/// a scan beats the index.
+#[test]
+fn bound_parameters_keep_statistics_aligned() {
+    let mut c = vesper_quarry::HermeticCatalog::default();
+    c.apply_ddl("CREATE TABLE t (a I64 NOT NULL)", Limits::default())
+        .unwrap();
+    let mut d = vesper_quarry::DataSet::new(&c);
+    let rows: Vec<Vec<Value>> = (0..100).map(|_| vec![Value::I64(1)]).collect();
+    d.set_rows("t", &rows, Limits::default()).unwrap();
+    let param = ParamDef {
+        name: "p".into(),
+        ty: ScalarType::I64,
+        nullable: false,
+    };
+    let q = c
+        .prepare("SELECT a FROM t WHERE a = :p", &[param], Limits::default())
+        .unwrap()
+        .optimized();
+    let indexes = BTreeMap::from([("t_a".to_string(), ("t".to_string(), "a".to_string()))]);
+    let params = BTreeMap::from([("p".to_string(), Value::I64(1))]);
+    match q.access_plan(&d, &indexes, &params) {
+        Ok(plan) => {
+            assert_eq!(plan.to_string(), "t=scan");
+            assert_eq!(plan.bindings[0].rows, 100);
+        }
+        Err(e) => {
+            let port = cfg!(feature = "vesper-port");
+            assert!(!port, "{e}");
+            assert_eq!(e.kind, ErrorKind::Unsupported);
+        }
+    }
+}
+
+/// Access planning, like execution, refuses data from another schema
+/// snapshot.
+#[test]
+fn access_plan_rejects_a_stale_data_snapshot() {
+    let mut c = vesper_quarry::HermeticCatalog::default();
+    c.apply_ddl("CREATE TABLE t (a I64, b I64)", Limits::default())
+        .unwrap();
+    let q = c
+        .prepare("SELECT a FROM t WHERE a = 1", &[], Limits::default())
+        .unwrap();
+    let mut c2 = vesper_quarry::HermeticCatalog::default();
+    c2.apply_ddl("CREATE TABLE t (b I64, a I64)", Limits::default())
+        .unwrap();
+    let d = vesper_quarry::DataSet::new(&c2);
+    let e = q
+        .access_plan(&d, &BTreeMap::new(), &BTreeMap::new())
+        .unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Stale);
+}
