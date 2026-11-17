@@ -856,12 +856,18 @@ fn compile_session_with_linkage<M: Module>(
     let mut program = crate::ir::lower_world(world);
     if optimize {
         crate::ir_opt::optimize(world, &mut program)?;
+        crate::ir_inline::inline(world, &mut program, &crate::ir_inline::Budget::default());
     } else {
         crate::ir_opt::fip_reuse_pass(world, &mut program)?;
     }
     crate::fip::elaborate_non_fip_drops(world, &mut program);
+    if optimize {
+        // Native only, never the verified backend (Stage 1 perf lane 3).
+        crate::bounds_hoist::run(&mut program);
+    }
     let ids = super::declare_instances(m, world, &plan.entry, &instances, linkage)?;
-    let mut text = super::define_instances(m, world, &instances, &ids, &program, linkage)?;
+    let mut text =
+        super::define_instances(m, world, &instances, &ids, &program, linkage, optimize)?;
     let ptr = m.target_config().pointer_type();
     let call_conv = m.isa().default_call_conv();
     let sig = clif::entry_signature(call_conv, ptr);
@@ -929,6 +935,7 @@ fn compile_session_with_linkage<M: Module>(
             trace_entry: None,
             source_locations: true,
             srcloc: cranelift_codegen::ir::SourceLoc::default(),
+            operands_only: optimize,
             session: Some(SessionCodegen {
                 ctx: context,
                 park,
@@ -1115,9 +1122,18 @@ pub fn check_data_base_freshness(
 /// Codegen flags for a session module. DetFloat programs
 /// ([`super::needs_nan_canonicalization`]) get Cranelift's NaN
 /// canonicalisation, as object emission and the JIT do (lane 23, #346).
-fn isa_flags(world: &World, pic: bool) -> Result<cranelift_codegen::settings::Flags, String> {
+/// Optimized sessions also run Cranelift at `opt_level=speed` (Stage 1
+/// performance lane 1, #931); unoptimized sessions keep `none`.
+fn isa_flags(
+    world: &World,
+    pic: bool,
+    optimize: bool,
+) -> Result<cranelift_codegen::settings::Flags, String> {
     use cranelift_codegen::settings::{self, Configurable};
     let mut flags = settings::builder();
+    if optimize {
+        flags.set("opt_level", "speed").map_err(|e| e.to_string())?;
+    }
     if super::needs_nan_canonicalization(world) {
         flags
             .set("enable_nan_canonicalization", "true")
@@ -1159,7 +1175,7 @@ pub fn object(
         cranelift_native::builder().map_err(str::to_string)?
     };
     let isa = builder
-        .finish(isa_flags(world, true)?)
+        .finish(isa_flags(world, true, true)?)
         .map_err(|e| e.to_string())?;
     // Windows x64 COFF with unwind tables (lane 24, #347).
     if super::windows::is_windows(isa.triple()) {
@@ -1266,7 +1282,7 @@ mod host {
             let plan = plan(world, entry, bindings)?;
             let isa = cranelift_native::builder()
                 .map_err(str::to_string)?
-                .finish(isa_flags(world, false)?)
+                .finish(isa_flags(world, false, optimize)?)
                 .map_err(|e| e.to_string())?;
             let mut builder =
                 cranelift_jit::JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
@@ -1447,9 +1463,13 @@ mod nan_tests {
         );
         let plain = world("fn main() -> f64 {\n    1.5\n}\n");
         for pic in [false, true] {
-            assert!(isa_flags(&det, pic).unwrap().enable_nan_canonicalization());
             assert!(
-                !isa_flags(&plain, pic)
+                isa_flags(&det, pic, false)
+                    .unwrap()
+                    .enable_nan_canonicalization()
+            );
+            assert!(
+                !isa_flags(&plain, pic, false)
                     .unwrap()
                     .enable_nan_canonicalization()
             );

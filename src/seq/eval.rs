@@ -71,6 +71,33 @@ impl Runtime<'_> {
         if op == SeqOp::SubSlice && matches!(args.first(), Some(Value::String(_))) {
             return self.str_op(crate::strings::StrOp::SubStr, &args, site);
         }
+        // A hoisted access is its checked access under a guard that held:
+        // the reference semantics of `crate::bounds_hoist`.
+        if let SeqOp::Hoisted(access) = op {
+            let slice = matches!(args.first(), Some(Value::Slice { .. }));
+            return match self.seq_op(access.checked(slice), args, site)? {
+                OutOfBounds => Err(format!(
+                    "hoisted ChunkSeq::{} is out of bounds: its guard was wrong",
+                    op.name()
+                )),
+                outcome => Ok(outcome),
+            };
+        }
+        if let SeqOp::BoundsGuard { inclusive } = op {
+            let lo = index(arg(0)?)?;
+            let hi = index(arg(1)?)?;
+            let mut inside = true;
+            for pair in args.get(2..).unwrap_or_default().chunks(2) {
+                let [s, offset] = pair else {
+                    return Err("bounds guard needs a sequence and an offset".into());
+                };
+                let len = u128::from(view(s)?.2 as u64);
+                let end = u128::from(index(offset)?) + u128::from(hi);
+                inside &= if inclusive { end < len } else { end <= len };
+            }
+            let empty = if inclusive { lo > hi } else { lo >= hi };
+            return Ok(V(Value::Bool(empty || inside)));
+        }
         Ok(match op {
             SeqOp::New => V(Value::Seq(Rc::new(RefCell::new(Vec::new())))),
             SeqOp::WithCapacity => {
@@ -180,7 +207,9 @@ impl Runtime<'_> {
                     len,
                 })
             }
-            SeqOp::Str(_) => unreachable!("string operations return above"),
+            SeqOp::Str(_) | SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. } => {
+                unreachable!("string and hoisted operations return above")
+            }
             SeqOp::SubSlice => {
                 let (cell, start, len) = view(arg(0)?)?;
                 let lo = index(arg(1)?)?;

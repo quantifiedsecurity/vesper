@@ -49,10 +49,24 @@ pub mod multi_backend;
 mod plan;
 pub mod recording;
 
+// The logic behind the shared types above comes from one of two engines:
+// the Rust implementation, or the Vesper port in `vesper/src/lib.ves`
+// called through its generated binding (`--features vesper-port`).
+#[cfg(not(feature = "vesper-port"))]
+mod reference;
+#[cfg(not(feature = "vesper-port"))]
+use reference as engine;
+
+#[cfg(feature = "vesper-port")]
+mod port;
+#[cfg(feature = "vesper-port")]
+use port as engine;
+
 pub use d3d12::{Access, Layout, QueueKind, Sync};
+pub use engine::graph::RenderGraph;
 pub use graph::{
     BufferDesc, BufferHandle, ByteRange, GraphError, PassDesc, PassId, QueueId, QueueRestriction,
-    RenderGraph, ResourceRef, SubresourceRange, TextureDesc, TextureHandle,
+    ResourceRef, SubresourceRange, TextureDesc, TextureHandle,
 };
 pub use plan::{
     Barrier, BufferBarrier, Command, Dependency, DependencyKind, Plan, PlanError, PlanOptions,

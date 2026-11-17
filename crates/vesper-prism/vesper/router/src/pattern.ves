@@ -1,0 +1,148 @@
+// Route pattern parsing: literal and `{name}` segments, and their checks.
+use self::{
+    RouteFault,
+    Piece,
+    Pattern,
+    byte,
+    is_digit,
+    is_alpha
+};
+
+// A C0, DEL or C1 control character (`char::is_control`) at `i` of UTF-8 text.
+fn control_at(in p: Slice[u8], i: u64, hi: u64) -> bool {
+    let b = byte(in p, i);
+    if b < 32 || b == 127 {
+        return true;
+    }
+    if b == 194 && wrapping_add(i, 1) < hi {
+        let c = byte(in p, wrapping_add(i, 1));
+        return c >= 128 && c <= 159;
+    }
+    false
+}
+
+fn find(in s: Slice[u8], lo: u64, hi: u64, b: u8) -> u64 {
+    for i in lo..hi {
+        if byte(in s, i) == b {
+            return i;
+        }
+    }
+    hi
+}
+
+pub fn same(in a: Slice[u8], alo: u64, ahi: u64, in b: Slice[u8], blo: u64, bhi: u64) -> bool {
+    if wrapping_sub(ahi, alo) != wrapping_sub(bhi, blo) {
+        return false;
+    }
+    for i in 0..wrapping_sub(ahi, alo) {
+        if byte(in a, wrapping_add(alo, i)) != byte(in b, wrapping_add(blo, i)) {
+            return false;
+        }
+    }
+    true
+}
+
+// `parse_pattern`: decoded-form segments, `:name` parameters, a significant
+// trailing slash.
+pub fn parse_pattern(in p: Slice[u8], max_segments: u64) -> Result[Pattern, RouteFault] {
+    let n = p.len();
+    if n == 0 || byte(in p, 0) != 47 {
+        return Result::Err(RouteFault::InvalidPattern);
+    }
+    let mut hi = n;
+    let mut trailing = false;
+    if n >= 2 && byte(in p, wrapping_sub(n, 1)) == 47 {
+        if n == 2 {
+            return Result::Err(RouteFault::InvalidPattern);
+        }
+        hi = wrapping_sub(n, 1);
+        trailing = true;
+    }
+    let mut pieces: ChunkSeq[Piece] = ChunkSeq::new[Piece]();
+    if hi == 1 {
+        return Result::Ok(
+            Pattern {
+                pieces: pieces,
+                trailing: false
+            }
+        );
+    }
+    let mut segments: u64 = 1;
+    for i in 1..hi {
+        if byte(in p, i) == 47 {
+            segments = wrapping_add(segments, 1);
+        }
+    }
+    if segments > max_segments {
+        return Result::Err(RouteFault::SegmentLimit);
+    }
+    let mut at: u64 = 1;
+    loop {
+        let end = find(in p, at, hi, 47);
+        if at < end && byte(in p, at) == 58 {
+            let name_lo = wrapping_add(at, 1);
+            let first = byte(in p, name_lo);
+            if name_lo >= end || !(is_alpha(first) || first == 95) {
+                return Result::Err(RouteFault::InvalidParameterName);
+            }
+            for i in name_lo..end {
+                let b = byte(in p, i);
+                if !(is_alpha(b) || is_digit(b) || b == 95) {
+                    return Result::Err(RouteFault::InvalidParameterName);
+                }
+            }
+            for k in 0..pieces.len() {
+                match pieces.try_get(k) {
+                    Option::Some(q) => if q.param && same(in p, q.lo, q.hi, in p, name_lo, end) {
+                        return Result::Err(RouteFault::DuplicateParameterName);
+                    },
+                    Option::None => (),
+                }
+            }
+            pieces
+                .push(
+                Piece {
+                    param: true,
+                    lo: name_lo,
+                    hi: end
+                }
+            );
+        } else {
+            // Literals are decoded text, so they obey the target policy: no
+            // separators, NUL, dot segments or percent (no second decode).
+            let len = wrapping_sub(end, at);
+            let dots = (len == 1 || len == 2)
+                && byte(in p, at)
+                == 46
+                && byte(in p, wrapping_sub(end, 1))
+                == 46;
+            if len == 0 || dots {
+                return Result::Err(RouteFault::InvalidPattern);
+            }
+            for i in at..end {
+                let b = byte(in p, i);
+                if b == 92 || b == 0 || b == 37 || b == 63 || b == 35 || control_at(in p, i, end) {
+                    return Result::Err(RouteFault::InvalidPattern);
+                }
+            }
+            pieces
+                .push(
+                Piece {
+                    param: false,
+                    lo: at,
+                    hi: end
+                }
+            );
+        }
+        if end >= hi {
+            break;
+        }
+        at = wrapping_add(end, 1);
+    }
+    Result::Ok(
+        Pattern {
+            pieces: pieces,
+            trailing: trailing
+        }
+    )
+}

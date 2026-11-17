@@ -1,0 +1,540 @@
+// Vesper port of the socket-independent HTTP/1.1 connection state machine of
+// crates/vesper-prism (`Connection` in src/connection.rs, port wave P1 lane
+// 14, #911).
+//
+// This library owns every decision: which request ids are valid, the
+// in-flight and outbound budgets, the order responses reach the wire, the
+// close policy (request `Connection: close`, closing responses, EOF, parse
+// failures) and the write cursor. The Rust wrapper owns the bytes: the
+// decoder's input queue, encoded responses keyed by request sequence, and
+// the wire queue. Calls that move bytes return a plan of `Action`s that the
+// wrapper applies in order (porting recipe, pattern d).
+
+copy enum ConnectionState {
+    Open,
+    Closing,
+    Closed
+}
+
+// What `poll_request` does next. The wrapper keeps the decoder's `Error`
+// value; `Failed` reports it once.
+copy enum Gate {
+    Failed,
+    NoMore,
+    Backpressure,
+    Decode
+}
+
+// What `receive` does with `len` offered bytes.
+copy enum Intake {
+    Ended,
+    Discard,
+    Accept(u64)
+}
+
+// Why a submission is refused before encoding.
+copy enum Refusal {
+    Foreign,
+    Unknown,
+    Duplicate,
+    Stale,
+    Abandoned
+}
+
+copy enum Check {
+    Refuse(Refusal),
+    Accept {
+        head: bool,
+        close: bool
+    }
+}
+
+// A step the wrapper applies to the bytes it holds.
+copy enum Action {
+    // Move the encoded response of `sequence` to the back of the wire queue.
+    Promote {
+        sequence: u64,
+        id: bool
+    },
+    // `sequence` was cut off by an earlier closing response; hand its
+    // encoded response (if any) back to the application.
+    Abandon {
+        sequence: u64
+    },
+    // Drop the generated error response of `sequence`: an earlier close
+    // superseded it.
+    Discard {
+        sequence: u64
+    }
+}
+
+copy enum Advance {
+    Overrun {
+        pending: u64,
+        advanced: u64
+    },
+    Advanced {
+        popped: bool
+    }
+}
+
+// What `shutdown` returns for each slot still held, in sequence order.
+copy enum Owner {
+    Blocked(u64),
+    Awaiting(u64),
+    Unsent(u64)
+}
+
+copy struct Slot {
+    id: bool,
+    head: bool,
+    request_close: bool,
+    // 0 awaiting, 1 ready, 2 failure with a generated response, 3 failure.
+    phase: u64,
+    len: u64
+}
+
+copy struct Chunk {
+    id: bool,
+    sequence: u64,
+    len: u64
+}
+
+struct ConnectionCore {
+    connection: u64,
+    max_in_flight: u64,
+    max_outbound: u64,
+    max_total: u64,
+    base_sequence: u64,
+    next_sequence: u64,
+    slots: ChunkSeq[Slot],
+    outbound: ChunkSeq[Chunk],
+    out_head: u64,
+    cursor: u64,
+    retained: u64,
+    has_close_after: bool,
+    close_after: u64,
+    stop_issuing: bool,
+    input_ended: bool,
+    close_promoted: bool,
+    has_failure: bool,
+    failure_reported: bool,
+    discarded_input: u64
+}
+
+fn saturating_add(a: u64, b: u64) -> u64 {
+    let s = wrapping_add(a, b);
+    if s < a {
+        18446744073709551615
+    } else {
+        s
+    }
+}
+
+fn slot_at(in c: ConnectionCore, i: u64) -> Slot {
+    match c.slots.try_get(i) {
+        Option::Some(s) => s,
+        Option::None => Slot {
+            id: false,
+            head: false,
+            request_close: false,
+            phase: 3,
+            len: 0
+        },
+    }
+}
+
+fn chunk_at(in c: ConnectionCore, i: u64) -> Chunk {
+    match c.outbound.try_get(i) {
+        Option::Some(k) => k,
+        Option::None => Chunk {
+            id: false,
+            sequence: 0,
+            len: 0
+        },
+    }
+}
+
+fn outbound_len(in c: ConnectionCore) -> u64 {
+    wrapping_sub(c.outbound.len(), c.out_head)
+}
+
+// `Connection::new`'s own limit check (`InvalidLimits` when false); the
+// wrapper then builds the decoder.
+pub fn connection_limits_valid(max_in_flight: u64, max_outbound: u64, max_total: u64) -> bool {
+    max_in_flight != 0 && max_outbound >= max_total
+}
+
+pub fn connection_core_new(connection: u64, max_in_flight: u64, max_outbound: u64, max_total: u64)
+    -> ConnectionCore {
+    ConnectionCore {
+        connection: connection,
+        max_in_flight: max_in_flight,
+        max_outbound: max_outbound,
+        max_total: max_total,
+        base_sequence: 0,
+        next_sequence: 0,
+        slots: ChunkSeq::new[Slot](),
+        outbound: ChunkSeq::new[Chunk](),
+        out_head: 0,
+        cursor: 0,
+        retained: 0,
+        has_close_after: false,
+        close_after: 0,
+        stop_issuing: false,
+        input_ended: false,
+        close_promoted: false,
+        has_failure: false,
+        failure_reported: false,
+        discarded_input: 0
+    }
+}
+
+// `receive`: how many of `len` offered bytes the decoder queue takes.
+pub fn connection_core_intake(inout c: ConnectionCore, buffered: u64, max_buffered: u64, len: u64)
+    -> Intake {
+    if c.input_ended {
+        return Intake::Ended;
+    }
+    if c.stop_issuing {
+        c.discarded_input = saturating_add(c.discarded_input, len);
+        return Intake::Discard;
+    }
+    let capacity = wrapping_sub(max_buffered, buffered);
+    if len < capacity {
+        Intake::Accept(len)
+    } else {
+        Intake::Accept(capacity)
+    }
+}
+
+pub fn connection_core_end_input(inout c: ConnectionCore) {
+    c.input_ended = true;
+}
+
+pub fn connection_core_poll(inout c: ConnectionCore) -> Gate {
+    if c.has_failure && !c.failure_reported {
+        c.failure_reported = true;
+        return Gate::Failed;
+    }
+    if c.stop_issuing {
+        return Gate::NoMore;
+    }
+    if c.slots.len() >= c.max_in_flight {
+        return Gate::Backpressure;
+    }
+    Gate::Decode
+}
+
+// A request was decoded: issue its sequence.
+pub fn connection_core_issue(inout c: ConnectionCore, head: bool, close: bool) -> u64 {
+    let sequence = c.next_sequence;
+    c.next_sequence = wrapping_add(sequence, 1);
+    c
+        .slots
+        .push(
+        Slot {
+            id: true,
+            head: head,
+            request_close: close,
+            phase: 0,
+            len: 0
+        }
+    );
+    if close {
+        c.has_close_after = true;
+        c.close_after = sequence;
+        c.stop_issuing = true;
+    }
+    sequence
+}
+
+// The decoder has no complete request: true when no more will come.
+pub fn connection_core_idle(inout c: ConnectionCore) -> bool {
+    if !c.input_ended {
+        return false;
+    }
+    c.stop_issuing = true;
+    if c.slots.len() > 0 {
+        c.has_close_after = true;
+        c.close_after = wrapping_sub(c.next_sequence, 1);
+    }
+    true
+}
+
+// The decoder failed: stop issuing and reserve the failure's sequence. The
+// wrapper encodes the response for `decoder_error_status` (decoder.ves).
+pub fn connection_core_fail(inout c: ConnectionCore) -> u64 {
+    c.stop_issuing = true;
+    c.has_failure = true;
+    c.failure_reported = true;
+    let sequence = c.next_sequence;
+    c.next_sequence = wrapping_add(sequence, 1);
+    sequence
+}
+
+// Move completed responses at the front, in order, to the wire queue.
+fn promote(inout c: ConnectionCore, inout plan: ChunkSeq[Action]) {
+    loop {
+        if c.close_promoted || c.slots.len() == 0 {
+            return;
+        }
+        let front = slot_at(in c, 0);
+        if front.phase == 0 {
+            return;
+        }
+        let n = c.slots.len();
+        for i in 1..n {
+            let moved = slot_at(in c, i);
+            c.slots.try_set(wrapping_sub(i, 1), moved);
+        }
+        c.slots.truncate(wrapping_sub(n, 1));
+        let sequence = c.base_sequence;
+        c.base_sequence = wrapping_add(sequence, 1);
+        if front.phase == 1 || front.phase == 2 {
+            c
+                .outbound
+                .push(
+                Chunk {
+                    id: front.id,
+                    sequence: sequence,
+                    len: front.len
+                }
+            );
+            plan
+                .push(
+                Action::Promote {
+                    sequence: sequence,
+                    id: front.id
+                }
+            );
+        }
+        if c.has_close_after && c.close_after == sequence {
+            c.close_promoted = true;
+        }
+    }
+}
+
+// Record the failure slot of `connection_core_fail`, with the length of its
+// generated response when the wrapper could encode one.
+pub fn connection_core_record_failure(
+    inout c: ConnectionCore,
+    sequence: u64,
+    response: bool,
+    len: u64
+) -> ChunkSeq[Action] {
+    let mut plan: ChunkSeq[Action] = ChunkSeq::new[Action]();
+    if response {
+        c.retained = wrapping_add(c.retained, len);
+    }
+    let phase: u64 = if response {
+        2
+    } else {
+        3
+    };
+    c
+        .slots
+        .push(
+        Slot {
+            id: false,
+            head: false,
+            request_close: true,
+            phase: phase,
+            len: len
+        }
+    );
+    c.has_close_after = true;
+    c.close_after = sequence;
+    promote(inout c, inout plan);
+    plan
+}
+
+// `submit`'s checks before encoding. `close` is what the request side
+// requires; the wrapper adds the response's own `close`.
+pub fn connection_core_check(in c: ConnectionCore, connection: u64, sequence: u64) -> Check {
+    if connection != c.connection {
+        return Check::Refuse(Refusal::Foreign);
+    }
+    if sequence >= c.next_sequence {
+        return Check::Refuse(Refusal::Unknown);
+    }
+    if c.has_close_after && sequence > c.close_after {
+        return Check::Refuse(Refusal::Abandoned);
+    }
+    if sequence < c.base_sequence {
+        return Check::Refuse(Refusal::Stale);
+    }
+    let slot = slot_at(in c, wrapping_sub(sequence, c.base_sequence));
+    if slot.phase != 0 {
+        return Check::Refuse(Refusal::Duplicate);
+    }
+    Check::Accept {
+        head: slot.head,
+        close: slot.request_close || (c.has_close_after && c.close_after == sequence)
+    }
+}
+
+// Whether an encoded response of `len` bytes fits the outbound budget. An
+// out-of-order response cannot be written until earlier ones are, so it must
+// leave room for one maximal response at the front; otherwise later
+// completions could block the earliest submission forever.
+pub fn connection_core_fits(in c: ConnectionCore, sequence: u64, len: u64) -> bool {
+    let index = wrapping_sub(sequence, c.base_sequence);
+    let reserve = if index == 0 {
+        0
+    } else {
+        c.max_total
+    };
+    saturating_add(saturating_add(c.retained, len), reserve) <= c.max_outbound
+}
+
+// Truncate every slot after `sequence`, handing back their owners.
+fn close_at(inout c: ConnectionCore, sequence: u64, inout plan: ChunkSeq[Action]) {
+    c.has_close_after = true;
+    c.close_after = sequence;
+    c.stop_issuing = true;
+    let keep = wrapping_add(wrapping_sub(sequence, c.base_sequence), 1);
+    let n = c.slots.len();
+    if keep >= n {
+        return;
+    }
+    for i in keep..n {
+        let slot = slot_at(in c, i);
+        let at = wrapping_add(c.base_sequence, i);
+        if slot.phase == 1 || slot.phase == 2 {
+            c.retained = wrapping_sub(c.retained, slot.len);
+        }
+        if slot.id {
+            plan
+                .push(
+                Action::Abandon {
+                    sequence: at
+                }
+            );
+        } else if slot.phase == 2 {
+            // A generated error response for a later parse failure is
+            // superseded: the connection closes before that position.
+            plan
+                .push(
+                Action::Discard {
+                    sequence: at
+                }
+            );
+        }
+    }
+    c.slots.truncate(keep);
+}
+
+// Accept a checked, encoded response that fits.
+pub fn connection_core_submit(inout c: ConnectionCore, sequence: u64, len: u64, close: bool)
+    -> ChunkSeq[Action] {
+    let mut plan: ChunkSeq[Action] = ChunkSeq::new[Action]();
+    let index = wrapping_sub(sequence, c.base_sequence);
+    let slot = slot_at(in c, index);
+    c.retained = wrapping_add(c.retained, len);
+    c
+        .slots
+        .try_set(
+        index,
+        Slot {
+            id: slot.id,
+            head: slot.head,
+            request_close: slot.request_close,
+            phase: 1,
+            len: len
+        }
+    );
+    if close {
+        close_at(inout c, sequence, inout plan);
+    }
+    promote(inout c, inout plan);
+    plan
+}
+
+fn front_pending(in c: ConnectionCore) -> u64 {
+    if outbound_len(in c) == 0 {
+        0
+    } else {
+        wrapping_sub(chunk_at(in c, c.out_head).len, c.cursor)
+    }
+}
+
+pub fn connection_core_cursor(in c: ConnectionCore) -> u64 {
+    c.cursor
+}
+
+pub fn connection_core_pending_len(in c: ConnectionCore) -> u64 {
+    let mut total: u64 = 0;
+    for i in c.out_head..c.outbound.len() {
+        total = wrapping_add(total, chunk_at(in c, i).len);
+    }
+    wrapping_sub(total, c.cursor)
+}
+
+// `advance_output`: the transport accepted `written` bytes of the front.
+pub fn connection_core_advance(inout c: ConnectionCore, written: u64) -> Advance {
+    let pending = front_pending(in c);
+    if written > pending {
+        return Advance::Overrun {
+            pending: pending,
+            advanced: written
+        };
+    }
+    c.cursor = wrapping_add(c.cursor, written);
+    c.retained = wrapping_sub(c.retained, written);
+    if pending > 0 && written == pending {
+        c.out_head = wrapping_add(c.out_head, 1);
+        c.cursor = 0;
+        if c.out_head == c.outbound.len() {
+            c.outbound.clear();
+            c.out_head = 0;
+        } else if c.out_head >= 64 && c.out_head >= outbound_len(in c) {
+            // Drop the written prefix once it outnumbers the queued chunks,
+            // so a connection that never drains fully stays bounded.
+            let mut kept: ChunkSeq[Chunk] = ChunkSeq::new[Chunk]();
+            for i in c.out_head..c.outbound.len() {
+                kept.push(chunk_at(in c, i));
+            }
+            c.outbound = kept;
+            c.out_head = 0;
+        }
+        return Advance::Advanced {
+            popped: true
+        };
+    }
+    Advance::Advanced {
+        popped: false
+    }
+}
+
+pub fn connection_core_state(in c: ConnectionCore) -> ConnectionState {
+    if !c.stop_issuing {
+        ConnectionState::Open
+    } else if c.slots.len() == 0 && outbound_len(in c) == 0 {
+        ConnectionState::Closed
+    } else {
+        ConnectionState::Closing
+    }
+}
+
+pub fn connection_core_in_flight(in c: ConnectionCore) -> u64 {
+    c.slots.len()
+}
+
+// Every slot still held at shutdown, in order: blocked ready responses,
+// awaiting ids, and unsent generated error responses.
+pub fn connection_core_owners(in c: ConnectionCore) -> ChunkSeq[Owner] {
+    let mut out: ChunkSeq[Owner] = ChunkSeq::new[Owner]();
+    for i in 0..c.slots.len() {
+        let slot = slot_at(in c, i);
+        let at = wrapping_add(c.base_sequence, i);
+        if slot.id && slot.phase == 1 {
+            out.push(Owner::Blocked(at));
+        } else if slot.id && slot.phase == 0 {
+            out.push(Owner::Awaiting(at));
+        } else if !slot.id && slot.phase == 2 {
+            out.push(Owner::Unsent(at));
+        }
+    }
+    out
+}

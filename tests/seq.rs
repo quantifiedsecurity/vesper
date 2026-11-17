@@ -338,12 +338,8 @@ fn element_modes_are_enforced() {
         "E0401",
         "Fail",
     );
-    // An abortable read cannot cross an inout parameter; try_get can.
-    rejected(
-        "fn f(inout s: ChunkSeq[u64]) -> u64 eff [Fail[RuntimeError]] { s.get(0) }",
-        "E0402",
-        "inout",
-    );
+    // An abortable read may cross an inout parameter (keep-writes, #935).
+    accepted("fn f(inout s: ChunkSeq[u64]) -> u64 eff [Fail[RuntimeError]] { s.get(0) }");
     accepted(
         "fn f(inout s: ChunkSeq[u64]) -> u64 { match s.try_get(0) { Option::Some(v) => v, Option::None => 0 } }",
     );

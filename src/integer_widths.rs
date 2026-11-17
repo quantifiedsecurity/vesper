@@ -7,6 +7,12 @@
 //! function over shifts, `|` and conversions, added to the module when the
 //! module mentions it and does not define a function of that name, so every
 //! backend runs it without dedicated support.
+//!
+//! `mul_wide(a: u64, b: u64) -> (u64, u64)` is the full 128-bit product of
+//! two `u64` values as `(low, high)` words, like Rust's `u64::widening_mul`.
+//! It is a reserved prelude function of the same kind: its source body
+//! builds the product from 32-bit halves, so every backend agrees, and the
+//! Cranelift backend lowers a call to it to one `imul` and one `umulhi`.
 use crate::ast::*;
 use std::collections::BTreeSet;
 
@@ -48,7 +54,7 @@ pub(crate) fn prelude(module: &Module, after: usize) -> Module {
     let source: String = used
         .iter()
         .filter(|n| !defined.contains(*n))
-        .filter_map(|n| crate::numeric::byte_order_source(n))
+        .filter_map(|n| crate::numeric::byte_order_source(n).or_else(|| wide_source(n)))
         .map(|f| f + "\n")
         .collect();
     if source.is_empty() {
@@ -67,4 +73,23 @@ pub(crate) fn prelude(module: &Module, after: usize) -> Module {
 /// The largest span end in `module`.
 pub(crate) fn module_end(module: &Module) -> usize {
     module.items.iter().map(item_end).max().unwrap_or(0)
+}
+
+/// The reserved 64x64 -> 128-bit multiply: `mul_wide(a, b)` is `(low, high)`.
+pub const MUL_WIDE: &str = "mul_wide";
+
+/// The portable source of [`MUL_WIDE`]: schoolbook multiplication of 32-bit
+/// halves, with every partial sum below 2^64.
+fn wide_source(name: &str) -> Option<String> {
+    (name == MUL_WIDE).then(|| {
+        "fn mul_wide(a: u64, b: u64) -> (u64, u64) { \
+         let m: u64 = 4294967295; \
+         let a0 = a & m; let a1 = a >> 32; let b0 = b & m; let b1 = b >> 32; \
+         let p00 = wrapping_mul(a0, b0); let p01 = wrapping_mul(a0, b1); \
+         let p10 = wrapping_mul(a1, b0); let p11 = wrapping_mul(a1, b1); \
+         let mid = wrapping_add(wrapping_add(p00 >> 32, p01 & m), p10 & m); \
+         let hi = wrapping_add(wrapping_add(wrapping_add(p11, p01 >> 32), p10 >> 32), mid >> 32); \
+         (wrapping_mul(a, b), hi) }"
+            .to_string()
+    })
 }

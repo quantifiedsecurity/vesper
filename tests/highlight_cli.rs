@@ -278,7 +278,9 @@ fn inputs_past_the_analysis_budget_fall_back_quickly() {
 
 #[test]
 fn snippets_that_do_not_check_fall_back_to_tier0_with_a_reason() {
-    let path = fixture("abort_across_inout.ves");
+    // `tx` is live when `Fail::raise` aborts (E0402). Failing across the
+    // stationary `inout broker` alone is accepted (keep-writes, #935).
+    let path = fixture("abort_with_live_txn.ves");
     let (doc, stderr) = json(&["highlight", "--json", &path]);
     assert_eq!(doc["tier"], 0);
     assert_eq!(doc["fallback"]["kind"], "check");

@@ -483,9 +483,14 @@ impl Flow<'_> {
     }
     fn frame(&mut self, s: &State, span: &Span) {
         for (n, v) in &s.slots {
+            // A handler body's external captures live in the enclosing
+            // frame. An abort that escapes the handler is checked there at
+            // the `Handle` instruction; one the handler catches leaves them
+            // in place (the checker requires the body not to consume them).
             if v.pass == Pass::Sink
                 && self.mode(&v.ty) == Mode::Linear
                 && !v.moved.contains(&vec![])
+                && !self.external_captures.contains(n)
             {
                 self.caused(
                     format!("abortable effect may abandon linear place '{n}'"),
@@ -504,9 +509,8 @@ impl Flow<'_> {
                     "An abortable operation must not abandon a live owned linear temporary.",
                 );
             }
-            if !v.consumed && v.loan.as_ref().is_some_and(|(_, p)| *p == Pass::Inout) {
-                self.caused("abortable effect crosses a mutable temporary loan", span.clone(), self.origins.value(*id), "A mutable temporary loan cannot cross an operation that may abandon its continuation.");
-            }
+            // An `inout` loan may cross an abort (keep-writes, manuscript
+            // §4.3 `PostCall_abort`): the loaned place stays in this frame.
         }
     }
     fn end(&mut self, s: &State, span: &Span) {

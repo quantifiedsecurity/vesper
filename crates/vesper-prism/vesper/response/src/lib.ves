@@ -1,0 +1,489 @@
+// Vesper port of the fixed-length HTTP/1.1 response encoder of
+// crates/vesper-prism (`ResponseBuilder` in src/response.rs, port wave P1
+// lane 14, #911).
+//
+// A `ResponsePlan` is the validated builder state: status, context,
+// connection policy, the declared representation length, the retained
+// fields and the running head length and field count. Every limit is checked
+// before a field is retained or output is allocated.
+
+copy struct ResponseLimits {
+    max_head_bytes: u64,
+    max_headers: u64,
+    max_body_bytes: u64,
+    max_total_bytes: u64
+}
+
+copy enum ResponseContext {
+    Ordinary,
+    Head,
+    Connect
+}
+
+copy enum ConnectionPolicy {
+    KeepAlive,
+    Close
+}
+
+copy enum ResponseError {
+    UnsupportedStatus,
+    UnsupportedConnect,
+    UnsupportedUpgrade,
+    UnsupportedTransferCoding,
+    ReservedHeader,
+    InvalidHeaderName,
+    InvalidHeaderValue,
+    BodyForbidden,
+    LengthMismatch {
+        expected: u64,
+        actual: u64
+    },
+    LengthOverflow,
+    HeadLimit,
+    HeaderCountLimit,
+    BodyLimit,
+    TotalLimit,
+    AllocationFailed
+}
+
+struct ResponsePlan {
+    status: u64,
+    head: bool,
+    close: bool,
+    representation_length: u64,
+    limits: ResponseLimits,
+    names: ChunkSeq[u8],
+    name_ends: ChunkSeq[u64],
+    values: ChunkSeq[u8],
+    value_ends: ChunkSeq[u64],
+    head_length: u64,
+    header_count: u64
+}
+
+fn byte(in s: Slice[u8], i: u64) -> u8 {
+    match s.try_get(i) {
+        Option::Some(b) => b,
+        Option::None => 0,
+    }
+}
+
+fn is_alnum(b: u8) -> bool {
+    (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+}
+
+fn lower(b: u8) -> u8 {
+    if b >= 65 && b <= 90 {
+        wrapping_add(b, 32)
+    } else {
+        b
+    }
+}
+
+// Whether `b` is one of the bytes of `set`.
+fn in_set(b: u8, in set: Str) -> bool {
+    for i in 0..set.len() {
+        match set.try_byte_at(i) {
+            Option::Some(c) => if c == b {
+                return true;
+            },
+            Option::None => (),
+        }
+    }
+    false
+}
+
+fn token(b: u8) -> bool {
+    is_alnum(b) || in_set(b, "!#$%&'*+-.^_`|~")
+}
+
+fn eq_fold(in s: Slice[u8], in lit: Str) -> bool {
+    if s.len() != lit.len() {
+        return false;
+    }
+    for i in 0..lit.len() {
+        let want = match lit.try_byte_at(i) {
+            Option::Some(b) => b,
+            Option::None => 0,
+        };
+        if lower(byte(in s, i)) != want {
+            return false;
+        }
+    }
+    true
+}
+
+// `a + b`, or `None` on overflow (`LengthOverflow`).
+fn add(a: u64, b: u64) -> Option[u64] {
+    let s = wrapping_add(a, b);
+    if s < a {
+        Option::None
+    } else {
+        Option::Some(s)
+    }
+}
+
+fn body_forbidden(status: u64) -> bool {
+    status == 204 || status == 205 || status == 304
+}
+
+fn carries_length(status: u64) -> bool {
+    status != 204 && status != 304
+}
+
+fn decimal_length(value: u64) -> u64 {
+    let mut v = value;
+    let mut n: u64 = 1;
+    loop {
+        if v < 10 {
+            break;
+        }
+        v = v / 10;
+        n = wrapping_add(n, 1);
+    }
+    n
+}
+
+fn policy_length(close: bool) -> u64 {
+    if close {
+        5
+    } else {
+        10
+    }
+}
+
+fn push_text(inout out: ChunkSeq[u8], in text: Str) {
+    for i in 0..text.len() {
+        match text.try_byte_at(i) {
+            Option::Some(b) => out.push(b),
+            Option::None => (),
+        }
+    }
+}
+
+fn push_decimal(inout out: ChunkSeq[u8], value: u64) {
+    let mut digits: ChunkSeq[u8] = ChunkSeq::new[u8]();
+    let mut rest = value;
+    loop {
+        digits.push(wrapping_u8(wrapping_add(rest % 10, 48)));
+        rest = rest / 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let n = digits.len();
+    for i in 0..n {
+        match digits.try_get(wrapping_sub(wrapping_sub(n, 1), i)) {
+            Option::Some(d) => out.push(d),
+            Option::None => (),
+        }
+    }
+}
+
+// The fixed standard reason phrase, appended to `out`; unknown codes add
+// nothing.
+fn push_reason(inout out: ChunkSeq[u8], status: u64) {
+    match status {
+        200 => push_text(inout out, "OK"),
+        201 => push_text(inout out, "Created"),
+        202 => push_text(inout out, "Accepted"),
+        203 => push_text(inout out, "Non-Authoritative Information"),
+        204 => push_text(inout out, "No Content"),
+        205 => push_text(inout out, "Reset Content"),
+        206 => push_text(inout out, "Partial Content"),
+        207 => push_text(inout out, "Multi-Status"),
+        208 => push_text(inout out, "Already Reported"),
+        226 => push_text(inout out, "IM Used"),
+        300 => push_text(inout out, "Multiple Choices"),
+        301 => push_text(inout out, "Moved Permanently"),
+        302 => push_text(inout out, "Found"),
+        303 => push_text(inout out, "See Other"),
+        304 => push_text(inout out, "Not Modified"),
+        305 => push_text(inout out, "Use Proxy"),
+        307 => push_text(inout out, "Temporary Redirect"),
+        308 => push_text(inout out, "Permanent Redirect"),
+        400 => push_text(inout out, "Bad Request"),
+        401 => push_text(inout out, "Unauthorized"),
+        402 => push_text(inout out, "Payment Required"),
+        403 => push_text(inout out, "Forbidden"),
+        404 => push_text(inout out, "Not Found"),
+        405 => push_text(inout out, "Method Not Allowed"),
+        406 => push_text(inout out, "Not Acceptable"),
+        407 => push_text(inout out, "Proxy Authentication Required"),
+        408 => push_text(inout out, "Request Timeout"),
+        409 => push_text(inout out, "Conflict"),
+        410 => push_text(inout out, "Gone"),
+        411 => push_text(inout out, "Length Required"),
+        412 => push_text(inout out, "Precondition Failed"),
+        413 => push_text(inout out, "Content Too Large"),
+        414 => push_text(inout out, "URI Too Long"),
+        415 => push_text(inout out, "Unsupported Media Type"),
+        416 => push_text(inout out, "Range Not Satisfiable"),
+        417 => push_text(inout out, "Expectation Failed"),
+        421 => push_text(inout out, "Misdirected Request"),
+        422 => push_text(inout out, "Unprocessable Content"),
+        423 => push_text(inout out, "Locked"),
+        424 => push_text(inout out, "Failed Dependency"),
+        425 => push_text(inout out, "Too Early"),
+        428 => push_text(inout out, "Precondition Required"),
+        429 => push_text(inout out, "Too Many Requests"),
+        431 => push_text(inout out, "Request Header Fields Too Large"),
+        451 => push_text(inout out, "Unavailable For Legal Reasons"),
+        500 => push_text(inout out, "Internal Server Error"),
+        501 => push_text(inout out, "Not Implemented"),
+        502 => push_text(inout out, "Bad Gateway"),
+        503 => push_text(inout out, "Service Unavailable"),
+        504 => push_text(inout out, "Gateway Timeout"),
+        505 => push_text(inout out, "HTTP Version Not Supported"),
+        506 => push_text(inout out, "Variant Also Negotiates"),
+        507 => push_text(inout out, "Insufficient Storage"),
+        508 => push_text(inout out, "Loop Detected"),
+        510 => push_text(inout out, "Not Extended"),
+        511 => push_text(inout out, "Network Authentication Required"),
+        _ => (),
+    }
+}
+
+fn reason_length(status: u64) -> u64 {
+    let mut out: ChunkSeq[u8] = ChunkSeq::new[u8]();
+    push_reason(inout out, status);
+    out.len()
+}
+
+fn wire_body_length(head: bool, representation_length: u64) -> u64 {
+    if head {
+        0
+    } else {
+        representation_length
+    }
+}
+
+fn check_sizes(
+    limits: ResponseLimits,
+    head: bool,
+    representation_length: u64,
+    head_length: u64,
+    header_count: u64
+) -> Option[ResponseError] {
+    if head_length > limits.max_head_bytes {
+        return Option::Some(ResponseError::HeadLimit);
+    }
+    if header_count > limits.max_headers {
+        return Option::Some(ResponseError::HeaderCountLimit);
+    }
+    match add(head_length, wire_body_length(head, representation_length)) {
+        Option::None => Option::Some(ResponseError::LengthOverflow),
+        Option::Some(total) => if total > limits.max_total_bytes {
+            Option::Some(ResponseError::TotalLimit)
+        } else {
+            Option::None
+        },
+    }
+}
+
+fn plan_head_length(status: u64, close: bool, representation_length: u64) -> u64 {
+    // Status line, the Content-Length field when carried, the Connection
+    // field and the final empty line. These stay far below 2^64 because the
+    // representation length is bounded by the body limit first.
+    let mut n = wrapping_add(15, reason_length(status));
+    if carries_length(status) {
+        n = wrapping_add(n, wrapping_add(18, decimal_length(representation_length)));
+    }
+    wrapping_add(n, wrapping_add(16, policy_length(close)))
+}
+
+// `ResponseBuilder::new`.
+pub fn response_plan_new(
+    status: u64,
+    context: ResponseContext,
+    connection: ConnectionPolicy,
+    representation_length: u64,
+    limits: ResponseLimits
+) -> ResponsePlan eff [Fail[ResponseError]] {
+    if status < 200 || status > 599 {
+        Fail::raise(ResponseError::UnsupportedStatus);
+    }
+    // A valid 426 requires Upgrade, which this fixed-length subset cannot
+    // produce.
+    if status == 426 {
+        Fail::raise(ResponseError::UnsupportedUpgrade);
+    }
+    let head = match context {
+        ResponseContext::Ordinary => false,
+        ResponseContext::Head => true,
+        ResponseContext::Connect => Fail::raise(ResponseError::UnsupportedConnect),
+    };
+    if body_forbidden(status) && representation_length != 0 {
+        Fail::raise(ResponseError::BodyForbidden);
+    }
+    if representation_length > limits.max_body_bytes {
+        Fail::raise(ResponseError::BodyLimit);
+    }
+    let close = match connection {
+        ConnectionPolicy::KeepAlive => false,
+        ConnectionPolicy::Close => true,
+    };
+    let head_length = plan_head_length(status, close, representation_length);
+    let header_count: u64 = if carries_length(status) {
+        2
+    } else {
+        1
+    };
+    match check_sizes(limits, head, representation_length, head_length, header_count) {
+        Option::Some(e) => Fail::raise(e),
+        Option::None => (),
+    }
+    ResponsePlan {
+        status: status,
+        head: head,
+        close: close,
+        representation_length: representation_length,
+        limits: limits,
+        names: ChunkSeq::new[u8](),
+        name_ends: ChunkSeq::new[u64](),
+        values: ChunkSeq::new[u8](),
+        value_ends: ChunkSeq::new[u64](),
+        head_length: head_length,
+        header_count: header_count
+    }
+}
+
+// `ResponseBuilder::header`: validate and retain one ordinary field.
+pub fn response_plan_header(inout p: ResponsePlan, in name: Slice[u8], in value: Slice[u8])
+    -> Option[ResponseError] {
+    if name.len() == 0 {
+        return Option::Some(ResponseError::InvalidHeaderName);
+    }
+    for i in 0..name.len() {
+        if !token(byte(in name, i)) {
+            return Option::Some(ResponseError::InvalidHeaderName);
+        }
+    }
+    for i in 0..value.len() {
+        let b = byte(in value, i);
+        if b < 32 || b == 127 {
+            return Option::Some(ResponseError::InvalidHeaderValue);
+        }
+    }
+    if eq_fold(in name, "transfer-encoding")
+        || eq_fold(in name, "trailer")
+        || eq_fold(in name, "te") {
+        return Option::Some(ResponseError::UnsupportedTransferCoding);
+    }
+    if eq_fold(in name, "upgrade") {
+        return Option::Some(ResponseError::UnsupportedUpgrade);
+    }
+    if eq_fold(in name, "content-length")
+        || eq_fold(in name, "connection")
+        || eq_fold(in name, "keep-alive")
+        || eq_fold(in name, "proxy-connection") {
+        return Option::Some(ResponseError::ReservedHeader);
+    }
+    let field = match add(name.len(), value.len()) {
+        Option::Some(n) => add(n, 4),
+        Option::None => Option::None,
+    };
+    let head_length = match field {
+        Option::Some(f) => add(p.head_length, f),
+        Option::None => Option::None,
+    };
+    let head_length = match head_length {
+        Option::Some(n) => n,
+        Option::None => {
+            return Option::Some(ResponseError::LengthOverflow);
+        },
+    };
+    let header_count = wrapping_add(p.header_count, 1);
+    match check_sizes(p.limits, p.head, p.representation_length, head_length, header_count) {
+        Option::Some(e) => {
+            return Option::Some(e);
+        },
+        Option::None => (),
+    }
+    for i in 0..name.len() {
+        p.names.push(lower(byte(in name, i)));
+    }
+    p.name_ends.push(p.names.len());
+    for i in 0..value.len() {
+        p.values.push(byte(in value, i));
+    }
+    p.value_ends.push(p.values.len());
+    p.head_length = head_length;
+    p.header_count = header_count;
+    Option::None
+}
+
+fn at(in s: ChunkSeq[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+fn byte_of(in s: ChunkSeq[u8], i: u64) -> u8 {
+    match s.try_get(i) {
+        Option::Some(b) => b,
+        Option::None => 0,
+    }
+}
+
+// `ResponseBuilder::finish`: the exact wire bytes. No partial output on an
+// error.
+pub fn response_plan_finish(in p: ResponsePlan, in body: Slice[u8])
+    -> ChunkSeq[u8] eff [Fail[ResponseError]] {
+    if body_forbidden(p.status) && body.len() != 0 {
+        Fail::raise(ResponseError::BodyForbidden);
+    }
+    if body.len() != p.representation_length {
+        Fail::raise(
+            ResponseError::LengthMismatch {
+                expected: p.representation_length,
+                actual: body.len()
+            }
+        );
+    }
+    match check_sizes(p.limits, p.head, p.representation_length, p.head_length, p.header_count) {
+        Option::Some(e) => Fail::raise(e),
+        Option::None => (),
+    }
+    let body_length = wire_body_length(p.head, p.representation_length);
+    let mut out: ChunkSeq[u8] = ChunkSeq::with_capacity[u8](
+        wrapping_add(p.head_length, body_length)
+    );
+    push_text(inout out, "HTTP/1.1 ");
+    push_decimal(inout out, p.status);
+    out.push(32);
+    push_reason(inout out, p.status);
+    push_text(inout out, "\r\n");
+    let mut name_at: u64 = 0;
+    let mut value_at: u64 = 0;
+    for f in 0..p.name_ends.len() {
+        let name_end = at(in p.name_ends, f);
+        let value_end = at(in p.value_ends, f);
+        for i in name_at..name_end {
+            out.push(byte_of(in p.names, i));
+        }
+        push_text(inout out, ": ");
+        for i in value_at..value_end {
+            out.push(byte_of(in p.values, i));
+        }
+        push_text(inout out, "\r\n");
+        name_at = name_end;
+        value_at = value_end;
+    }
+    if carries_length(p.status) {
+        push_text(inout out, "Content-Length: ");
+        push_decimal(inout out, p.representation_length);
+        push_text(inout out, "\r\n");
+    }
+    push_text(inout out, "Connection: ");
+    if p.close {
+        push_text(inout out, "close");
+    } else {
+        push_text(inout out, "keep-alive");
+    }
+    push_text(inout out, "\r\n\r\n");
+    if !p.head {
+        out.extend(in body);
+    }
+    out
+}

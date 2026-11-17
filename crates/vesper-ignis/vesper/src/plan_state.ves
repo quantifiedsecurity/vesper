@@ -1,0 +1,661 @@
+fn touch_at(in pl: Planner, resource: u32, queue: u32) -> u32 {
+    get32(
+        in pl.last_touch,
+        wrapping_add(wrapping_mul(widen_u64(resource), pl.nq), widen_u64(queue))
+    )
+}
+
+// The recorded accesses of a state: the last write, then the reads.
+fn state_recs(in pl: Planner, st: SubState) -> ChunkSeq[Rec] {
+    let mut out: ChunkSeq[Rec] = ChunkSeq::new[Rec]();
+    if st.has_write {
+        out.push(st.write);
+    }
+    let mut at = st.reads_head;
+    loop {
+        if at == none32() {
+            break;
+        }
+        match pl.reads.try_get(widen_u64(at)) {
+            Option::Some(n) => {
+                out.push(n.rec);
+                at = n.next;
+            },
+            Option::None => {
+                break;
+            },
+        }
+    }
+    out
+}
+
+fn reads_of(in pl: Planner, st: SubState) -> ChunkSeq[Rec] {
+    let mut only = st;
+    only.has_write = false;
+    state_recs(in pl, only)
+}
+
+fn push_read(inout pl: Planner, st: SubState, r: Rec) -> SubState {
+    let at = wrapping_u32(pl.reads.len());
+    pl
+        .reads
+        .push(
+        RecNode {
+            rec: r,
+            next: none32()
+        }
+    );
+    let mut out = st;
+    if st.reads_tail == none32() {
+        out.reads_head = at;
+    } else {
+        match pl.reads.try_get(widen_u64(st.reads_tail)) {
+            Option::Some(n) => {
+                let mut m = n;
+                m.next = at;
+                pl.reads.try_set(widen_u64(st.reads_tail), m);
+            },
+            Option::None => (),
+        }
+    }
+    out.reads_tail = at;
+    out
+}
+
+copy enum CovLookup {
+    Missing,
+    Found(Covered)
+}
+
+fn covered_on(in pl: Planner, st: SubState, queue: u32) -> CovLookup {
+    let mut at = st.cov_head;
+    loop {
+        if at == none32() {
+            break;
+        }
+        match pl.covs.try_get(widen_u64(at)) {
+            Option::Some(n) => {
+                if n.queue == queue {
+                    return CovLookup::Found(n.cov);
+                }
+                at = n.next;
+            },
+            Option::None => {
+                break;
+            },
+        }
+    }
+    CovLookup::Missing
+}
+
+fn set_covered(inout pl: Planner, st: SubState, queue: u32, c: Covered) -> SubState {
+    let mut at = st.cov_head;
+    loop {
+        if at == none32() {
+            break;
+        }
+        match pl.covs.try_get(widen_u64(at)) {
+            Option::Some(n) => {
+                if n.queue == queue {
+                    let mut m = n;
+                    m.cov = c;
+                    pl.covs.try_set(widen_u64(at), m);
+                    return st;
+                }
+                at = n.next;
+            },
+            Option::None => {
+                break;
+            },
+        }
+    }
+    let fresh = wrapping_u32(pl.covs.len());
+    pl
+        .covs
+        .push(
+        CovNode {
+            queue: queue,
+            cov: c,
+            next: st.cov_head
+        }
+    );
+    let mut out = st;
+    out.cov_head = fresh;
+    out
+}
+
+// A copy of a state with its own read and coverage lists (a segment split
+// clones the state).
+fn clone_state(inout pl: Planner, st: SubState) -> SubState {
+    let mut out = st;
+    out.reads_head = none32();
+    out.reads_tail = none32();
+    out.cov_head = none32();
+    let recs = reads_of(in pl, st);
+    for i in 0..recs.len() {
+        match recs.try_get(i) {
+            Option::Some(r) => {
+                out = push_read(inout pl, out, r);
+            },
+            Option::None => (),
+        }
+    }
+    let mut covs: ChunkSeq[CovNode] = ChunkSeq::new[CovNode]();
+    let mut at = st.cov_head;
+    loop {
+        if at == none32() {
+            break;
+        }
+        match pl.covs.try_get(widen_u64(at)) {
+            Option::Some(n) => {
+                covs.push(n);
+                at = n.next;
+            },
+            Option::None => {
+                break;
+            },
+        }
+    }
+    let mut i = covs.len();
+    loop {
+        if i == 0 {
+            break;
+        }
+        i = wrapping_sub(i, 1);
+        match covs.try_get(i) {
+            Option::Some(n) => {
+                let fresh = wrapping_u32(pl.covs.len());
+                pl
+                    .covs
+                    .push(
+                    CovNode {
+                        queue: n.queue,
+                        cov: n.cov,
+                        next: out.cov_head
+                    }
+                );
+                out.cov_head = fresh;
+            },
+            Option::None => (),
+        }
+    }
+    out
+}
+
+fn fold_sync(in recs: ChunkSeq[Rec]) -> u32 {
+    let mut s: u32 = 0;
+    for i in 0..recs.len() {
+        match recs.try_get(i) {
+            Option::Some(r) => {
+                s = sync_union(s, r.sync);
+            },
+            Option::None => (),
+        }
+    }
+    s
+}
+
+fn fold_access(in recs: ChunkSeq[Rec]) -> u32 {
+    let mut a = no_access();
+    for i in 0..recs.len() {
+        match recs.try_get(i) {
+            Option::Some(r) => {
+                a = access_union(a, r.access);
+            },
+            Option::None => (),
+        }
+    }
+    a
+}
+
+fn single(slot: u32, value: u32) -> Placement {
+    Placement {
+        pk0: slot,
+        pk1: value,
+        pk2: 0
+    }
+}
+
+// `push_pending`: a texture barrier for one subresource (when `layouts`),
+// or a buffer barrier merged per (placement, resource).
+fn push_pending(
+    inout pl: Planner,
+    resource: u32,
+    has_sub: bool,
+    sub: SubPos,
+    at: Placement,
+    sync_before: u32,
+    access_before: u32,
+    sync_after: u32,
+    access_after: u32,
+    has_layouts: bool,
+    before: Layout,
+    after: Layout
+) {
+    if has_sub && has_layouts {
+        pl
+            .tex
+            .push(
+            TexEntry {
+                pk0: at.pk0,
+                pk1: at.pk1,
+                pk2: at.pk2,
+                resource: resource,
+                sync_before: sync_before,
+                sync_after: sync_after,
+                access_before: access_before,
+                access_after: access_after,
+                layout_before: layout_ord(before),
+                layout_after: layout_ord(after),
+                sub: sub.flat,
+                mip: sub.mip,
+                slice: sub.slice,
+                plane: sub.plane
+            }
+        );
+        return;
+    }
+    for i in 0..pl.buf.len() {
+        match pl.buf.try_get(i) {
+            Option::Some(e) => {
+                if e.pk0 == at.pk0 && e.pk1 == at.pk1 && e.pk2 == at.pk2 && e.resource == resource {
+                    let mut m = e;
+                    m.sync_before = sync_union(e.sync_before, sync_before);
+                    m.sync_after = sync_union(e.sync_after, sync_after);
+                    m.access_before = access_union(e.access_before, access_before);
+                    m.access_after = access_union(e.access_after, access_after);
+                    pl.buf.try_set(i, m);
+                    return;
+                }
+            },
+            Option::None => (),
+        }
+    }
+    pl
+        .buf
+        .push(
+        BufEntry {
+            pk0: at.pk0,
+            pk1: at.pk1,
+            pk2: at.pk2,
+            resource: resource,
+            sync_before: sync_before,
+            sync_after: sync_after,
+            access_before: access_before,
+            access_after: access_after
+        }
+    );
+}
+
+// Split or single placement for a barrier ordering earlier work on the same
+// queue before pass `p`.
+fn placement(in pl: Planner, p: u32, queue: u32, resource: u32, has_same_queue_prior: bool)
+    -> Placement {
+    if pl.split && has_same_queue_prior {
+        let t = touch_at(in pl, resource, queue);
+        if t != none32() && t != p {
+            let pp = widen_u64(get32(in pl.qpos, widen_u64(p)));
+            let tp = widen_u64(get32(in pl.qpos, widen_u64(t)));
+            if pp > wrapping_add(tp, 1) {
+                return Placement {
+                    pk0: 4,
+                    pk1: t,
+                    pk2: p
+                };
+            }
+        }
+    }
+    single(0, p)
+}
+
+copy enum StepOutcome {
+    Done(SubState),
+    Failed(PlanFault)
+}
+
+// The producer queue transitions a subresource first when the consumer
+// queue cannot (`handoff`).
+fn handoff(
+    inout pl: Planner,
+    in g: Graph,
+    p: u32,
+    queue: u32,
+    resource: u32,
+    sub: SubPos,
+    st: SubState,
+    cur: Layout,
+    target: Layout
+) -> StepOutcome {
+    let unsupported = PlanFault::UnsupportedQueueHandoff {
+        pass: p,
+        resource: resource,
+        subresource: sub.flat,
+        from: cur,
+        to: target
+    };
+    let recs = state_recs(in pl, st);
+    let first = match recs.try_get(0) {
+        Option::Some(r) => r,
+        Option::None => {
+            return StepOutcome::Failed(unsupported);
+        },
+    };
+    let producer = first.queue;
+    if producer == queue {
+        return StepOutcome::Failed(unsupported);
+    }
+    for i in 0..recs.len() {
+        match recs.try_get(i) {
+            Option::Some(r) => {
+                if r.queue != producer {
+                    return StepOutcome::Failed(unsupported);
+                }
+            },
+            Option::None => (),
+        }
+    }
+    let pkind = get_queue(in g, widen_u64(producer));
+    let kind = get_queue(in g, widen_u64(queue));
+    let mid = if queue_can_transition(pkind, cur, target) {
+        target
+    } else if queue_can_transition(pkind, cur, Layout::Common)
+        && (target == Layout::Common || queue_can_transition(kind, Layout::Common, target)) {
+        Layout::Common
+    } else {
+        return StepOutcome::Failed(unsupported);
+    };
+    let t = touch_at(in pl, resource, producer);
+    let sync_before = fold_sync(in recs);
+    let access_before = fold_access(in recs);
+    push_pending(
+        inout pl,
+        resource,
+        true,
+        sub,
+        single(1, t),
+        sync_before,
+        access_before,
+        0,
+        no_access(),
+        true,
+        cur,
+        mid
+    );
+    let mut out = st;
+    out.has_layout = true;
+    out.layout = mid;
+    out.has_write = true;
+    out.write = Rec {
+        pass: t,
+        queue: producer,
+        sync: 0,
+        access: no_access()
+    };
+    out.reads_head = none32();
+    out.reads_tail = none32();
+    out.cov_head = none32();
+    StepOutcome::Done(out)
+}
+
+fn auto_count() -> u64 {
+    13
+}
+
+fn first_auto_layout(kind: QueueKind, access: u32) -> Option[Layout] {
+    for i in 0..auto_count() {
+        let l = auto_candidate(i);
+        if layout_allows(l, access) && queue_supports_layout(kind, l) {
+            return Option::Some(l);
+        }
+    }
+    Option::None
+}
+
+// Advances one subresource or segment state for one requirement
+// (`process`).
+fn process(
+    inout pl: Planner,
+    in g: Graph,
+    p: u32,
+    queue: u32,
+    resource: u32,
+    has_sub: bool,
+    sub: SubPos,
+    st0: SubState,
+    req: Req
+) -> StepOutcome {
+    let kind = get_queue(in g, widen_u64(queue));
+    let mut st = st0;
+    let mut target = Layout::Undefined;
+    if st.has_layout {
+        let cur = st.layout;
+        target = if req.has_layout {
+            req.layout
+        } else if cur
+            != Layout::Undefined
+            && layout_allows(cur, req.access)
+            && queue_supports_layout(kind, cur) {
+            cur
+        } else {
+            match first_auto_layout(kind, req.access) {
+                Option::Some(l) => l,
+                Option::None => {
+                    let s = if has_sub {
+                        sub.flat
+                    } else {
+                        0
+                    };
+                    return StepOutcome::Failed(
+                        PlanFault::NoLayoutForAccess {
+                            pass: p,
+                            resource: resource,
+                            subresource: s,
+                            access: req.access
+                        }
+                    );
+                },
+            }
+        };
+        if cur != target && !queue_can_transition(kind, cur, target) {
+            let s = if has_sub {
+                sub
+            } else {
+                no_sub()
+            };
+            match handoff(inout pl, in g, p, queue, resource, s, st, cur, target) {
+                StepOutcome::Done(next) => {
+                    st = next;
+                },
+                StepOutcome::Failed(f) => {
+                    return StepOutcome::Failed(f);
+                },
+            }
+        }
+    }
+    let before_layout = st.layout;
+    let needs_transition = st.has_layout && st.layout != target;
+    let req_write = access_is_write(req.access);
+    let is_write = req_write || needs_transition;
+    let mut same: ChunkSeq[Rec] = ChunkSeq::new[Rec]();
+    let mut cross: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    let mut has_chain = false;
+    let mut chain_sync: u32 = 0;
+    let mut chain_access: u32 = 0;
+    let cov = covered_on(in pl, st, queue);
+    if st.has_write {
+        let w = st.write;
+        if w.queue == queue {
+            let covered = match cov {
+                CovLookup::Found(Covered::Full) => true,
+                CovLookup::Found(Covered::Scope(s, a)) => sync_covers(s, req.sync)
+                    && access_contains(a, req.access),
+                CovLookup::Missing => false,
+            };
+            if is_write || !covered {
+                same.push(w);
+                match cov {
+                    CovLookup::Found(Covered::Scope(s, a)) => {
+                        has_chain = true;
+                        chain_sync = s;
+                        chain_access = a;
+                    },
+                    _ => (),
+                }
+            }
+        } else {
+            let full = match cov {
+                CovLookup::Found(Covered::Full) => true,
+                _ => false,
+            };
+            if is_write || !full {
+                cross.push(w.pass);
+            }
+        }
+    }
+    if req.has_other {
+        if req.other.queue == queue {
+            same.push(req.other);
+        } else {
+            cross.push(req.other.pass);
+        }
+    }
+    if is_write {
+        let reads = reads_of(in pl, st);
+        for i in 0..reads.len() {
+            match reads.try_get(i) {
+                Option::Some(r) => {
+                    if r.queue == queue {
+                        same.push(r);
+                    } else {
+                        cross.push(r.pass);
+                    }
+                },
+                Option::None => (),
+            }
+        }
+    }
+    let barrier = same.len() > 0 || needs_transition;
+    if barrier {
+        let mut sync_before = fold_sync(in same);
+        let mut access_before = fold_access(in same);
+        if has_chain {
+            sync_before = sync_union(sync_before, chain_sync);
+            access_before = access_union(access_before, chain_access);
+        }
+        let at = placement(in pl, p, queue, resource, same.len() > 0 && cross.len() == 0);
+        push_pending(
+            inout pl,
+            resource,
+            has_sub,
+            sub,
+            at,
+            sync_before,
+            access_before,
+            req.sync,
+            req.access,
+            st.has_layout,
+            before_layout,
+            target
+        );
+    }
+    for i in 0..cross.len() {
+        pl
+            .cross
+            .push(
+            Pair {
+                key: p,
+                value: get32(in cross, i)
+            }
+        );
+    }
+    let rec = Rec {
+        pass: p,
+        queue: queue,
+        sync: req.sync,
+        access: req.access
+    };
+    if is_write {
+        st.has_write = true;
+        st.write = rec;
+        st.reads_head = none32();
+        st.reads_tail = none32();
+        st.cov_head = none32();
+        if !req_write {
+            st = set_covered(inout pl, st, queue, Covered::Scope(req.sync, req.access));
+        }
+        if st.has_layout {
+            st.layout = target;
+        }
+    } else {
+        if cross.len() > 0 {
+            st = set_covered(inout pl, st, queue, Covered::Full);
+        } else if barrier {
+            let merged = match covered_on(in pl, st, queue) {
+                CovLookup::Found(Covered::Scope(s, a)) => Covered::Scope(
+                    s | req.sync,
+                    a | req.access
+                ),
+                CovLookup::Found(Covered::Full) => Covered::Full,
+                CovLookup::Missing => Covered::Scope(req.sync, req.access),
+            };
+            st = set_covered(inout pl, st, queue, merged);
+        }
+        st = push_read(inout pl, st, rec);
+    }
+    StepOutcome::Done(st)
+}
+
+// A texture requirement for one subresource, from one use (`seq` keeps
+// the use order among equal subresources).
+copy struct ReqEntry {
+    sub: u32,
+    seq: u64,
+    access: u32,
+    sync: u32,
+    has_layout: u32,
+    layout: u32,
+    mip: u32,
+    slice: u32,
+    plane: u32
+}
+
+impl Ord for ReqEntry {}
+
+impl Eq for ReqEntry {}
+
+fn flat_index(r: Resource, mip: u32, slice: u32, plane: u32) -> u32 {
+    wrapping_add(mip, wrapping_mul(r.mips, wrapping_add(slice, wrapping_mul(r.slices, plane))))
+}
+
+fn split_segments(inout pl: Planner, resource: u32, at: u64) {
+    let mut s = get32(in pl.base, widen_u64(resource));
+    loop {
+        if s == none32() {
+            break;
+        }
+        let seg = seg_at(in pl, s);
+        if seg.start < at && at < seg.end {
+            let original = state_at(in pl, seg.sid);
+            let copy_state = clone_state(inout pl, original);
+            let state_index = wrapping_u32(pl.states.len());
+            pl.states.push(copy_state);
+            let fresh = wrapping_u32(pl.segs.len());
+            pl
+                .segs
+                .push(
+                Seg {
+                    start: at,
+                    end: seg.end,
+                    sid: state_index,
+                    next: seg.next
+                }
+            );
+            let mut m = seg;
+            m.end = at;
+            m.next = fresh;
+            pl.segs.try_set(widen_u64(s), m);
+            return;
+        }
+        s = seg.next;
+    }
+}
