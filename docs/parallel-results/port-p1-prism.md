@@ -126,7 +126,10 @@ budget of 128 Mi. In practice that caps a file at about 5,700 tokens,
 whitespace included. The decoder (8,000 tokens) and the router (7,000) did not
 fit in one file, so each became a package with several modules, using the
 package support from #919. Every module is at most 4,700 tokens, and all eight
-files are canonical under `vesper fmt --check`.
+files are canonical under `vesper fmt --check`. #939 has since made the formatter
+near-linear and lifted the file cap. The split stays, because the modules are
+easier to read that way, and all eight files are still canonical under the new
+formatter.
 
 ## Benchmarks
 
