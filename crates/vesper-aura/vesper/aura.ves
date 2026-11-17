@@ -1,0 +1,3143 @@
+// Vesper port of vesper-aura (port wave P1 lane 13, #910): the keyed view
+// runtime of manuscript §37.2 and the SimAura backend of §37.6.
+//
+// The Rust crate keeps its public types; its wrappers encode a `ViewTree` or a
+// `Transaction` as words plus one byte buffer of all text, call this library,
+// and decode what comes back. Everything that decides something lives here:
+// validation (view.rs), reconciliation (plan.rs), the session state machine
+// (session.rs), the executing recording backend (recording.rs), and the
+// SimAura focus order, event dispatch, topology encoding and WCAG audits
+// (sim_aura.rs).
+//
+// Codes shared with the wrappers (src/port/codec.rs):
+// - Kind: 0 Container, 1 Text, 2 Button, 3 Input.
+// - Property: 0 Text, 1 Value, 2 Enabled, 3 Visible, 4 Width.
+// - Event: 0 Click, 1 Changed, 2 Focused.
+// - Value tag: 0 Text, 1 Bool, 2 Int (the payload is the i64's bits).
+// - Limits: nodes, children, depth, properties, subscriptions, text bytes,
+//   total text bytes, patches.
+//
+// Every allocation lives in a handle that the caller owns (a dropped local
+// sequence is not freed natively yet), so scratch space is a field of the
+// handle a function builds or updates.
+
+// ---------------------------------------------------------------- codes
+
+fn none_id() -> u64 {
+    18446744073709551615
+}
+
+fn max_u64() -> u64 {
+    18446744073709551615
+}
+
+// The budget names of ViewError::Budget and BackendError::Budget.
+fn b_nodes() -> u64 {
+    0
+}
+
+fn b_teardown() -> u64 {
+    1
+}
+
+fn b_children() -> u64 {
+    2
+}
+
+fn b_properties() -> u64 {
+    3
+}
+
+fn b_subscriptions() -> u64 {
+    4
+}
+
+fn b_text() -> u64 {
+    5
+}
+
+fn b_total_text() -> u64 {
+    6
+}
+
+fn b_depth() -> u64 {
+    7
+}
+
+fn b_patches() -> u64 {
+    8
+}
+
+fn b_slots() -> u64 {
+    9
+}
+
+fn b_handler() -> u64 {
+    10
+}
+
+fn b_event_batch() -> u64 {
+    11
+}
+
+fn b_subscription_counter() -> u64 {
+    12
+}
+
+fn b_disconnect_counter() -> u64 {
+    13
+}
+
+// The messages of BackendError::Invalid.
+fn i_limits() -> u64 {
+    0
+}
+
+fn i_reused() -> u64 {
+    1
+}
+
+fn i_root_parent() -> u64 {
+    2
+}
+
+fn i_destroy() -> u64 {
+    3
+}
+
+fn i_bound() -> u64 {
+    4
+}
+
+fn i_property() -> u64 {
+    5
+}
+
+fn i_redundant() -> u64 {
+    6
+}
+
+fn i_slot_mismatch() -> u64 {
+    7
+}
+
+fn i_subscribed() -> u64 {
+    8
+}
+
+fn i_event() -> u64 {
+    9
+}
+
+fn i_subscription_mismatch() -> u64 {
+    10
+}
+
+fn i_remove_position() -> u64 {
+    11
+}
+
+fn i_parent_mismatch() -> u64 {
+    12
+}
+
+fn i_insert_detached() -> u64 {
+    13
+}
+
+fn i_insert_position() -> u64 {
+    14
+}
+
+fn i_move_position() -> u64 {
+    15
+}
+
+fn i_unmounted() -> u64 {
+    16
+}
+
+fn i_cycle() -> u64 {
+    17
+}
+
+fn i_broken_parent() -> u64 {
+    18
+}
+
+fn i_disconnected() -> u64 {
+    19
+}
+
+// ---------------------------------------------------------------- data
+
+// view::Limits.
+copy struct Lim {
+    nodes: u64,
+    children: u64,
+    depth: u64,
+    properties: u64,
+    subscriptions: u64,
+    text: u64,
+    total: u64,
+    patches: u64
+}
+
+// view::ViewError, with keys as u64 and budgets as codes.
+copy enum ViewFault {
+    InvalidLimits,
+    Budget(u64),
+    DuplicateKey(u64),
+    MissingRoot(u64),
+    MissingChild {
+        parent: u64,
+        child: u64
+    },
+    MultipleParents(u64),
+    RootHasParent,
+    CycleOrDisconnected,
+    ChildrenOnLeaf(u64),
+    PropertyType {
+        key: u64,
+        property: u64
+    },
+    UnsupportedEvent {
+        key: u64,
+        event: u64
+    },
+    IdentityExhausted,
+    Closed
+}
+
+// recording::BackendError (WrongThread is checked by the Rust wrapper).
+copy enum BackendFault {
+    ForeignSession,
+    StaleRevision,
+    StaleWidget,
+    StaleSlot,
+    StaleSubscription,
+    Invalid(u64),
+    Budget(u64),
+    Injected(u64)
+}
+
+// The answer of Session::request_close.
+copy enum CloseRequest {
+    Granted(u64),
+    AlreadyPending,
+    Closed,
+    Exhausted
+}
+
+// One patch or one recorded event: a tag and up to four words.
+//
+// Patches (serials of the plan's session): 0 SetRoot(a = present, b), 1
+// Create(a, kind b), 2 Destroy(a), 3 BindSlot(widget a, property b, slot c,
+// value of input node d), 4 SetSlot(slot a, property b, input node d), 5
+// UnbindSlot(widget a, property b, slot c), 6 Subscribe(widget a, event b,
+// handler c, subscription d), 7 Disconnect(a), 8 RemoveChild, 9 InsertChild
+// (parent a, child b, index c), 10 MoveChild(parent a, child b, from c, to d).
+//
+// Recorded events: 0 RootChanged(a = present, b), 1 Created, 2 Destroyed, 3
+// SlotBound, 4 SlotChanged, 5 SlotUnbound, 6 Subscribed, 7 Disconnected (a),
+// 8 ChildRemoved, 9 ChildInserted (parent a, child b, index c), 10
+// ChildMoved (parent a, child b, from c, to d).
+copy struct Op {
+    tag: u64,
+    a: u64,
+    b: u64,
+    c: u64,
+    d: u64
+}
+
+// A node of a decoded input tree; its fields are ranges of the tree's
+// property, subscription and child sequences.
+copy struct TNode {
+    key: u64,
+    kind: u64,
+    pstart: u64,
+    pcount: u64,
+    sstart: u64,
+    scount: u64,
+    cstart: u64,
+    ccount: u64
+}
+
+copy struct TProp {
+    property: u64,
+    tag: u64,
+    payload: u64,
+    tstart: u64,
+    tlen: u64
+}
+
+copy struct TSub {
+    event: u64,
+    handler: u64
+}
+
+// A decoded and validated input tree. `sorted` lists node indices by key,
+// `parent` holds each node's parent index (or none), `order` is the
+// depth-first pre-order from the root.
+struct Tree {
+    root: u64,
+    nodes: ChunkSeq[TNode],
+    props: ChunkSeq[TProp],
+    subs: ChunkSeq[TSub],
+    kids: ChunkSeq[u64],
+    keys: ChunkSeq[u64],
+    sorted: ChunkSeq[u64],
+    tmp: ChunkSeq[u64],
+    parent: ChunkSeq[u64],
+    order: ChunkSeq[u64],
+    seen: ChunkSeq[bool],
+    stack: ChunkSeq[u64],
+    depths: ChunkSeq[u64]
+}
+
+// A mounted node, in pre-order. `src` is its index in the input tree that
+// mounted it.
+copy struct MNode {
+    key: u64,
+    id: u64,
+    kind: u64,
+    src: u64,
+    pstart: u64,
+    pcount: u64,
+    sstart: u64,
+    scount: u64,
+    cstart: u64,
+    ccount: u64
+}
+
+copy struct MProp {
+    property: u64,
+    slot: u64,
+    tag: u64,
+    payload: u64,
+    tstart: u64,
+    tlen: u64
+}
+
+copy struct MSub {
+    event: u64,
+    id: u64,
+    handler: u64
+}
+
+// plan::Mounted: the retained identities of the mounted tree.
+struct Mounted {
+    present: bool,
+    nodes: ChunkSeq[MNode],
+    props: ChunkSeq[MProp],
+    subs: ChunkSeq[MSub],
+    kids: ChunkSeq[u64],
+    text: ChunkSeq[u8],
+    keys: ChunkSeq[u64],
+    sorted: ChunkSeq[u64],
+    tmp: ChunkSeq[u64]
+}
+
+// A prepared update: the plan, the next mounted state, and the scratch
+// space that built them. `serial` is the identity counter after planning.
+struct Prepared {
+    fault: Option[ViewFault],
+    session: u64,
+    base: u64,
+    next: u64,
+    serial: u64,
+    ops: ChunkSeq[Op],
+    tree: Tree,
+    m: Mounted,
+    prev: ChunkSeq[u64],
+    succ: ChunkSeq[u64],
+    cur: ChunkSeq[u64],
+    cur_start: ChunkSeq[u64],
+    cur_len: ChunkSeq[u64],
+    work: ChunkSeq[u64]
+}
+
+// session::Session without its Rust backend and thread: identities,
+// revision, close state (0 open, 1 pending, 2 closed) and the mounted tree.
+struct Reconciler {
+    session: u64,
+    serial: u64,
+    revision: u64,
+    close: u64,
+    close_id: u64,
+    next_close: u64,
+    lim: Lim,
+    m: Mounted
+}
+
+// ---------------------------------------------------------------- helpers
+
+fn get_u64(in s: Slice[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+fn seq_u64(in s: ChunkSeq[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => none_id(),
+    }
+}
+
+fn seq_bool(in s: ChunkSeq[bool], i: u64) -> bool {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => false,
+    }
+}
+
+fn byte_at(in s: Slice[u8], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => widen_u64(v),
+        Option::None => 0,
+    }
+}
+
+fn seq_byte(in s: ChunkSeq[u8], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => widen_u64(v),
+        Option::None => 0,
+    }
+}
+
+fn add(a: u64, b: u64) -> u64 {
+    wrapping_add(a, b)
+}
+
+fn inc(a: u64) -> u64 {
+    wrapping_add(a, 1)
+}
+
+fn dec(a: u64) -> u64 {
+    wrapping_sub(a, 1)
+}
+
+fn op(tag: u64, a: u64, b: u64, c: u64, d: u64) -> Op {
+    Op {
+        tag: tag,
+        a: a,
+        b: b,
+        c: c,
+        d: d
+    }
+}
+
+fn tnode(in s: ChunkSeq[TNode], i: u64) -> TNode {
+    match s.try_get(i) {
+        Option::Some(n) => n,
+        Option::None => TNode {
+            key: 0,
+            kind: 0,
+            pstart: 0,
+            pcount: 0,
+            sstart: 0,
+            scount: 0,
+            cstart: 0,
+            ccount: 0
+        },
+    }
+}
+
+fn tprop(in s: ChunkSeq[TProp], i: u64) -> TProp {
+    match s.try_get(i) {
+        Option::Some(p) => p,
+        Option::None => TProp {
+            property: 0,
+            tag: 0,
+            payload: 0,
+            tstart: 0,
+            tlen: 0
+        },
+    }
+}
+
+fn tsub(in s: ChunkSeq[TSub], i: u64) -> TSub {
+    match s.try_get(i) {
+        Option::Some(p) => p,
+        Option::None => TSub {
+            event: 0,
+            handler: 0
+        },
+    }
+}
+
+fn mnode(in s: ChunkSeq[MNode], i: u64) -> MNode {
+    match s.try_get(i) {
+        Option::Some(n) => n,
+        Option::None => MNode {
+            key: 0,
+            id: 0,
+            kind: 0,
+            src: 0,
+            pstart: 0,
+            pcount: 0,
+            sstart: 0,
+            scount: 0,
+            cstart: 0,
+            ccount: 0
+        },
+    }
+}
+
+fn mprop(in s: ChunkSeq[MProp], i: u64) -> MProp {
+    match s.try_get(i) {
+        Option::Some(p) => p,
+        Option::None => MProp {
+            property: 0,
+            slot: 0,
+            tag: 0,
+            payload: 0,
+            tstart: 0,
+            tlen: 0
+        },
+    }
+}
+
+fn msub(in s: ChunkSeq[MSub], i: u64) -> MSub {
+    match s.try_get(i) {
+        Option::Some(p) => p,
+        Option::None => MSub {
+            event: 0,
+            id: 0,
+            handler: 0
+        },
+    }
+}
+
+fn limits_from(in w: Slice[u64]) -> Lim {
+    Lim {
+        nodes: get_u64(in w, 0),
+        children: get_u64(in w, 1),
+        depth: get_u64(in w, 2),
+        properties: get_u64(in w, 3),
+        subscriptions: get_u64(in w, 4),
+        text: get_u64(in w, 5),
+        total: get_u64(in w, 6),
+        patches: get_u64(in w, 7)
+    }
+}
+
+fn lim_ok(lim: Lim) -> bool {
+    lim.nodes != 0 && lim.depth != 0 && lim.patches != 0
+}
+
+// Limits::check, for Session::new.
+pub fn limits_valid(in limits: Slice[u64]) -> bool {
+    lim_ok(limits_from(in limits))
+}
+
+// Remove `s[i]`, keeping the order of the rest.
+fn remove_at(inout s: ChunkSeq[u64], i: u64) {
+    let n = s.len();
+    if i < n {
+        let mut j = i;
+        loop {
+            if inc(j) >= n {
+                break;
+            }
+            let v = match s.try_get(inc(j)) {
+                Option::Some(v) => v,
+                Option::None => 0,
+            };
+            s.try_set(j, v);
+            j = inc(j);
+        }
+        s.truncate(dec(n));
+    }
+}
+
+// Insert `v` before `s[i]` (or at the end when `i` is the length).
+fn insert_at(inout s: ChunkSeq[u64], i: u64, v: u64) {
+    let n = s.len();
+    s.push(v);
+    if i < n {
+        let mut j = n;
+        loop {
+            if j <= i {
+                break;
+            }
+            let w = match s.try_get(dec(j)) {
+                Option::Some(w) => w,
+                Option::None => 0,
+            };
+            s.try_set(j, w);
+            j = dec(j);
+        }
+        s.try_set(i, v);
+    }
+}
+
+// The first position of `v` in `s`, or none.
+fn position(in s: ChunkSeq[u64], v: u64) -> u64 {
+    for i in 0..s.len() {
+        if seq_u64(in s, i) == v {
+            return i;
+        }
+    }
+    none_id()
+}
+
+// Stable bottom-up merge sort of the indices `idx` by `keys[idx[i]]`.
+fn sort_by_key(in keys: ChunkSeq[u64], inout idx: ChunkSeq[u64], inout tmp: ChunkSeq[u64]) {
+    let n = idx.len();
+    tmp.clear();
+    for i in 0..n {
+        tmp.push(0);
+    }
+    let mut width: u64 = 1;
+    loop {
+        if width >= n {
+            break;
+        }
+        let mut lo: u64 = 0;
+        loop {
+            if lo >= n {
+                break;
+            }
+            let mid = if add(lo, width) < n {
+                add(lo, width)
+            } else {
+                n
+            };
+            let hi = if add(mid, width) < n {
+                add(mid, width)
+            } else {
+                n
+            };
+            let mut a = lo;
+            let mut b = mid;
+            let mut k = lo;
+            loop {
+                if k >= hi {
+                    break;
+                }
+                let take_a = if a < mid {
+                    if b < hi {
+                        seq_u64(in keys, seq_u64(in idx, a)) <= seq_u64(in keys, seq_u64(in idx, b))
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                };
+                if take_a {
+                    tmp.try_set(k, seq_u64(in idx, a));
+                    a = inc(a);
+                } else {
+                    tmp.try_set(k, seq_u64(in idx, b));
+                    b = inc(b);
+                }
+                k = inc(k);
+            }
+            lo = hi;
+        }
+        for i in 0..n {
+            idx.try_set(i, seq_u64(in tmp, i));
+        }
+        width = wrapping_mul(width, 2);
+    }
+}
+
+// The index whose key is `key`, by binary search over `sorted`; the first
+// such index when keys repeat. None when absent.
+fn find_key(in keys: ChunkSeq[u64], in sorted: ChunkSeq[u64], key: u64) -> u64 {
+    let mut lo: u64 = 0;
+    let mut hi = sorted.len();
+    loop {
+        if lo >= hi {
+            break;
+        }
+        let mid = add(lo, wrapping_sub(hi, lo) / 2);
+        if seq_u64(in keys, seq_u64(in sorted, mid)) < key {
+            lo = inc(mid);
+        } else {
+            hi = mid;
+        }
+    }
+    if lo < sorted.len() {
+        let i = seq_u64(in sorted, lo);
+        if seq_u64(in keys, i) == key {
+            return i;
+        }
+    }
+    none_id()
+}
+
+// Whether a Unicode scalar is White_Space (Rust's char::is_whitespace).
+fn is_space(c: u64) -> bool {
+    (c >= 9 && c <= 13) || c == 32 || c == 133 || c == 160 || c == 5760 || (c >= 8192 && c <= 8202) || c == 8232 || c == 8233 || c == 8239 || c == 8287 || c == 12288
+}
+
+// The width of the UTF-8 sequence that starts with byte `b`.
+fn utf8_width(b: u64) -> u64 {
+    if b < 128 {
+        1
+    } else if b < 224 {
+        2
+    } else if b < 240 {
+        3
+    } else {
+        4
+    }
+}
+
+// Whether the UTF-8 text `bytes[start .. start + len]` is empty after
+// trimming White_Space (Rust's `str::trim().is_empty()`). The text came
+// from a Rust `String`, so it is valid UTF-8.
+fn blank_slice(in bytes: Slice[u8], start: u64, len: u64) -> bool {
+    let end = add(start, len);
+    let mut i = start;
+    loop {
+        if i >= end {
+            break true;
+        }
+        let b = byte_at(in bytes, i);
+        let w = utf8_width(b);
+        let c = if w == 1 {
+            b
+        } else if w == 2 {
+            ((b & 31) << 6) | (byte_at(in bytes, inc(i)) & 63)
+        } else if w == 3 {
+            ((b & 15) << 12) | ((byte_at(in bytes, inc(i)) & 63) << 6) | (byte_at(in bytes, add(i, 2)) & 63)
+        } else {
+            ((b & 7) << 18) | ((byte_at(in bytes, inc(i)) & 63) << 12) | ((byte_at(in bytes, add(i, 2)) & 63) << 6) | (byte_at(in bytes, add(i, 3)) & 63)
+        };
+        if !is_space(c) {
+            break false;
+        }
+        i = add(i, w);
+    }
+}
+
+fn blank_seq(in bytes: ChunkSeq[u8], start: u64, len: u64) -> bool {
+    blank_slice(in bytes.as_slice(), start, len)
+}
+
+// view::property_valid. `payload` is an Int's bits.
+fn property_valid(kind: u64, property: u64, tag: u64, payload: u64) -> bool {
+    if property == 0 && tag == 0 {
+        kind != 0
+    } else if property == 1 && tag == 0 {
+        kind == 3
+    } else if (property == 2 || property == 3) && tag == 1 {
+        true
+    } else if property == 4 && tag == 2 {
+        payload < 9223372036854775808
+    } else {
+        false
+    }
+}
+
+// view::event_valid.
+fn event_valid(kind: u64, event: u64) -> bool {
+    (kind == 2 && (event == 0 || event == 2)) || (kind == 3 && (event == 1 || event == 2))
+}
+
+// ---------------------------------------------------------------- trees
+
+fn tree_new() -> Tree {
+    Tree {
+        root: 0,
+        nodes: ChunkSeq::new[TNode](),
+        props: ChunkSeq::new[TProp](),
+        subs: ChunkSeq::new[TSub](),
+        kids: ChunkSeq::new[u64](),
+        keys: ChunkSeq::new[u64](),
+        sorted: ChunkSeq::new[u64](),
+        tmp: ChunkSeq::new[u64](),
+        parent: ChunkSeq::new[u64](),
+        order: ChunkSeq::new[u64](),
+        seen: ChunkSeq::new[bool](),
+        stack: ChunkSeq::new[u64](),
+        depths: ChunkSeq::new[u64]()
+    }
+}
+
+// Decode the wrapper's words: `root, n`, then per node `key, kind, np, ns,
+// nc`, `np` properties of five words (property, tag, payload, text start,
+// text length), `ns` subscriptions of two words (event, handler) and `nc`
+// child keys.
+fn decode(inout t: Tree, in w: Slice[u64]) {
+    t.root = get_u64(in w, 0);
+    let n = get_u64(in w, 1);
+    let mut at: u64 = 2;
+    for i in 0..n {
+        let key = get_u64(in w, at);
+        let kind = get_u64(in w, inc(at));
+        let np = get_u64(in w, add(at, 2));
+        let ns = get_u64(in w, add(at, 3));
+        let nc = get_u64(in w, add(at, 4));
+        at = add(at, 5);
+        let node = TNode {
+            key: key,
+            kind: kind,
+            pstart: t.props.len(),
+            pcount: np,
+            sstart: t.subs.len(),
+            scount: ns,
+            cstart: t.kids.len(),
+            ccount: nc
+        };
+        for j in 0..np {
+            t.props.push(TProp {
+                property: get_u64(in w, at),
+                tag: get_u64(in w, inc(at)),
+                payload: get_u64(in w, add(at, 2)),
+                tstart: get_u64(in w, add(at, 3)),
+                tlen: get_u64(in w, add(at, 4))
+            });
+            at = add(at, 5);
+        }
+        for j in 0..ns {
+            t.subs.push(TSub {
+                event: get_u64(in w, at),
+                handler: get_u64(in w, inc(at))
+            });
+            at = add(at, 2);
+        }
+        for j in 0..nc {
+            t.kids.push(get_u64(in w, at));
+            at = inc(at);
+        }
+        t.nodes.push(node);
+        t.keys.push(key);
+        t.sorted.push(i);
+        t.parent.push(none_id());
+        t.seen.push(false);
+    }
+}
+
+fn tree_find(in t: Tree, key: u64) -> u64 {
+    find_key(in t.keys, in t.sorted, key)
+}
+
+// view::validate over a decoded tree, with the same order of checks, so the
+// first error is the same one. Fills `parent` and `order`.
+fn validate(inout t: Tree, lim: Lim, in text: Slice[u8]) -> Option[ViewFault] {
+    if !lim_ok(lim) {
+        return Option::Some(ViewFault::InvalidLimits);
+    }
+    let n = t.nodes.len();
+    if n > lim.nodes {
+        return Option::Some(ViewFault::Budget(b_nodes()));
+    }
+    sort_by_key(in t.keys, inout t.sorted, inout t.tmp);
+    // dup[i]: an earlier node has the same key (the sort is stable).
+    t.tmp.clear();
+    for i in 0..n {
+        t.tmp.push(0);
+    }
+    for r in 0..n {
+        if r > 0 {
+            let i = seq_u64(in t.sorted, r);
+            let j = seq_u64(in t.sorted, dec(r));
+            if seq_u64(in t.keys, i) == seq_u64(in t.keys, j) {
+                t.tmp.try_set(i, 1);
+            }
+        }
+    }
+    let mut total: u64 = 0;
+    let mut teardown: u64 = 1;
+    for i in 0..n {
+        let node = tnode(in t.nodes, i);
+        // Every accepted tree must remain fully unmountable under the budget.
+        let more = add(add(add(1, node.pcount), node.scount), node.ccount);
+        if teardown > wrapping_sub(max_u64(), more) {
+            return Option::Some(ViewFault::Budget(b_teardown()));
+        }
+        teardown = add(teardown, more);
+        if teardown > lim.patches {
+            return Option::Some(ViewFault::Budget(b_teardown()));
+        }
+        if seq_u64(in t.tmp, i) == 1 {
+            return Option::Some(ViewFault::DuplicateKey(node.key));
+        }
+        if node.ccount > lim.children {
+            return Option::Some(ViewFault::Budget(b_children()));
+        }
+        if node.pcount > lim.properties {
+            return Option::Some(ViewFault::Budget(b_properties()));
+        }
+        if node.scount > lim.subscriptions {
+            return Option::Some(ViewFault::Budget(b_subscriptions()));
+        }
+        if node.kind != 0 && node.ccount != 0 {
+            return Option::Some(ViewFault::ChildrenOnLeaf(node.key));
+        }
+        for j in 0..node.pcount {
+            let p = tprop(in t.props, add(node.pstart, j));
+            if !property_valid(node.kind, p.property, p.tag, p.payload) {
+                return Option::Some(ViewFault::PropertyType {
+                    key: node.key,
+                    property: p.property
+                });
+            }
+            if p.tag == 0 {
+                if p.tlen > lim.text {
+                    return Option::Some(ViewFault::Budget(b_text()));
+                }
+                if total > wrapping_sub(max_u64(), p.tlen) {
+                    return Option::Some(ViewFault::Budget(b_total_text()));
+                }
+                total = add(total, p.tlen);
+                if total > lim.total {
+                    return Option::Some(ViewFault::Budget(b_total_text()));
+                }
+            }
+        }
+        for j in 0..node.scount {
+            let s = tsub(in t.subs, add(node.sstart, j));
+            if !event_valid(node.kind, s.event) {
+                return Option::Some(ViewFault::UnsupportedEvent {
+                    key: node.key,
+                    event: s.event
+                });
+            }
+        }
+    }
+    let root = tree_find(in t, t.root);
+    if root == none_id() {
+        return Option::Some(ViewFault::MissingRoot(t.root));
+    }
+    for i in 0..n {
+        let node = tnode(in t.nodes, i);
+        for j in 0..node.ccount {
+            let child = seq_u64(in t.kids, add(node.cstart, j));
+            let c = tree_find(in t, child);
+            if c == none_id() {
+                return Option::Some(ViewFault::MissingChild {
+                    parent: node.key,
+                    child: child
+                });
+            }
+            if seq_u64(in t.parent, c) != none_id() {
+                return Option::Some(ViewFault::MultipleParents(child));
+            }
+            t.parent.try_set(c, i);
+        }
+    }
+    if seq_u64(in t.parent, root) != none_id() {
+        return Option::Some(ViewFault::RootHasParent);
+    }
+    t.stack.clear();
+    t.depths.clear();
+    t.stack.push(root);
+    t.depths.push(1);
+    let mut seen: u64 = 0;
+    loop {
+        let top = t.stack.len();
+        if top == 0 {
+            break;
+        }
+        let i = seq_u64(in t.stack, dec(top));
+        let depth = seq_u64(in t.depths, dec(top));
+        t.stack.truncate(dec(top));
+        t.depths.truncate(dec(top));
+        if depth > lim.depth {
+            return Option::Some(ViewFault::Budget(b_depth()));
+        }
+        if seq_bool(in t.seen, i) {
+            return Option::Some(ViewFault::CycleOrDisconnected);
+        }
+        t.seen.try_set(i, true);
+        seen = inc(seen);
+        t.order.push(i);
+        let node = tnode(in t.nodes, i);
+        let mut j = node.ccount;
+        loop {
+            if j == 0 {
+                break;
+            }
+            j = dec(j);
+            let child = seq_u64(in t.kids, add(node.cstart, j));
+            let c = tree_find(in t, child);
+            t.stack.push(c);
+            t.depths.push(inc(depth));
+        }
+    }
+    if seen != n {
+        return Option::Some(ViewFault::CycleOrDisconnected);
+    }
+    Option::None
+}
+
+// ---------------------------------------------------------------- mounted
+
+fn mounted_new() -> Mounted {
+    Mounted {
+        present: false,
+        nodes: ChunkSeq::new[MNode](),
+        props: ChunkSeq::new[MProp](),
+        subs: ChunkSeq::new[MSub](),
+        kids: ChunkSeq::new[u64](),
+        text: ChunkSeq::new[u8](),
+        keys: ChunkSeq::new[u64](),
+        sorted: ChunkSeq::new[u64](),
+        tmp: ChunkSeq::new[u64]()
+    }
+}
+
+fn mounted_find(in m: Mounted, key: u64) -> u64 {
+    if m.present {
+        find_key(in m.keys, in m.sorted, key)
+    } else {
+        none_id()
+    }
+}
+
+// The property `property` of mounted node `n`, as an index into `props`.
+fn mounted_prop(in m: Mounted, n: MNode, property: u64) -> u64 {
+    for j in 0..n.pcount {
+        if mprop(in m.props, add(n.pstart, j)).property == property {
+            return add(n.pstart, j);
+        }
+    }
+    none_id()
+}
+
+fn mounted_sub(in m: Mounted, n: MNode, event: u64) -> u64 {
+    for j in 0..n.scount {
+        if msub(in m.subs, add(n.sstart, j)).event == event {
+            return add(n.sstart, j);
+        }
+    }
+    none_id()
+}
+
+fn copy_mounted(in src: Mounted, inout dst: Mounted) {
+    dst.present = src.present;
+    dst.nodes.clear();
+    dst.props.clear();
+    dst.subs.clear();
+    dst.kids.clear();
+    dst.text.clear();
+    dst.keys.clear();
+    dst.sorted.clear();
+    for i in 0..src.nodes.len() {
+        dst.nodes.push(mnode(in src.nodes, i));
+    }
+    for i in 0..src.props.len() {
+        dst.props.push(mprop(in src.props, i));
+    }
+    for i in 0..src.subs.len() {
+        dst.subs.push(msub(in src.subs, i));
+    }
+    for i in 0..src.kids.len() {
+        dst.kids.push(seq_u64(in src.kids, i));
+    }
+    for i in 0..src.text.len() {
+        match src.text.try_get(i) {
+            Option::Some(b) => dst.text.push(b),
+            Option::None => (),
+        }
+    }
+    for i in 0..src.keys.len() {
+        dst.keys.push(seq_u64(in src.keys, i));
+    }
+    for i in 0..src.sorted.len() {
+        dst.sorted.push(seq_u64(in src.sorted, i));
+    }
+}
+
+// Whether mounted property `a` of `old` holds the same value as `b` of `new`.
+fn same_value(in old: Mounted, a: MProp, in new: Mounted, b: MProp) -> bool {
+    if a.tag != b.tag {
+        false
+    } else if a.tag != 0 {
+        a.payload == b.payload
+    } else if a.tlen != b.tlen {
+        false
+    } else {
+        let mut i: u64 = 0;
+        loop {
+            if i >= a.tlen {
+                break true;
+            }
+            if seq_byte(in old.text, add(a.tstart, i)) != seq_byte(in new.text, add(b.tstart, i)) {
+                break false;
+            }
+            i = inc(i);
+        }
+    }
+}
+
+// ---------------------------------------------------------------- planning
+
+fn prepared_empty(session: u64, base: u64, serial: u64) -> Prepared {
+    Prepared {
+        fault: Option::None,
+        session: session,
+        base: base,
+        next: base,
+        serial: serial,
+        ops: ChunkSeq::new[Op](),
+        tree: tree_new(),
+        m: mounted_new(),
+        prev: ChunkSeq::new[u64](),
+        succ: ChunkSeq::new[u64](),
+        cur: ChunkSeq::new[u64](),
+        cur_start: ChunkSeq::new[u64](),
+        cur_len: ChunkSeq::new[u64](),
+        work: ChunkSeq::new[u64]()
+    }
+}
+
+// Ids::next: hand out the counter, failing once it would overflow.
+fn next_id(inout p: Prepared) -> Option[u64] {
+    let n = p.serial;
+    if n == max_u64() {
+        Option::None
+    } else {
+        p.serial = inc(n);
+        Option::Some(n)
+    }
+}
+
+// Push one patch, or record the patch budget failure and answer false.
+fn emit(inout p: Prepared, max: u64, o: Op) -> bool {
+    if p.ops.len() >= max {
+        p.fault = Option::Some(ViewFault::Budget(b_patches()));
+        false
+    } else {
+        p.ops.push(o);
+        true
+    }
+}
+
+fn exhausted(inout p: Prepared) {
+    p.fault = Option::Some(ViewFault::IdentityExhausted);
+}
+
+// Build the next mounted state from the validated tree: retained widgets,
+// slots and subscriptions keep their identities, everything else gets a
+// fresh one, in the order plan::build hands them out. `prev` maps each new
+// node to the old node it retains (or none).
+fn mount_next(in old: Mounted, inout p: Prepared, in text: Slice[u8]) {
+    for oi in 0..p.tree.order.len() {
+        let ti = seq_u64(in p.tree.order, oi);
+        let tn = tnode(in p.tree.nodes, ti);
+        let found = mounted_find(in old, tn.key);
+        let retained = found != none_id() && mnode(in old.nodes, found).kind == tn.kind;
+        let prev = if retained {
+            found
+        } else {
+            none_id()
+        };
+        let pn = mnode(in old.nodes, prev);
+        let id = if retained {
+            pn.id
+        } else {
+            match next_id(inout p) {
+                Option::Some(v) => v,
+                Option::None => {
+                    exhausted(inout p);
+                    return;
+                },
+            }
+        };
+        let pstart = p.m.props.len();
+        for j in 0..tn.pcount {
+            let tp = tprop(in p.tree.props, add(tn.pstart, j));
+            let old_prop = if retained {
+                mounted_prop(in old, pn, tp.property)
+            } else {
+                none_id()
+            };
+            let slot = if old_prop != none_id() {
+                mprop(in old.props, old_prop).slot
+            } else {
+                match next_id(inout p) {
+                    Option::Some(v) => v,
+                    Option::None => {
+                        exhausted(inout p);
+                        return;
+                    },
+                }
+            };
+            let tstart = p.m.text.len();
+            if tp.tag == 0 {
+                for k in 0..tp.tlen {
+                    match text.try_get(add(tp.tstart, k)) {
+                        Option::Some(b) => p.m.text.push(b),
+                        Option::None => (),
+                    }
+                }
+            }
+            p.m.props.push(MProp {
+                property: tp.property,
+                slot: slot,
+                tag: tp.tag,
+                payload: tp.payload,
+                tstart: tstart,
+                tlen: if tp.tag == 0 {
+                    tp.tlen
+                } else {
+                    0
+                }
+            });
+        }
+        let sstart = p.m.subs.len();
+        for j in 0..tn.scount {
+            let ts = tsub(in p.tree.subs, add(tn.sstart, j));
+            let old_sub = if retained {
+                mounted_sub(in old, pn, ts.event)
+            } else {
+                none_id()
+            };
+            let keep = old_sub != none_id() && msub(in old.subs, old_sub).handler == ts.handler;
+            let sid = if keep {
+                msub(in old.subs, old_sub).id
+            } else {
+                match next_id(inout p) {
+                    Option::Some(v) => v,
+                    Option::None => {
+                        exhausted(inout p);
+                        return;
+                    },
+                }
+            };
+            p.m.subs.push(MSub {
+                event: ts.event,
+                id: sid,
+                handler: ts.handler
+            });
+        }
+        let cstart = p.m.kids.len();
+        for j in 0..tn.ccount {
+            p.m.kids.push(seq_u64(in p.tree.kids, add(tn.cstart, j)));
+        }
+        p.m.nodes.push(MNode {
+            key: tn.key,
+            id: id,
+            kind: tn.kind,
+            src: ti,
+            pstart: pstart,
+            pcount: tn.pcount,
+            sstart: sstart,
+            scount: tn.scount,
+            cstart: cstart,
+            ccount: tn.ccount
+        });
+        p.m.keys.push(tn.key);
+        p.m.sorted.push(oi);
+        p.prev.push(prev);
+        p.cur_start.push(0);
+        p.cur_len.push(0);
+    }
+    p.m.present = true;
+    sort_by_key(in p.m.keys, inout p.m.sorted, inout p.m.tmp);
+}
+
+// The key of the parent of `key` in the new tree, or none.
+fn new_parent_key(in t: Tree, key: u64) -> u64 {
+    let c = tree_find(in t, key);
+    if c == none_id() {
+        none_id()
+    } else {
+        let parent = seq_u64(in t.parent, c);
+        if parent == none_id() {
+            none_id()
+        } else {
+            tnode(in t.nodes, parent).key
+        }
+    }
+}
+
+// Whether old node `oi` is retained, through `succ` (old index to new index).
+fn old_retained(in p: Prepared, oi: u64) -> bool {
+    seq_u64(in p.succ, oi) != none_id()
+}
+
+// Detach every edge not retained under the same parent, child-last per
+// node; keep the rest per new node in `cur`.
+fn detach(in old: Mounted, inout p: Prepared, max: u64) -> bool {
+    for oi in 0..old.nodes.len() {
+        let node = mnode(in old.nodes, oi);
+        let keep_node = old_retained(in p, oi);
+        p.work.clear();
+        for j in 0..node.ccount {
+            p.work.push(seq_u64(in old.kids, add(node.cstart, j)));
+        }
+        let mut i = node.ccount;
+        loop {
+            if i == 0 {
+                break;
+            }
+            i = dec(i);
+            let child = seq_u64(in p.work, i);
+            let ci = mounted_find(in old, child);
+            let keep = keep_node && old_retained(in p, ci) && new_parent_key(in p.tree, child) == node.key;
+            if !keep {
+                if !emit(inout p, max, op(8, node.id, mnode(in old.nodes, ci).id, i, 0)) {
+                    return false;
+                }
+                remove_at(inout p.work, i);
+            }
+        }
+        if keep_node {
+            let nj = seq_u64(in p.succ, oi);
+            p.cur_start.try_set(nj, p.cur.len());
+            p.cur_len.try_set(nj, p.work.len());
+            for j in 0..p.work.len() {
+                p.cur.push(seq_u64(in p.work, j));
+            }
+        }
+    }
+    true
+}
+
+// Disconnect, unbind and destroy, child-first.
+fn teardown(in old: Mounted, inout p: Prepared, max: u64) -> bool {
+    let mut oi = old.nodes.len();
+    loop {
+        if oi == 0 {
+            break;
+        }
+        oi = dec(oi);
+        let node = mnode(in old.nodes, oi);
+        let nj = mounted_find(in p.m, node.key);
+        let next = mnode(in p.m.nodes, nj);
+        for j in 0..node.scount {
+            let s = msub(in old.subs, add(node.sstart, j));
+            let keep = if nj == none_id() {
+                false
+            } else {
+                let k = mounted_sub(in p.m, next, s.event);
+                k != none_id() && msub(in p.m.subs, k).id == s.id
+            };
+            if !keep {
+                if !emit(inout p, max, op(7, s.id, 0, 0, 0)) {
+                    return false;
+                }
+            }
+        }
+        for j in 0..node.pcount {
+            let s = mprop(in old.props, add(node.pstart, j));
+            let keep = if nj == none_id() {
+                false
+            } else {
+                let k = mounted_prop(in p.m, next, s.property);
+                k != none_id() && mprop(in p.m.props, k).slot == s.slot
+            };
+            if !keep {
+                if !emit(inout p, max, op(5, node.id, s.property, s.slot, 0)) {
+                    return false;
+                }
+            }
+        }
+        if !old_retained(in p, oi) {
+            if !emit(inout p, max, op(2, node.id, 0, 0, 0)) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+// Create new widgets, bind or update slots, subscribe, in pre-order.
+fn create(in old: Mounted, inout p: Prepared, max: u64) -> bool {
+    for nj in 0..p.m.nodes.len() {
+        let node = mnode(in p.m.nodes, nj);
+        let prev = seq_u64(in p.prev, nj);
+        let pn = mnode(in old.nodes, prev);
+        if prev == none_id() {
+            if !emit(inout p, max, op(1, node.id, node.kind, 0, 0)) {
+                return false;
+            }
+        }
+        for j in 0..node.pcount {
+            let s = mprop(in p.m.props, add(node.pstart, j));
+            let k = if prev == none_id() {
+                none_id()
+            } else {
+                mounted_prop(in old, pn, s.property)
+            };
+            if k == none_id() {
+                if !emit(inout p, max, op(3, node.id, s.property, s.slot, node.src)) {
+                    return false;
+                }
+            } else if !same_value(in old, mprop(in old.props, k), in p.m, s) {
+                if !emit(inout p, max, op(4, s.slot, s.property, 0, node.src)) {
+                    return false;
+                }
+            }
+        }
+        for j in 0..node.scount {
+            let s = msub(in p.m.subs, add(node.sstart, j));
+            let keep = if prev == none_id() {
+                false
+            } else {
+                let k = mounted_sub(in old, pn, s.event);
+                k != none_id() && msub(in old.subs, k).id == s.id
+            };
+            if !keep {
+                if !emit(inout p, max, op(6, node.id, s.event, s.handler, s.id)) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+// Attach and reorder children: moves for retained edges, inserts for new.
+fn attach(inout p: Prepared, max: u64) -> bool {
+    for nj in 0..p.m.nodes.len() {
+        let node = mnode(in p.m.nodes, nj);
+        p.work.clear();
+        let start = seq_u64(in p.cur_start, nj);
+        for j in 0..seq_u64(in p.cur_len, nj) {
+            p.work.push(seq_u64(in p.cur, add(start, j)));
+        }
+        for index in 0..node.ccount {
+            let child = seq_u64(in p.m.kids, add(node.cstart, index));
+            let here = index < p.work.len() && seq_u64(in p.work, index) == child;
+            if !here {
+                let child_id = mnode(in p.m.nodes, mounted_find(in p.m, child)).id;
+                let from = position(in p.work, child);
+                if from != none_id() {
+                    if !emit(inout p, max, op(10, node.id, child_id, from, index)) {
+                        return false;
+                    }
+                    remove_at(inout p.work, from);
+                    insert_at(inout p.work, index, child);
+                } else {
+                    if !emit(inout p, max, op(9, node.id, child_id, index, 0)) {
+                        return false;
+                    }
+                    insert_at(inout p.work, index, child);
+                }
+            }
+        }
+    }
+    true
+}
+
+// plan::build: the sparse patch plan from `old` to the validated tree in
+// `p.tree` (or to nothing), in the same safe application order.
+fn plan(in old: Mounted, inout p: Prepared, has_tree: bool, in text: Slice[u8], max: u64) {
+    if has_tree {
+        mount_next(in old, inout p, in text);
+        match p.fault {
+            Option::Some(_) => {
+                return;
+            },
+            Option::None => (),
+        }
+    }
+    for oi in 0..old.nodes.len() {
+        let node = mnode(in old.nodes, oi);
+        let nj = mounted_find(in p.m, node.key);
+        let same = nj != none_id() && mnode(in p.m.nodes, nj).kind == node.kind;
+        p.succ.push(if same {
+            nj
+        } else {
+            none_id()
+        });
+    }
+    let old_root = mnode(in old.nodes, 0).id;
+    let new_root = mnode(in p.m.nodes, 0).id;
+    if old.present && (!has_tree || old_root != new_root) {
+        if !emit(inout p, max, op(0, 0, 0, 0, 0)) {
+            return;
+        }
+    }
+    if old.present {
+        if !detach(in old, inout p, max) {
+            return;
+        }
+        if !teardown(in old, inout p, max) {
+            return;
+        }
+    }
+    if has_tree {
+        if !create(in old, inout p, max) {
+            return;
+        }
+        if !attach(inout p, max) {
+            return;
+        }
+        if !old.present || new_root != old_root {
+            if !emit(inout p, max, op(0, 1, new_root, 0, 0)) {
+                return;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- session
+
+pub fn reconciler_new(session: u64, in limits: Slice[u64]) -> Reconciler {
+    Reconciler {
+        session: session,
+        serial: 1,
+        revision: 0,
+        close: 0,
+        close_id: 0,
+        next_close: 1,
+        lim: limits_from(in limits),
+        m: mounted_new()
+    }
+}
+
+pub fn reconciler_revision(in r: Reconciler) -> u64 {
+    r.revision
+}
+
+// Session::prepare after the thread check: a plan from the mounted tree to
+// the encoded tree (`has_tree`), or to nothing. The result carries its
+// fault, if any, and the identity counter to reserve either way.
+pub fn reconciler_prepare(in r: Reconciler, has_tree: bool, in words: Slice[u64], in text: Slice[u8]) -> Prepared {
+    let mut p = prepared_empty(r.session, r.revision, r.serial);
+    if r.close == 2 {
+        p.fault = Option::Some(ViewFault::Closed);
+        return p;
+    }
+    if r.revision == max_u64() {
+        p.fault = Option::Some(ViewFault::IdentityExhausted);
+        return p;
+    }
+    p.next = inc(r.revision);
+    if has_tree {
+        decode(inout p.tree, in words);
+        match validate(inout p.tree, r.lim, in text) {
+            Option::Some(f) => {
+                p.fault = Option::Some(f);
+                return p;
+            },
+            Option::None => (),
+        }
+    }
+    plan(in r.m, inout p, has_tree, in text, r.lim.patches);
+    p
+}
+
+// Identities a plan reserved are never handed out again, whether or not
+// the plan commits.
+pub fn reconciler_reserve(inout r: Reconciler, in p: Prepared) {
+    if p.session == r.session && p.serial > r.serial {
+        r.serial = p.serial;
+    }
+}
+
+// Session::commit's checks before the backend runs: 0 ok, 1 foreign
+// session, 2 stale revision, 3 closed.
+pub fn reconciler_commit_check(in r: Reconciler, in p: Prepared) -> u64 {
+    if p.session != r.session {
+        1
+    } else if p.base != r.revision {
+        2
+    } else if r.close == 2 {
+        3
+    } else {
+        0
+    }
+}
+
+// The backend applied the plan: mount its tree and advance the revision.
+pub fn reconciler_adopt(inout r: Reconciler, in p: Prepared) {
+    copy_mounted(in p.m, inout r.m);
+    r.revision = p.next;
+}
+
+pub fn reconciler_widget(in r: Reconciler, key: u64) -> Option[u64] {
+    let i = mounted_find(in r.m, key);
+    if i == none_id() {
+        Option::None
+    } else {
+        Option::Some(mnode(in r.m.nodes, i).id)
+    }
+}
+
+pub fn reconciler_slot(in r: Reconciler, key: u64, property: u64) -> Option[u64] {
+    let i = mounted_find(in r.m, key);
+    if i == none_id() {
+        Option::None
+    } else {
+        let k = mounted_prop(in r.m, mnode(in r.m.nodes, i), property);
+        if k == none_id() {
+            Option::None
+        } else {
+            Option::Some(mprop(in r.m.props, k).slot)
+        }
+    }
+}
+
+pub fn reconciler_subscription(in r: Reconciler, key: u64, event: u64) -> Option[u64] {
+    let i = mounted_find(in r.m, key);
+    if i == none_id() {
+        Option::None
+    } else {
+        let k = mounted_sub(in r.m, mnode(in r.m.nodes, i), event);
+        if k == none_id() {
+            Option::None
+        } else {
+            Option::Some(msub(in r.m.subs, k).id)
+        }
+    }
+}
+
+pub fn reconciler_request_close(inout r: Reconciler) -> CloseRequest {
+    if r.close == 1 {
+        CloseRequest::AlreadyPending
+    } else if r.close == 2 {
+        CloseRequest::Closed
+    } else if r.next_close == max_u64() {
+        CloseRequest::Exhausted
+    } else {
+        let id = r.next_close;
+        r.next_close = inc(id);
+        r.close = 1;
+        r.close_id = id;
+        CloseRequest::Granted(id)
+    }
+}
+
+// Session::resolve_close's checks: 0 ok, 1 foreign session, 2 stale.
+pub fn reconciler_close_check(in r: Reconciler, session: u64, id: u64) -> u64 {
+    if session != r.session {
+        1
+    } else if r.close != 1 || r.close_id != id {
+        2
+    } else {
+        0
+    }
+}
+
+pub fn reconciler_reopen(inout r: Reconciler) {
+    r.close = 0;
+}
+
+pub fn reconciler_mark_closed(inout r: Reconciler) {
+    r.close = 2;
+}
+
+// 0 open, 1 close pending, 2 closed.
+pub fn reconciler_close_state(in r: Reconciler) -> u64 {
+    r.close
+}
+
+// For the crate's unit test of counter exhaustion only.
+pub fn reconciler_force_counters(inout r: Reconciler, serial: u64, revision: u64) {
+    r.serial = serial;
+    r.revision = revision;
+}
+
+pub fn prepared_fault(in p: Prepared) -> Option[ViewFault] {
+    p.fault
+}
+
+pub fn prepared_ops(in p: Prepared) -> ChunkSeq[Op] {
+    let mut out: ChunkSeq[Op] = ChunkSeq::new[Op]();
+    for i in 0..p.ops.len() {
+        match p.ops.try_get(i) {
+            Option::Some(o) => out.push(o),
+            Option::None => (),
+        }
+    }
+    out
+}
+
+// session, base revision, next revision.
+pub fn prepared_header(in p: Prepared) -> (u64, u64, u64) {
+    (p.session, p.base, p.next)
+}
+
+// ---------------------------------------------------------------- recording
+
+copy struct RWidget {
+    serial: u64,
+    kind: u64,
+    has_parent: bool,
+    parent: u64,
+    user_state: u64
+}
+
+copy struct Edge {
+    parent: u64,
+    child: u64
+}
+
+copy struct RSlot {
+    serial: u64,
+    widget: u64,
+    property: u64,
+    tag: u64,
+    payload: u64,
+    tstart: u64,
+    tlen: u64
+}
+
+copy struct RSub {
+    serial: u64,
+    widget: u64,
+    event: u64,
+    handler: u64
+}
+
+// recording::RecordingSnapshot. Widgets, slots and subscriptions are kept
+// in serial order (identities only grow), so lookups are binary searches;
+// a removed entry is marked dead (serial none_id would break the order, so
+// `dead` lists the removed serials) and dropped on the next copy. A
+// widget's children are the edges whose parent it is, in sequence order.
+struct RState {
+    revision: u64,
+    has_root: bool,
+    root: u64,
+    has_session: bool,
+    session: u64,
+    high_water: u64,
+    created: u64,
+    disconnected: u64,
+    widgets: ChunkSeq[RWidget],
+    wlive: ChunkSeq[bool],
+    edges: ChunkSeq[Edge],
+    slots: ChunkSeq[RSlot],
+    slive: ChunkSeq[bool],
+    subs: ChunkSeq[RSub],
+    blive: ChunkSeq[bool],
+    nwidgets: u64,
+    nslots: u64,
+    nsubs: u64,
+    text: ChunkSeq[u8],
+    events: ChunkSeq[Op]
+}
+
+// recording::RecordingBackend: the published state, a staging copy, and
+// the injected rejection.
+struct Recorder {
+    lim: Lim,
+    st: RState,
+    stage: RState,
+    has_reject: bool,
+    reject: u64,
+    seen: ChunkSeq[bool],
+    stack: ChunkSeq[u64],
+    depths: ChunkSeq[u64]
+}
+
+fn rstate_new() -> RState {
+    RState {
+        revision: 0,
+        has_root: false,
+        root: 0,
+        has_session: false,
+        session: 0,
+        high_water: 0,
+        created: 0,
+        disconnected: 0,
+        widgets: ChunkSeq::new[RWidget](),
+        wlive: ChunkSeq::new[bool](),
+        edges: ChunkSeq::new[Edge](),
+        slots: ChunkSeq::new[RSlot](),
+        slive: ChunkSeq::new[bool](),
+        subs: ChunkSeq::new[RSub](),
+        blive: ChunkSeq::new[bool](),
+        nwidgets: 0,
+        nslots: 0,
+        nsubs: 0,
+        text: ChunkSeq::new[u8](),
+        events: ChunkSeq::new[Op]()
+    }
+}
+
+fn rwidget(in s: ChunkSeq[RWidget], i: u64) -> RWidget {
+    match s.try_get(i) {
+        Option::Some(w) => w,
+        Option::None => RWidget {
+            serial: 0,
+            kind: 0,
+            has_parent: false,
+            parent: 0,
+            user_state: 0
+        },
+    }
+}
+
+fn redge(in s: ChunkSeq[Edge], i: u64) -> Edge {
+    match s.try_get(i) {
+        Option::Some(e) => e,
+        Option::None => Edge {
+            parent: none_id(),
+            child: none_id()
+        },
+    }
+}
+
+fn rslot(in s: ChunkSeq[RSlot], i: u64) -> RSlot {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => RSlot {
+            serial: 0,
+            widget: 0,
+            property: 0,
+            tag: 0,
+            payload: 0,
+            tstart: 0,
+            tlen: 0
+        },
+    }
+}
+
+fn rsub(in s: ChunkSeq[RSub], i: u64) -> RSub {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => RSub {
+            serial: 0,
+            widget: 0,
+            event: 0,
+            handler: 0
+        },
+    }
+}
+
+// The live widget with `serial`, as an index, or none.
+fn widget_index(in s: RState, serial: u64) -> u64 {
+    let mut lo: u64 = 0;
+    let mut hi = s.widgets.len();
+    loop {
+        if lo >= hi {
+            break;
+        }
+        let mid = add(lo, wrapping_sub(hi, lo) / 2);
+        if rwidget(in s.widgets, mid).serial < serial {
+            lo = inc(mid);
+        } else {
+            hi = mid;
+        }
+    }
+    if lo < s.widgets.len() && rwidget(in s.widgets, lo).serial == serial && seq_bool(in s.wlive, lo) {
+        lo
+    } else {
+        none_id()
+    }
+}
+
+fn slot_index(in s: RState, serial: u64) -> u64 {
+    let mut lo: u64 = 0;
+    let mut hi = s.slots.len();
+    loop {
+        if lo >= hi {
+            break;
+        }
+        let mid = add(lo, wrapping_sub(hi, lo) / 2);
+        if rslot(in s.slots, mid).serial < serial {
+            lo = inc(mid);
+        } else {
+            hi = mid;
+        }
+    }
+    if lo < s.slots.len() && rslot(in s.slots, lo).serial == serial && seq_bool(in s.slive, lo) {
+        lo
+    } else {
+        none_id()
+    }
+}
+
+fn sub_index(in s: RState, serial: u64) -> u64 {
+    let mut lo: u64 = 0;
+    let mut hi = s.subs.len();
+    loop {
+        if lo >= hi {
+            break;
+        }
+        let mid = add(lo, wrapping_sub(hi, lo) / 2);
+        if rsub(in s.subs, mid).serial < serial {
+            lo = inc(mid);
+        } else {
+            hi = mid;
+        }
+    }
+    if lo < s.subs.len() && rsub(in s.subs, lo).serial == serial && seq_bool(in s.blive, lo) {
+        lo
+    } else {
+        none_id()
+    }
+}
+
+// The live slot bound to (widget, property), or none.
+fn widget_slot(in s: RState, widget: u64, property: u64) -> u64 {
+    for i in 0..s.slots.len() {
+        if seq_bool(in s.slive, i) {
+            let v = rslot(in s.slots, i);
+            if v.widget == widget && v.property == property {
+                return i;
+            }
+        }
+    }
+    none_id()
+}
+
+fn widget_slot_count(in s: RState, widget: u64) -> u64 {
+    let mut n: u64 = 0;
+    for i in 0..s.slots.len() {
+        if seq_bool(in s.slive, i) && rslot(in s.slots, i).widget == widget {
+            n = inc(n);
+        }
+    }
+    n
+}
+
+fn widget_sub(in s: RState, widget: u64, event: u64) -> u64 {
+    for i in 0..s.subs.len() {
+        if seq_bool(in s.blive, i) {
+            let v = rsub(in s.subs, i);
+            if v.widget == widget && v.event == event {
+                return i;
+            }
+        }
+    }
+    none_id()
+}
+
+fn widget_sub_count(in s: RState, widget: u64) -> u64 {
+    let mut n: u64 = 0;
+    for i in 0..s.subs.len() {
+        if seq_bool(in s.blive, i) && rsub(in s.subs, i).widget == widget {
+            n = inc(n);
+        }
+    }
+    n
+}
+
+fn child_count(in s: RState, parent: u64) -> u64 {
+    let mut n: u64 = 0;
+    for i in 0..s.edges.len() {
+        if redge(in s.edges, i).parent == parent {
+            n = inc(n);
+        }
+    }
+    n
+}
+
+// The position in `edges` of the `index`-th child of `parent`, or none.
+fn child_edge(in s: RState, parent: u64, index: u64) -> u64 {
+    let mut n: u64 = 0;
+    for i in 0..s.edges.len() {
+        if redge(in s.edges, i).parent == parent {
+            if n == index {
+                return i;
+            }
+            n = inc(n);
+        }
+    }
+    none_id()
+}
+
+fn remove_edge(inout s: RState, at: u64) {
+    let n = s.edges.len();
+    if at < n {
+        let mut j = at;
+        loop {
+            if inc(j) >= n {
+                break;
+            }
+            let e = redge(in s.edges, inc(j));
+            s.edges.try_set(j, e);
+            j = inc(j);
+        }
+        s.edges.truncate(dec(n));
+    }
+}
+
+fn insert_edge(inout s: RState, at: u64, e: Edge) {
+    let n = s.edges.len();
+    s.edges.push(e);
+    if at < n {
+        let mut j = n;
+        loop {
+            if j <= at {
+                break;
+            }
+            let moved = redge(in s.edges, dec(j));
+            s.edges.try_set(j, moved);
+            j = dec(j);
+        }
+        s.edges.try_set(at, e);
+    }
+}
+
+// Insert `child` as the `index`-th child of `parent` (index <= count).
+fn insert_child(inout s: RState, parent: u64, child: u64, index: u64) {
+    let e = Edge {
+        parent: parent,
+        child: child
+    };
+    let at = child_edge(in s, parent, index);
+    if at == none_id() {
+        s.edges.push(e);
+    } else {
+        insert_edge(inout s, at, e);
+    }
+}
+
+fn set_widget(inout s: RState, i: u64, w: RWidget) {
+    s.widgets.try_set(i, w);
+}
+
+// Copy `src` into `dst`, dropping dead entries and their text.
+fn copy_state(in src: RState, inout dst: RState) {
+    dst.revision = src.revision;
+    dst.has_root = src.has_root;
+    dst.root = src.root;
+    dst.has_session = src.has_session;
+    dst.session = src.session;
+    dst.high_water = src.high_water;
+    dst.created = src.created;
+    dst.disconnected = src.disconnected;
+    dst.widgets.clear();
+    dst.wlive.clear();
+    dst.edges.clear();
+    dst.slots.clear();
+    dst.slive.clear();
+    dst.subs.clear();
+    dst.blive.clear();
+    dst.text.clear();
+    dst.events.clear();
+    for i in 0..src.widgets.len() {
+        if seq_bool(in src.wlive, i) {
+            dst.widgets.push(rwidget(in src.widgets, i));
+            dst.wlive.push(true);
+        }
+    }
+    for i in 0..src.edges.len() {
+        dst.edges.push(redge(in src.edges, i));
+    }
+    for i in 0..src.slots.len() {
+        if seq_bool(in src.slive, i) {
+            let v = rslot(in src.slots, i);
+            let tstart = dst.text.len();
+            for k in 0..v.tlen {
+                match src.text.try_get(add(v.tstart, k)) {
+                    Option::Some(b) => dst.text.push(b),
+                    Option::None => (),
+                }
+            }
+            dst.slots.push(RSlot {
+                serial: v.serial,
+                widget: v.widget,
+                property: v.property,
+                tag: v.tag,
+                payload: v.payload,
+                tstart: tstart,
+                tlen: v.tlen
+            });
+            dst.slive.push(true);
+        }
+    }
+    for i in 0..src.subs.len() {
+        if seq_bool(in src.blive, i) {
+            dst.subs.push(rsub(in src.subs, i));
+            dst.blive.push(true);
+        }
+    }
+    dst.nwidgets = src.nwidgets;
+    dst.nslots = src.nslots;
+    dst.nsubs = src.nsubs;
+    for i in 0..src.events.len() {
+        match src.events.try_get(i) {
+            Option::Some(o) => dst.events.push(o),
+            Option::None => (),
+        }
+    }
+}
+
+fn copy_recorder(in src: Recorder, inout dst: Recorder) {
+    dst.lim = src.lim;
+    dst.has_reject = src.has_reject;
+    dst.reject = src.reject;
+    copy_state(in src.st, inout dst.st);
+}
+
+pub fn recorder_new(in limits: Slice[u64]) -> Recorder {
+    Recorder {
+        lim: limits_from(in limits),
+        st: rstate_new(),
+        stage: rstate_new(),
+        has_reject: false,
+        reject: 0,
+        seen: ChunkSeq::new[bool](),
+        stack: ChunkSeq::new[u64](),
+        depths: ChunkSeq::new[u64]()
+    }
+}
+
+// RecordingBackend::stage_clone, for SimAura's WCAG gate.
+pub fn recorder_clone(in rec: Recorder) -> Recorder {
+    let mut out = Recorder {
+        lim: rec.lim,
+        st: rstate_new(),
+        stage: rstate_new(),
+        has_reject: false,
+        reject: 0,
+        seen: ChunkSeq::new[bool](),
+        stack: ChunkSeq::new[u64](),
+        depths: ChunkSeq::new[u64]()
+    };
+    copy_recorder(in rec, inout out);
+    out
+}
+
+// Publish `src` (a staged clone) as `dst`.
+pub fn recorder_assign(inout dst: Recorder, in src: Recorder) {
+    copy_recorder(in src, inout dst);
+}
+
+pub fn recorder_reject_next_at(inout rec: Recorder, patch: u64) {
+    rec.has_reject = true;
+    rec.reject = patch;
+}
+
+fn session_ok(in s: RState, session: u64) -> bool {
+    s.has_session && s.session == session
+}
+
+// RecordingBackend::set_user_state after the thread check.
+pub fn recorder_set_user_state(inout rec: Recorder, session: u64, serial: u64, user: u64) -> Option[BackendFault] {
+    if !session_ok(in rec.st, session) {
+        return Option::Some(BackendFault::ForeignSession);
+    }
+    let i = widget_index(in rec.st, serial);
+    if i == none_id() {
+        return Option::Some(BackendFault::StaleWidget);
+    }
+    let w = rwidget(in rec.st.widgets, i);
+    set_widget(inout rec.st, i, RWidget {
+        serial: w.serial,
+        kind: w.kind,
+        has_parent: w.has_parent,
+        parent: w.parent,
+        user_state: user
+    });
+    Option::None
+}
+
+// The checks of RecordingBackend::widget: foreign session or stale widget.
+pub fn recorder_check_widget(in rec: Recorder, session: u64, serial: u64) -> Option[BackendFault] {
+    if !session_ok(in rec.st, session) {
+        Option::Some(BackendFault::ForeignSession)
+    } else if widget_index(in rec.st, serial) == none_id() {
+        Option::Some(BackendFault::StaleWidget)
+    } else {
+        Option::None
+    }
+}
+
+pub fn recorder_check_slot(in rec: Recorder, session: u64, serial: u64) -> Option[BackendFault] {
+    if !session_ok(in rec.st, session) {
+        Option::Some(BackendFault::ForeignSession)
+    } else if slot_index(in rec.st, serial) == none_id() {
+        Option::Some(BackendFault::StaleSlot)
+    } else {
+        Option::None
+    }
+}
+
+// RecordingBackend::dispatch: the handler of a live registration.
+pub fn recorder_dispatch(in rec: Recorder, session: u64, serial: u64) -> Result[u64, BackendFault] {
+    if !session_ok(in rec.st, session) {
+        Result::Err(BackendFault::ForeignSession)
+    } else {
+        let i = sub_index(in rec.st, serial);
+        if i == none_id() {
+            Result::Err(BackendFault::StaleSubscription)
+        } else {
+            Result::Ok(rsub(in rec.st.subs, i).handler)
+        }
+    }
+}
+
+fn word(in w: Slice[u64], base: u64, k: u64) -> u64 {
+    get_u64(in w, add(base, k))
+}
+
+// RecordingSnapshot::allocate.
+fn allocate(inout s: RState, session: u64, serial: u64) -> Option[BackendFault] {
+    if !session_ok(in s, session) {
+        return Option::Some(BackendFault::ForeignSession);
+    }
+    if serial <= s.high_water {
+        return Option::Some(BackendFault::Invalid(i_reused()));
+    }
+    s.high_water = serial;
+    Option::None
+}
+
+fn foreign() -> Option[BackendFault] {
+    Option::Some(BackendFault::ForeignSession)
+}
+
+fn invalid(code: u64) -> Option[BackendFault] {
+    Option::Some(BackendFault::Invalid(code))
+}
+
+fn budget(code: u64) -> Option[BackendFault] {
+    Option::Some(BackendFault::Budget(code))
+}
+
+fn stale_widget() -> Option[BackendFault] {
+    Option::Some(BackendFault::StaleWidget)
+}
+
+fn record(inout s: RState, lim: Lim, e: Op) -> Option[BackendFault] {
+    if s.events.len() >= lim.patches {
+        return budget(b_event_batch());
+    }
+    s.events.push(e);
+    Option::None
+}
+
+// The text bytes of a value carried by a patch, compared with a stored one.
+fn same_text(in s: RState, v: RSlot, in text: Slice[u8], tstart: u64, tlen: u64) -> bool {
+    if v.tlen != tlen {
+        false
+    } else {
+        let mut i: u64 = 0;
+        loop {
+            if i >= tlen {
+                break true;
+            }
+            if seq_byte(in s.text, add(v.tstart, i)) != byte_at(in text, add(tstart, i)) {
+                break false;
+            }
+            i = inc(i);
+        }
+    }
+}
+
+fn push_text(inout s: RState, in text: Slice[u8], tstart: u64, tlen: u64) -> u64 {
+    let at = s.text.len();
+    for k in 0..tlen {
+        match text.try_get(add(tstart, k)) {
+            Option::Some(b) => s.text.push(b),
+            Option::None => (),
+        }
+    }
+    at
+}
+
+// RecordingSnapshot::apply for the patch at `w[base ..]` (ten words: the tag,
+// then every identity as a session and a serial; see src/port/codec.rs).
+fn apply_patch(inout s: RState, lim: Lim, in w: Slice[u64], base: u64, in text: Slice[u8]) -> Option[BackendFault] {
+    let tag = word(in w, base, 0);
+    if tag == 0 {
+        let has = word(in w, base, 1) == 1;
+        let root = word(in w, base, 3);
+        if has {
+            if !session_ok(in s, word(in w, base, 2)) {
+                return foreign();
+            }
+            let i = widget_index(in s, root);
+            if i == none_id() {
+                return stale_widget();
+            }
+            if rwidget(in s.widgets, i).has_parent {
+                return invalid(i_root_parent());
+            }
+        }
+        s.has_root = has;
+        s.root = root;
+        record(inout s, lim, op(0, if has {
+            1
+        } else {
+            0
+        }, root, 0, 0))
+    } else if tag == 1 {
+        let serial = word(in w, base, 2);
+        match allocate(inout s, word(in w, base, 1), serial) {
+            Option::Some(f) => {
+                return Option::Some(f);
+            },
+            Option::None => (),
+        }
+        if s.nwidgets >= lim.nodes {
+            return budget(b_nodes());
+        }
+        s.widgets.push(RWidget {
+            serial: serial,
+            kind: word(in w, base, 3),
+            has_parent: false,
+            parent: 0,
+            user_state: 0
+        });
+        s.wlive.push(true);
+        s.nwidgets = inc(s.nwidgets);
+        record(inout s, lim, op(1, serial, 0, 0, 0))
+    } else if tag == 2 {
+        if !session_ok(in s, word(in w, base, 1)) {
+            return foreign();
+        }
+        let serial = word(in w, base, 2);
+        let i = widget_index(in s, serial);
+        if i == none_id() {
+            return stale_widget();
+        }
+        let node = rwidget(in s.widgets, i);
+        if (s.has_root && s.root == serial) || node.has_parent || child_count(in s, serial) != 0 || widget_slot_count(in s, serial) != 0 || widget_sub_count(in s, serial) != 0 {
+            return invalid(i_destroy());
+        }
+        s.wlive.try_set(i, false);
+        s.nwidgets = dec(s.nwidgets);
+        record(inout s, lim, op(2, serial, 0, 0, 0))
+    } else if tag == 3 {
+        if !session_ok(in s, word(in w, base, 1)) {
+            return foreign();
+        }
+        let widget = word(in w, base, 2);
+        let property = word(in w, base, 3);
+        let slot = word(in w, base, 5);
+        let vtag = word(in w, base, 6);
+        let payload = word(in w, base, 7);
+        let tstart = word(in w, base, 8);
+        let tlen = word(in w, base, 9);
+        match allocate(inout s, word(in w, base, 4), slot) {
+            Option::Some(f) => {
+                return Option::Some(f);
+            },
+            Option::None => (),
+        }
+        let i = widget_index(in s, widget);
+        if i == none_id() {
+            return stale_widget();
+        }
+        if widget_slot(in s, widget, property) != none_id() {
+            return invalid(i_bound());
+        }
+        if widget_slot_count(in s, widget) >= lim.properties {
+            return budget(b_properties());
+        }
+        if !property_valid(rwidget(in s.widgets, i).kind, property, vtag, payload) {
+            return invalid(i_property());
+        }
+        if vtag == 0 && tlen > lim.text {
+            return budget(b_text());
+        }
+        let at = if vtag == 0 {
+            push_text(inout s, in text, tstart, tlen)
+        } else {
+            0
+        };
+        s.slots.push(RSlot {
+            serial: slot,
+            widget: widget,
+            property: property,
+            tag: vtag,
+            payload: payload,
+            tstart: at,
+            tlen: if vtag == 0 {
+                tlen
+            } else {
+                0
+            }
+        });
+        s.slive.push(true);
+        s.nslots = inc(s.nslots);
+        record(inout s, lim, op(3, slot, 0, 0, 0))
+    } else if tag == 4 {
+        if !session_ok(in s, word(in w, base, 1)) {
+            return foreign();
+        }
+        let slot = word(in w, base, 2);
+        let vtag = word(in w, base, 3);
+        let payload = word(in w, base, 4);
+        let tstart = word(in w, base, 5);
+        let tlen = word(in w, base, 6);
+        let k = slot_index(in s, slot);
+        if k == none_id() {
+            return Option::Some(BackendFault::StaleSlot);
+        }
+        let old = rslot(in s.slots, k);
+        let i = widget_index(in s, old.widget);
+        if i == none_id() {
+            return stale_widget();
+        }
+        if !property_valid(rwidget(in s.widgets, i).kind, old.property, vtag, payload) {
+            return invalid(i_property());
+        }
+        if vtag == 0 && tlen > lim.text {
+            return budget(b_text());
+        }
+        let same = if old.tag != vtag {
+            false
+        } else if vtag != 0 {
+            old.payload == payload
+        } else {
+            same_text(in s, old, in text, tstart, tlen)
+        };
+        if same {
+            return invalid(i_redundant());
+        }
+        let at = if vtag == 0 {
+            push_text(inout s, in text, tstart, tlen)
+        } else {
+            0
+        };
+        s.slots.try_set(k, RSlot {
+            serial: old.serial,
+            widget: old.widget,
+            property: old.property,
+            tag: vtag,
+            payload: payload,
+            tstart: at,
+            tlen: if vtag == 0 {
+                tlen
+            } else {
+                0
+            }
+        });
+        record(inout s, lim, op(4, slot, 0, 0, 0))
+    } else if tag == 5 {
+        let widget_session = word(in w, base, 1);
+        let widget = word(in w, base, 2);
+        let property = word(in w, base, 3);
+        if !session_ok(in s, word(in w, base, 4)) {
+            return foreign();
+        }
+        let slot = word(in w, base, 5);
+        let k = slot_index(in s, slot);
+        let owner = rslot(in s.slots, k);
+        if k == none_id() || !session_ok(in s, widget_session) || owner.widget != widget || owner.property != property {
+            return Option::Some(BackendFault::StaleSlot);
+        }
+        if widget_index(in s, widget) == none_id() {
+            return stale_widget();
+        }
+        s.slive.try_set(k, false);
+        s.nslots = dec(s.nslots);
+        record(inout s, lim, op(5, slot, 0, 0, 0))
+    } else if tag == 6 {
+        if !session_ok(in s, word(in w, base, 1)) {
+            return foreign();
+        }
+        let widget = word(in w, base, 2);
+        let event = word(in w, base, 3);
+        let handler = word(in w, base, 4);
+        let sub = word(in w, base, 6);
+        match allocate(inout s, word(in w, base, 5), sub) {
+            Option::Some(f) => {
+                return Option::Some(f);
+            },
+            Option::None => (),
+        }
+        let i = widget_index(in s, widget);
+        if i == none_id() {
+            return stale_widget();
+        }
+        if widget_sub(in s, widget, event) != none_id() {
+            return invalid(i_subscribed());
+        }
+        if widget_sub_count(in s, widget) >= lim.subscriptions {
+            return budget(b_subscriptions());
+        }
+        if !event_valid(rwidget(in s.widgets, i).kind, event) {
+            return invalid(i_event());
+        }
+        s.subs.push(RSub {
+            serial: sub,
+            widget: widget,
+            event: event,
+            handler: handler
+        });
+        s.blive.push(true);
+        s.nsubs = inc(s.nsubs);
+        if s.created == max_u64() {
+            return budget(b_subscription_counter());
+        }
+        s.created = inc(s.created);
+        record(inout s, lim, op(6, sub, 0, 0, 0))
+    } else if tag == 7 {
+        if !session_ok(in s, word(in w, base, 1)) {
+            return foreign();
+        }
+        let sub = word(in w, base, 2);
+        let k = sub_index(in s, sub);
+        if k == none_id() {
+            return Option::Some(BackendFault::StaleSubscription);
+        }
+        let v = rsub(in s.subs, k);
+        s.blive.try_set(k, false);
+        s.nsubs = dec(s.nsubs);
+        if widget_index(in s, v.widget) == none_id() {
+            return stale_widget();
+        }
+        if s.disconnected == max_u64() {
+            return budget(b_disconnect_counter());
+        }
+        s.disconnected = inc(s.disconnected);
+        record(inout s, lim, op(7, sub, 0, 0, 0))
+    } else if tag == 8 || tag == 9 || tag == 10 {
+        if !session_ok(in s, word(in w, base, 1)) {
+            return foreign();
+        }
+        if !session_ok(in s, word(in w, base, 3)) {
+            return foreign();
+        }
+        let parent = word(in w, base, 2);
+        let child = word(in w, base, 4);
+        let index = word(in w, base, 5);
+        if tag == 8 {
+            if widget_index(in s, parent) == none_id() {
+                return stale_widget();
+            }
+            let at = child_edge(in s, parent, index);
+            if at == none_id() || redge(in s.edges, at).child != child {
+                return invalid(i_remove_position());
+            }
+            remove_edge(inout s, at);
+            let c = widget_index(in s, child);
+            if c == none_id() {
+                return stale_widget();
+            }
+            let cw = rwidget(in s.widgets, c);
+            if !cw.has_parent || cw.parent != parent {
+                return invalid(i_parent_mismatch());
+            }
+            set_widget(inout s, c, RWidget {
+                serial: cw.serial,
+                kind: cw.kind,
+                has_parent: false,
+                parent: 0,
+                user_state: cw.user_state
+            });
+            record(inout s, lim, op(8, parent, child, index, 0))
+        } else if tag == 9 {
+            let c = widget_index(in s, child);
+            if c == none_id() {
+                return stale_widget();
+            }
+            let cw = rwidget(in s.widgets, c);
+            if parent == child || (s.has_root && s.root == child) || cw.has_parent {
+                return invalid(i_insert_detached());
+            }
+            let pi = widget_index(in s, parent);
+            if pi == none_id() {
+                return stale_widget();
+            }
+            let count = child_count(in s, parent);
+            if rwidget(in s.widgets, pi).kind != 0 || index > count {
+                return invalid(i_insert_position());
+            }
+            if count >= lim.children {
+                return budget(b_children());
+            }
+            insert_child(inout s, parent, child, index);
+            set_widget(inout s, c, RWidget {
+                serial: cw.serial,
+                kind: cw.kind,
+                has_parent: true,
+                parent: parent,
+                user_state: cw.user_state
+            });
+            record(inout s, lim, op(9, parent, child, index, 0))
+        } else {
+            let to = word(in w, base, 6);
+            if widget_index(in s, parent) == none_id() {
+                return stale_widget();
+            }
+            let at = child_edge(in s, parent, index);
+            if at == none_id() || redge(in s.edges, at).child != child || to >= child_count(in s, parent) {
+                return invalid(i_move_position());
+            }
+            remove_edge(inout s, at);
+            insert_child(inout s, parent, child, to);
+            record(inout s, lim, op(10, parent, child, index, to))
+        }
+    } else {
+        invalid(i_limits())
+    }
+}
+
+// RecordingSnapshot::validate_final over the staged state.
+fn validate_final(inout rec: Recorder) -> Option[BackendFault] {
+    let lim = rec.lim;
+    if !rec.stage.has_root {
+        if rec.stage.nwidgets == 0 && rec.stage.nslots == 0 && rec.stage.nsubs == 0 {
+            return Option::None;
+        }
+        return invalid(i_unmounted());
+    }
+    // Separate session/backend limits are permitted, so the backend must
+    // independently retain enough patch budget to close its accepted tree.
+    let n = rec.stage.nwidgets;
+    let ns = rec.stage.nslots;
+    let nb = rec.stage.nsubs;
+    let ne = rec.stage.edges.len();
+    if n > wrapping_sub(max_u64(), 1) || ns > wrapping_sub(max_u64(), inc(n)) || nb > wrapping_sub(max_u64(), add(inc(n), ns)) || ne > wrapping_sub(max_u64(), add(add(inc(n), ns), nb)) {
+        return budget(b_teardown());
+    }
+    if add(add(add(inc(n), ns), nb), ne) > lim.patches {
+        return budget(b_teardown());
+    }
+    let mut total: u64 = 0;
+    for i in 0..rec.stage.slots.len() {
+        if seq_bool(in rec.stage.slive, i) {
+            let v = rslot(in rec.stage.slots, i);
+            if v.tag == 0 {
+                if v.tlen > lim.text {
+                    return budget(b_text());
+                }
+                if total > wrapping_sub(max_u64(), v.tlen) {
+                    return budget(b_total_text());
+                }
+                total = add(total, v.tlen);
+                if total > lim.total {
+                    return budget(b_total_text());
+                }
+            }
+        }
+    }
+    rec.seen.clear();
+    for i in 0..rec.stage.widgets.len() {
+        rec.seen.push(false);
+    }
+    rec.stack.clear();
+    rec.depths.clear();
+    rec.stack.push(rec.stage.root);
+    rec.depths.push(1);
+    let mut seen: u64 = 0;
+    loop {
+        let top = rec.stack.len();
+        if top == 0 {
+            break;
+        }
+        let widget = seq_u64(in rec.stack, dec(top));
+        let depth = seq_u64(in rec.depths, dec(top));
+        rec.stack.truncate(dec(top));
+        rec.depths.truncate(dec(top));
+        if depth > lim.depth {
+            return budget(b_depth());
+        }
+        let i = widget_index(in rec.stage, widget);
+        if i != none_id() && seq_bool(in rec.seen, i) {
+            return invalid(i_cycle());
+        }
+        if i == none_id() {
+            return stale_widget();
+        }
+        rec.seen.try_set(i, true);
+        seen = inc(seen);
+        for e in 0..rec.stage.edges.len() {
+            let edge = redge(in rec.stage.edges, e);
+            if edge.parent == widget {
+                let c = widget_index(in rec.stage, edge.child);
+                if c == none_id() {
+                    return stale_widget();
+                }
+                let cw = rwidget(in rec.stage.widgets, c);
+                if !cw.has_parent || cw.parent != widget {
+                    return invalid(i_broken_parent());
+                }
+                rec.stack.push(edge.child);
+                rec.depths.push(inc(depth));
+            }
+        }
+    }
+    if seen != n {
+        return invalid(i_disconnected());
+    }
+    Option::None
+}
+
+// Backend::apply for RecordingBackend after the thread check: stage every
+// patch, validate the result, publish it only if everything succeeded.
+// `w` holds ten words per patch, `text` the bytes of their text values.
+pub fn recorder_apply(inout rec: Recorder, session: u64, base: u64, next: u64, in w: Slice[u64], in text: Slice[u8]) -> Option[BackendFault] {
+    if !lim_ok(rec.lim) {
+        return invalid(i_limits());
+    }
+    if rec.st.has_session && rec.st.session != session {
+        return foreign();
+    }
+    if base == max_u64() || rec.st.revision != base || next != inc(base) {
+        return Option::Some(BackendFault::StaleRevision);
+    }
+    let count = w.len() / 10;
+    if count > rec.lim.patches {
+        return budget(b_patches());
+    }
+    let has_reject = rec.has_reject;
+    let reject = rec.reject;
+    rec.has_reject = false;
+    copy_state(in rec.st, inout rec.stage);
+    rec.stage.has_session = true;
+    rec.stage.session = session;
+    rec.stage.events.clear();
+    let lim = rec.lim;
+    for i in 0..count {
+        if has_reject && reject == i {
+            return Option::Some(BackendFault::Injected(i));
+        }
+        match apply_patch(inout rec.stage, lim, in w, wrapping_mul(i, 10), in text) {
+            Option::Some(f) => {
+                return Option::Some(f);
+            },
+            Option::None => (),
+        }
+    }
+    if has_reject && reject >= count {
+        return Option::Some(BackendFault::Injected(count));
+    }
+    match validate_final(inout rec) {
+        Option::Some(f) => {
+            return Option::Some(f);
+        },
+        Option::None => (),
+    }
+    rec.stage.revision = next;
+    copy_state(in rec.stage, inout rec.st);
+    Option::None
+}
+
+// ---------------------------------------------------------------- SimAura
+
+// The answer of a SimAura query, with its scratch space. `items` holds the
+// focus order (serials), the audit findings (tag, target, kind per finding:
+// tag 0 missing label, 1 hidden subscribed control) or the encoded nodes;
+// `values` holds encoded slot references.
+struct Query {
+    fault: Option[ViewFault],
+    code: u64,
+    found: bool,
+    target: u64,
+    has_handler: bool,
+    handler: u64,
+    sub: u64,
+    inspected: u64,
+    interactive: u64,
+    items: ChunkSeq[u64],
+    values: ChunkSeq[u64],
+    stack: ChunkSeq[u64],
+    flags: ChunkSeq[bool],
+    seen: ChunkSeq[bool],
+    tree: Tree
+}
+
+fn query_new() -> Query {
+    Query {
+        fault: Option::None,
+        code: 0,
+        found: false,
+        target: 0,
+        has_handler: false,
+        handler: 0,
+        sub: 0,
+        inspected: 0,
+        interactive: 0,
+        items: ChunkSeq::new[u64](),
+        values: ChunkSeq::new[u64](),
+        stack: ChunkSeq::new[u64](),
+        flags: ChunkSeq::new[bool](),
+        seen: ChunkSeq::new[bool](),
+        tree: tree_new()
+    }
+}
+
+// Whether a mounted widget's bool property (2 Enabled, 3 Visible) is false.
+fn flag_off(in s: RState, widget: u64, property: u64) -> bool {
+    let k = widget_slot(in s, widget, property);
+    if k == none_id() {
+        false
+    } else {
+        let v = rslot(in s.slots, k);
+        v.tag == 1 && v.payload == 0
+    }
+}
+
+fn mounted_label(in s: RState, widget: u64) -> bool {
+    let k = widget_slot(in s, widget, 0);
+    if k == none_id() {
+        false
+    } else {
+        let v = rslot(in s.slots, k);
+        v.tag == 0 && !blank_seq(in s.text, v.tstart, v.tlen)
+    }
+}
+
+// SimAura::focusable_order into `q.items`: depth-first pre-order of the
+// visible, enabled Buttons and Inputs; hidden or disabled widgets prune
+// their subtree.
+fn focus_order(in rec: Recorder, inout q: Query) {
+    let s = rec.st.has_root;
+    q.items.clear();
+    if !s {
+        return;
+    }
+    q.seen.clear();
+    for i in 0..rec.st.widgets.len() {
+        q.seen.push(false);
+    }
+    q.stack.clear();
+    q.stack.push(rec.st.root);
+    loop {
+        let top = q.stack.len();
+        if top == 0 {
+            break;
+        }
+        let id = seq_u64(in q.stack, dec(top));
+        q.stack.truncate(dec(top));
+        let i = widget_index(in rec.st, id);
+        if i != none_id() && !seq_bool(in q.seen, i) {
+            q.seen.try_set(i, true);
+            if !flag_off(in rec.st, id, 3) && !flag_off(in rec.st, id, 2) {
+                let kind = rwidget(in rec.st.widgets, i).kind;
+                if kind == 2 || kind == 3 {
+                    q.items.push(id);
+                }
+                let n = child_count(in rec.st, id);
+                let mut j = n;
+                loop {
+                    if j == 0 {
+                        break;
+                    }
+                    j = dec(j);
+                    q.stack.push(redge(in rec.st.edges, child_edge(in rec.st, id, j)).child);
+                }
+            }
+        }
+    }
+}
+
+pub fn sim_focusable(in rec: Recorder) -> Query {
+    let mut q = query_new();
+    focus_order(in rec, inout q);
+    q
+}
+
+// The live Focused (or any `event`) subscription of `widget`, into
+// `q.has_handler`/`q.handler`.
+fn dispatch_if_subscribed(in rec: Recorder, inout q: Query, widget: u64, event: u64) {
+    let k = widget_sub(in rec.st, widget, event);
+    if k == none_id() {
+        q.has_handler = false;
+    } else {
+        q.has_handler = true;
+        q.sub = rsub(in rec.st.subs, k).serial;
+        q.handler = rsub(in rec.st.subs, k).handler;
+    }
+}
+
+// SimAura::focus_next (`forward`) or focus_prev: `found` is false when no
+// widget is focusable; otherwise `target` is the newly focused widget and
+// `has_handler`/`handler` its Focused registration.
+pub fn sim_focus(in rec: Recorder, has_focus: bool, focused: u64, forward: bool) -> Query {
+    let mut q = query_new();
+    focus_order(in rec, inout q);
+    let n = q.items.len();
+    if n == 0 {
+        q.found = false;
+        return q;
+    }
+    q.found = true;
+    let at = if has_focus {
+        position(in q.items, focused)
+    } else {
+        none_id()
+    };
+    let next = if at == none_id() {
+        if forward {
+            seq_u64(in q.items, 0)
+        } else {
+            seq_u64(in q.items, dec(n))
+        }
+    } else if forward {
+        seq_u64(in q.items, inc(at) % n)
+    } else {
+        seq_u64(in q.items, dec(add(at, n)) % n)
+    };
+    q.target = next;
+    dispatch_if_subscribed(in rec, inout q, next, 2);
+    q
+}
+
+// SimAura::trigger_event after the thread check: `code` 0 dispatched
+// (`handler`), 1 not focusable, 2 not subscribed. The widget's session was
+// compared by the wrapper (`same_session`).
+pub fn sim_trigger(in rec: Recorder, same_session: bool, widget: u64, event: u64) -> Query {
+    let mut q = query_new();
+    focus_order(in rec, inout q);
+    if !same_session || !rec.st.has_session || position(in q.items, widget) == none_id() {
+        q.code = 1;
+        return q;
+    }
+    dispatch_if_subscribed(in rec, inout q, widget, event);
+    q.code = if q.has_handler {
+        0
+    } else {
+        2
+    };
+    q
+}
+
+// Whether `widget` is still focusable (SimAura::apply drops a focus that
+// is not).
+pub fn sim_still_focusable(in rec: Recorder, widget: u64) -> Query {
+    let mut q = query_new();
+    focus_order(in rec, inout q);
+    q.found = position(in q.items, widget) != none_id();
+    q
+}
+
+fn audit_one(inout q: Query, kind: u64, visible: bool, labelled: bool, subscribed: bool, target: u64) {
+    if kind == 2 || kind == 3 {
+        q.interactive = inc(q.interactive);
+        if visible && !labelled {
+            q.items.push(0);
+            q.items.push(target);
+            q.items.push(kind);
+        }
+        if !visible && subscribed {
+            q.items.push(1);
+            q.items.push(target);
+            q.items.push(kind);
+        }
+    }
+}
+
+// SimAura::audit_wcag (audit_snapshot): pre-order with inherited
+// visibility, then any widget the walk did not reach, in serial order.
+pub fn sim_audit(in rec: Recorder) -> Query {
+    let mut q = query_new();
+    q.inspected = rec.st.nwidgets;
+    q.seen.clear();
+    for i in 0..rec.st.widgets.len() {
+        q.seen.push(false);
+    }
+    if rec.st.has_root {
+        q.stack.clear();
+        q.flags.clear();
+        q.stack.push(rec.st.root);
+        q.flags.push(true);
+        loop {
+            let top = q.stack.len();
+            if top == 0 {
+                break;
+            }
+            let id = seq_u64(in q.stack, dec(top));
+            let parent_visible = seq_bool(in q.flags, dec(top));
+            q.stack.truncate(dec(top));
+            q.flags.truncate(dec(top));
+            let i = widget_index(in rec.st, id);
+            if i != none_id() && !seq_bool(in q.seen, i) {
+                q.seen.try_set(i, true);
+                let visible = parent_visible && !flag_off(in rec.st, id, 3);
+                let w = rwidget(in rec.st.widgets, i);
+                audit_one(inout q, w.kind, visible, mounted_label(in rec.st, id), widget_sub_count(in rec.st, id) != 0, id);
+                let n = child_count(in rec.st, id);
+                let mut j = n;
+                loop {
+                    if j == 0 {
+                        break;
+                    }
+                    j = dec(j);
+                    q.stack.push(redge(in rec.st.edges, child_edge(in rec.st, id, j)).child);
+                    q.flags.push(visible);
+                }
+            }
+        }
+    }
+    // Include widgets the walk missed in malformed snapshots so the audit
+    // is total.
+    for i in 0..rec.st.widgets.len() {
+        if seq_bool(in rec.st.wlive, i) && !seq_bool(in q.seen, i) {
+            let w = rwidget(in rec.st.widgets, i);
+            audit_one(inout q, w.kind, !flag_off(in rec.st, w.serial, 3), mounted_label(in rec.st, w.serial), widget_sub_count(in rec.st, w.serial) != 0, w.serial);
+        }
+    }
+    q
+}
+
+// The index of tree node `n`'s property, or none.
+fn tree_prop(in t: Tree, n: TNode, property: u64) -> u64 {
+    for j in 0..n.pcount {
+        if tprop(in t.props, add(n.pstart, j)).property == property {
+            return add(n.pstart, j);
+        }
+    }
+    none_id()
+}
+
+fn tree_flag_off(in t: Tree, n: TNode, property: u64) -> bool {
+    let k = tree_prop(in t, n, property);
+    if k == none_id() {
+        false
+    } else {
+        let p = tprop(in t.props, k);
+        p.tag == 1 && p.payload == 0
+    }
+}
+
+fn tree_label(in t: Tree, n: TNode, in text: Slice[u8]) -> bool {
+    let k = tree_prop(in t, n, 0);
+    if k == none_id() {
+        false
+    } else {
+        let p = tprop(in t.props, k);
+        p.tag == 0 && !blank_slice(in text, p.tstart, p.tlen)
+    }
+}
+
+// audit_view_tree: validate, then audit in pre-order with the visibility a
+// node inherits from its parent. Targets are tree keys.
+pub fn audit_tree(in words: Slice[u64], in text: Slice[u8], in limits: Slice[u64]) -> Query {
+    let mut q = query_new();
+    decode(inout q.tree, in words);
+    match validate(inout q.tree, limits_from(in limits), in text) {
+        Option::Some(f) => {
+            q.fault = Option::Some(f);
+            return q;
+        },
+        Option::None => (),
+    }
+    let n = q.tree.nodes.len();
+    q.inspected = q.tree.order.len();
+    q.flags.clear();
+    for i in 0..n {
+        q.flags.push(true);
+    }
+    for oi in 0..q.tree.order.len() {
+        let ti = seq_u64(in q.tree.order, oi);
+        let node = tnode(in q.tree.nodes, ti);
+        let parent = seq_u64(in q.tree.parent, ti);
+        let parent_visible = if parent == none_id() {
+            true
+        } else {
+            seq_bool(in q.flags, parent)
+        };
+        let visible = parent_visible && !tree_flag_off(in q.tree, node, 3);
+        q.flags.try_set(ti, visible);
+        let labelled = tree_label(in q.tree, node, in text);
+        audit_one(inout q, node.kind, visible, labelled, node.scount != 0, node.key);
+    }
+    q
+}
+
+// The slot properties of each kind, in slot order (sim_aura::kind_properties).
+fn kind_slot_count(kind: u64) -> u64 {
+    if kind == 0 {
+        3
+    } else if kind == 3 {
+        5
+    } else {
+        4
+    }
+}
+
+fn kind_slot_property(kind: u64, i: u64) -> u64 {
+    if kind == 0 {
+        add(i, 2)
+    } else if kind == 3 {
+        i
+    } else if i == 0 {
+        0
+    } else {
+        inc(i)
+    }
+}
+
+// encode_view_tree: validate, then one node operation per node in
+// pre-order into `items` (kind tag, child count, slot base, event action,
+// layout flags), and per slot into `values` (property, input node index,
+// 1 when the node sets it).
+pub fn encode_tree(in words: Slice[u64], in text: Slice[u8], in limits: Slice[u64]) -> Query {
+    let mut q = query_new();
+    decode(inout q.tree, in words);
+    match validate(inout q.tree, limits_from(in limits), in text) {
+        Option::Some(f) => {
+            q.fault = Option::Some(f);
+            return q;
+        },
+        Option::None => (),
+    }
+    let mut slots: u64 = 0;
+    for oi in 0..q.tree.order.len() {
+        let ti = seq_u64(in q.tree.order, oi);
+        let node = tnode(in q.tree.nodes, ti);
+        if slots > 4294967295 {
+            q.fault = Option::Some(ViewFault::Budget(b_slots()));
+            return q;
+        }
+        let base = slots;
+        for i in 0..kind_slot_count(node.kind) {
+            let property = kind_slot_property(node.kind, i);
+            q.values.push(property);
+            q.values.push(ti);
+            q.values.push(if tree_prop(in q.tree, node, property) == none_id() {
+                0
+            } else {
+                1
+            });
+            slots = inc(slots);
+        }
+        if node.ccount > 65535 {
+            q.fault = Option::Some(ViewFault::Budget(b_children()));
+            return q;
+        }
+        let mut action: u64 = 0;
+        for j in 0..node.scount {
+            let h = tsub(in q.tree.subs, add(node.sstart, j)).handler;
+            if h > 4294967295 {
+                q.fault = Option::Some(ViewFault::Budget(b_handler()));
+                return q;
+            }
+            if j == 0 {
+                action = h;
+            }
+        }
+        let mut flags: u64 = 0;
+        if !tree_flag_off(in q.tree, node, 3) {
+            flags = flags | 1;
+        }
+        if !tree_flag_off(in q.tree, node, 2) {
+            flags = flags | 2;
+        }
+        if node.kind == 2 || node.kind == 3 {
+            flags = flags | 4;
+        }
+        if tree_label(in q.tree, node, in text) {
+            flags = flags | 8;
+        }
+        q.items.push(node.kind);
+        q.items.push(node.ccount);
+        q.items.push(base);
+        q.items.push(action);
+        q.items.push(flags);
+    }
+    q
+}
+
+pub fn query_fault(in q: Query) -> Option[ViewFault] {
+    q.fault
+}
+
+// code, found, target, has_handler, handler, subscription.
+pub fn query_answer(in q: Query) -> (u64, bool, u64, bool, u64, u64) {
+    (q.code, q.found, q.target, q.has_handler, q.handler, q.sub)
+}
+
+// inspected nodes, interactive controls.
+pub fn query_counts(in q: Query) -> (u64, u64) {
+    (q.inspected, q.interactive)
+}
+
+pub fn query_items(in q: Query) -> ChunkSeq[u64] {
+    let mut out: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for i in 0..q.items.len() {
+        out.push(seq_u64(in q.items, i));
+    }
+    out
+}
+
+pub fn query_values(in q: Query) -> ChunkSeq[u64] {
+    let mut out: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for i in 0..q.values.len() {
+        out.push(seq_u64(in q.values, i));
+    }
+    out
+}
