@@ -402,9 +402,20 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
     std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The repository root: this crate lives at `crates/vesper-port-harness`.
-fn repository() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+/// The workspace root: the nearest ancestor of the crate being built whose
+/// `Cargo.toml` declares `[workspace]`. Found at run time, because compiled
+/// code must not embed build paths (`env!("CARGO_MANIFEST_DIR")`).
+fn repository() -> Result<PathBuf, String> {
+    let crate_dir = std::fs::canonicalize(env("CARGO_MANIFEST_DIR")?)
+        .map_err(|e| format!("CARGO_MANIFEST_DIR: {e}"))?;
+    crate_dir
+        .ancestors()
+        .find(|dir| {
+            std::fs::read_to_string(dir.join("Cargo.toml"))
+                .is_ok_and(|text| text.lines().any(|l| l.trim() == "[workspace]"))
+        })
+        .map(Path::to_path_buf)
+        .ok_or_else(|| format!("no [workspace] Cargo.toml above {}", crate_dir.display()))
 }
 
 /// The `vesper` executable: [`COMPILER_ENV`], or the in-tree compiler built
@@ -421,8 +432,7 @@ fn compiler() -> Result<PathBuf, String> {
         println!("cargo:rerun-if-changed={}", path.display());
         return Ok(path);
     }
-    let root = std::fs::canonicalize(repository())
-        .map_err(|e| format!("{}: {e}", repository().display()))?;
+    let root = repository()?;
     let target_dir = match std::env::var_os("CARGO_TARGET_DIR") {
         Some(dir) => root.join(dir),
         None => root.join("target"),
