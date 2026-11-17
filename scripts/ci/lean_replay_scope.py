@@ -46,6 +46,8 @@ TRIGGERS = (
     "tests/resource_model42.rs",
     "tests/replay42_kernel.rs",
     "tests/common/lean4lean*",
+    "tests/fixtures/resource_oracle42/*",
+    "docs/rfcs/resource-model42*",
     # Toolchain, Bazel and CI configuration.
     "BUILD.bazel",
     "MODULE.bazel",

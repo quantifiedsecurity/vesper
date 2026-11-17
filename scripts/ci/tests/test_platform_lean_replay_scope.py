@@ -29,7 +29,9 @@ class LeanReplayScope(unittest.TestCase):
 
     def test_lean_facing_pr_runs_replays(self):
         for path in ["lean/Foundations.lean", "tools/logos42/pins.json", "src/lean_ir.rs",
-                     "tests/lean4lean_map42.rs", "MODULE.bazel", "src/optimize/witness_lean.rs"]:
+                     "tests/lean4lean_map42.rs", "MODULE.bazel", "src/optimize/witness_lean.rs",
+                     "tests/fixtures/resource_oracle42/fault_peer.py",
+                     "docs/rfcs/resource-model42-source-manifest.json"]:
             with self.subTest(path=path):
                 self.assertEqual(scope.flags(branch="feature", changed=[path], messages=""), [])
 
