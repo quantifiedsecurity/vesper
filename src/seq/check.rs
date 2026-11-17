@@ -193,13 +193,14 @@ impl Checker<'_> {
         let mode = self.mode(&elem_ty);
         let known = elem_ty != Type::Infer;
         match op {
-            SeqOp::Get | SeqOp::SliceGet | SeqOp::TryGet if known && mode != Mode::Copy => self.error(
-                "E1522",
-                format!(
-                    "cannot copy '{elem_ty}' out of a sequence because it is not copy; use pop"
+            SeqOp::Get | SeqOp::SliceGet | SeqOp::TryGet if known && mode != Mode::Copy => self
+                .error(
+                    "E1522",
+                    format!(
+                        "cannot copy '{elem_ty}' out of a sequence because it is not copy; use pop"
+                    ),
+                    span.clone(),
                 ),
-                span.clone(),
-            ),
             SeqOp::Extend if known && mode != Mode::Copy => self.error(
                 "E1522",
                 format!("extend copies its elements, but '{elem_ty}' is not copy"),
@@ -331,7 +332,9 @@ impl Checker<'_> {
         if elem_ty != Type::Infer && self.mode(&elem_ty) != Mode::Copy {
             self.error(
                 "E1522",
-                format!("cannot copy '{elem_ty}' out of a sequence because it is not copy; use pop"),
+                format!(
+                    "cannot copy '{elem_ty}' out of a sequence because it is not copy; use pop"
+                ),
                 e.span.clone(),
             );
         }

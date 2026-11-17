@@ -32,14 +32,22 @@ fn run() -> u64 eff [Fail[RuntimeError]] {
     bytes.push(7);
     bytes.push(9);
     let pairs: ChunkSeq[Pair] = ChunkSeq::new[Pair]();
-    pairs.push(Pair { a: 5, b: 6 });
-    pairs.push(Pair { a: 11, b: 12 });
+    let first = Pair {
+        a: 5,
+        b: 6
+    };
+    pairs.push(first);
+    let second = Pair {
+        a: 11,
+        b: 12
+    };
+    pairs.push(second);
     let last = match pairs.pop() {
         Option::Some(p) => wrapping_add(p.a, widen_u64(p.b)),
         Option::None => 0,
     };
     let more: ChunkSeq[u64] = ChunkSeq::new[u64]();
-    more.extend(in s[10..20]);
+    more.extend(in s[10 .. 20]);
     more.truncate(4);
     let head = sum(in more.as_slice(), 0, 0);
     s.clear();

@@ -87,8 +87,8 @@ pub extern "C" fn vesper_seq_grow(handle: u64, stride: u64, needed: u64) -> u64 
         return 0;
     }
     let new_cap = cap.saturating_mul(2).max(4).max(needed);
-    let layout =
-        data_layout(new_cap, stride).unwrap_or_else(|| fault("capacity overflows the address space"));
+    let layout = data_layout(new_cap, stride)
+        .unwrap_or_else(|| fault("capacity overflows the address space"));
     let grown = if data.is_null() {
         // SAFETY: `layout` has a non-zero size.
         unsafe { alloc(layout) }

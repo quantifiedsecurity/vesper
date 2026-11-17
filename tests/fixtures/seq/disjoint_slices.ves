@@ -40,9 +40,9 @@ fn run() -> u64 eff [Fail[RuntimeError]] {
     fill(inout s, 0, 10);
     let mid: u64 = 4;
     let n = s.len();
-    split(inout s[0..mid], inout s[mid..n]);
+    split(inout s[0 .. mid], inout s[mid .. n]);
     // Overlapping `in` views are shared reads.
-    let both = wrapping_add(total(in s[0..6], 0, 0), total(in s[3..10], 0, 0));
+    let both = wrapping_add(total(in s[0 .. 6], 0, 0), total(in s[3 .. 10], 0, 0));
     wrapping_add(wrapping_add(total(in s.as_slice(), 0, 0), both), s[9])
 }
 

@@ -8,10 +8,10 @@ mod regions;
 pub mod resource_trace;
 #[cfg(test)]
 mod resource_trace_acceptance;
-#[path = "tiled/eval.rs"]
-mod tiled;
 #[path = "seq/eval.rs"]
 mod seq;
+#[path = "tiled/eval.rs"]
+mod tiled;
 use resource_trace::{
     ResourceConsume, ResourceIdentity, ResourceTraceCompletion, ResourceTraceConfig,
     ResourceTraceEngine, ResourceTraceError, ResourceTraceFailure, ResourceTraceObserver,

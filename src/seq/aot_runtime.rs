@@ -63,7 +63,12 @@ pub fn define<M: Module>(m: &mut M) -> Result<(), String> {
         let mut ids = vec![];
         for (i, text) in MESSAGES.iter().enumerate() {
             let id = m
-                .declare_data(&format!("vesper_seq_fault_message_{i}"), Linkage::Local, false, false)
+                .declare_data(
+                    &format!("vesper_seq_fault_message_{i}"),
+                    Linkage::Local,
+                    false,
+                    false,
+                )
                 .map_err(e)?;
             let mut d = DataDescription::new();
             d.define(text.as_bytes().to_vec().into_boxed_slice());

@@ -130,9 +130,17 @@ impl<M: Module> Codegen<'_, '_, M> {
     }
 
     /// Grows `handle` to hold `needed` elements when its capacity is short.
-    fn seq_reserve(&mut self, handle: ir::Value, needed: ir::Value, stride: i64) -> Result<(), String> {
+    fn seq_reserve(
+        &mut self,
+        handle: ir::Value,
+        needed: ir::Value,
+        stride: i64,
+    ) -> Result<(), String> {
         let cap = self.seq_word(handle, CAP);
-        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, needed, cap);
+        let fits = self
+            .b
+            .ins()
+            .icmp(IntCC::UnsignedLessThanOrEqual, needed, cap);
         let grow = self.b.create_block();
         let done = self.b.create_block();
         self.branch(fits, done, &[], grow, &[]);
@@ -278,11 +286,10 @@ impl<M: Module> Codegen<'_, '_, M> {
                     self.b.ins().uextend(types::I64, valid)
                 } else {
                     let option = Type::Named("Option".into(), vec![elem.clone()]);
-                    let out = self.seq_option(&option, &elem, valid, |this| {
+                    self.seq_option(&option, &elem, valid, |this| {
                         let addr = this.seq_elem_addr(h, start, i, stride);
                         this.seq_load_elem(addr, &elem)
-                    })?;
-                    out
+                    })?
                 }
             }
             SeqOp::Clear => {
@@ -433,7 +440,10 @@ impl<M: Module> Codegen<'_, '_, M> {
                     if self.world.functions.contains_key(n) {
                         return None;
                     }
-                    (seq::resolve(n, None)?, args.iter().map(|a| &a.expr).collect())
+                    (
+                        seq::resolve(n, None)?,
+                        args.iter().map(|a| &a.expr).collect(),
+                    )
                 }
                 ExprKind::Field(base, method) => {
                     let t = self.ty(base);

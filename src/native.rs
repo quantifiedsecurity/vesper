@@ -32,6 +32,9 @@ mod native_vector;
 /// Source Strata region blocks lowered to `vesper_region_*` runtime calls.
 #[path = "regions/native.rs"]
 mod regions;
+/// `ChunkSeq[T]` and `Slice[T]` native lowering (§13).
+#[path = "seq/native.rs"]
+mod seq_native;
 /// Checked source entries with declared linear external effects compiled to
 /// ABI v2 fiber entries that park through `vesper-fiber-abi`.
 #[path = "native_session.rs"]
@@ -39,9 +42,6 @@ pub mod session;
 /// AoSoA `tiled(N) struct` and `TiledSeq[T]` native lowering (§12.5).
 #[path = "tiled/native.rs"]
 mod tiled;
-/// `ChunkSeq[T]` and `Slice[T]` native lowering (§13).
-#[path = "seq/native.rs"]
-mod seq_native;
 /// Windows x64 COFF objects with unwind tables, and the MSVC link driver.
 #[path = "native_windows.rs"]
 pub mod windows;
@@ -2613,7 +2613,9 @@ impl<M: Module> Codegen<'_, '_, M> {
                             .map(|a| {
                                 // A slice view argument is a value, not a place.
                                 let view = a.place.is_none()
-                                    && f.values.get(&a.value).is_some_and(crate::seq::is_slice_type);
+                                    && f.values
+                                        .get(&a.value)
+                                        .is_some_and(crate::seq::is_slice_type);
                                 let expr = if !view
                                     && (a.pass == Pass::Inout
                                         || (a.pass == Pass::In

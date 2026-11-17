@@ -149,9 +149,10 @@ fn op_uses(op: &Op) -> Vec<ValueId> {
         Op::Tuple(v) | Op::Vector { args: v, .. } => v.clone(),
         Op::Data(_, f) => f.iter().map(|(_, v)| *v).collect(),
         Op::Project(v, _) => vec![*v],
-        Op::Call { args, .. } | Op::Tiled { args, .. } | Op::Seq { args, .. } | Op::Fip { args, .. } => {
-            args.iter().map(|a| a.value).collect()
-        }
+        Op::Call { args, .. }
+        | Op::Tiled { args, .. }
+        | Op::Seq { args, .. }
+        | Op::Fip { args, .. } => args.iter().map(|a| a.value).collect(),
         Op::Indirect { callee, args } => {
             let mut v = vec![*callee];
             v.extend(args.iter().map(|a| a.value));

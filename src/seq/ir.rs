@@ -75,13 +75,6 @@ impl Lower<'_> {
             }
             _ => return None,
         };
-        Some(self.emit(
-            Op::Seq {
-                op,
-                args: operands,
-            },
-            e,
-            true,
-        ))
+        Some(self.emit(Op::Seq { op, args: operands }, e, true))
     }
 }
