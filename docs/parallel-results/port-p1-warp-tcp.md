@@ -178,9 +178,12 @@ make `build.rs` always build the port.
 ## Other notes
 
 - The lane plan asks for a Loom package (`Loom.toml` plus `src/**/*.ves`).
-  `vesper build --lib` takes one file on `main` (package directories come with
-  #919, still open), so the library is plain files that the build
-  concatenates. Once #919 lands they become package modules.
+  The port was written while `vesper build --lib` took one file, so the
+  library is plain files that the build concatenates. Package builds landed
+  with #919 just before this PR; turning the 17 files into package modules
+  needs `use` lists between them and a root module that exports the 65
+  functions, and is left as a follow-up. The branch has `main` with #919
+  merged and builds through its prebuilt-compiler harness.
 - `vesper fmt` rejects a file over 8,192 tokens, which is why the library is
   split; every file is canonically formatted.
 - `crates/vesper-warp-tcp/vesper` is skipped in the self-hosted corpus
