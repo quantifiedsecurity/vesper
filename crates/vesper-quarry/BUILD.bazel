@@ -129,11 +129,11 @@ rust_test(
         ":quarry_vesper_binding",
     ] + [":_port_%s_divergent.bin" % m for m in PORT_DIVERGENT] + PORT_TEST_DATA,
     edition = "2021",
-    env = dict(
-        {"VESPER_QUARRY_BINDING": "$(rootpath :quarry_vesper_binding)"},
-        **{
-            "VESPER_QUARRY_DIVERGENT_" + m.upper(): "$(rootpath :_port_%s_divergent.bin)" % m
+    env = {
+        key: value
+        for key, value in [("VESPER_QUARRY_BINDING", "$(rootpath :quarry_vesper_binding)")] + [
+            ("VESPER_QUARRY_DIVERGENT_" + m.upper(), "$(rootpath :_port_%s_divergent.bin)" % m)
             for m in PORT_DIVERGENT
-        }
-    ),
+        ]
+    },
 )
