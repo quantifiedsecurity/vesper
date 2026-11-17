@@ -25,6 +25,7 @@ pub mod interface;
 pub mod io_session;
 pub mod ir;
 pub mod ir_check;
+pub mod ir_inline;
 pub mod ir_opt;
 pub mod layout;
 pub mod lean;
