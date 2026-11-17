@@ -148,7 +148,10 @@ impl World {
                     }
                 }
                 Item::Function(f) => {
-                    if crate::numeric::wrapping_intrinsic(&f.name).is_some() {
+                    if crate::numeric::wrapping_intrinsic(&f.name).is_some()
+                        || (f.name == crate::integer_widths::MUL_WIDE
+                            && (builtin_count..builtin_count + module.items.len()).contains(&index))
+                    {
                         errors.push(Diagnostic::new(
                             "E0100",
                             format!("'{}' is a reserved arithmetic intrinsic", f.name),

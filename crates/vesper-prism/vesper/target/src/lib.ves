@@ -1,0 +1,441 @@
+// Vesper port of the single request-target interpretation of
+// crates/vesper-prism (`Target::parse` in src/target.rs, port wave P1 lane
+// 14, #911).
+//
+// The target is decoded exactly once. The path is split on literal `/`
+// before decoding, so `%2F` never makes a separator; encoded `/`, `\` and NUL,
+// dot segments and empty interior segments are rejected; `+` is a space only
+// in the query. The result lists every decoded segment and query entry as
+// byte ranges, which the Rust wrapper turns into `Segment`s and
+// `QueryEntry`s.
+
+copy enum Utf8Policy {
+    Require,
+    AllowBytes
+}
+
+copy struct TargetLimits {
+    max_target_bytes: u64,
+    max_segments: u64,
+    max_query_entries: u64,
+    utf8: Utf8Policy
+}
+
+copy enum TargetError {
+    TooLong,
+    TooManySegments,
+    TooManyQueryEntries,
+    InvalidSyntax,
+    InvalidEscape,
+    EmptySegment,
+    DotSegment,
+    EncodedSlash,
+    EncodedBackslash,
+    EncodedNul,
+    InvalidUtf8,
+    EmptyQueryEntry,
+    EmptyQueryKey,
+    AllocationFailed
+}
+
+// A decoded target. `segment_ends`, `key_ends` and `value_ends` are end
+// offsets into `segments`, `keys` and `values`; `value_present[i]` is false
+// for an entry written without `=`.
+struct ParsedTarget {
+    asterisk: bool,
+    segments: ChunkSeq[u8],
+    segment_ends: ChunkSeq[u64],
+    trailing_slash: bool,
+    has_query: bool,
+    keys: ChunkSeq[u8],
+    key_ends: ChunkSeq[u64],
+    values: ChunkSeq[u8],
+    value_ends: ChunkSeq[u64],
+    value_present: ChunkSeq[bool]
+}
+
+fn byte(in s: Slice[u8], i: u64) -> u8 {
+    match s.try_get(i) {
+        Option::Some(b) => b,
+        Option::None => 0,
+    }
+}
+
+fn byte_of(in s: ChunkSeq[u8], i: u64) -> u8 {
+    match s.try_get(i) {
+        Option::Some(b) => b,
+        Option::None => 0,
+    }
+}
+
+fn is_digit(b: u8) -> bool {
+    b >= 48 && b <= 57
+}
+
+fn is_alnum(b: u8) -> bool {
+    is_digit(b) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+}
+
+fn is_hex(b: u8) -> bool {
+    is_digit(b) || (b >= 65 && b <= 70) || (b >= 97 && b <= 102)
+}
+
+fn hex_value(b: u8) -> u8 {
+    if is_digit(b) {
+        wrapping_sub(b, 48)
+    } else if b >= 97 {
+        wrapping_sub(b, 87)
+    } else {
+        wrapping_sub(b, 55)
+    }
+}
+
+// Whether `b` is one of the bytes of `set`.
+fn in_set(b: u8, in set: Str) -> bool {
+    for i in 0..set.len() {
+        match set.try_byte_at(i) {
+            Option::Some(c) => if c == b {
+                return true;
+            },
+            Option::None => (),
+        }
+    }
+    false
+}
+
+fn find(in s: Slice[u8], lo: u64, hi: u64, b: u8) -> u64 {
+    for i in lo..hi {
+        if byte(in s, i) == b {
+            return i;
+        }
+    }
+    hi
+}
+
+fn count(in s: Slice[u8], lo: u64, hi: u64, b: u8) -> u64 {
+    let mut n: u64 = 0;
+    for i in lo..hi {
+        if byte(in s, i) == b {
+            n = wrapping_add(n, 1);
+        }
+    }
+    n
+}
+
+// The decoder's origin-form grammar (`valid_target` for a GET request).
+fn valid_origin(in t: Slice[u8]) -> bool {
+    let n = t.len();
+    if n == 0 || byte(in t, 0) != 47 {
+        return false;
+    }
+    if n >= 2 && byte(in t, 1) == 47 {
+        return false;
+    }
+    let mut i: u64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        let b = byte(in t, i);
+        if b == 37 {
+            let h1 = wrapping_add(i, 1);
+            let h2 = wrapping_add(i, 2);
+            if h1 >= n || !is_hex(byte(in t, h1)) || h2 >= n || !is_hex(byte(in t, h2)) {
+                return false;
+            }
+            i = wrapping_add(i, 3);
+        } else if is_alnum(b) || in_set(b, "-._~!$&'()*+,;=:@/?") {
+            i = wrapping_add(i, 1);
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+fn classify_syntax(in t: Slice[u8]) -> TargetError {
+    let n = t.len();
+    let mut i: u64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        if byte(in t, i) == 37 {
+            let h1 = wrapping_add(i, 1);
+            let h2 = wrapping_add(i, 2);
+            if h1 >= n || !is_hex(byte(in t, h1)) || h2 >= n || !is_hex(byte(in t, h2)) {
+                return TargetError::InvalidEscape;
+            }
+            i = wrapping_add(i, 3);
+        } else {
+            i = wrapping_add(i, 1);
+        }
+    }
+    TargetError::InvalidSyntax
+}
+
+fn continuation(in s: ChunkSeq[u8], i: u64) -> bool {
+    let b = byte_of(in s, i);
+    i < s.len() && b >= 128 && b <= 191
+}
+
+// Rust's `str::from_utf8` acceptance: no overlong forms, surrogates or
+// scalar values above U+10FFFF.
+fn valid_utf8(in s: ChunkSeq[u8]) -> bool {
+    let n = s.len();
+    let mut i: u64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        let b = byte_of(in s, i);
+        if b < 128 {
+            i = wrapping_add(i, 1);
+        } else {
+            let b1 = byte_of(in s, wrapping_add(i, 1));
+            let has1 = wrapping_add(i, 1) < n;
+            let width: u64 = if b >= 194 && b <= 223 {
+                2
+            } else if b >= 224 && b <= 239 {
+                3
+            } else if b >= 240 && b <= 244 {
+                4
+            } else {
+                0
+            };
+            if width == 0 || !has1 {
+                return false;
+            }
+            let lo1: u8 = if b == 224 {
+                160
+            } else if b == 240 {
+                144
+            } else {
+                128
+            };
+            let hi1: u8 = if b == 237 {
+                159
+            } else if b == 244 {
+                143
+            } else {
+                191
+            };
+            if b1 < lo1 || b1 > hi1 {
+                return false;
+            }
+            for k in 2..width {
+                if !continuation(in s, wrapping_add(i, k)) {
+                    return false;
+                }
+            }
+            i = wrapping_add(i, width);
+        }
+    }
+    true
+}
+
+// The only percent decoder. Its output is never decoded again. The grammar
+// was checked first, so every escape here is complete.
+fn decode(in s: Slice[u8], lo: u64, hi: u64, plus_is_space: bool) -> ChunkSeq[u8] {
+    let mut out: ChunkSeq[u8] = ChunkSeq::with_capacity[u8](wrapping_sub(hi, lo));
+    let mut i = lo;
+    loop {
+        if i >= hi {
+            break;
+        }
+        let b = byte(in s, i);
+        if b == 37 && wrapping_add(i, 2) < hi {
+            let high = hex_value(byte(in s, wrapping_add(i, 1)));
+            let low = hex_value(byte(in s, wrapping_add(i, 2)));
+            out.push(wrapping_add(wrapping_mul(high, 16), low));
+            i = wrapping_add(i, 3);
+        } else {
+            if plus_is_space && b == 43 {
+                out.push(32);
+            } else {
+                out.push(b);
+            }
+            i = wrapping_add(i, 1);
+        }
+    }
+    out
+}
+
+fn contains(in s: ChunkSeq[u8], b: u8) -> bool {
+    for i in 0..s.len() {
+        if byte_of(in s, i) == b {
+            return true;
+        }
+    }
+    false
+}
+
+fn require_utf8(policy: Utf8Policy) -> bool {
+    match policy {
+        Utf8Policy::Require => true,
+        Utf8Policy::AllowBytes => false,
+    }
+}
+
+// Decode one query key or value into `out`.
+fn query_part(inout out: ChunkSeq[u8], in s: Slice[u8], lo: u64, hi: u64, utf8: bool)
+    -> Option[TargetError] {
+    let decoded = decode(in s, lo, hi, true);
+    if contains(in decoded, 0) {
+        return Option::Some(TargetError::EncodedNul);
+    }
+    if utf8 && !valid_utf8(in decoded) {
+        return Option::Some(TargetError::InvalidUtf8);
+    }
+    out.extend(in decoded.as_slice());
+    Option::None
+}
+
+fn empty_target(asterisk: bool) -> ParsedTarget {
+    ParsedTarget {
+        asterisk: asterisk,
+        segments: ChunkSeq::new[u8](),
+        segment_ends: ChunkSeq::new[u64](),
+        trailing_slash: false,
+        has_query: false,
+        keys: ChunkSeq::new[u8](),
+        key_ends: ChunkSeq::new[u64](),
+        values: ChunkSeq::new[u8](),
+        value_ends: ChunkSeq::new[u64](),
+        value_present: ChunkSeq::new[bool]()
+    }
+}
+
+fn parse(in raw: Slice[u8], limits: TargetLimits) -> Result[ParsedTarget, TargetError] {
+    let n = raw.len();
+    if n > limits.max_target_bytes {
+        return Result::Err(TargetError::TooLong);
+    }
+    if n == 1 && byte(in raw, 0) == 42 {
+        return Result::Ok(empty_target(true));
+    }
+    if !valid_origin(in raw) {
+        return Result::Err(classify_syntax(in raw));
+    }
+    let utf8 = require_utf8(limits.utf8);
+    let question = find(in raw, 0, n, 63);
+    let has_query = question < n;
+    let mut rest_hi = question;
+    let rest_lo: u64 = 1;
+    let mut trailing = false;
+    if rest_hi > rest_lo && byte(in raw, wrapping_sub(rest_hi, 1)) == 47 {
+        rest_hi = wrapping_sub(rest_hi, 1);
+        trailing = true;
+    }
+    let segment_count = if rest_hi <= rest_lo {
+        if trailing {
+            // Only `//`, which the grammar already rejects.
+            return Result::Err(TargetError::EmptySegment);
+        }
+        0
+    } else {
+        wrapping_add(count(in raw, rest_lo, rest_hi, 47), 1)
+    };
+    if segment_count > limits.max_segments {
+        return Result::Err(TargetError::TooManySegments);
+    }
+    let query_lo = wrapping_add(question, 1);
+    let entry_count = if has_query && query_lo < n {
+        wrapping_add(count(in raw, query_lo, n, 38), 1)
+    } else {
+        0
+    };
+    if entry_count > limits.max_query_entries {
+        return Result::Err(TargetError::TooManyQueryEntries);
+    }
+    let mut t = empty_target(false);
+    t.trailing_slash = trailing;
+    t.has_query = has_query;
+    if segment_count > 0 {
+        let mut at = rest_lo;
+        loop {
+            let end = find(in raw, at, rest_hi, 47);
+            if end == at {
+                return Result::Err(TargetError::EmptySegment);
+            }
+            let decoded = decode(in raw, at, end, false);
+            if contains(in decoded, 47) {
+                return Result::Err(TargetError::EncodedSlash);
+            }
+            if contains(in decoded, 92) {
+                return Result::Err(TargetError::EncodedBackslash);
+            }
+            if contains(in decoded, 0) {
+                return Result::Err(TargetError::EncodedNul);
+            }
+            let dots = decoded
+                .len()
+                >= 1
+                && decoded
+                .len()
+                <= 2
+                && byte_of(in decoded, 0)
+                == 46
+                && byte_of(in decoded, wrapping_sub(decoded.len(), 1))
+                == 46;
+            if dots {
+                return Result::Err(TargetError::DotSegment);
+            }
+            if utf8 && !valid_utf8(in decoded) {
+                return Result::Err(TargetError::InvalidUtf8);
+            }
+            t.segments.extend(in decoded.as_slice());
+            t.segment_ends.push(t.segments.len());
+            if end >= rest_hi {
+                break;
+            }
+            at = wrapping_add(end, 1);
+        }
+    }
+    if has_query && query_lo < n {
+        let mut at = query_lo;
+        loop {
+            let end = find(in raw, at, n, 38);
+            if end == at {
+                return Result::Err(TargetError::EmptyQueryEntry);
+            }
+            let eq = find(in raw, at, end, 61);
+            if eq == at {
+                return Result::Err(TargetError::EmptyQueryKey);
+            }
+            match query_part(inout t.keys, in raw, at, eq, utf8) {
+                Option::Some(e) => {
+                    return Result::Err(e);
+                },
+                Option::None => (),
+            }
+            t.key_ends.push(t.keys.len());
+            if eq < end {
+                match query_part(inout t.values, in raw, wrapping_add(eq, 1), end, utf8) {
+                    Option::Some(e) => {
+                        return Result::Err(e);
+                    },
+                    Option::None => (),
+                }
+                t.value_present.push(true);
+            } else {
+                t.value_present.push(false);
+            }
+            t.value_ends.push(t.values.len());
+            if end >= n {
+                break;
+            }
+            at = wrapping_add(end, 1);
+        }
+    }
+    Result::Ok(t)
+}
+
+// `Target::parse`.
+pub fn target_parse(in raw: Slice[u8], limits: TargetLimits)
+    -> ParsedTarget eff [Fail[TargetError]] {
+    match parse(in raw, limits) {
+        Result::Ok(t) => t,
+        Result::Err(e) => Fail::raise(e),
+    }
+}

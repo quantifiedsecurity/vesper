@@ -91,6 +91,45 @@ pub enum SeqOp {
     /// A `String` or `Str` primitive (§13): a string is a `ChunkSeq[u8]`
     /// that holds valid UTF-8, so its operations share `Op::Seq`.
     Str(crate::strings::StrOp),
+    /// An element access of a sequence or slice whose index a dominating
+    /// [`SeqOp::BoundsGuard`] proved in bounds. Only the native bounds-check
+    /// hoisting pass ([`crate::bounds_hoist`]) creates it, in the fast copy
+    /// of a counted loop; its operands are those of the access it replaces.
+    Hoisted(Access),
+    /// `[lo, hi, s1, c1, .., sn, cn]`: whether the range `lo..hi` (`lo..=hi`
+    /// when `inclusive`) is empty, or `c_k + i` is in bounds of `s_k` for
+    /// every index `i` of the range and every `k` (`c_k + hi` fits the
+    /// length without overflow). A `bool`; total. Created by
+    /// [`crate::bounds_hoist`].
+    BoundsGuard { inclusive: bool },
+}
+
+/// The element access a [`SeqOp::Hoisted`] performs without its check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum Access {
+    /// `get` or `s[i]` on a sequence or slice: the element.
+    Get,
+    /// `set` on a sequence or slice: `Unit`.
+    Set,
+    /// `try_get`: always `Some(element)`.
+    TryGet,
+    /// `try_set`: stores and yields `true`.
+    TrySet,
+}
+
+impl Access {
+    /// The checked operation this access stands for, on a receiver that is
+    /// a slice (`slice`) or a sequence.
+    pub fn checked(self, slice: bool) -> SeqOp {
+        match (self, slice) {
+            (Self::Get, false) => SeqOp::Get,
+            (Self::Get, true) => SeqOp::SliceGet,
+            (Self::Set, false) => SeqOp::Set,
+            (Self::Set, true) => SeqOp::SliceSet,
+            (Self::TryGet, _) => SeqOp::TryGet,
+            (Self::TrySet, _) => SeqOp::TrySet,
+        }
+    }
 }
 
 impl SeqOp {
@@ -130,7 +169,10 @@ impl SeqOp {
     }
     /// Whether argument 0 is the receiver sequence or slice.
     pub fn has_receiver(self) -> bool {
-        !matches!(self, Self::New | Self::WithCapacity)
+        !matches!(
+            self,
+            Self::New | Self::WithCapacity | Self::BoundsGuard { .. }
+        )
     }
     pub fn name(self) -> &'static str {
         match self {
@@ -150,6 +192,8 @@ impl SeqOp {
             Self::AsSlice => "as_slice",
             Self::SubSlice => "slice",
             Self::Str(op) => op.name(),
+            Self::Hoisted(access) => access.checked(false).name(),
+            Self::BoundsGuard { .. } => "bounds_guard",
         }
     }
 }

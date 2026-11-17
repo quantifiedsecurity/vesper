@@ -4,3 +4,18 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 description = "Bounded strict HTTP/1.1 request framing for the Prism host prototype"
+build = "build.rs"
+
+[features]
+# Forward the public API to the Vesper port (the packages in vesper/) instead of the Rust
+# reference build (port wave P1 lane 14, #911).
+vesper-port = ["dep:vesper-port-harness"]
+# A deliberately wrong Vesper build, one edit per library: the port test run
+# must fail (CI asserts that it does).
+vesper-port-divergent = ["vesper-port"]
+
+[dependencies]
+vesper-port-abi = { path = "../vesper-port-abi" }
+
+[build-dependencies]
+vesper-port-harness = { path = "../vesper-port-harness", optional = true }
