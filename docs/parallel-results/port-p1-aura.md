@@ -4,8 +4,11 @@ Claim: [#910](https://github.com/robot-head/vesper/issues/910). The keyed view
 runtime of `crates/vesper-aura` (validation, planning, the session state
 machine, the recording backend and the SimAura queries) now runs as the Vesper
 Loom package `@vesper/aura` in `crates/vesper-aura/vesper/`, linked through
-the export ABI. The Rust implementation is deleted. `vesper-aura-gtk` is
-unchanged and passes against the port.
+the export ABI behind the non-default `vesper-port` feature. The Rust
+implementation stays the default build: by the user's rule (2026-11-17), a
+port stays non-default until it reaches reasonable performance parity, and
+the benchmark below measures the port at 3.8x to 5.2x the Rust build's time.
+`vesper-aura-gtk` is unchanged and passes against both builds.
 
 ## API inventory (re-measured before porting)
 
@@ -60,7 +63,7 @@ values (`ViewTree`, `Value`, `String`s) handed back to callers.
 `lib.ves` holds every type and the 40 exported functions (the export ABI
 exports only root-module functions, and types defined in submodules get
 mangled binding names). `codes.ves` lists the numeric codes shared with
-`src/ported/codec.rs`. 3,966 lines of Vesper replace 1,814 lines of Rust;
+`src/ported/codec.rs`. 3,966 lines of Vesper mirror 1,814 lines of Rust;
 the Rust side keeps 1,357 lines of wrapper and codec plus the 1,770-line
 generated binding (`port/binding.rs`, 129 `unsafe` occurrences, all in
 generated code; the crate's own code has none).
@@ -100,8 +103,7 @@ WCAG-gated `SimAura` and checks that the port's live-allocation count returns
 to its start. The two unit tests share a lock because the count is
 process-wide.
 
-All 28 tests and the 9 doctests passed against both builds before deletion,
-and pass against the port after it.
+All 28 tests and the 9 doctests pass against both builds.
 
 ## Divergence checks
 
@@ -121,24 +123,53 @@ edit was also built alone to check that it is the one the named test catches.
 
 ## Benchmarks
 
-None. Aura is not on the lane rules' hot-path list and the crate had no
-benchmark, so no ABBA comparison was required, and no performance numbers are
-claimed.
+`examples/abba.rs`, run by `crates/vesper-aura/bench-abba.sh`. The two builds
+cannot share one binary (the public failure types name a single `Session`),
+so the example is built twice and its `compare` mode runs the executables as
+separate processes in Rust, port, port, Rust order per epoch. Each run warms
+up for 50 operations and then times 200; the pair totals are analyzed with
+`vesper_bench::analyze_pairs`. Trees are built before the clock starts.
+
+Workloads, over a 64-row tree (257 nodes: per row a Container holding a
+Text, a Button and an Input):
+
+- `one-text`: `prepare` plus `commit` of a tree that differs in one Text.
+- `reorder`: `prepare` plus `commit` of a tree with its rows rotated by one
+  and every row Text changed.
+- `encode-audit`: `encode_view_tree` plus `audit_view_tree`.
+
+Setup: 4-vCPU Intel Xeon @ 2.10 GHz cloud container, Linux, Rust 1.97
+`--release`, the port compiled by the `vesper` executable from this branch
+through `vesper-port-harness`; 15 epochs.
+
+| Workload | Rust ns/op | Port ns/op | Port/Rust median | Range over epochs |
+| --- | ---: | ---: | ---: | --- |
+| one-text | 475,575 | 1,898,130 | 3.84x | 3.12x to 5.68x |
+| reorder | 555,501 | 2,780,751 | 5.24x | 4.68x to 5.93x |
+| encode-audit | 166,098 | 664,907 | 4.00x | 3.42x to 5.61x |
+
+The port is slower than 2x on every workload, so the Rust code is not deleted
+(lane rules, "Performance"). Not yet profiled. Candidate costs: every call
+flattens the tree into words plus a text buffer and decodes it again in
+Vesper, the recorder's published state is copied into a Rust snapshot after
+every change, and the Vesper side keeps its maps as sorted index arrays
+searched by binary search, with a bounds-checked call per element access.
 
 ## Platforms run
 
-- Linux (cloud container), Cargo, Rust 1.97: `cargo test -p vesper-aura`, the
-  vesper-aura section of `scripts/test-port-harness.sh` (five divergent
+- Linux (cloud container), Cargo, Rust 1.97: `cargo test -p vesper-aura`
+  with and without `--features vesper-port`, the vesper-aura section of `scripts/test-port-harness.sh` (five divergent
   builds), and `cargo +1.100.0 clippy --all-targets -p vesper-aura -p
   vesper-aura-gtk -- -D warnings`, with and without `vesper-port-divergent`.
 - Linux, `vesper-aura-gtk` with `--features gtk` under
   `dbus-run-session -- xvfb-run -a` (`GSK_RENDERER=cairo`), against both
-  builds before deletion and against the port after it.
+  builds.
 - Bazel (BuildBuddy), macOS AArch64 and Windows x86_64 MSVC, and the
   `aura-gtk.yml` workflow: through CI on the PR.
 
 ## Rust code deleted
 
-Yes. `src/reference/` (the frozen Rust implementation, 1,814 lines) and the
-`vesper-port` feature are gone; the port is the only build, and
-`vesper-port-divergent` is the only feature.
+No. The Rust implementation (`src/reference/`) is the default build and
+takes bug fixes only; the port is built with `--features vesper-port`, and
+`scripts/test-port-harness.sh` runs the crate's tests against both builds
+plus the five divergent builds. Deletion waits for performance parity.
