@@ -240,19 +240,18 @@ fn closures_and_generic_callees_stay_calls() {
     assert_eq!(calls(&program, "main", "apply"), 1, "closure body");
 }
 
-/// The Stage 1 lock corpus is built with `optimize` off; the inliner and
-/// `opt_level=speed` only apply with it on, so unoptimized objects are the
-/// same bytes the backend produced before this lane.
+/// The Stage 1 lock corpus is built with `optimize` off, and executable
+/// objects keep their calls even with it on (the verifiers report their
+/// call graphs). Only the JIT, library exports and sessions inline.
 #[test]
-fn unoptimized_objects_do_not_change() {
+fn objects_keep_their_calls() {
     let w = world(NESTED);
     let target = Some("x86_64-unknown-linux-gnu");
-    let (a, clif_a) = native::object_with_options(&w, "main", target, false).unwrap();
-    let (b, clif_b) = native::object_with_options(&w, "main", target, false).unwrap();
-    assert_eq!(a, b);
-    assert_eq!(clif_a, clif_b);
-    // The unoptimized program still calls `f`; the optimized one does not.
-    assert!(clif_a.contains("call "), "{clif_a}");
-    let (_, optimized) = native::object_with_options(&w, "main", target, true).unwrap();
-    assert_ne!(optimized, clif_a);
+    for optimize in [false, true] {
+        let (a, clif_a) = native::object_with_options(&w, "main", target, optimize).unwrap();
+        let (b, clif_b) = native::object_with_options(&w, "main", target, optimize).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(clif_a, clif_b);
+        assert!(clif_a.contains("call "), "{clif_a}");
+    }
 }

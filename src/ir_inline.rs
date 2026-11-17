@@ -7,7 +7,11 @@
 //! splices the body of a small callee into its caller's control-flow graph.
 //!
 //! It runs only on the native path, only when `optimize` is on, after
-//! [`crate::ir_opt::optimize`] and before [`crate::fip::elaborate_non_fip_drops`].
+//! [`crate::ir_opt::optimize`] and before [`crate::fip::elaborate_non_fip_drops`]:
+//! in the JIT, in library exports (`vesper build --lib`, which ports use) and
+//! in sessions. Executable objects keep their calls, because the
+//! integration-B verifiers report and budget the call graph of exactly the
+//! objects `vesper build` emits.
 //! It is never called from `ir_opt::optimize`, which the verified backend
 //! also runs, so the verified backend's input and the Stage 1 lock corpus
 //! (built with `optimize` off) do not change.

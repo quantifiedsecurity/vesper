@@ -650,7 +650,12 @@ fn compile_entry<M: Module>(
     let mut program = crate::ir::lower_world(world);
     if optimize {
         crate::ir_opt::optimize(world, &mut program)?;
-        crate::ir_inline::inline(world, &mut program, &crate::ir_inline::Budget::default());
+        // Object emission keeps every call: the integration-B verifiers
+        // report and budget the call graph of exactly these objects, and an
+        // observed build must equal the plain one (#931).
+        if matches!(linkage, DefinitionLinkage::Jit) {
+            crate::ir_inline::inline(world, &mut program, &crate::ir_inline::Budget::default());
+        }
     } else {
         crate::ir_opt::fip_reuse_pass(world, &mut program)?;
     }
@@ -1284,9 +1289,10 @@ pub fn object_isa_for(
 ) -> Result<std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, String> {
     isa_with_flags(target, needs_nan_canonicalization(world), false)
 }
-/// [`object_isa_for`] for an optimized build: Cranelift runs at
-/// `opt_level=speed` when `optimize` is on (#931). Builds with a verifier
-/// observer keep [`object_isa_for`], which the verifiers recompile with.
+/// [`object_isa_for`] for an optimized library build
+/// ([`export::object`]): Cranelift runs at `opt_level=speed` when
+/// `optimize` is on (#931). Executable objects keep [`object_isa_for`],
+/// which the integration-B verifiers recompile emitted functions with.
 pub fn object_isa_optimized(
     world: &World,
     target: Option<&str>,
@@ -1377,7 +1383,7 @@ pub fn object_traced_with_options(
     target: Option<&str>,
     optimize: bool,
 ) -> Result<(Vec<u8>, String), String> {
-    let isa = object_isa_optimized(world, target, optimize)?;
+    let isa = object_isa_for(world, target)?;
     let builder = ObjectBuilder::new(isa, "vesper", cranelift_module::default_libcall_names())
         .map_err(|e| e.to_string())?;
     let mut m = ObjectModule::new(builder);
@@ -1455,11 +1461,7 @@ pub fn object_with_codegen_options(
     instrument: Option<Instrument<'_>>,
     options: CodegenOptions,
 ) -> Result<(Vec<u8>, String), String> {
-    let isa = if observer.is_none() && instrument.is_none() {
-        object_isa_optimized(world, target, optimize)?
-    } else {
-        object_isa_for(world, target)?
-    };
+    let isa = object_isa_for(world, target)?;
     if windows::is_windows(isa.triple()) {
         return windows::object(world, entry, isa, optimize, observer, instrument, options);
     }
