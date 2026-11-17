@@ -284,7 +284,7 @@ fn visit(e: &Expr, callback: &mut impl FnMut(&Expr)) {
         _ => {}
     }
 }
-fn contains_function(world: &World, t: &Type) -> bool {
+pub(crate) fn contains_function(world: &World, t: &Type) -> bool {
     fn visit(world: &World, t: &Type, seen: &mut BTreeSet<String>) -> bool {
         match t {
             Type::Function { .. } => true,
@@ -651,6 +651,12 @@ fn compile_entry<M: Module>(
     let mut program = crate::ir::lower_world(world);
     if optimize {
         crate::ir_opt::optimize(world, &mut program)?;
+        // Object emission keeps every call: the integration-B verifiers
+        // report and budget the call graph of exactly these objects, and an
+        // observed build must equal the plain one (#931).
+        if matches!(linkage, DefinitionLinkage::Jit) {
+            crate::ir_inline::inline(world, &mut program, &crate::ir_inline::Budget::default());
+        }
     } else {
         crate::ir_opt::fip_reuse_pass(world, &mut program)?;
     }
@@ -674,6 +680,7 @@ fn compile_entry<M: Module>(
         linkage,
         trace_ok,
         trace_entry,
+        optimize,
     )?;
     let mut abi = Vec::new();
     for (key, (name, vars)) in &instances {
@@ -842,6 +849,7 @@ fn define_instances<M: Module>(
     ids: &BTreeMap<String, FuncId>,
     program: &crate::ir::Program,
     linkage: DefinitionLinkage,
+    optimize: bool,
 ) -> Result<String, String> {
     define_instances_observed_with_trace(
         m,
@@ -855,6 +863,7 @@ fn define_instances<M: Module>(
         linkage,
         false,
         None,
+        optimize,
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -870,6 +879,7 @@ fn define_instances_observed_with_trace<M: Module>(
     linkage: DefinitionLinkage,
     trace_host: bool,
     trace_entry: Option<(&str, FuncId)>,
+    operands_only: bool,
 ) -> Result<String, String> {
     let mut clif = String::new();
     let denorm = crate::capability_effects::const_denorm_spans(world);
@@ -967,6 +977,7 @@ fn define_instances_observed_with_trace<M: Module>(
                 denorm: &denorm,
                 source_locations: options.source_locations,
                 srcloc: ir::SourceLoc::default(),
+                operands_only,
             };
             c.set_location(f.span.start);
             // Function-value parameters bound to top-level functions by
@@ -1161,6 +1172,11 @@ fn jit_run_entry(
         .set("use_colocated_libcalls", "false")
         .map_err(|e| e.to_string())?;
     flags.set("is_pic", "false").map_err(|e| e.to_string())?;
+    // Optimized builds run Cranelift's egraph optimizer (#931); unoptimized
+    // builds keep the default `none`.
+    if optimize {
+        flags.set("opt_level", "speed").map_err(|e| e.to_string())?;
+    }
     if needs_nan_canonicalization(world) {
         flags
             .set("enable_nan_canonicalization", "true")
@@ -1268,7 +1284,7 @@ pub fn object_with_options(
 pub fn object_isa(
     target: Option<&str>,
 ) -> Result<std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, String> {
-    isa_with_flags(target, false)
+    isa_with_flags(target, false, false)
 }
 /// [`object_isa`] for `world`: NaN canonicalisation is enabled when the
 /// program has a DetFloat function ([`needs_nan_canonicalization`]).
@@ -1276,14 +1292,29 @@ pub fn object_isa_for(
     world: &World,
     target: Option<&str>,
 ) -> Result<std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, String> {
-    isa_with_flags(target, needs_nan_canonicalization(world))
+    isa_with_flags(target, needs_nan_canonicalization(world), false)
+}
+/// [`object_isa_for`] for an optimized library build
+/// ([`export::object`]): Cranelift runs at `opt_level=speed` when
+/// `optimize` is on (#931). Executable objects keep [`object_isa_for`],
+/// which the integration-B verifiers recompile emitted functions with.
+pub fn object_isa_optimized(
+    world: &World,
+    target: Option<&str>,
+    optimize: bool,
+) -> Result<std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, String> {
+    isa_with_flags(target, needs_nan_canonicalization(world), optimize)
 }
 fn isa_with_flags(
     target: Option<&str>,
     canonicalize_nans: bool,
+    speed: bool,
 ) -> Result<std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, String> {
     let mut flags = settings::builder();
     flags.set("is_pic", "true").map_err(|e| e.to_string())?;
+    if speed {
+        flags.set("opt_level", "speed").map_err(|e| e.to_string())?;
+    }
     if canonicalize_nans {
         flags
             .set("enable_nan_canonicalization", "true")
@@ -1665,6 +1696,11 @@ struct Codegen<'a, 'b, M: Module> {
     source_locations: bool,
     /// The location instructions are currently emitted at.
     srcloc: ir::SourceLoc,
+    /// Read only an instruction's operands from their frontend variables
+    /// instead of every IR value of the graph (optimized builds, #931).
+    /// Reading every value at every instruction gives each block a phi for
+    /// each value of the graph, which inlining makes quadratic.
+    operands_only: bool,
 }
 /// The Cranelift source location of source byte `offset`. Locations are
 /// byte offsets into the checked module's source; the all-ones value is
@@ -2570,8 +2606,17 @@ impl<M: Module> Codegen<'_, '_, M> {
             let before_inst_drops = f.box_drops_before_inst.get(&i);
             let after_inst_drops = f.box_drops_after_inst.get(&i);
             for (inst_idx, inst) in block.instructions.iter().enumerate() {
-                for (id, register) in &registers {
-                    values.insert(*id, self.use_var(*register));
+                if !self.operands_only || before_inst_drops.is_some() || after_inst_drops.is_some()
+                {
+                    for (id, register) in &registers {
+                        values.insert(*id, self.use_var(*register));
+                    }
+                } else {
+                    for id in crate::ir_inline::operands(&inst.op) {
+                        if let Some(register) = registers.get(&id) {
+                            values.insert(id, self.use_var(*register));
+                        }
+                    }
                 }
                 if !self.in_fip_fn
                     && let Some(drops) = before_inst_drops
@@ -2914,8 +2959,16 @@ impl<M: Module> Codegen<'_, '_, M> {
                     }
                 }
             }
-            for (id, register) in &registers {
-                values.insert(*id, self.use_var(*register));
+            if !self.operands_only || f.box_drops_before_term.contains_key(&i) {
+                for (id, register) in &registers {
+                    values.insert(*id, self.use_var(*register));
+                }
+            } else {
+                for id in crate::ir_inline::terminator_operands(&block.terminator) {
+                    if let Some(register) = registers.get(&id) {
+                        values.insert(id, self.use_var(*register));
+                    }
+                }
             }
             if !self.in_fip_fn
                 && let Some(drops) = f.box_drops_before_term.get(&i)

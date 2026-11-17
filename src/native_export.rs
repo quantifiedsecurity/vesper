@@ -1009,7 +1009,7 @@ pub fn object(
         .iter()
         .map(|f| (f.name.clone(), f.symbol.clone()))
         .collect::<BTreeMap<_, _>>();
-    let isa = object_isa_for(world, target)?;
+    let isa = object_isa_optimized(world, target, optimize)?;
     if windows::is_windows(isa.triple()) {
         return windows::emit_with(isa, "vesper", |m| {
             compile_exports(m, world, interface, &exports, optimize)
@@ -1046,6 +1046,7 @@ fn compile_exports<M: Module>(
     let mut program = crate::ir::lower_world(world);
     if optimize {
         crate::ir_opt::optimize(world, &mut program)?;
+        crate::ir_inline::inline(world, &mut program, &crate::ir_inline::Budget::default());
     } else {
         crate::ir_opt::fip_reuse_pass(world, &mut program)?;
     }
@@ -1066,7 +1067,15 @@ fn compile_exports<M: Module>(
             .map_err(|e| e.to_string())?;
         ids.insert(key.clone(), id);
     }
-    let clif = define_instances(m, world, &all, &ids, &program, DefinitionLinkage::Object)?;
+    let clif = define_instances(
+        m,
+        world,
+        &all,
+        &ids,
+        &program,
+        DefinitionLinkage::Object,
+        optimize,
+    )?;
     if interface.is_v2() {
         glue::define(m, world, interface)?;
     }
