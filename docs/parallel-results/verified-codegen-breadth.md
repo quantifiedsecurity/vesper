@@ -593,6 +593,12 @@ Claim #844 (lane V2 of the verified-compiler plan; references #582, #583).
 
 - The heap exists only in the Linux ELF executables. Mach-O and COFF need a
   zero-fill section and relocations.
+- The RV64 semantics proof (`CodegenRv64Semantics.lean`, #862) relates
+  only the stack frame. `ldh`/`sth` and the `loadptr`/`storeptr` rows are
+  outside `emit_sim`/`row_sim` (`DataM`, `FrameRow`) until `Corr` also
+  relates the heap at `HEAP_BASE`. That extension also needs the frame to be
+  disjoint from the heap, and heap indices to stay below `HEAP_WORDS`.
+  `CodegenFailScope.lean` counts `sth` as a store.
 - The Lean heap is unbounded. The physical bound (512 MiB) comes from the
   allocator rows that lowering emits; it is enforced at run time and tested,
   not proved.
