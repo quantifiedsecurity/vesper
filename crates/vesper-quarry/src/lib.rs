@@ -30,7 +30,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub use execute::{DataSet, QueryResult};
-pub use plan::{BoundColumn, JoinKind, PreparedQuery, RelPlan, TypedExpr};
+pub use plan::{
+    AccessPath, AccessPlan, BindingPath, BoundColumn, IndexBound, JoinKind, PreparedQuery, RelPlan,
+    TypedExpr,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalarType {

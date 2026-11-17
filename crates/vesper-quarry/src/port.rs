@@ -23,7 +23,10 @@
 
 use crate::execute::{DataSet, QueryResult};
 use crate::parse::Cmp;
-use crate::plan::{BoundColumn, ExprNode, JoinKind, PreparedQuery, RelPlan, TypedExpr};
+use crate::plan::{
+    AccessPath, AccessPlan, BindingPath, BoundColumn, ExprNode, IndexBound, JoinKind, PreparedQuery,
+    RelPlan, TypedExpr,
+};
 use crate::{
     ColumnDef, DdlChange, Error, ErrorKind, HermeticCatalog, Limits, ParamDef, Result, ScalarType,
     Value,
@@ -608,6 +611,80 @@ pub(crate) fn execute(
         rows,
         work,
     })
+}
+
+/// `PreparedQuery::access_plan` through the port.
+pub(crate) fn access_plan(
+    query: &PreparedQuery,
+    data: &DataSet,
+    indexes: &BTreeMap<String, (String, String)>,
+    params: &BTreeMap<String, Value>,
+) -> Result<AccessPlan> {
+    let mut e = Enc::default();
+    e.plan(&optimize(&query.plan));
+    e.w(params.len() as u64);
+    for (name, v) in params {
+        e.s(name);
+        e.value(v);
+    }
+    e.catalog(&query.catalog);
+    e.w(data.tables.len() as u64);
+    for (name, rows) in &data.tables {
+        e.s(name);
+        e.rows(rows, false);
+    }
+    e.w(indexes.len() as u64);
+    for (name, (table, column)) in indexes {
+        e.s(name);
+        e.s(table);
+        e.s(column);
+    }
+    let q = checked(binding::access_paths(&e.words, &e.text))?;
+    let words = q.as_ref().words().to_vec();
+    let mut d = Dec {
+        words: &words,
+        pool: &e.text,
+        at: 0,
+    };
+    let alias = |binding: usize| {
+        query
+            .columns
+            .iter()
+            .find(|c| c.binding == binding)
+            .map_or_else(String::new, |c| c.alias.clone())
+    };
+    let mut bindings = Vec::new();
+    for b in 0..words.len() / 8 {
+        let kind = d.w();
+        let index = d.s();
+        let bound = [
+            IndexBound::Eq,
+            IndexBound::Range,
+            IndexBound::Lower,
+            IndexBound::Upper,
+        ][d.n().min(3)];
+        let outer = d.n();
+        let slot = d.n();
+        let path = match kind {
+            0 => AccessPath::Scan,
+            1 => AccessPath::Index { index, bound },
+            _ => AccessPath::IndexJoin {
+                index,
+                outer: alias(outer),
+                column: query
+                    .columns
+                    .get(slot)
+                    .map_or_else(String::new, |c| c.column.clone()),
+            },
+        };
+        bindings.push(BindingPath {
+            alias: alias(b),
+            path,
+            rows: d.w(),
+            cost: d.w(),
+        });
+    }
+    Ok(AccessPlan { bindings })
 }
 
 /// Live Vesper allocations (for leak tests).

@@ -177,17 +177,18 @@ impl Abi for Stat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Tok { pub kind: u64, pub a: u64, pub b: u64 }
+pub struct Tok { pub kind: u64, pub a: u64, pub b: u64, pub kw: u64 }
 
 impl Abi for Tok {
-    const WORDS: usize = 3;
+    const WORDS: usize = 4;
     fn put(&self, out: &mut [u64]) {
         Abi::put(&self.kind, &mut out[0..]);
         Abi::put(&self.a, &mut out[1..]);
         Abi::put(&self.b, &mut out[2..]);
+        Abi::put(&self.kw, &mut out[3..]);
     }
     fn get(words: &[u64]) -> Self {
-        Tok { kind: Abi::get(&words[0..]), a: Abi::get(&words[1..]), b: Abi::get(&words[2..]) }
+        Tok { kind: Abi::get(&words[0..]), a: Abi::get(&words[1..]), b: Abi::get(&words[2..]), kw: Abi::get(&words[3..]) }
     }
 }
 
@@ -393,7 +394,7 @@ const _: () = assert!(<Raw as Abi>::WORDS == 5);
 const _: () = assert!(<Rng as Abi>::WORDS == 2);
 const _: () = assert!(<Sel as Abi>::WORDS == 3);
 const _: () = assert!(<Stat as Abi>::WORDS == 8);
-const _: () = assert!(<Tok as Abi>::WORDS == 3);
+const _: () = assert!(<Tok as Abi>::WORDS == 4);
 const _: () = assert!(<Val as Abi>::WORDS == 3);
 
 unsafe extern "C" {
@@ -401,6 +402,7 @@ unsafe extern "C" {
     fn vesper_quarry_seq_free(seq: i64) -> i64;
     fn vesper_quarry_live_allocations() -> i64;
     fn vesper_quarry_Q_drop(value: *mut u64) -> i64;
+    fn vesper_quarry_access_paths(result: *mut u64, prog: *mut u64, text: *mut u64) -> i64;
     fn vesper_quarry_ddl_apply(result: *mut u64, meta: *mut u64, text: *mut u64, revision: i64, sql: *mut u64, limits: *mut u64) -> i64;
     fn vesper_quarry_execute(result: *mut u64, prog: *mut u64, text: *mut u64) -> i64;
     fn vesper_quarry_optimize(result: *mut u64, plan: *mut u64) -> i64;
@@ -418,6 +420,16 @@ pub const RUNTIME: vesper_port_abi::SeqRuntime = vesper_port_abi::SeqRuntime {
 pub fn live_allocations() -> i64 {
     // SAFETY: the function only reads two counters.
     unsafe { vesper_quarry_live_allocations() }
+}
+
+/// Calls `access_paths` of the Vesper library `quarry` (`vesper_quarry_access_paths`).
+pub fn access_paths(prog: &[u64], text: &[u8]) -> Q {
+    let mut result = [0u64; 32];
+    // SAFETY: `vesper_quarry_access_paths` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(prog, |view_prog| vesper_port_abi::with_slice(text, |view_text| unsafe { vesper_quarry_access_paths(result.as_mut_ptr(), view_prog, view_text) }));
+    unsafe { Q::from_words(&result[0..]) }
 }
 
 /// Calls `ddl_apply` of the Vesper library `quarry` (`vesper_quarry_ddl_apply`).

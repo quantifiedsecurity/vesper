@@ -6165,6 +6165,9 @@ dependencies = [
 name = "vesper-quarry"
 version = "0.1.0"
 dependencies = [
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
  "vesper-simd",
 ]
 

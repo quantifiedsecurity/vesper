@@ -32,7 +32,10 @@
 copy struct Tok {
     kind: u64,
     a: u64,
-    b: u64
+    b: u64,
+    // For a Word: its reserved keyword id (1 select .. 31 using, in the
+    // order of `keyword`), or 0.
+    kw: u64
 }
 
 // One parsed (unchecked) expression. kind: Column 0 (a, b = qualifier range,
@@ -152,11 +155,16 @@ copy struct Stat {
 copy struct Bound {
     has_lo: bool,
     lo: Val,
-    lo_null: bool,
+    lo_incl: bool,
     has_hi: bool,
     hi: Val,
-    hi_null: bool,
-    unknown: bool
+    hi_incl: bool,
+    // A bound value is NULL: the path yields no rows.
+    null: bool,
+    // A bound value is a parameter with no value at planning.
+    unknown: bool,
+    // Every bound came from an `=` predicate.
+    only_eq: bool
 }
 
 // Everything one call needs; returned to Rust as the result handle.
@@ -239,18 +247,6 @@ fn new_q() -> Q {
     }
 }
 
-fn add(a: u64, b: u64) -> u64 {
-    wrapping_add(a, b)
-}
-
-fn sub(a: u64, b: u64) -> u64 {
-    wrapping_sub(a, b)
-}
-
-fn mul(a: u64, b: u64) -> u64 {
-    wrapping_mul(a, b)
-}
-
 fn sw(in s: Slice[u64], i: u64) -> u64 {
     match s.try_get(i) {
         Option::Some(x) => x,
@@ -280,11 +276,17 @@ fn cb(in s: ChunkSeq[u8], i: u64) -> u8 {
 }
 
 fn lim(in q: Q, i: u64) -> u64 {
-    cw(in q.lim, i)
+    match q.lim.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
 }
 
 fn ex(in q: Q, i: u64) -> u64 {
-    cw(in q.ex, i)
+    match q.ex.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
 }
 
 fn tok(in q: Q, i: u64) -> Tok {
@@ -293,7 +295,8 @@ fn tok(in q: Q, i: u64) -> Tok {
         Option::None => Tok {
             kind: 0,
             a: 0,
-            b: 0
+            b: 0,
+            kw: 0
         },
     }
 }
@@ -442,7 +445,7 @@ fn ceil_div(a: u64, b: u64) -> u64 {
     if r == 0 {
         d
     } else {
-        add(d, 1)
+        wrapping_add(d, 1)
     }
 }
 
@@ -457,7 +460,7 @@ fn put(inout m: ChunkSeq[u8], in s: Str) {
 
 fn put_range(inout m: ChunkSeq[u8], in p: ChunkSeq[u8], off: u64, len: u64) {
     for i in 0..len {
-        m.push(cb(in p, add(off, i)));
+        m.push(cb(in p, wrapping_add(off, i)));
     }
 }
 
@@ -466,7 +469,7 @@ fn put_u64(inout m: ChunkSeq[u8], x: u64) {
     let mut v = x;
     loop {
         let (d, r) = div_rem(v, 10);
-        m.push(wrapping_u8(add(r, 48)));
+        m.push(wrapping_u8(wrapping_add(r, 48)));
         v = d;
         if v == 0 {
             break;
@@ -478,7 +481,7 @@ fn put_u64(inout m: ChunkSeq[u8], x: u64) {
         if j <= i {
             break;
         }
-        j = sub(j, 1);
+        j = wrapping_sub(j, 1);
         if j <= i {
             break;
         }
@@ -486,7 +489,7 @@ fn put_u64(inout m: ChunkSeq[u8], x: u64) {
         let b = cb(in m, j);
         m.try_set(i, b);
         m.try_set(j, a);
-        i = add(i, 1);
+        i = wrapping_add(i, 1);
     }
 }
 
@@ -500,7 +503,7 @@ fn is_lit(in p: ChunkSeq[u8], off: u64, len: u64, in s: Str) -> bool {
             Option::Some(b) => b,
             Option::None => 0,
         };
-        if cb(in p, add(off, i)) != b {
+        if cb(in p, wrapping_add(off, i)) != b {
             return false;
         }
     }
@@ -513,7 +516,7 @@ fn same(in p: ChunkSeq[u8], ao: u64, al: u64, bo: u64, bl: u64) -> bool {
         return false;
     }
     for i in 0..al {
-        if cb(in p, add(ao, i)) != cb(in p, add(bo, i)) {
+        if cb(in p, wrapping_add(ao, i)) != cb(in p, wrapping_add(bo, i)) {
             return false;
         }
     }
@@ -528,8 +531,8 @@ fn order(in p: ChunkSeq[u8], ao: u64, al: u64, bo: u64, bl: u64) -> u64 {
         bl
     };
     for i in 0..n {
-        let x = cb(in p, add(ao, i));
-        let y = cb(in p, add(bo, i));
+        let x = cb(in p, wrapping_add(ao, i));
+        let y = cb(in p, wrapping_add(bo, i));
         if x < y {
             return 0;
         }
@@ -639,7 +642,10 @@ fn load_limits(inout q: Q, in limits: Slice[u64]) -> bool {
 fn identifier(inout q: Q, off: u64, len: u64) -> u64 {
     let mut ok = len > 0 && len <= 128;
     for i in 0..len {
-        let c = cb(in q.pool, add(off, i));
+        let c = match q.pool.try_get(wrapping_add(off, i)) {
+            Option::Some(c) => c,
+            Option::None => 0,
+        };
         let alpha = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95;
         let digit = c >= 48 && c <= 57;
         if i == 0 {
@@ -656,7 +662,10 @@ fn identifier(inout q: Q, off: u64, len: u64) -> u64 {
     }
     let start = q.pool.len();
     for i in 0..len {
-        let c = cb(in q.pool, add(off, i));
+        let c = match q.pool.try_get(wrapping_add(off, i)) {
+            Option::Some(c) => c,
+            Option::None => 0,
+        };
         let lower = if c >= 65 && c <= 90 {
             wrapping_add(c, 32)
         } else {
@@ -674,12 +683,12 @@ fn identifier(inout q: Q, off: u64, len: u64) -> u64 {
 
 fn load_catalog(inout q: Q, in meta: Slice[u64], at: u64) -> u64 {
     let n = sw(in meta, at);
-    let mut p = add(at, 1);
+    let mut p = wrapping_add(at, 1);
     for t in 0..n {
         let noff = sw(in meta, p);
-        let nlen = sw(in meta, add(p, 1));
-        let nc = sw(in meta, add(p, 2));
-        p = add(p, 3);
+        let nlen = sw(in meta, wrapping_add(p, 1));
+        let nc = sw(in meta, wrapping_add(p, 2));
+        p = wrapping_add(p, 3);
         q.tabs.push(CTab {
             noff: noff,
             nlen: nlen,
@@ -689,12 +698,12 @@ fn load_catalog(inout q: Q, in meta: Slice[u64], at: u64) -> u64 {
         for c in 0..nc {
             q.cols.push(CCol {
                 noff: sw(in meta, p),
-                nlen: sw(in meta, add(p, 1)),
-                ty: sw(in meta, add(p, 2)),
-                nullable: sw(in meta, add(p, 3)) != 0,
+                nlen: sw(in meta, wrapping_add(p, 1)),
+                ty: sw(in meta, wrapping_add(p, 2)),
+                nullable: sw(in meta, wrapping_add(p, 3)) != 0,
                 used: false
             });
-            p = add(p, 4);
+            p = wrapping_add(p, 4);
         }
     }
     p
@@ -715,7 +724,10 @@ fn find_table(in q: Q, off: u64, len: u64) -> u64 {
 // Lexer (src/parse.rs `lex`).
 
 fn byte(in s: Slice[u8], i: u64) -> u64 {
-    widen_u64(sb(in s, i))
+    match s.try_get(i) {
+        Option::Some(x) => widen_u64(x),
+        Option::None => 0,
+    }
 }
 
 fn is_space(c: u64) -> bool {
@@ -747,9 +759,9 @@ fn lex(inout q: Q, in sql: Slice[u8]) {
         }
         let c = byte(in sql, i);
         if is_space(c) {
-            i = add(i, 1);
+            i = wrapping_add(i, 1);
         } else {
-        let bn = add(q.toks.len(), 1);
+        let bn = wrapping_add(q.toks.len(), 1);
         if !bound(inout q, bn, 1, "SQL token limit") {
             return;
         }
@@ -757,20 +769,25 @@ fn lex(inout q: Q, in sql: Slice[u8]) {
         if (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95 || c == 58 {
             let is_param = c == 58;
             if is_param {
-                i = add(i, 1);
+                i = wrapping_add(i, 1);
             }
             let word_start = i;
             loop {
                 if i >= n || !is_word_byte(byte(in sql, i)) {
                     break;
                 }
-                i = add(i, 1);
+                i = wrapping_add(i, 1);
             }
-            let len = sub(i, word_start);
-            let off = identifier(inout q, add(base, word_start), len);
+            let len = wrapping_sub(i, word_start);
+            let off = identifier(inout q, wrapping_add(base, word_start), len);
             if q.err != 0 {
                 return;
             }
+            let kw = if is_param {
+                0
+            } else {
+                keyword(in q.pool, off, len)
+            };
             q.toks.push(Tok {
                 kind: if is_param {
                     2
@@ -778,20 +795,21 @@ fn lex(inout q: Q, in sql: Slice[u8]) {
                     1
                 },
                 a: off,
-                b: len
+                b: len,
+                kw: kw
             });
         } else if is_digit(c) || c == 45 {
-            i = add(i, 1);
+            i = wrapping_add(i, 1);
             loop {
                 if i >= n || !is_digit(byte(in sql, i)) {
                     break;
                 }
-                i = add(i, 1);
+                i = wrapping_add(i, 1);
             }
             // Parse sql[start..i] as an i64.
             let neg = c == 45;
             let first = if neg {
-                add(start, 1)
+                wrapping_add(start, 1)
             } else {
                 start
             };
@@ -805,12 +823,12 @@ fn lex(inout q: Q, in sql: Slice[u8]) {
                 if m > 922337203685477580 {
                     ok = false;
                 } else {
-                    m = add(mul(m, 10), sub(byte(in sql, j), 48));
+                    m = wrapping_add(wrapping_mul(m, 10), wrapping_sub(byte(in sql, j), 48));
                     if m > 9223372036854775808 {
                         ok = false;
                     }
                 }
-                j = add(j, 1);
+                j = wrapping_add(j, 1);
             }
             if ok && !neg && m > 9223372036854775807 {
                 ok = false;
@@ -820,17 +838,18 @@ fn lex(inout q: Q, in sql: Slice[u8]) {
                 return;
             }
             let v = if neg {
-                sub(0, m)
+                wrapping_sub(0, m)
             } else {
                 m
             };
             q.toks.push(Tok {
                 kind: 3,
                 a: v,
-                b: 0
+                b: 0,
+                kw: 0
             });
         } else if c == 39 {
-            i = add(i, 1);
+            i = wrapping_add(i, 1);
             let off = q.pool.len();
             let mut part = i;
             loop {
@@ -842,32 +861,34 @@ fn lex(inout q: Q, in sql: Slice[u8]) {
                     for k in part..i {
                         q.pool.push(sb(in sql, k));
                     }
-                    i = add(i, 1);
+                    i = wrapping_add(i, 1);
                     if i < n && byte(in sql, i) == 39 {
                         q.pool.push(39);
-                        i = add(i, 1);
+                        i = wrapping_add(i, 1);
                         part = i;
                     } else {
                         break;
                     }
                 } else {
-                    i = add(i, 1);
+                    i = wrapping_add(i, 1);
                 }
             }
             q.toks.push(Tok {
                 kind: 4,
                 a: off,
-                b: sub(q.pool.len(), off)
+                b: wrapping_sub(q.pool.len(), off),
+                kw: 0
             });
         } else if c == 61 {
-            i = add(i, 1);
+            i = wrapping_add(i, 1);
             q.toks.push(Tok {
                 kind: 6,
                 a: 0,
-                b: 0
+                b: 0,
+                kw: 0
             });
         } else if c == 60 || c == 62 || c == 33 {
-            i = add(i, 1);
+            i = wrapping_add(i, 1);
             let second = if i < n {
                 byte(in sql, i)
             } else {
@@ -875,13 +896,13 @@ fn lex(inout q: Q, in sql: Slice[u8]) {
             };
             let mut op: u64 = 0;
             if c == 60 && second == 61 {
-                i = add(i, 1);
+                i = wrapping_add(i, 1);
                 op = 3;
             } else if c == 62 && second == 61 {
-                i = add(i, 1);
+                i = wrapping_add(i, 1);
                 op = 5;
             } else if (c == 60 && second == 62) || (c == 33 && second == 61) {
-                i = add(i, 1);
+                i = wrapping_add(i, 1);
                 op = 1;
             } else if c == 60 {
                 op = 2;
@@ -894,14 +915,16 @@ fn lex(inout q: Q, in sql: Slice[u8]) {
             q.toks.push(Tok {
                 kind: 6,
                 a: op,
-                b: 0
+                b: 0,
+                kw: 0
             });
         } else if c == 40 || c == 41 || c == 44 || c == 46 || c == 59 || c == 42 {
-            i = add(i, 1);
+            i = wrapping_add(i, 1);
             q.toks.push(Tok {
                 kind: 5,
                 a: c,
-                b: 0
+                b: 0,
+                kw: 0
             });
         } else {
             if q.err == 0 {
@@ -922,9 +945,9 @@ fn at_end(in q: Q) -> bool {
     q.pos >= q.toks.len()
 }
 
-fn peek_is_word(in q: Q, in s: Str) -> bool {
+fn peek_is_word(in q: Q, kw: u64) -> bool {
     let t = tok(in q, q.pos);
-    t.kind == 1 && is_lit(in q.pool, t.a, t.b, s)
+    t.kind == 1 && t.kw == kw
 }
 
 fn peek_is_sym(in q: Q, c: u64) -> bool {
@@ -932,9 +955,9 @@ fn peek_is_sym(in q: Q, c: u64) -> bool {
     t.kind == 5 && t.a == c
 }
 
-fn word(inout q: Q, in s: Str) -> bool {
-    if q.err == 0 && peek_is_word(in q, s) {
-        q.pos = add(q.pos, 1);
+fn word(inout q: Q, kw: u64) -> bool {
+    if q.err == 0 && peek_is_word(in q, kw) {
+        q.pos = wrapping_add(q.pos, 1);
         true
     } else {
         false
@@ -943,15 +966,15 @@ fn word(inout q: Q, in s: Str) -> bool {
 
 fn sym(inout q: Q, c: u64) -> bool {
     if q.err == 0 && peek_is_sym(in q, c) {
-        q.pos = add(q.pos, 1);
+        q.pos = wrapping_add(q.pos, 1);
         true
     } else {
         false
     }
 }
 
-fn expect_word(inout q: Q, in s: Str) {
-    if !word(inout q, s) && q.err == 0 {
+fn expect_word(inout q: Q, kw: u64, in s: Str) {
+    if !word(inout q, kw) && q.err == 0 {
         q.err = 1;
         put(inout q.msg, "expected ");
         put(inout q.msg, s);
@@ -980,12 +1003,117 @@ fn take(inout q: Q) -> Tok {
         return tok(in q, none());
     }
     let t = tok(in q, q.pos);
-    q.pos = add(q.pos, 1);
+    q.pos = wrapping_add(q.pos, 1);
     t
 }
 
-fn reserved(in q: Q, off: u64, len: u64) -> bool {
-    is_lit(in q.pool, off, len, "select") || is_lit(in q.pool, off, len, "from") || is_lit(in q.pool, off, len, "where") || is_lit(in q.pool, off, len, "join") || is_lit(in q.pool, off, len, "inner") || is_lit(in q.pool, off, len, "left") || is_lit(in q.pool, off, len, "right") || is_lit(in q.pool, off, len, "full") || is_lit(in q.pool, off, len, "outer") || is_lit(in q.pool, off, len, "on") || is_lit(in q.pool, off, len, "as") || is_lit(in q.pool, off, len, "and") || is_lit(in q.pool, off, len, "or") || is_lit(in q.pool, off, len, "not") || is_lit(in q.pool, off, len, "is") || is_lit(in q.pool, off, len, "null") || is_lit(in q.pool, off, len, "true") || is_lit(in q.pool, off, len, "false") || is_lit(in q.pool, off, len, "create") || is_lit(in q.pool, off, len, "drop") || is_lit(in q.pool, off, len, "table") || is_lit(in q.pool, off, len, "order") || is_lit(in q.pool, off, len, "by") || is_lit(in q.pool, off, len, "group") || is_lit(in q.pool, off, len, "limit") || is_lit(in q.pool, off, len, "union") || is_lit(in q.pool, off, len, "distinct") || is_lit(in q.pool, off, len, "having") || is_lit(in q.pool, off, len, "offset") || is_lit(in q.pool, off, len, "cross") || is_lit(in q.pool, off, len, "using")
+// The reserved keyword id of a lowercase word (`Tok::kw`), or 0.
+fn keyword(in p: ChunkSeq[u8], off: u64, len: u64) -> u64 {
+    let c = match p.try_get(off) {
+        Option::Some(c) => c,
+        Option::None => 0,
+    };
+    if len == 2 {
+        if c == 111 && is_lit(in p, off, len, "on") {
+            return 10;
+        }
+        if c == 97 && is_lit(in p, off, len, "as") {
+            return 11;
+        }
+        if c == 111 && is_lit(in p, off, len, "or") {
+            return 13;
+        }
+        if c == 105 && is_lit(in p, off, len, "is") {
+            return 15;
+        }
+        if c == 98 && is_lit(in p, off, len, "by") {
+            return 23;
+        }
+    } else if len == 3 {
+        if c == 97 && is_lit(in p, off, len, "and") {
+            return 12;
+        }
+        if c == 110 && is_lit(in p, off, len, "not") {
+            return 14;
+        }
+    } else if len == 4 {
+        if c == 102 && is_lit(in p, off, len, "from") {
+            return 2;
+        }
+        if c == 106 && is_lit(in p, off, len, "join") {
+            return 4;
+        }
+        if c == 108 && is_lit(in p, off, len, "left") {
+            return 6;
+        }
+        if c == 102 && is_lit(in p, off, len, "full") {
+            return 8;
+        }
+        if c == 110 && is_lit(in p, off, len, "null") {
+            return 16;
+        }
+        if c == 116 && is_lit(in p, off, len, "true") {
+            return 17;
+        }
+        if c == 100 && is_lit(in p, off, len, "drop") {
+            return 20;
+        }
+    } else if len == 5 {
+        if c == 119 && is_lit(in p, off, len, "where") {
+            return 3;
+        }
+        if c == 105 && is_lit(in p, off, len, "inner") {
+            return 5;
+        }
+        if c == 114 && is_lit(in p, off, len, "right") {
+            return 7;
+        }
+        if c == 111 && is_lit(in p, off, len, "outer") {
+            return 9;
+        }
+        if c == 102 && is_lit(in p, off, len, "false") {
+            return 18;
+        }
+        if c == 116 && is_lit(in p, off, len, "table") {
+            return 21;
+        }
+        if c == 111 && is_lit(in p, off, len, "order") {
+            return 22;
+        }
+        if c == 103 && is_lit(in p, off, len, "group") {
+            return 24;
+        }
+        if c == 108 && is_lit(in p, off, len, "limit") {
+            return 25;
+        }
+        if c == 117 && is_lit(in p, off, len, "union") {
+            return 26;
+        }
+        if c == 99 && is_lit(in p, off, len, "cross") {
+            return 30;
+        }
+        if c == 117 && is_lit(in p, off, len, "using") {
+            return 31;
+        }
+    } else if len == 6 {
+        if c == 115 && is_lit(in p, off, len, "select") {
+            return 1;
+        }
+        if c == 99 && is_lit(in p, off, len, "create") {
+            return 19;
+        }
+        if c == 104 && is_lit(in p, off, len, "having") {
+            return 28;
+        }
+        if c == 111 && is_lit(in p, off, len, "offset") {
+            return 29;
+        }
+    } else if len == 8 {
+        if c == 100 && is_lit(in p, off, len, "distinct") {
+            return 27;
+        }
+    }
+    0
 }
 
 // A non-keyword identifier, as a pool range.
@@ -997,7 +1125,7 @@ fn ident(inout q: Q) -> Rng {
             len: 0
         };
     }
-    if t.kind == 1 && !reserved(in q, t.a, t.b) {
+    if t.kind == 1 && t.kw == 0 {
         Rng {
             off: t.a,
             len: t.b
@@ -1016,13 +1144,13 @@ fn push_raw(inout q: Q, r: Raw) -> u64 {
     if q.err != 0 {
         return none();
     }
-    q.nodes = add(q.nodes, 1);
+    q.nodes = wrapping_add(q.nodes, 1);
     let bn = q.nodes;
     if !bound(inout q, bn, 2, "expression node limit") {
         return none();
     }
     q.raw.push(r);
-    sub(q.raw.len(), 1)
+    wrapping_sub(q.raw.len(), 1)
 }
 
 fn raw2(kind: u64, a: u64, b: u64, c: u64) -> Raw {
@@ -1042,7 +1170,7 @@ fn parse_expr(inout q: Q, depth: u64) -> u64 {
     }
     let mut lhs = parse_and(inout q, depth);
     loop {
-        if q.err != 0 || !word(inout q, "or") {
+        if q.err != 0 || !word(inout q, 13) {
             break;
         }
         let rhs = parse_and(inout q, depth);
@@ -1057,7 +1185,7 @@ fn parse_expr(inout q: Q, depth: u64) -> u64 {
 fn parse_and(inout q: Q, depth: u64) -> u64 {
     let mut lhs = parse_not(inout q, depth);
     loop {
-        if q.err != 0 || !word(inout q, "and") {
+        if q.err != 0 || !word(inout q, 12) {
             break;
         }
         let rhs = parse_not(inout q, depth);
@@ -1074,8 +1202,8 @@ fn parse_not(inout q: Q, depth: u64) -> u64 {
     if !bound(inout q, bn, 3, "expression nesting limit") {
         return none();
     }
-    if word(inout q, "not") {
-        let x = parse_not(inout q, add(depth, 1));
+    if word(inout q, 14) {
+        let x = parse_not(inout q, wrapping_add(depth, 1));
         return push_raw(inout q, raw2(6, 0, x, 0));
     }
     let lhs = parse_atom(inout q, depth);
@@ -1084,12 +1212,12 @@ fn parse_not(inout q: Q, depth: u64) -> u64 {
     }
     let t = tok(in q, q.pos);
     if t.kind == 6 {
-        q.pos = add(q.pos, 1);
+        q.pos = wrapping_add(q.pos, 1);
         let rhs = parse_atom(inout q, depth);
         push_raw(inout q, raw2(3, t.a, lhs, rhs))
-    } else if word(inout q, "is") {
-        let negated = word(inout q, "not");
-        expect_word(inout q, "null");
+    } else if word(inout q, 15) {
+        let negated = word(inout q, 14);
+        expect_word(inout q, 16, "null");
         push_raw(
             inout q,
             raw2(
@@ -1110,7 +1238,7 @@ fn parse_not(inout q: Q, depth: u64) -> u64 {
 
 fn parse_atom(inout q: Q, depth: u64) -> u64 {
     if sym(inout q, 40) {
-        let x = parse_expr(inout q, add(depth, 1));
+        let x = parse_expr(inout q, wrapping_add(depth, 1));
         expect_sym(inout q, 41);
         return x;
     }
@@ -1136,7 +1264,7 @@ fn parse_atom(inout q: Q, depth: u64) -> u64 {
             c: t.b,
             d: 0
         }
-    } else if t.kind == 1 && is_lit(in q.pool, t.a, t.b, "null") {
+    } else if t.kind == 1 && t.kw == 16 {
         Raw {
             kind: 2,
             a: 0,
@@ -1144,11 +1272,11 @@ fn parse_atom(inout q: Q, depth: u64) -> u64 {
             c: 0,
             d: 0
         }
-    } else if t.kind == 1 && (is_lit(in q.pool, t.a, t.b, "true") || is_lit(in q.pool, t.a, t.b, "false")) {
+    } else if t.kind == 1 && (t.kw == 17 || t.kw == 18) {
         Raw {
             kind: 2,
             a: 4,
-            b: if is_lit(in q.pool, t.a, t.b, "true") {
+            b: if t.kw == 17 {
                 1
             } else {
                 0
@@ -1156,7 +1284,7 @@ fn parse_atom(inout q: Q, depth: u64) -> u64 {
             c: 0,
             d: 0
         }
-    } else if t.kind == 1 && !reserved(in q, t.a, t.b) {
+    } else if t.kind == 1 && t.kw == 0 {
         if sym(inout q, 46) {
             let name = ident(inout q);
             Raw {
@@ -1185,8 +1313,8 @@ fn parse_atom(inout q: Q, depth: u64) -> u64 {
 fn parse_table(inout q: Q, kind: u64) -> Bind {
     let name = ident(inout q);
     let t = tok(in q, q.pos);
-    let plain = q.err == 0 && t.kind == 1 && !reserved(in q, t.a, t.b);
-    let alias = if word(inout q, "as") || plain {
+    let plain = q.err == 0 && t.kind == 1 && t.kw == 0;
+    let alias = if word(inout q, 11) || plain {
         ident(inout q)
     } else {
         name
@@ -1210,7 +1338,7 @@ fn finish(inout q: Q) {
 
 // SELECT: fills sels, binds (the FROM binding first) and filter.
 fn parse_select(inout q: Q) {
-    expect_word(inout q, "select");
+    expect_word(inout q, 1, "select");
     loop {
         if q.err != 0 {
             return;
@@ -1223,7 +1351,7 @@ fn parse_select(inout q: Q) {
         };
         let mut aoff = none();
         let mut alen: u64 = 0;
-        if word(inout q, "as") {
+        if word(inout q, 11) {
             let a = ident(inout q);
             aoff = a.off;
             alen = a.len;
@@ -1248,7 +1376,7 @@ fn parse_select(inout q: Q) {
             break;
         }
     }
-    expect_word(inout q, "from");
+    expect_word(inout q, 2, "from");
     let from = parse_table(inout q, 0);
     if q.err != 0 {
         return;
@@ -1259,34 +1387,34 @@ fn parse_select(inout q: Q) {
         return;
     }
     loop {
-        if q.err != 0 || at_end(in q) || peek_is_sym(in q, 59) || peek_is_word(in q, "where") {
+        if q.err != 0 || at_end(in q) || peek_is_sym(in q, 59) || peek_is_word(in q, 3) {
             break;
         }
-        let kind: u64 = if word(inout q, "inner") {
+        let kind: u64 = if word(inout q, 5) {
             0
-        } else if word(inout q, "left") {
-            word(inout q, "outer");
+        } else if word(inout q, 6) {
+            word(inout q, 9);
             1
-        } else if word(inout q, "right") {
-            word(inout q, "outer");
+        } else if word(inout q, 7) {
+            word(inout q, 9);
             2
-        } else if word(inout q, "full") {
-            word(inout q, "outer");
+        } else if word(inout q, 8) {
+            word(inout q, 9);
             3
         } else {
             0
         };
-        expect_word(inout q, "join");
+        expect_word(inout q, 4, "join");
         if q.err != 0 {
             return;
         }
         // binds holds the FROM binding too, so its length is joins + 1.
-        let bn = add(q.binds.len(), 1);
+        let bn = wrapping_add(q.binds.len(), 1);
         if !bound(inout q, bn, 6, "relation limit") {
             return;
         }
         let mut rhs = parse_table(inout q, kind);
-        expect_word(inout q, "on");
+        expect_word(inout q, 10, "on");
         let on = parse_expr(inout q, 0);
         if q.err != 0 {
             return;
@@ -1294,7 +1422,7 @@ fn parse_select(inout q: Q) {
         rhs.on = on;
         q.binds.push(rhs);
     }
-    if word(inout q, "where") {
+    if word(inout q, 3) {
         q.filter = parse_expr(inout q, 0);
     }
     finish(inout q);
@@ -1341,12 +1469,12 @@ fn parse_ddl(inout q: Q) -> u64 {
         if q.err != 0 || at_end(in q) {
             break;
         }
-        let bn = add(count, 1);
+        let bn = wrapping_add(count, 1);
         if !bound(inout q, bn, 2, "DDL statement limit") {
             return count;
         }
-        if word(inout q, "create") {
-            expect_word(inout q, "table");
+        if word(inout q, 19) {
+            expect_word(inout q, 21, "table");
             let name = ident(inout q);
             expect_sym(inout q, 40);
             if q.err != 0 {
@@ -1365,8 +1493,8 @@ fn parse_ddl(inout q: Q) -> u64 {
                 }
                 // Duplicate column names.
                 for k in 0..ncols {
-                    let p = add(add(at, 1), mul(k, 4));
-                    if same(in q.pool, cw(in q.words, p), cw(in q.words, add(p, 1)), col.off, col.len) {
+                    let p = wrapping_add(wrapping_add(at, 1), wrapping_mul(k, 4));
+                    if same(in q.pool, cw(in q.words, p), cw(in q.words, wrapping_add(p, 1)), col.off, col.len) {
                         fail_name(inout q, 3, "column ", col.off, col.len);
                         return count;
                     }
@@ -1375,17 +1503,17 @@ fn parse_ddl(inout q: Q) -> u64 {
                 if q.err != 0 {
                     return count;
                 }
-                let nullable = if word(inout q, "not") {
-                    expect_word(inout q, "null");
+                let nullable = if word(inout q, 14) {
+                    expect_word(inout q, 16, "null");
                     false
                 } else {
-                    word(inout q, "null");
+                    word(inout q, 16);
                     true
                 };
                 if q.err != 0 {
                     return count;
                 }
-                let bn = add(ncols, 1);
+                let bn = wrapping_add(ncols, 1);
                 if !bound(inout q, bn, 5, "column limit") {
                     return count;
                 }
@@ -1397,15 +1525,15 @@ fn parse_ddl(inout q: Q) -> u64 {
                 } else {
                     0
                 });
-                ncols = add(ncols, 1);
+                ncols = wrapping_add(ncols, 1);
                 if !sym(inout q, 44) {
                     break;
                 }
             }
             q.words.try_set(at, ncols);
             expect_sym(inout q, 41);
-        } else if word(inout q, "drop") {
-            expect_word(inout q, "table");
+        } else if word(inout q, 20) {
+            expect_word(inout q, 21, "table");
             let name = ident(inout q);
             if q.err != 0 {
                 return count;
@@ -1417,7 +1545,7 @@ fn parse_ddl(inout q: Q) -> u64 {
             syntax(inout q, "only CREATE TABLE and DROP TABLE are supported");
             return count;
         }
-        count = add(count, 1);
+        count = wrapping_add(count, 1);
         if !sym(inout q, 59) && q.err == 0 && !at_end(in q) {
             syntax(inout q, "expected statement separator");
         }
@@ -1452,15 +1580,15 @@ pub fn ddl_apply(in meta: Slice[u64], in text: Slice[u8], revision: u64, in sql:
     let mut p: u64 = 1;
     for s in 0..count {
         let kind = cw(in q.words, p);
-        let noff = cw(in q.words, add(p, 1));
-        let nlen = cw(in q.words, add(p, 2));
+        let noff = cw(in q.words, wrapping_add(p, 1));
+        let nlen = cw(in q.words, wrapping_add(p, 2));
         let found = find_table(in q, noff, nlen);
         if kind == 0 {
             if found != none() {
                 fail_name(inout q, 3, "table ", noff, nlen);
                 return q;
             }
-            let bn = add(live, 1);
+            let bn = wrapping_add(live, 1);
             if !bound(inout q, bn, 4, "catalog table limit") {
                 return q;
             }
@@ -1470,8 +1598,8 @@ pub fn ddl_apply(in meta: Slice[u64], in text: Slice[u8], revision: u64, in sql:
                 start: 0,
                 n: 0
             });
-            live = add(live, 1);
-            p = add(add(p, 4), mul(cw(in q.words, add(p, 3)), 4));
+            live = wrapping_add(live, 1);
+            p = wrapping_add(wrapping_add(p, 4), wrapping_mul(cw(in q.words, wrapping_add(p, 3)), 4));
         } else {
             if found == none() {
                 fail_name(inout q, 2, "table ", noff, nlen);
@@ -1480,14 +1608,14 @@ pub fn ddl_apply(in meta: Slice[u64], in text: Slice[u8], revision: u64, in sql:
             let mut t = ctab(in q, found);
             t.nlen = none();
             q.tabs.try_set(found, t);
-            live = sub(live, 1);
-            p = add(p, 3);
+            live = wrapping_sub(live, 1);
+            p = wrapping_add(p, 3);
         }
         if rev == none() {
             fail(inout q, 9, "catalog revision overflow");
             return q;
         }
-        rev = add(rev, 1);
+        rev = wrapping_add(rev, 1);
     }
     q
 }
@@ -1508,28 +1636,28 @@ fn ex_set(inout q: Q, i: u64, v: u64) {
 }
 
 fn ex_ty(in q: Q, p: u64) -> u64 {
-    ex(in q, add(p, 1))
+    ex(in q, wrapping_add(p, 1))
 }
 
 fn ex_nullable(in q: Q, p: u64) -> bool {
-    ex(in q, add(p, 2)) != 0
+    ex(in q, wrapping_add(p, 2)) != 0
 }
 
 // The end of the expression at p.
 fn ex_end(in q: Q, p: u64) -> u64 {
     let tag = ex(in q, p);
     if tag == 0 || tag == 1 {
-        add(p, 5)
+        wrapping_add(p, 5)
     } else if tag == 2 {
-        add(p, 6)
+        wrapping_add(p, 6)
     } else if tag == 3 {
-        ex_end(in q, ex_end(in q, add(p, 4)))
+        ex_end(in q, ex_end(in q, wrapping_add(p, 4)))
     } else if tag == 4 || tag == 5 {
-        ex_end(in q, ex_end(in q, add(p, 3)))
+        ex_end(in q, ex_end(in q, wrapping_add(p, 3)))
     } else if tag == 6 {
-        ex_end(in q, add(p, 3))
+        ex_end(in q, wrapping_add(p, 3))
     } else {
-        ex_end(in q, add(p, 4))
+        ex_end(in q, wrapping_add(p, 4))
     }
 }
 
@@ -1578,8 +1706,8 @@ fn emit_column(inout q: Q, c: BCol) -> u64 {
     let p = header(inout q, 0);
     q.ex.push(c.slot);
     q.ex.push(c.binding);
-    ex_set(inout q, add(p, 1), add(c.ty, 1));
-    ex_set(inout q, add(p, 2), bool_word(c.nullable));
+    ex_set(inout q, wrapping_add(p, 1), wrapping_add(c.ty, 1));
+    ex_set(inout q, wrapping_add(p, 2), bool_word(c.nullable));
     p
 }
 
@@ -1616,16 +1744,16 @@ fn check_expr(inout q: Q, r: u64, expected: u64) -> u64 {
         p = header(inout q, 1);
         q.ex.push(e.a);
         q.ex.push(e.b);
-        ex_set(inout q, add(p, 1), add(d.ty, 1));
-        ex_set(inout q, add(p, 2), bool_word(d.nullable));
+        ex_set(inout q, wrapping_add(p, 1), wrapping_add(d.ty, 1));
+        ex_set(inout q, wrapping_add(p, 2), bool_word(d.nullable));
     } else if e.kind == 2 {
         p = header(inout q, 2);
         q.ex.push(e.a);
         q.ex.push(e.b);
         q.ex.push(e.c);
         // The value tag is the type word (0 for NULL).
-        ex_set(inout q, add(p, 1), e.a);
-        ex_set(inout q, add(p, 2), bool_word(e.a == 0));
+        ex_set(inout q, wrapping_add(p, 1), e.a);
+        ex_set(inout q, wrapping_add(p, 2), bool_word(e.a == 0));
     } else if e.kind == 3 {
         p = header(inout q, 3);
         q.ex.push(e.a);
@@ -1647,11 +1775,11 @@ fn check_expr(inout q: Q, r: u64, expected: u64) -> u64 {
             fail(inout q, 5, "comparison operands must have identical types");
             return 0;
         }
-        ex_set(inout q, add(a, 1), ty);
-        ex_set(inout q, add(b, 1), ty);
-        ex_set(inout q, add(p, 1), 4);
+        ex_set(inout q, wrapping_add(a, 1), ty);
+        ex_set(inout q, wrapping_add(b, 1), ty);
+        ex_set(inout q, wrapping_add(p, 1), 4);
         let nb = bool_word(ex_nullable(in q, a) || ex_nullable(in q, b));
-        ex_set(inout q, add(p, 2), nb);
+        ex_set(inout q, wrapping_add(p, 2), nb);
     } else if e.kind == 4 || e.kind == 5 {
         if expected != 0 && expected != 4 {
             fail(inout q, 5, "boolean type mismatch");
@@ -1663,9 +1791,9 @@ fn check_expr(inout q: Q, r: u64, expected: u64) -> u64 {
         if q.err != 0 {
             return 0;
         }
-        ex_set(inout q, add(p, 1), 4);
+        ex_set(inout q, wrapping_add(p, 1), 4);
         let nb = bool_word(ex_nullable(in q, a) || ex_nullable(in q, b));
-        ex_set(inout q, add(p, 2), nb);
+        ex_set(inout q, wrapping_add(p, 2), nb);
         return p;
     } else if e.kind == 6 {
         p = header(inout q, 6);
@@ -1673,9 +1801,9 @@ fn check_expr(inout q: Q, r: u64, expected: u64) -> u64 {
         if q.err != 0 {
             return 0;
         }
-        ex_set(inout q, add(p, 1), 4);
+        ex_set(inout q, wrapping_add(p, 1), 4);
         let nb = bool_word(ex_nullable(in q, x));
-        ex_set(inout q, add(p, 2), nb);
+        ex_set(inout q, wrapping_add(p, 2), nb);
     } else {
         p = header(inout q, 7);
         q.ex.push(e.a);
@@ -1683,8 +1811,8 @@ fn check_expr(inout q: Q, r: u64, expected: u64) -> u64 {
         if q.err != 0 {
             return 0;
         }
-        ex_set(inout q, add(p, 1), 4);
-        ex_set(inout q, add(p, 2), 0);
+        ex_set(inout q, wrapping_add(p, 1), 4);
+        ex_set(inout q, wrapping_add(p, 2), 0);
     }
     if expected != 0 {
         let actual = ex_ty(in q, p);
@@ -1692,7 +1820,7 @@ fn check_expr(inout q: Q, r: u64, expected: u64) -> u64 {
             fail(inout q, 5, "expected boolean expression");
             return 0;
         }
-        ex_set(inout q, add(p, 1), expected);
+        ex_set(inout q, wrapping_add(p, 1), expected);
     }
     p
 }
@@ -1723,10 +1851,10 @@ fn check_table(inout q: Q, b: Bind) -> u64 {
     }
     let tab = ctab(in q, t);
     let binding = q.nbindings;
-    q.nbindings = add(binding, 1);
+    q.nbindings = wrapping_add(binding, 1);
     let slots_at = q.ex.len();
     for k in 0..tab.n {
-        let c = ccol(in q, add(tab.start, k));
+        let c = ccol(in q, wrapping_add(tab.start, k));
         let slot = q.bcols.len();
         q.ex.push(slot);
         q.bcols.push(BCol {
@@ -1750,7 +1878,7 @@ fn check_table(inout q: Q, b: Bind) -> u64 {
         f: none(),
         g: none()
     });
-    sub(q.plan.len(), 1)
+    wrapping_sub(q.plan.len(), 1)
 }
 
 fn set_nullable(inout q: Q, from: u64, to: u64) {
@@ -1769,21 +1897,21 @@ fn load_params(inout q: Q, in meta: Slice[u64], at: u64) {
     if !bound(inout q, bn, 2, "parameter count limit") {
         return;
     }
-    let mut p = add(at, 1);
+    let mut p = wrapping_add(at, 1);
     for k in 0..n {
-        let off = identifier(inout q, sw(in meta, p), sw(in meta, add(p, 1)));
+        let off = identifier(inout q, sw(in meta, p), sw(in meta, wrapping_add(p, 1)));
         if q.err != 0 {
             return;
         }
-        let len = sw(in meta, add(p, 1));
+        let len = sw(in meta, wrapping_add(p, 1));
         let d = CCol {
             noff: off,
             nlen: len,
-            ty: sw(in meta, add(p, 2)),
-            nullable: sw(in meta, add(p, 3)) != 0,
+            ty: sw(in meta, wrapping_add(p, 2)),
+            nullable: sw(in meta, wrapping_add(p, 3)) != 0,
             used: false
         };
-        p = add(p, 4);
+        p = wrapping_add(p, 4);
         // Insertion into the sorted list.
         let mut at_i = q.params.len();
         for i in 0..q.params.len() {
@@ -1798,14 +1926,14 @@ fn load_params(inout q: Q, in meta: Slice[u64], at: u64) {
             }
         }
         q.params.push(d);
-        let mut j = sub(q.params.len(), 1);
+        let mut j = wrapping_sub(q.params.len(), 1);
         loop {
             if j <= at_i {
                 break;
             }
-            let prev = param(in q, sub(j, 1));
+            let prev = param(in q, wrapping_sub(j, 1));
             q.params.try_set(j, prev);
-            j = sub(j, 1);
+            j = wrapping_sub(j, 1);
         }
         q.params.try_set(at_i, d);
     }
@@ -1835,7 +1963,7 @@ fn emit_plan(inout q: Q, n: u64) {
         q.words.push(x.c);
         q.words.push(x.e);
         for k in 0..x.e {
-            let w = ex(in q, add(x.d, k));
+            let w = ex(in q, wrapping_add(x.d, k));
             q.words.push(w);
         }
         let at = q.words.len();
@@ -1848,7 +1976,7 @@ fn emit_plan(inout q: Q, n: u64) {
             }
             let k = link(in q, l);
             copy_expr(inout q, k.expr);
-            count = add(count, 1);
+            count = wrapping_add(count, 1);
             l = k.next;
         }
         q.words.try_set(at, count);
@@ -1870,19 +1998,19 @@ fn emit_plan(inout q: Q, n: u64) {
 fn decode_plan(inout q: Q, p: u64) -> (u64, u64) {
     let kind = ex(in q, p);
     if kind == 0 {
-        let nslots = ex(in q, add(p, 4));
-        let slots_at = add(p, 5);
-        let preds_at = add(slots_at, nslots);
+        let nslots = ex(in q, wrapping_add(p, 4));
+        let slots_at = wrapping_add(p, 5);
+        let preds_at = wrapping_add(slots_at, nslots);
         let npreds = ex(in q, preds_at);
         let mut first = none();
         let mut last = none();
-        let mut e = add(preds_at, 1);
+        let mut e = wrapping_add(preds_at, 1);
         for k in 0..npreds {
             q.links.push(Link {
                 expr: e,
                 next: none()
             });
-            let l = sub(q.links.len(), 1);
+            let l = wrapping_sub(q.links.len(), 1);
             if last == none() {
                 first = l;
             } else {
@@ -1893,9 +2021,9 @@ fn decode_plan(inout q: Q, p: u64) -> (u64, u64) {
             last = l;
             e = ex_end(in q, e);
         }
-        let ta = ex(in q, add(p, 1));
-        let tb = ex(in q, add(p, 2));
-        let tc = ex(in q, add(p, 3));
+        let ta = ex(in q, wrapping_add(p, 1));
+        let tb = ex(in q, wrapping_add(p, 2));
+        let tc = ex(in q, wrapping_add(p, 3));
         q.plan.push(Node {
             kind: 0,
             a: ta,
@@ -1906,9 +2034,9 @@ fn decode_plan(inout q: Q, p: u64) -> (u64, u64) {
             f: first,
             g: last
         });
-        (sub(q.plan.len(), 1), e)
+        (wrapping_sub(q.plan.len(), 1), e)
     } else if kind == 1 {
-        let pred = add(p, 1);
+        let pred = wrapping_add(p, 1);
         let at = ex_end(in q, pred);
         let (input, end) = decode_plan(inout q, at);
         q.plan.push(Node {
@@ -1921,11 +2049,11 @@ fn decode_plan(inout q: Q, p: u64) -> (u64, u64) {
             f: none(),
             g: none()
         });
-        (sub(q.plan.len(), 1), end)
+        (wrapping_sub(q.plan.len(), 1), end)
     } else {
-        let (lhs, l_end) = decode_plan(inout q, add(p, 2));
+        let (lhs, l_end) = decode_plan(inout q, wrapping_add(p, 2));
         let (rhs, r_end) = decode_plan(inout q, l_end);
-        let jk = ex(in q, add(p, 1));
+        let jk = ex(in q, wrapping_add(p, 1));
         q.plan.push(Node {
             kind: 2,
             a: jk,
@@ -1936,7 +2064,7 @@ fn decode_plan(inout q: Q, p: u64) -> (u64, u64) {
             f: none(),
             g: none()
         });
-        (sub(q.plan.len(), 1), ex_end(in q, r_end))
+        (wrapping_sub(q.plan.len(), 1), ex_end(in q, r_end))
     }
 }
 
@@ -1956,19 +2084,19 @@ fn has_binding(in q: Q, n: u64, b: u64) -> bool {
 fn deps_within(in q: Q, p: u64, n: u64) -> bool {
     let tag = ex(in q, p);
     if tag == 0 {
-        has_binding(in q, n, ex(in q, add(p, 4)))
+        has_binding(in q, n, ex(in q, wrapping_add(p, 4)))
     } else if tag == 1 || tag == 2 {
         true
     } else if tag == 3 {
-        let a = add(p, 4);
+        let a = wrapping_add(p, 4);
         deps_within(in q, a, n) && deps_within(in q, ex_end(in q, a), n)
     } else if tag == 4 || tag == 5 {
-        let a = add(p, 3);
+        let a = wrapping_add(p, 3);
         deps_within(in q, a, n) && deps_within(in q, ex_end(in q, a), n)
     } else if tag == 6 {
-        deps_within(in q, add(p, 3), n)
+        deps_within(in q, wrapping_add(p, 3), n)
     } else {
-        deps_within(in q, add(p, 4), n)
+        deps_within(in q, wrapping_add(p, 4), n)
     }
 }
 
@@ -1983,13 +2111,13 @@ fn new_filter(inout q: Q, pred: u64, input: u64) -> u64 {
         f: none(),
         g: none()
     });
-    sub(q.plan.len(), 1)
+    wrapping_sub(q.plan.len(), 1)
 }
 
 // `place`: push the predicate at p as far down the plan n as is valid.
 fn place(inout q: Q, p: u64, n: u64) -> u64 {
     if ex(in q, p) == 4 {
-        let a = add(p, 3);
+        let a = wrapping_add(p, 3);
         let b = ex_end(in q, a);
         let inner = place(inout q, a, n);
         return place(inout q, b, inner);
@@ -2000,7 +2128,7 @@ fn place(inout q: Q, p: u64, n: u64) -> u64 {
             expr: p,
             next: none()
         });
-        let l = sub(q.links.len(), 1);
+        let l = wrapping_sub(q.links.len(), 1);
         if x.g == none() {
             x.f = l;
         } else {
@@ -2134,7 +2262,7 @@ pub fn prepare(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in li
             f: none(),
             g: none()
         });
-        plan = sub(q.plan.len(), 1);
+        plan = wrapping_sub(q.plan.len(), 1);
     }
     if q.err != 0 {
         return q;
@@ -2184,16 +2312,16 @@ pub fn prepare(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in li
                 noff = sel.aoff;
                 nlen = sel.alen;
             }
-            let bn = add(proj.len(), 1);
+            let bn = wrapping_add(proj.len(), 1);
             if !bound(inout q, bn, 2, "expanded projection limit") {
                 return q;
             }
             let mut i: u64 = 0;
             loop {
-                if add(i, 1) >= q.rows.len() {
+                if wrapping_add(i, 1) >= q.rows.len() {
                     break;
                 }
-                if same(in q.pool, cw(in q.rows, i), cw(in q.rows, add(i, 1)), noff, nlen) {
+                if same(in q.pool, cw(in q.rows, i), cw(in q.rows, wrapping_add(i, 1)), noff, nlen) {
                     if q.err == 0 {
                         q.err = 3;
                         put(inout q.msg, "output name ");
@@ -2202,7 +2330,7 @@ pub fn prepare(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in li
                     }
                     return q;
                 }
-                i = add(i, 2);
+                i = wrapping_add(i, 2);
             }
             q.rows.push(noff);
             q.rows.push(nlen);
@@ -2225,7 +2353,7 @@ pub fn prepare(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in li
     let mut used: u64 = 0;
     for i in 0..q.params.len() {
         if param(in q, i).used {
-            used = add(used, 1);
+            used = wrapping_add(used, 1);
         }
     }
     if used != q.params.len() {
@@ -2253,11 +2381,11 @@ pub fn prepare(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in li
     q.words.push(proj.len());
     for i in 0..proj.len() {
         let p = cw(in proj, i);
-        q.words.push(cw(in q.rows, mul(i, 2)));
-        q.words.push(cw(in q.rows, add(mul(i, 2), 1)));
-        let w = sub(ex_ty(in q, p), 1);
+        q.words.push(cw(in q.rows, wrapping_mul(i, 2)));
+        q.words.push(cw(in q.rows, wrapping_add(wrapping_mul(i, 2), 1)));
+        let w = wrapping_sub(ex_ty(in q, p), 1);
         q.words.push(w);
-        let w2 = ex(in q, add(p, 2));
+        let w2 = ex(in q, wrapping_add(p, 2));
         q.words.push(w2);
     }
     q.words.push(q.params.len());
@@ -2277,8 +2405,8 @@ pub fn prepare(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in li
 fn val_at(in q: Q, in s: ChunkSeq[u64], p: u64) -> Val {
     Val {
         t: cw(in s, p),
-        a: cw(in s, add(p, 1)),
-        b: cw(in s, add(p, 2))
+        a: cw(in s, wrapping_add(p, 1)),
+        b: cw(in s, wrapping_add(p, 2))
     }
 }
 
@@ -2311,7 +2439,7 @@ fn valid(v: Val, ty: u64, nullable: bool) -> bool {
     } else if v.t == 3 && !finite(v.a) {
         false
     } else {
-        v.t == add(ty, 1)
+        v.t == wrapping_add(ty, 1)
     }
 }
 
@@ -2364,13 +2492,13 @@ fn compare_vals(in q: Q, x: Val, y: Val) -> u64 {
 }
 
 fn tick(inout q: Q, n: u64) {
-    q.work = add(q.work, n);
+    q.work = wrapping_add(q.work, n);
     let w = q.work;
     bound(inout q, w, 9, "execution work limit");
 }
 
 fn row_val(in q: Q, row: u64, slot: u64) -> Val {
-    val_at(in q, in q.rows, add(row, mul(slot, 3)))
+    val_at(in q, in q.rows, wrapping_add(row, wrapping_mul(slot, 3)))
 }
 
 fn width(in q: Q) -> u64 {
@@ -2384,11 +2512,11 @@ fn charge_row(inout q: Q, row: u64) {
     let mut payload: u64 = w;
     for k in 0..w {
         let v = row_val(in q, row, k);
-        heap = add(add(heap, size_value(in q)), vheap(v));
-        payload = add(payload, vbytes(v));
+        heap = wrapping_add(wrapping_add(heap, size_value(in q)), vheap(v));
+        payload = wrapping_add(payload, vbytes(v));
     }
-    q.brows = add(q.brows, 1);
-    q.bbytes = add(q.bbytes, heap);
+    q.brows = wrapping_add(q.brows, 1);
+    q.bbytes = wrapping_add(q.bbytes, heap);
     let r = q.brows;
     let b = q.bbytes;
     if !bound(inout q, r, 10, "cumulative intermediate row limit") {
@@ -2443,20 +2571,20 @@ fn eval(inout q: Q, p: u64, row: u64) -> Val {
     }
     let tag = ex(in q, p);
     if tag == 0 {
-        let v = row_val(in q, row, ex(in q, add(p, 3)));
+        let v = row_val(in q, row, ex(in q, wrapping_add(p, 3)));
         tick(inout q, vbytes(v));
         v
     } else if tag == 1 {
-        let v = bind_val(in q, ex(in q, add(p, 3)), ex(in q, add(p, 4)));
+        let v = bind_val(in q, ex(in q, wrapping_add(p, 3)), ex(in q, wrapping_add(p, 4)));
         tick(inout q, vbytes(v));
         v
     } else if tag == 2 {
-        let v = val_at(in q, in q.ex, add(p, 3));
+        let v = val_at(in q, in q.ex, wrapping_add(p, 3));
         tick(inout q, vbytes(v));
         v
     } else if tag == 3 {
-        let op = ex(in q, add(p, 3));
-        let ap = add(p, 4);
+        let op = ex(in q, wrapping_add(p, 3));
+        let ap = wrapping_add(p, 4);
         let bp = ex_end(in q, ap);
         let a = eval(inout q, ap, row);
         let b = eval(inout q, bp, row);
@@ -2485,7 +2613,7 @@ fn eval(inout q: Q, p: u64, row: u64) -> Val {
             o != 0
         })
     } else if tag == 4 || tag == 5 {
-        let ap = add(p, 3);
+        let ap = wrapping_add(p, 3);
         let bp = ex_end(in q, ap);
         let av = eval(inout q, ap, row);
         let a = truth(inout q, av);
@@ -2510,7 +2638,7 @@ fn eval(inout q: Q, p: u64, row: u64) -> Val {
             null_val()
         }
     } else if tag == 6 {
-        let xv = eval(inout q, add(p, 3), row);
+        let xv = eval(inout q, wrapping_add(p, 3), row);
         let x = truth(inout q, xv);
         if x == 0 {
             null_val()
@@ -2518,8 +2646,8 @@ fn eval(inout q: Q, p: u64, row: u64) -> Val {
             bool_val(x == 1)
         }
     } else {
-        let negated = ex(in q, add(p, 3)) != 0;
-        let v = eval(inout q, add(p, 4), row);
+        let negated = ex(in q, wrapping_add(p, 3)) != 0;
+        let v = eval(inout q, wrapping_add(p, 4), row);
         bool_val((v.t == 0) != negated)
     }
 }
@@ -2558,7 +2686,7 @@ fn slots_of(in q: Q, n: u64, inout out: ChunkSeq[u64]) {
     let x = node(in q, n);
     if x.kind == 0 {
         for k in 0..x.e {
-            out.push(ex(in q, add(x.d, k)));
+            out.push(ex(in q, wrapping_add(x.d, k)));
         }
     } else if x.kind == 1 {
         slots_of(in q, x.b, inout out);
@@ -2581,10 +2709,10 @@ fn new_row(inout q: Q) -> u64 {
 }
 
 fn set_val(inout q: Q, row: u64, slot: u64, v: Val) {
-    let at = add(row, mul(slot, 3));
+    let at = wrapping_add(row, wrapping_mul(slot, 3));
     q.rows.try_set(at, v.t);
-    q.rows.try_set(add(at, 1), v.a);
-    q.rows.try_set(add(at, 2), v.b);
+    q.rows.try_set(wrapping_add(at, 1), v.a);
+    q.rows.try_set(wrapping_add(at, 2), v.b);
 }
 
 // `run`: the rows of plan n, as a range of `rowset`.
@@ -2609,11 +2737,11 @@ fn run(inout q: Q, n: u64) -> (u64, u64) {
                 x.e
             };
             for k in 0..m {
-                let v = val_at(in q, in q.ex, add(add(p, 1), mul(k, 3)));
-                let slot = ex(in q, add(x.d, k));
+                let v = val_at(in q, in q.ex, wrapping_add(wrapping_add(p, 1), wrapping_mul(k, 3)));
+                let slot = ex(in q, wrapping_add(x.d, k));
                 set_val(inout q, row, slot, v);
             }
-            p = add(add(p, 1), mul(nvals, 3));
+            p = wrapping_add(wrapping_add(p, 1), wrapping_mul(nvals, 3));
             // Charge rejected rows too: scanning and expression evaluation
             // remain bounded.
             charge_row(inout q, row);
@@ -2672,7 +2800,7 @@ fn run(inout q: Q, n: u64) -> (u64, u64) {
                     break;
                 }
                 let r = cw(in q.rowset, j);
-                tick(inout q, add(1, w));
+                tick(inout q, wrapping_add(1, w));
                 let row = new_row(inout q);
                 for k in 0..w {
                     let v = row_val(in q, l, k);
@@ -2686,7 +2814,7 @@ fn run(inout q: Q, n: u64) -> (u64, u64) {
                 charge_row(inout q, row);
                 if q.err == 0 && holds(inout q, x.d, row) {
                     matched_left = true;
-                    matched.try_set(sub(j, rs), true);
+                    matched.try_set(wrapping_sub(j, rs), true);
                     q.rowset.push(row);
                 } else {
                     q.rows.truncate(row);
@@ -2702,7 +2830,7 @@ fn run(inout q: Q, n: u64) -> (u64, u64) {
                 if q.err != 0 {
                     break;
                 }
-                let m = match matched.try_get(sub(j, rs)) {
+                let m = match matched.try_get(wrapping_sub(j, rs)) {
                     Option::Some(b) => b,
                     Option::None => false,
                 };
@@ -2739,12 +2867,12 @@ fn check_inputs(inout q: Q, n: u64) {
 // (nvals, values..)*)*]. Returns the end.
 fn load_data(inout q: Q, p: u64) -> u64 {
     let n = ex(in q, p);
-    let mut at = add(p, 1);
+    let mut at = wrapping_add(p, 1);
     for t in 0..n {
         let noff = ex(in q, at);
-        let nlen = ex(in q, add(at, 1));
-        let nrows = ex(in q, add(at, 2));
-        at = add(at, 3);
+        let nlen = ex(in q, wrapping_add(at, 1));
+        let nrows = ex(in q, wrapping_add(at, 2));
+        at = wrapping_add(at, 3);
         q.dtabs.push(CTab {
             noff: noff,
             nlen: nlen,
@@ -2752,7 +2880,7 @@ fn load_data(inout q: Q, p: u64) -> u64 {
             n: nrows
         });
         for r in 0..nrows {
-            at = add(add(at, 1), mul(ex(in q, at), 3));
+            at = wrapping_add(wrapping_add(at, 1), wrapping_mul(ex(in q, at), 3));
         }
     }
     at
@@ -2764,12 +2892,12 @@ fn table_bytes(in q: Q, t: CTab) -> u64 {
     let mut p = t.start;
     for r in 0..t.n {
         let nvals = ex(in q, p);
-        bytes = add(bytes, size_vec(in q));
+        bytes = wrapping_add(bytes, size_vec(in q));
         for k in 0..nvals {
-            let v = val_at(in q, in q.ex, add(add(p, 1), mul(k, 3)));
-            bytes = add(add(bytes, size_value(in q)), vheap(v));
+            let v = val_at(in q, in q.ex, wrapping_add(wrapping_add(p, 1), wrapping_mul(k, 3)));
+            bytes = wrapping_add(wrapping_add(bytes, size_value(in q)), vheap(v));
         }
-        p = add(add(p, 1), mul(nvals, 3));
+        p = wrapping_add(wrapping_add(p, 1), wrapping_mul(nvals, 3));
     }
     bytes
 }
@@ -2790,8 +2918,8 @@ fn validate_rows(inout q: Q, t: CTab) {
             return;
         }
         for k in 0..nvals {
-            let v = val_at(in q, in q.ex, add(add(p, 1), mul(k, 3)));
-            let col = ccol(in q, add(tab.start, k));
+            let v = val_at(in q, in q.ex, wrapping_add(wrapping_add(p, 1), wrapping_mul(k, 3)));
+            let col = ccol(in q, wrapping_add(tab.start, k));
             if !valid(v, col.ty, col.nullable) {
                 if q.err == 0 {
                     q.err = 8;
@@ -2803,7 +2931,7 @@ fn validate_rows(inout q: Q, t: CTab) {
                 return;
             }
         }
-        p = add(add(p, 1), mul(nvals, 3));
+        p = wrapping_add(wrapping_add(p, 1), wrapping_mul(nvals, 3));
     }
 }
 
@@ -2812,11 +2940,11 @@ fn validate_rows(inout q: Q, t: CTab) {
 fn load_catalog_ex(inout q: Q, p: u64) -> u64 {
     let mut out: ChunkSeq[u64] = ChunkSeq::new[u64]();
     let n = ex(in q, p);
-    let mut at = add(p, 1);
+    let mut at = wrapping_add(p, 1);
     out.push(n);
     for t in 0..n {
-        let nc = ex(in q, add(at, 2));
-        let end = add(add(at, 3), mul(nc, 4));
+        let nc = ex(in q, wrapping_add(at, 2));
+        let end = wrapping_add(wrapping_add(at, 3), wrapping_mul(nc, 4));
         for i in at..end {
             out.push(ex(in q, i));
         }
@@ -2843,38 +2971,38 @@ pub fn execute(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     let (root, plan_end) = decode_plan(inout q, 17);
     let nproj = ex(in q, plan_end);
     let mut proj: ChunkSeq[u64] = ChunkSeq::new[u64]();
-    let mut p = add(plan_end, 1);
+    let mut p = wrapping_add(plan_end, 1);
     for k in 0..nproj {
         proj.push(p);
         p = ex_end(in q, p);
     }
     let ndecl = ex(in q, p);
-    p = add(p, 1);
+    p = wrapping_add(p, 1);
     for k in 0..ndecl {
         let d = CCol {
             noff: ex(in q, p),
-            nlen: ex(in q, add(p, 1)),
-            ty: ex(in q, add(p, 2)),
-            nullable: ex(in q, add(p, 3)) != 0,
+            nlen: ex(in q, wrapping_add(p, 1)),
+            ty: ex(in q, wrapping_add(p, 2)),
+            nullable: ex(in q, wrapping_add(p, 3)) != 0,
             used: false
         };
         q.decls.push(d);
-        p = add(p, 4);
+        p = wrapping_add(p, 4);
     }
     let nbinds = ex(in q, p);
-    p = add(p, 1);
+    p = wrapping_add(p, 1);
     for k in 0..nbinds {
-        let v = val_at(in q, in q.ex, add(p, 2));
+        let v = val_at(in q, in q.ex, wrapping_add(p, 2));
         let d = CCol {
             noff: ex(in q, p),
-            nlen: ex(in q, add(p, 1)),
+            nlen: ex(in q, wrapping_add(p, 1)),
             ty: q.vals.len(),
             nullable: false,
             used: false
         };
         q.vals.push(v);
         q.params.push(d);
-        p = add(p, 5);
+        p = wrapping_add(p, 5);
     }
     p = load_catalog_ex(inout q, p);
     load_data(inout q, p);
@@ -2904,7 +3032,7 @@ pub fn execute(in prog: Slice[u64], in text: Slice[u8]) -> Q {
             fail_name(inout q, 5, "parameter :", d.noff, d.nlen);
             return q;
         }
-        parameter_bytes = add(add(parameter_bytes, size_value(in q)), vbytes(v));
+        parameter_bytes = wrapping_add(wrapping_add(parameter_bytes, size_value(in q)), vbytes(v));
     }
     if !bound(inout q, parameter_bytes, 8, "parameter byte limit") {
         return q;
@@ -2913,8 +3041,8 @@ pub fn execute(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     let mut bytes = parameter_bytes;
     for i in 0..q.dtabs.len() {
         let t = dtab(in q, i);
-        count = add(count, t.n);
-        bytes = add(bytes, table_bytes(in q, t));
+        count = wrapping_add(count, t.n);
+        bytes = wrapping_add(bytes, table_bytes(in q, t));
         if !bound(inout q, count, 7, "input row limit") {
             return q;
         }
@@ -2928,8 +3056,8 @@ pub fn execute(in prog: Slice[u64], in text: Slice[u8]) -> Q {
                 return q;
             }
             let nvals = ex(in q, at);
-            tick(inout q, add(1, nvals));
-            at = add(add(at, 1), mul(nvals, 3));
+            tick(inout q, wrapping_add(1, nvals));
+            at = wrapping_add(wrapping_add(at, 1), wrapping_mul(nvals, 3));
         }
         if q.err != 0 {
             return q;
@@ -2950,7 +3078,7 @@ pub fn execute(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     let mut output_bytes: u64 = 0;
     for i in s..e {
         let row = cw(in q.rowset, i);
-        let bn = add(out, 1);
+        let bn = wrapping_add(out, 1);
         if !bound(inout q, bn, 12, "output row limit") {
             return q;
         }
@@ -2960,12 +3088,12 @@ pub fn execute(in prog: Slice[u64], in text: Slice[u8]) -> Q {
             if q.err != 0 {
                 return q;
             }
-            heap = add(add(heap, size_value(in q)), vheap(v));
+            heap = wrapping_add(wrapping_add(heap, size_value(in q)), vheap(v));
             q.words.push(v.t);
             q.words.push(v.a);
             q.words.push(v.b);
         }
-        output_bytes = add(output_bytes, heap);
+        output_bytes = wrapping_add(output_bytes, heap);
         if !bound(inout q, output_bytes, 13, "output byte limit") {
             return q;
         }
@@ -3001,7 +3129,7 @@ pub fn set_rows(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     let rows = CTab {
         noff: name,
         nlen: tlen,
-        start: add(p, 1),
+        start: wrapping_add(p, 1),
         n: nrows
     };
     if !bound(inout q, nrows, 7, "input row limit") {
@@ -3013,16 +3141,16 @@ pub fn set_rows(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     }
     let mut count = nrows;
     let mut bytes = table_bytes(in q, rows);
-    let mut e = add(p, 1);
+    let mut e = wrapping_add(p, 1);
     for r in 0..nrows {
-        e = add(add(e, 1), mul(ex(in q, e), 3));
+        e = wrapping_add(wrapping_add(e, 1), wrapping_mul(ex(in q, e), 3));
     }
     load_data(inout q, e);
     for i in 0..q.dtabs.len() {
         let t = dtab(in q, i);
         if !same(in q.pool, t.noff, t.nlen, name, tlen) {
-            count = add(count, t.n);
-            bytes = add(bytes, table_bytes(in q, t));
+            count = wrapping_add(count, t.n);
+            bytes = wrapping_add(bytes, table_bytes(in q, t));
         }
     }
     if !bound(inout q, count, 7, "input row limit") {
@@ -3033,5 +3161,558 @@ pub fn set_rows(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     }
     q.words.push(name);
     q.words.push(tlen);
+    q
+}
+
+// ---------------------------------------------------------------------
+// Access path selection (spec/planner-ddl.md, sections 1 and 2).
+
+fn stat(in q: Q, i: u64) -> Stat {
+    match q.stats.try_get(i) {
+        Option::Some(s) => s,
+        Option::None => Stat {
+            binding: 0,
+            slot: 0,
+            ioff: 0,
+            ilen: 0,
+            nonnull: 0,
+            distinct: 0,
+            start: 0,
+            n: 0
+        },
+    }
+}
+
+// ANALYZE of column k of data table d: the exact non-null count, distinct
+// count and sorted distinct values with their counts. Cached in `stats`
+// (`binding` is the data table, `slot` the column).
+fn analyze(inout q: Q, d: u64, k: u64) -> Stat {
+    for i in 0..q.stats.len() {
+        let s = stat(in q, i);
+        if s.binding == d && s.slot == k {
+            return s;
+        }
+    }
+    let t = dtab(in q, d);
+    let start = q.vals.len();
+    let mut nonnull: u64 = 0;
+    let mut p = t.start;
+    for r in 0..t.n {
+        let nvals = ex(in q, p);
+        let v = val_at(in q, in q.ex, wrapping_add(wrapping_add(p, 1), wrapping_mul(k, 3)));
+        p = wrapping_add(wrapping_add(p, 1), wrapping_mul(nvals, 3));
+        if v.t == 0 {
+            continue_none();
+        } else {
+            nonnull = wrapping_add(nonnull, 1);
+            // Binary search in vals[start .. end].
+            let mut lo = start;
+            let mut hi = q.vals.len();
+            let mut found = false;
+            loop {
+                if lo >= hi {
+                    break;
+                }
+                let (half, r2) = div_rem(wrapping_sub(hi, lo), 2);
+                let mid = wrapping_add(lo, half);
+                let o = compare_vals(in q, vat(in q, mid), v);
+                if o == 1 {
+                    let c = cw(in q.counts, mid);
+                    q.counts.try_set(mid, wrapping_add(c, 1));
+                    found = true;
+                    break;
+                } else if o == 0 {
+                    lo = wrapping_add(mid, 1);
+                } else {
+                    hi = mid;
+                }
+            }
+            if !found {
+                // Insert at lo.
+                q.vals.push(v);
+                q.counts.push(1);
+                let mut j = wrapping_sub(q.vals.len(), 1);
+                loop {
+                    if j <= lo {
+                        break;
+                    }
+                    let prev = vat(in q, wrapping_sub(j, 1));
+                    let pc = cw(in q.counts, wrapping_sub(j, 1));
+                    q.vals.try_set(j, prev);
+                    q.counts.try_set(j, pc);
+                    j = wrapping_sub(j, 1);
+                }
+                q.vals.try_set(lo, v);
+                q.counts.try_set(lo, 1);
+            }
+        }
+    }
+    let s = Stat {
+        binding: d,
+        slot: k,
+        ioff: 0,
+        ilen: 0,
+        nonnull: nonnull,
+        distinct: wrapping_sub(q.vals.len(), start),
+        start: start,
+        n: wrapping_sub(q.vals.len(), start)
+    };
+    q.stats.push(s);
+    s
+}
+
+fn continue_none() {}
+
+fn pages(n: u64) -> u64 {
+    let p = ceil_div(n, 64);
+    if p == 0 {
+        1
+    } else {
+        p
+    }
+}
+
+// 1 + ceil(log_128(pages(n))).
+fn height(n: u64) -> u64 {
+    let mut h: u64 = 1;
+    let mut reach: u64 = 1;
+    let p = pages(n);
+    loop {
+        if reach >= p {
+            break;
+        }
+        reach = wrapping_mul(reach, 128);
+        h = wrapping_add(h, 1);
+    }
+    h
+}
+
+fn no_bound() -> Bound {
+    Bound {
+        has_lo: false,
+        lo: null_val(),
+        lo_incl: false,
+        has_hi: false,
+        hi: null_val(),
+        hi_incl: false,
+        null: false,
+        unknown: false,
+        only_eq: true
+    }
+}
+
+// A bound operand: a literal, or a parameter (known when it is bound).
+// Returns (is an operand, value, known).
+fn operand(in q: Q, p: u64) -> (bool, Val, bool) {
+    let tag = ex(in q, p);
+    if tag == 2 {
+        (true, val_at(in q, in q.ex, wrapping_add(p, 3)), true)
+    } else if tag == 1 {
+        let off = ex(in q, wrapping_add(p, 3));
+        let len = ex(in q, wrapping_add(p, 4));
+        for i in 0..q.params.len() {
+            let d = param(in q, i);
+            if same(in q.pool, d.noff, d.nlen, off, len) {
+                return (true, vat(in q, d.ty), true);
+            }
+        }
+        (true, null_val(), false)
+    } else {
+        (false, null_val(), false)
+    }
+}
+
+// Tighten bound b with `column op value` (op already oriented so the
+// column is on the left).
+fn tighten(in q: Q, b: Bound, op: u64, v: Val, known: bool) -> Bound {
+    let mut r = b;
+    if op != 0 {
+        r.only_eq = false;
+    }
+    if !known {
+        r.unknown = true;
+    } else if v.t == 0 {
+        r.null = true;
+    }
+    let lower = op == 0 || op == 4 || op == 5;
+    let upper = op == 0 || op == 2 || op == 3;
+    let incl = op == 0 || op == 3 || op == 5;
+    if lower {
+        if !r.has_lo {
+            r.has_lo = true;
+            r.lo = v;
+            r.lo_incl = incl;
+        } else if known && v.t != 0 && r.lo.t != 0 {
+            let o = compare_vals(in q, v, r.lo);
+            if o == 2 || (o == 1 && !incl) {
+                r.lo = v;
+                r.lo_incl = incl;
+            }
+        }
+    }
+    if upper {
+        if !r.has_hi {
+            r.has_hi = true;
+            r.hi = v;
+            r.hi_incl = incl;
+        } else if known && v.t != 0 && r.hi.t != 0 {
+            let o = compare_vals(in q, v, r.hi);
+            if o == 0 || (o == 1 && !incl) {
+                r.hi = v;
+                r.hi_incl = incl;
+            }
+        }
+    }
+    r
+}
+
+// The sargable bounds on `slot` among the predicates of scan x.
+fn bounds_of(in q: Q, x: Node, slot: u64) -> Bound {
+    let mut b = no_bound();
+    let mut l = x.f;
+    loop {
+        if l == none() {
+            break;
+        }
+        let k = link(in q, l);
+        l = k.next;
+        let p = k.expr;
+        if ex(in q, p) != 3 {
+            continue_none();
+        } else {
+            let op = ex(in q, wrapping_add(p, 3));
+            let a = wrapping_add(p, 4);
+            let c = ex_end(in q, a);
+            if op != 1 {
+                if ex(in q, a) == 0 && ex(in q, wrapping_add(a, 3)) == slot {
+                    let (is_op, v, known) = operand(in q, c);
+                    if is_op {
+                        b = tighten(in q, b, op, v, known);
+                    }
+                } else if ex(in q, c) == 0 && ex(in q, wrapping_add(c, 3)) == slot {
+                    let (is_op, v, known) = operand(in q, a);
+                    // `v > c` is `c < v`.
+                    let flipped = if op == 2 {
+                        4
+                    } else if op == 3 {
+                        5
+                    } else if op == 4 {
+                        2
+                    } else if op == 5 {
+                        3
+                    } else {
+                        op
+                    };
+                    if is_op {
+                        b = tighten(in q, b, flipped, v, known);
+                    }
+                }
+            }
+        }
+    }
+    b
+}
+
+// The bound kind: eq 0, range 1, lower 2, upper 3.
+fn bound_kind(in q: Q, b: Bound) -> u64 {
+    if b.has_lo && b.has_hi {
+        if b.lo_incl && b.hi_incl && !b.unknown && !b.null && compare_vals(in q, b.lo, b.hi) == 1 {
+            0
+        } else if (b.unknown || b.null) && b.only_eq {
+            0
+        } else {
+            1
+        }
+    } else if b.has_lo {
+        2
+    } else {
+        3
+    }
+}
+
+// The estimated rows of an index path over column stats s.
+fn index_rows(in q: Q, b: Bound, kind: u64, s: Stat, n: u64) -> u64 {
+    if b.null {
+        return 0;
+    }
+    if b.unknown {
+        return if kind == 0 {
+            if s.distinct == 0 {
+                0
+            } else {
+                ceil_div(n, s.distinct)
+            }
+        } else if kind == 1 {
+            ceil_div(n, 10)
+        } else {
+            ceil_div(n, 4)
+        };
+    }
+    let mut m: u64 = 0;
+    for i in 0..s.n {
+        let v = vat(in q, wrapping_add(s.start, i));
+        let above = if b.has_lo {
+            let o = compare_vals(in q, v, b.lo);
+            o == 2 || (o == 1 && b.lo_incl)
+        } else {
+            true
+        };
+        let below = if b.has_hi {
+            let o = compare_vals(in q, v, b.hi);
+            o == 0 || (o == 1 && b.hi_incl)
+        } else {
+            true
+        };
+        if above && below {
+            m = wrapping_add(m, cw(in q.counts, wrapping_add(s.start, i)));
+        }
+    }
+    m
+}
+
+// The column position of a slot in scan x, or none.
+fn column_of(in q: Q, x: Node, slot: u64) -> u64 {
+    for k in 0..x.e {
+        if ex(in q, wrapping_add(x.d, k)) == slot {
+            return k;
+        }
+    }
+    none()
+}
+
+// The catalog column position of the index at index-list entry i on the
+// table of scan x, or none when the index is on another table.
+fn index_column(in q: Q, x: Node, i: u64) -> u64 {
+    let base = cw(in q.rows, 0);
+    let at = wrapping_add(base, wrapping_mul(i, 6));
+    if !same(in q.pool, ex(in q, wrapping_add(at, 2)), ex(in q, wrapping_add(at, 3)), x.a, x.b) {
+        return none();
+    }
+    let t = find_table(in q, x.a, x.b);
+    let tab = ctab(in q, t);
+    for k in 0..tab.n {
+        let c = ccol(in q, wrapping_add(tab.start, k));
+        if same(in q.pool, c.noff, c.nlen, ex(in q, wrapping_add(at, 4)), ex(in q, wrapping_add(at, 5))) {
+            return k;
+        }
+    }
+    none()
+}
+
+// Whether index name a sorts before index name b.
+fn name_before(in q: Q, ao: u64, al: u64, bo: u64, bl: u64) -> bool {
+    order(in q.pool, ao, al, bo, bl) == 0
+}
+
+// Collect the scans (by binding) and, for each join, its right-hand scan:
+// scans[binding] = node; joins records (rhs binding, join node).
+fn collect(in q: Q, n: u64, inout scans: ChunkSeq[u64], inout joins: ChunkSeq[u64]) {
+    let x = node(in q, n);
+    if x.kind == 0 {
+        scans.try_set(x.c, n);
+    } else if x.kind == 1 {
+        collect(in q, x.b, inout scans, inout joins);
+    } else {
+        collect(in q, x.b, inout scans, inout joins);
+        collect(in q, x.c, inout scans, inout joins);
+        let r = node(in q, x.c);
+        if r.kind == 0 {
+            joins.push(r.c);
+            joins.push(n);
+        }
+    }
+}
+
+// The equality conjuncts `b.c = a.d` of the condition at p, as
+// (slot of b, binding of a, slot of a) triples appended to out.
+fn join_keys(in q: Q, p: u64, b: u64, inout out: ChunkSeq[u64]) {
+    let tag = ex(in q, p);
+    if tag == 4 {
+        let a = wrapping_add(p, 3);
+        join_keys(in q, a, b, inout out);
+        join_keys(in q, ex_end(in q, a), b, inout out);
+    } else if tag == 3 && ex(in q, wrapping_add(p, 3)) == 0 {
+        let x = wrapping_add(p, 4);
+        let y = ex_end(in q, x);
+        if ex(in q, x) == 0 && ex(in q, y) == 0 {
+            let xb = ex(in q, wrapping_add(x, 4));
+            let yb = ex(in q, wrapping_add(y, 4));
+            if xb == b && yb != b {
+                out.push(ex(in q, wrapping_add(x, 3)));
+                out.push(yb);
+                out.push(ex(in q, wrapping_add(y, 3)));
+            } else if yb == b && xb != b {
+                out.push(ex(in q, wrapping_add(y, 3)));
+                out.push(xb);
+                out.push(ex(in q, wrapping_add(x, 3)));
+            }
+        }
+    }
+}
+
+// The access paths of an optimized plan. prog is
+//   plan, nbinds, (name off, name len, value)*, catalog, data,
+//   nindexes, (name off, name len, table off, table len, column off,
+//   column len)*
+// with ranges into text. On success words holds, per binding in FROM
+// order, [kind, index off, index len, bound kind, outer binding,
+// outer slot, rows, cost]: kind is scan 0, index 1, index_join 2.
+pub fn access_paths(in prog: Slice[u64], in text: Slice[u8]) -> Q {
+    let mut q = new_q();
+    q.pool.extend(in text);
+    q.ex.extend(in prog);
+    let (root, plan_end) = decode_plan(inout q, 0);
+    let mut p = plan_end;
+    let nbinds = ex(in q, p);
+    p = wrapping_add(p, 1);
+    for k in 0..nbinds {
+        let v = val_at(in q, in q.ex, wrapping_add(p, 2));
+        let d = CCol {
+            noff: ex(in q, p),
+            nlen: ex(in q, wrapping_add(p, 1)),
+            ty: q.vals.len(),
+            nullable: false,
+            used: false
+        };
+        q.vals.push(v);
+        q.params.push(d);
+        p = wrapping_add(p, 5);
+    }
+    p = load_catalog_ex(inout q, p);
+    p = load_data(inout q, p);
+    let nidx = ex(in q, p);
+    // rows[0] records where the index list starts in `ex`.
+    q.rows.push(wrapping_add(p, 1));
+    let mut scans: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for i in 0..q.plan.len() {
+        scans.push(none());
+    }
+    let mut joins: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    collect(in q, root, inout scans, inout joins);
+    // rows estimate of each binding's chosen path.
+    let mut chosen: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for b in 0..scans.len() {
+        let s = cw(in scans, b);
+        if s == none() {
+            break;
+        }
+        let x = node(in q, s);
+        let d = find_data(in q, x.a, x.b);
+        if d == none() {
+            fail_name(inout q, 8, "missing data for ", x.a, x.b);
+            return q;
+        }
+        let n = dtab(in q, d).n;
+        // Scan.
+        let mut kind: u64 = 0;
+        let mut ioff: u64 = 0;
+        let mut ilen: u64 = 0;
+        let mut bkind: u64 = 0;
+        let mut outer = none();
+        let mut outer_slot = none();
+        let mut rows = n;
+        let mut cost = wrapping_add(wrapping_mul(1000, pages(n)), wrapping_mul(10, n));
+        let base = cw(in q.rows, 0);
+        // Index paths.
+        for i in 0..nidx {
+            let k = index_column(in q, x, i);
+            if k == none() {
+                continue_none();
+            } else {
+                let slot = ex(in q, wrapping_add(x.d, k));
+                let bd = bounds_of(in q, x, slot);
+                if bd.has_lo || bd.has_hi {
+                    let st = analyze(inout q, d, k);
+                    let bk = bound_kind(in q, bd);
+                    let m = index_rows(in q, bd, bk, st, n);
+                    let c = wrapping_add(wrapping_mul(1000, height(n)), wrapping_mul(1010, m));
+                    let at = wrapping_add(base, wrapping_mul(i, 6));
+                    let no = ex(in q, at);
+                    let nl = ex(in q, wrapping_add(at, 1));
+                    if c < cost || (c == cost && kind == 1 && name_before(in q, no, nl, ioff, ilen)) {
+                        kind = 1;
+                        ioff = no;
+                        ilen = nl;
+                        bkind = bk;
+                        rows = m;
+                        cost = c;
+                    }
+                }
+            }
+        }
+        // Index nested-loop join paths, for the right side of INNER and
+        // LEFT joins.
+        let mut j: u64 = 0;
+        loop {
+            if wrapping_add(j, 1) >= joins.len() {
+                break;
+            }
+            if cw(in joins, j) == b {
+                let jn = node(in q, cw(in joins, wrapping_add(j, 1)));
+                if jn.a == 0 || jn.a == 1 {
+                    let mut keys: ChunkSeq[u64] = ChunkSeq::new[u64]();
+                    join_keys(in q, jn.d, b, inout keys);
+                    let mut t: u64 = 0;
+                    loop {
+                        if t >= keys.len() {
+                            break;
+                        }
+                        let bslot = cw(in keys, t);
+                        let ab = cw(in keys, wrapping_add(t, 1));
+                        let aslot = cw(in keys, wrapping_add(t, 2));
+                        t = wrapping_add(t, 3);
+                        if !has_binding(in q, jn.b, ab) {
+                            continue_none();
+                        } else {
+                            let k = column_of(in q, x, bslot);
+                            let an = node(in q, cw(in scans, ab));
+                            let ad = find_data(in q, an.a, an.b);
+                            let ak = column_of(in q, an, aslot);
+                            if k != none() && ad != none() && ak != none() {
+                                let ast = analyze(inout q, ad, ak);
+                                let mut kk = cw(in chosen, ab);
+                                if kk > ast.distinct {
+                                    kk = ast.distinct;
+                                }
+                                for i in 0..nidx {
+                                    if index_column(in q, x, i) == k {
+                                        let st = analyze(inout q, d, k);
+                                        let probe = if st.distinct == 0 {
+                                            0
+                                        } else {
+                                            ceil_div(wrapping_mul(kk, st.nonnull), st.distinct)
+                                        };
+                                        let c = wrapping_add(wrapping_mul(wrapping_mul(1000, height(n)), kk), wrapping_mul(1010, probe));
+                                        let at = wrapping_add(base, wrapping_mul(i, 6));
+                                        let no = ex(in q, at);
+                                        let nl = ex(in q, wrapping_add(at, 1));
+                                        if c < cost || (c == cost && kind == 2 && name_before(in q, no, nl, ioff, ilen)) {
+                                            kind = 2;
+                                            ioff = no;
+                                            ilen = nl;
+                                            outer = ab;
+                                            outer_slot = aslot;
+                                            rows = probe;
+                                            cost = c;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            j = wrapping_add(j, 2);
+        }
+        chosen.push(rows);
+        q.words.push(kind);
+        q.words.push(ioff);
+        q.words.push(ilen);
+        q.words.push(bkind);
+        q.words.push(outer);
+        q.words.push(outer_slot);
+        q.words.push(rows);
+        q.words.push(cost);
+    }
     q
 }

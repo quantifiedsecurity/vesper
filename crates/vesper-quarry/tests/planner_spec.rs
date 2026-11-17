@@ -555,3 +555,49 @@ fn front_end_transcript_matches_golden() {
             .unwrap_or_default()
     );
 }
+
+#[test]
+fn planner_chooses_the_golden_access_paths() {
+    // The cost model of spec/planner-ddl.md section 2 must choose each
+    // case's `plan:` line. Only the Vesper port implements it.
+    let dir = fixtures();
+    let cases = parse_cases(&std::fs::read_to_string(dir.join("cases.txt")).unwrap());
+    let s = build_store();
+    let indexes = s.indexes();
+    let t = s.begin().unwrap();
+    let data = s.dataset(&t, &["c", "o", "p"], Limits::default()).unwrap();
+    let mut wrong = Vec::new();
+    for case in &cases {
+        let defs: Vec<ParamDef> = case.params.iter().map(|(d, _)| d.clone()).collect();
+        let binds: BTreeMap<String, Value> = case
+            .params
+            .iter()
+            .map(|(d, v)| (d.name.clone(), v.clone()))
+            .collect();
+        let q = s
+            .catalog()
+            .prepare(&case.sql, &defs, Limits::default())
+            .unwrap();
+        match q.optimized().access_plan(&data, &indexes, &binds) {
+            Ok(plan) => {
+                if plan.to_string() != case.plan {
+                    wrong.push(format!(
+                        "{}: chose {plan} ({:?}), want {}",
+                        case.name,
+                        plan.bindings
+                            .iter()
+                            .map(|b| (b.rows, b.cost))
+                            .collect::<Vec<_>>(),
+                        case.plan
+                    ));
+                }
+            }
+            Err(e) => {
+                assert!(cfg!(not(feature = "vesper-port")), "{}: {e}", case.name);
+                assert_eq!(e.kind, ErrorKind::Unsupported);
+            }
+        }
+    }
+    s.commit(t).unwrap();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

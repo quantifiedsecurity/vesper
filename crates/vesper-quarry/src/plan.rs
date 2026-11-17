@@ -531,3 +531,103 @@ pub(crate) fn prepare(
         params: c.params,
     })
 }
+
+/// How an index path bounds its column (spec/planner-ddl.md, section 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexBound {
+    Eq,
+    Range,
+    Lower,
+    Upper,
+}
+
+/// The access path the planner chose for one FROM binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccessPath {
+    /// Every row the snapshot sees.
+    Scan,
+    /// A secondary index with sargable bounds.
+    Index { index: String, bound: IndexBound },
+    /// Index nested-loop join: probe `index` with the distinct non-null
+    /// values of `outer.column`.
+    IndexJoin {
+        index: String,
+        outer: String,
+        column: String,
+    },
+}
+
+/// One FROM binding's chosen path, with the cost model's row estimate and
+/// cost (integer milli-units).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BindingPath {
+    pub alias: String,
+    pub path: AccessPath,
+    pub rows: u64,
+    pub cost: u64,
+}
+
+/// The access paths of a query, in FROM order. `Display` renders the
+/// notation of `tests/fixtures/planner/cases.txt`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccessPlan {
+    pub bindings: Vec<BindingPath>,
+}
+
+impl std::fmt::Display for AccessPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, b) in self.bindings.iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{}=", b.alias)?;
+            match &b.path {
+                AccessPath::Scan => f.write_str("scan")?,
+                AccessPath::Index { index, bound } => {
+                    let bound = match bound {
+                        IndexBound::Eq => "eq",
+                        IndexBound::Range => "range",
+                        IndexBound::Lower => "lower",
+                        IndexBound::Upper => "upper",
+                    };
+                    write!(f, "index({index},{bound})")?;
+                }
+                AccessPath::IndexJoin {
+                    index,
+                    outer,
+                    column,
+                } => write!(f, "index_join({index},{outer}.{column})")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PreparedQuery {
+    /// Chooses an access path for every FROM binding of the optimized plan
+    /// with the cost model of `spec/planner-ddl.md`. `data` holds every
+    /// table the query reads (its exact statistics are ANALYZE's), `indexes`
+    /// maps index names to `(table, column)` as `Store::indexes` returns
+    /// them, and `params` are the parameter values known at planning (a
+    /// parameter without a value is estimated).
+    ///
+    /// Only the Vesper port implements access selection; the Rust build
+    /// returns `Unsupported`.
+    pub fn access_plan(
+        &self,
+        data: &crate::DataSet,
+        indexes: &BTreeMap<String, (String, String)>,
+        params: &BTreeMap<String, Value>,
+    ) -> crate::Result<AccessPlan> {
+        #[cfg(feature = "vesper-port")]
+        return crate::port::access_plan(self, data, indexes, params);
+        #[cfg(not(feature = "vesper-port"))]
+        {
+            let _ = (data, indexes, params);
+            Err(Error::new(
+                ErrorKind::Unsupported,
+                "access path selection is implemented by the Vesper port (vesper-port)",
+            ))
+        }
+    }
+}
