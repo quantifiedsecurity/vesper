@@ -42,13 +42,13 @@ fn lower_with(source: &str, require: bool) -> Program {
         .collect()
 }
 
-/// Fixtures whose certificates the facts cannot establish yet: the status
-/// protocol of `Fail` (milestone 7) returns a payload word that is only
-/// meaningful on one side of a status test, which needs status-guarded
-/// facts (the same follow-up as enum payloads). Region programs (milestone
-/// 8) add to the bump pointer, a word loaded from the heap through a run-time
-/// pointer, which carries no fact (`transfer` of `loadPtr`), so their checked
-/// `u64` adds need heap facts.
+/// Fixtures whose certificates the facts cannot establish yet:
+/// - the status protocol of `Fail` (milestone 7) returns a payload word
+///   that is only meaningful on one side of a status test, which needs
+///   status-guarded facts (the same follow-up as enum payloads);
+/// - region programs (milestone 8): the bump allocator's checked `u64`
+///   arithmetic reads heap words (`LoadPtr`), and a heap load carries no
+///   range fact in `CodegenValidation` (heap facts are a follow-up).
 const IMPRECISE: [&str; 7] = [
     "fail_implicit.ves",
     "fail_try.ves",

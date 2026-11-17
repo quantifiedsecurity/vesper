@@ -267,9 +267,8 @@ pub fn transfer(facts: &Facts, row: &Lir, signed: bool) -> Facts {
         Lir::LoadOut { dst, index } => put(&mut next, Slot(dst), facts.get(&Out(index)).copied()),
         Lir::LoadIn { dst, index } => put(&mut next, Slot(dst), facts.get(&In(index)).copied()),
         Lir::StoreIn { index, src } => put(&mut next, In(index), facts.get(&Slot(src)).copied()),
-        // Heap words are addressed through run-time pointers: a load knows
-        // nothing. A store forgets every heap fact in Lean (`forgetHeap`);
-        // the Rust `Loc` has no heap words, so there is none to forget.
+        // A heap load knows nothing. A store would forget every heap fact,
+        // but this mirror tracks none (`Loc` has no heap words).
         Lir::LoadPtr { dst, .. } => put(&mut next, Slot(dst), None),
         _ => {}
     }

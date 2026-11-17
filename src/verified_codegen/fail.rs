@@ -275,6 +275,8 @@ pub fn local(f: &FunctionIr) -> Result<Local, VerifiedError> {
                 _ => {}
             },
             Op::Unary(op, _) if op == "-" => out.overflow = true,
+            // Out of range raises `RuntimeError::IndexOutOfBounds`.
+            Op::Index(..) => out.runtime = true,
             _ => {}
         }
     }
