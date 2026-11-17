@@ -61,7 +61,7 @@ if cargo test --locked -p vesper-port-pilot --features vesper-port-divergent --t
     echo "the divergent kit passed its API tests" >&2
     exit 1
 fi
-for t in sequence_results slice_parameters owned_handles linear_handles recursive_enum_handles generic_instances vsys_imports; do
+for t in sequence_results slice_parameters strings owned_handles linear_handles recursive_enum_handles generic_instances vsys_imports; do
     if ! grep -q "test $t ... FAILED" "$log"; then
         cat "$log"
         echo "the divergent kit did not fail $t" >&2
@@ -81,5 +81,19 @@ divergent "package port" root_package_modules_are_linked dependency_modules_are_
     -p vesper-port-build --features divergent --test package
 cargo test --locked -p vesper-beacon -p vesper-beacon-seed
 cargo test --locked -p vesper-beacon-arrow --test beacon_build
+# Port P1 lane 10 (#907): vesper-warp-bbr, both builds, and its divergent
+# build fails exactly one unit test per ported module.
+cargo test --locked -p vesper-warp-bbr
+cargo test --locked -p vesper-warp-bbr --features vesper-port
+if cargo test --locked -p vesper-warp-bbr --features vesper-port-divergent --lib -- --test-threads=1 >"$log" 2>&1; then
+    cat "$log"
+    echo "the divergent warp-bbr port passed its unit tests" >&2
+    exit 1
+fi
+for t in pacing::tests::pacing_delay_is_ceiling_and_defined_at_zero filter::tests::cycle_max_keeps_two_cycles bbr::tests::persistent_congestion_collapses_cwnd_then_floors_at_min_pipe; do
+    grep -q "test $t ... FAILED" "$log" || { cat "$log"; echo "the divergent warp-bbr port did not fail $t" >&2; exit 1; }
+done
+grep -q 'test bbr::tests::inflight_at_loss_solves_for_the_threshold_crossing ... ok' "$log" || { cat "$log"; echo "the divergent warp-bbr port failed an unchanged test" >&2; exit 1; }
+echo "divergent warp-bbr port detected (one failure per ported module)"
 # Port wave P1 lane 3 (#900): vesper-warp-wheel.
 sh crates/vesper-warp-wheel/port/test-port.sh
