@@ -255,3 +255,15 @@ fn objects_keep_their_calls() {
         assert!(clif_a.contains("call "), "{clif_a}");
     }
 }
+
+/// Callers holding `Box` values keep their calls: `Box` drops are placed
+/// per block, and splitting a block at an inlined call once let the drop
+/// pass free a list that was moved into a pending argument (the JIT then
+/// recursed forever in `bounded_generics::sorted_insert_over_a_struct_key`).
+#[test]
+fn box_holding_callers_keep_their_calls() {
+    let source = include_str!("fixtures/bounded_generics/sorted.ves");
+    agree(source, "12152021");
+    let (_, program) = inlined(source, &Budget::default());
+    assert_eq!(calls(&program, "main", "key"), 4);
+}

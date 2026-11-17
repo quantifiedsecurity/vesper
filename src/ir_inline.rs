@@ -31,7 +31,8 @@
 //!   after the call did. Rows with labels, tails, handlers or capability
 //!   effects are not inlined, and callers whose row names a capability effect
 //!   (`ConstTime`, `Realtime`, `DetFloat`) are left alone so the per-function
-//!   capability verifiers see the code they saw before;
+//!   capability verifiers see the code they saw before, and so are callers
+//!   holding `Box` values, whose drops are placed per block;
 //! * its body has no closures, handlers, `?`, indirect calls, tiled or `Box`
 //!   operations, and no type in it mentions `Box`, a function type or a slice
 //!   parameter;
@@ -222,7 +223,7 @@ fn inlinable(world: &World, f: &FunctionIr) -> bool {
             .chain(f.params.iter().map(|p| &p.ty))
             .chain(std::iter::once(&f.result))
     };
-    if types().any(|t| crate::fip::mentions_box(world, t) || mentions_function(world, t))
+    if types().any(|t| holds_box(world, t) || mentions_function(world, t))
         || f.params.iter().any(|p| crate::seq::is_slice_type(&p.ty))
     {
         return false;
@@ -242,8 +243,8 @@ fn inlinable(world: &World, f: &FunctionIr) -> bool {
         })
 }
 
-/// Callers whose code a per-function verifier inspects, or whose `Box`
-/// bookkeeping is already elaborated, keep their calls.
+/// Callers whose code a per-function verifier inspects, or that hold `Box`
+/// values, keep their calls.
 fn caller_eligible(world: &World, f: &FunctionIr) -> bool {
     world.functions.get(&f.name).is_none_or(|s| !s.fip)
         && f.fip_call_slots.is_empty()
@@ -256,6 +257,20 @@ fn caller_eligible(world: &World, f: &FunctionIr) -> bool {
             .instances
             .iter()
             .any(|e| crate::capability_effects::is_capability_effect(&e.name))
+        // `fip::elaborate_non_fip_drops` places `Box` drops per block; a
+        // split block would let it drop a moved-out value still waiting in
+        // a temporary for the call after the inlined body.
+        && !f
+            .values
+            .values()
+            .chain(f.locals.values())
+            .chain(f.params.iter().map(|p| &p.ty))
+            .any(|t| holds_box(world, t))
+}
+
+/// `Box` anywhere in `t`, including inside the fields of a named type.
+fn holds_box(world: &World, t: &Type) -> bool {
+    crate::fip::mentions_box(world, t) || crate::fip::type_contains_box(world, t)
 }
 
 /// How one callee parameter is supplied at a call site.
@@ -322,19 +337,6 @@ fn site_bindings(
         {
             return None;
         }
-    }
-    if callee
-        .blocks
-        .iter()
-        .flat_map(|b| &b.instructions)
-        .any(|i| matches!(i.op, Op::Loop))
-        && caller
-            .values
-            .values()
-            .chain(caller.locals.values())
-            .any(|t| crate::fip::mentions_box(world, t))
-    {
-        return None;
     }
     let mut out = Vec::with_capacity(args.len());
     for (a, p) in args.iter().zip(&callee.params) {
