@@ -417,6 +417,26 @@ pub fn plan(
     entry: &str,
     max_functions: usize,
 ) -> Result<Plan, VerifiedError> {
+    plan_with(world, program, &[entry.to_owned()], max_functions, None)
+}
+
+/// Plan every function reachable from `entries`. With `refused`
+/// (coverage), a function that cannot be planned is recorded there and left
+/// out instead of failing the plan, effect-row refusals are recorded while
+/// the function is still planned, every function that raises uses the
+/// status protocol, and the entry-only checks are skipped.
+pub fn plan_with(
+    world: &World,
+    program: &Program,
+    entries: &[String],
+    max_functions: usize,
+    mut refused: Option<&mut BTreeMap<String, Vec<VerifiedError>>>,
+) -> Result<Plan, VerifiedError> {
+    let tolerant = refused.is_some();
+    let entry = entries
+        .first()
+        .ok_or_else(|| VerifiedError::Entry("no entry".into()))?
+        .as_str();
     struct Found {
         name: String,
         params: Vec<(Pass, Shape)>,
@@ -433,158 +453,185 @@ pub fn plan(
     let mut found: Vec<Found> = vec![];
     let mut handlers = BTreeMap::new();
     let mut handled: BTreeMap<String, Type> = BTreeMap::new();
-    let mut queue = VecDeque::from([(entry.to_owned(), None::<Vec<String>>)]);
-    let mut seen = BTreeSet::from([entry.to_owned()]);
+    let mut queue: VecDeque<(String, Option<Vec<String>>)> =
+        entries.iter().map(|e| (e.clone(), None)).collect();
+    let mut seen: BTreeSet<String> = entries.iter().cloned().collect();
     while let Some((name, inherited)) = queue.pop_front() {
         if found.len() >= max_functions {
             return Err(VerifiedError::Limit(format!(
                 "more than {max_functions} reachable functions"
             )));
         }
-        let nested = name.starts_with('$');
-        let f = program.functions.get(&name).ok_or_else(|| {
-            let detail = if world.functions.contains_key(&name) {
-                "function without a body"
-            } else {
-                "no such function in the checked world"
-            };
-            VerifiedError::unsupported(Unsupported::ExternalFunction, &name, detail)
-        })?;
-        // Monomorphization substituted every type parameter of a reachable
-        // instance; one that remains has no concrete instance.
-        // (The unused continuation of a `raise` clause is erased below.)
-        if f.params
-            .iter()
-            .filter(|p| {
-                !(name.starts_with("$handler_clause") && matches!(p.ty, Type::Function { .. }))
-            })
-            .map(|p| &p.ty)
-            .chain([&f.result])
-            .any(|t| super::mono::mentions_generic(world, t))
-        {
-            return Err(VerifiedError::unsupported(
-                Unsupported::Generic,
-                &name,
-                "a type parameter without a concrete instance",
-            ));
-        }
-        effects_supported(world, f)?;
-        let caps = inherited.unwrap_or_else(|| row_caps(world, f));
-        // Nothing supplies the entry's capabilities: the process starts with
-        // no open region.
-        if name == entry && !caps.is_empty() {
-            return Err(VerifiedError::unsupported(
-                Unsupported::Effect,
-                &name,
-                format!("region capability on the entry ({})", caps.join(", ")),
-            ));
-        }
-        // The unused continuation of a `raise` clause has no words; any
-        // other function-typed parameter is a function value.
-        let erased = f
-            .params
-            .iter()
-            .map(|p| {
-                nested
-                    && name.starts_with("$handler_clause")
-                    && matches!(p.ty, Type::Function { .. })
-            })
-            .collect::<Vec<_>>();
-        let params = f
-            .params
-            .iter()
-            .zip(&erased)
-            .map(|(p, e)| {
-                if *e {
-                    Ok((p.pass, Shape(vec![])))
+        let mut soft = vec![];
+        let one = || -> Result<Found, VerifiedError> {
+            let nested = name.starts_with('$');
+            let f = program.functions.get(&name).ok_or_else(|| {
+                let detail = if world.functions.contains_key(&name) {
+                    "function without a body"
                 } else {
-                    Ok((p.pass, shape(world, &p.ty, &name)?))
-                }
-            })
-            .collect::<Result<Vec<_>, VerifiedError>>()?;
-        let writeback = f
-            .params
-            .iter()
-            .zip(&params)
-            .map(|(p, (_, s))| {
-                if p.projections.is_empty() {
-                    return Ok(vec![(0, s.len())]);
-                }
-                p.projections
-                    .iter()
-                    .map(|path| {
-                        s.range(path).ok_or_else(|| {
-                            VerifiedError::Invalid(format!(
-                                "projection {}.{{{}}} of {name}",
-                                p.name,
-                                path.join(".")
-                            ))
-                        })
-                    })
-                    .collect()
-            })
-            .collect::<Result<Vec<_>, VerifiedError>>()?;
-        let result = shape(world, &f.result, &name)?;
-        let mut calls = vec![];
-        let mut handles = vec![];
-        let mut enqueue = |callee: &str, caps: Option<Vec<String>>, queue: &mut VecDeque<_>| {
-            if seen.insert(callee.to_owned()) {
-                queue.push_back((callee.to_owned(), caps));
+                    "no such function in the checked world"
+                };
+                VerifiedError::unsupported(Unsupported::ExternalFunction, &name, detail)
+            })?;
+            // Monomorphization substituted every type parameter of a reachable
+            // instance; one that remains has no concrete instance.
+            // (The unused continuation of a `raise` clause is erased below.)
+            if f.params
+                .iter()
+                .filter(|p| {
+                    !(name.starts_with("$handler_clause") && matches!(p.ty, Type::Function { .. }))
+                })
+                .map(|p| &p.ty)
+                .chain([&f.result])
+                .any(|t| super::mono::mentions_generic(world, t))
+            {
+                return Err(VerifiedError::unsupported(
+                    Unsupported::Generic,
+                    &name,
+                    "a type parameter without a concrete instance",
+                ));
             }
-        };
-        for b in &f.blocks {
-            for i in &b.instructions {
-                if let Some((block_label, _, body)) = region_block(world, &i.op, &name) {
-                    // The body sees the enclosing capabilities and its own
-                    // (which shadows an outer one of the same label). Its
-                    // failures pass through the block.
-                    let mut inner: Vec<String> = caps
+            match effects_supported(world, f) {
+                Err(e) if tolerant => soft.push(e),
+                r => r?,
+            }
+            let caps = inherited.unwrap_or_else(|| row_caps(world, f));
+            // Nothing supplies the entry's capabilities: the process starts with
+            // no open region.
+            if !tolerant && name == entry && !caps.is_empty() {
+                return Err(VerifiedError::unsupported(
+                    Unsupported::Effect,
+                    &name,
+                    format!("region capability on the entry ({})", caps.join(", ")),
+                ));
+            }
+            // The unused continuation of a `raise` clause has no words; any
+            // other function-typed parameter is a function value.
+            let erased = f
+                .params
+                .iter()
+                .map(|p| {
+                    nested
+                        && name.starts_with("$handler_clause")
+                        && matches!(p.ty, Type::Function { .. })
+                })
+                .collect::<Vec<_>>();
+            let params = f
+                .params
+                .iter()
+                .zip(&erased)
+                .map(|(p, e)| {
+                    if *e {
+                        Ok((p.pass, Shape(vec![])))
+                    } else {
+                        Ok((p.pass, shape(world, &p.ty, &name)?))
+                    }
+                })
+                .collect::<Result<Vec<_>, VerifiedError>>()?;
+            let writeback = f
+                .params
+                .iter()
+                .zip(&params)
+                .map(|(p, (_, s))| {
+                    if p.projections.is_empty() {
+                        return Ok(vec![(0, s.len())]);
+                    }
+                    p.projections
                         .iter()
-                        .filter(|c| **c != block_label)
-                        .cloned()
-                        .collect();
-                    inner.push(block_label);
-                    enqueue(&body, Some(inner), &mut queue);
-                    calls.push(body);
-                    continue;
+                        .map(|path| {
+                            s.range(path).ok_or_else(|| {
+                                VerifiedError::Invalid(format!(
+                                    "projection {}.{{{}}} of {name}",
+                                    p.name,
+                                    path.join(".")
+                                ))
+                            })
+                        })
+                        .collect()
+                })
+                .collect::<Result<Vec<_>, VerifiedError>>()?;
+            let result = shape(world, &f.result, &name)?;
+            let mut calls = vec![];
+            let mut handles = vec![];
+            let mut enqueue = |callee: &str, caps: Option<Vec<String>>, queue: &mut VecDeque<_>| {
+                if seen.insert(callee.to_owned()) {
+                    queue.push_back((callee.to_owned(), caps));
                 }
-                match &i.op {
-                    Op::Call {
-                        callee, capability, ..
-                    } if capability.is_none()
-                        && callee != fail::RAISE
-                        && crate::numeric::wrapping_intrinsic(callee).is_none() =>
-                    {
-                        enqueue(callee, None, &mut queue);
-                        calls.push(callee.clone());
+            };
+            for b in &f.blocks {
+                for i in &b.instructions {
+                    if let Some((block_label, _, body)) = region_block(world, &i.op, &name) {
+                        // The body sees the enclosing capabilities and its own
+                        // (which shadows an outer one of the same label). Its
+                        // failures pass through the block.
+                        let mut inner: Vec<String> = caps
+                            .iter()
+                            .filter(|c| **c != block_label)
+                            .cloned()
+                            .collect();
+                        inner.push(block_label);
+                        enqueue(&body, Some(inner), &mut queue);
+                        calls.push(body);
+                        continue;
                     }
-                    Op::Handle {
-                        state_value, expr, ..
-                    } => {
-                        let h = fail::handler(program, &name, *state_value, expr)?;
-                        for g in [&h.body, &h.ret, &h.raise] {
-                            enqueue(g, None, &mut queue);
+                    match &i.op {
+                        Op::Call {
+                            callee, capability, ..
+                        } if capability.is_none()
+                            && callee != fail::RAISE
+                            && crate::numeric::wrapping_intrinsic(callee).is_none() =>
+                        {
+                            enqueue(callee, None, &mut queue);
+                            calls.push(callee.clone());
                         }
-                        let k = h.error.to_string();
-                        handled.insert(k.clone(), h.error.clone());
-                        handles.push((k, h.body.clone(), [h.ret.clone(), h.raise.clone()]));
-                        handlers.insert((name.clone(), expr.span.start, expr.span.end), h);
+                        Op::Handle {
+                            state_value, expr, ..
+                        } => {
+                            let h = fail::handler(program, &name, *state_value, expr)?;
+                            for g in [&h.body, &h.ret, &h.raise] {
+                                enqueue(g, None, &mut queue);
+                            }
+                            let k = h.error.to_string();
+                            handled.insert(k.clone(), h.error.clone());
+                            handles.push((k, h.body.clone(), [h.ret.clone(), h.raise.clone()]));
+                            handlers.insert((name.clone(), expr.span.start, expr.span.end), h);
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
+            Ok(Found {
+                name: name.clone(),
+                params,
+                writeback,
+                result,
+                erased,
+                caps,
+                local: fail::local(f)?,
+                calls,
+                handles,
+            })
+        };
+        let r = one();
+        match (r, refused.as_deref_mut()) {
+            (Ok(f), refused) => {
+                if let Some(refused) = refused
+                    && !soft.is_empty()
+                {
+                    refused.entry(name).or_default().extend(soft);
+                }
+                found.push(f);
+            }
+            (Err(e), Some(refused)) => {
+                let list = refused.entry(name).or_default();
+                list.extend(soft);
+                list.push(e);
+            }
+            (Err(e), None) => return Err(e),
         }
-        found.push(Found {
-            name,
-            params,
-            writeback,
-            result,
-            erased,
-            caps,
-            local: fail::local(f)?,
-            calls,
-            handles,
-        });
+    }
+    if found.is_empty() {
+        return Err(VerifiedError::Entry("no plannable function".into()));
     }
     let locals = found.iter().map(|f| &f.local).collect::<Vec<_>>();
     let fails = fail::codes(world, &locals, &handled, entry)?;
@@ -602,14 +649,21 @@ pub fn plan(
         let mut changed = false;
         for n in 0..found.len() {
             let mut next = raises[n].clone();
+            // Unplanned callees (coverage) contribute nothing.
             for c in &found[n].calls {
-                next.extend(raises[index[c]].iter().copied());
+                if let Some(&k) = index.get(c) {
+                    next.extend(raises[k].iter().copied());
+                }
             }
             for (error, body, clauses) in &found[n].handles {
                 let caught = fails.code(&handled[error]);
-                next.extend(raises[index[body]].iter().filter(|c| Some(**c) != caught));
+                if let Some(&k) = index.get(body) {
+                    next.extend(raises[k].iter().filter(|c| Some(**c) != caught));
+                }
                 for g in clauses {
-                    next.extend(raises[index[g]].iter().copied());
+                    if let Some(&k) = index.get(g) {
+                        next.extend(raises[k].iter().copied());
+                    }
                 }
             }
             if next != raises[n] {
@@ -623,14 +677,17 @@ pub fn plan(
     }
     // The entry aborts instead of returning a status, which is only right
     // when nothing inside the program calls it.
-    if !raises[0].is_empty() && found.iter().any(|f| f.calls.iter().any(|c| c == entry)) {
+    if !tolerant
+        && !raises[0].is_empty()
+        && found.iter().any(|f| f.calls.iter().any(|c| c == entry))
+    {
         return Err(VerifiedError::unsupported(
             Unsupported::Effect,
             entry,
             "an entry that may fail and is also called inside the program",
         ));
     }
-    for c in &raises[0] {
+    for c in raises[0].iter().filter(|_| !tolerant) {
         if fails.trap_kind(*c).is_none() {
             return Err(VerifiedError::unsupported(
                 Unsupported::Effect,
@@ -645,7 +702,7 @@ pub fn plan(
     let mut functions = vec![];
     let mut label = FIRST_FREE_LABEL;
     for (n, (f, raises)) in found.into_iter().zip(raises).enumerate() {
-        let status = n > 0 && !raises.is_empty();
+        let status = (n > 0 || tolerant) && !raises.is_empty();
         let ret_words = if status {
             1 + f.result.len().max(fails.payload_words(&raises))
         } else {
@@ -672,6 +729,24 @@ pub fn plan(
         fails,
         handlers,
     })
+}
+
+/// The direct callees of `f` (wrapping intrinsics, effect operations and
+/// `Fail::raise` excluded), in order.
+pub fn callees(f: &FunctionIr) -> impl Iterator<Item = &String> {
+    f.blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .filter_map(|i| match &i.op {
+            Op::Call {
+                callee,
+                capability: None,
+                ..
+            } if callee != fail::RAISE && crate::numeric::wrapping_intrinsic(callee).is_none() => {
+                Some(callee)
+            }
+            _ => None,
+        })
 }
 
 /// The lowered body of one function.
@@ -709,6 +784,9 @@ struct FnLower<'a> {
     /// Region blocks of this function whose body is being called: a
     /// failure passed on to the caller closes them first.
     open_regions: Vec<Slot>,
+    /// Coverage mode: record every refusal here and keep lowering, instead
+    /// of returning the first one (see `coverage.rs`).
+    refusals: Option<&'a mut Vec<VerifiedError>>,
 }
 
 fn kind_name(kind: Kind) -> &'static str {
@@ -734,6 +812,22 @@ fn kind_of(shape: &Shape, function: &str, what: &str) -> Result<Kind, VerifiedEr
 }
 
 impl FnLower<'_> {
+    /// In coverage mode, record `r`'s error and continue. An `Invalid` error
+    /// after a recorded refusal is its consequence (a value the refused
+    /// construct would have defined) and is dropped.
+    fn tolerate(&mut self, r: Result<(), VerifiedError>) -> Result<(), VerifiedError> {
+        match (r, self.refusals.as_deref_mut()) {
+            (Ok(()), _) => Ok(()),
+            (Err(e), None) => Err(e),
+            (Err(VerifiedError::Invalid(_)), Some(seen)) if !seen.is_empty() => Ok(()),
+            (Err(e), Some(seen)) => {
+                if !seen.contains(&e) {
+                    seen.push(e);
+                }
+                Ok(())
+            }
+        }
+    }
     fn err(&self, construct: Unsupported, detail: impl Into<String>) -> VerifiedError {
         VerifiedError::unsupported(construct, &self.f.name, detail)
     }
@@ -1368,7 +1462,7 @@ impl FnLower<'_> {
                 }
                 self.call(n, &words, dst, None)
             }
-            Op::Index(..) => Err(self.err(Unsupported::Index, "dynamic indexing")),
+            Op::Index(base, index) => self.index(i, *base, *index),
             Op::Indirect { .. } | Op::Closure { .. } => {
                 Err(self.err(Unsupported::FunctionValue, "closures and indirect calls"))
             }
@@ -2124,6 +2218,68 @@ impl FnLower<'_> {
         }
     }
 
+    /// `base[index]` on a tuple whose elements all have the result's shape:
+    /// a first-match chain of word tests on the index (existing `Const`,
+    /// `Compare`, `BranchZero`, `Jump` and `Move` rows only, so no new Lean
+    /// rows), then a raise of `RuntimeError::IndexOutOfBounds` when no
+    /// element matches. A negative index never equals an element number.
+    fn index(
+        &mut self,
+        i: &Instruction,
+        base: ValueId,
+        index: ValueId,
+    ) -> Result<(), VerifiedError> {
+        let ty = self
+            .types
+            .get(&base)
+            .cloned()
+            .ok_or_else(|| VerifiedError::Invalid(format!("untyped value %{base}")))?;
+        let Type::Tuple(elements) = &ty else {
+            return Err(self.err(Unsupported::Index, format!("indexing a value of type {ty}")));
+        };
+        let (src, _) = self.value(base)?;
+        let (at, ishape) = self.value(index)?;
+        let kind = kind_of(&ishape, &self.f.name, "index")?;
+        if matches!(kind, Kind::Bool | Kind::F64) {
+            return Err(VerifiedError::Invalid(format!("index of kind {kind:?}")));
+        }
+        let (dst, dshape) = self.value_of(i.dest, &i.ty)?;
+        let words = dshape.len();
+        for t in elements {
+            if self.words(t)? != words {
+                return Err(self.err(
+                    Unsupported::Index,
+                    format!("indexing a tuple with elements of different sizes ({ty})"),
+                ));
+            }
+        }
+        let tmp = self.alloc(2)?;
+        let done = self.fresh();
+        for k in 0..elements.len() as u32 {
+            let next = self.fresh();
+            self.push(Lir::Const {
+                dst: tmp,
+                word: u64::from(k),
+            })?;
+            self.push(Lir::Compare {
+                cond: Cond::Eq,
+                kind,
+                dst: tmp + 1,
+                a: at,
+                b: tmp,
+            })?;
+            self.push(Lir::BranchZero {
+                cond: tmp + 1,
+                target: next,
+            })?;
+            self.copy(dst, src + k * words, words)?;
+            self.push(Lir::Jump(done))?;
+            self.push(Lir::Label(next))?;
+        }
+        self.raise_runtime_error("IndexOutOfBounds")?;
+        self.push(Lir::Label(done))
+    }
+
     /// Whether `block` ends in a self call whose result is returned directly.
     fn tail_self_call(&self, block: &Block) -> bool {
         let Some(last) = block.instructions.last() else {
@@ -2160,7 +2316,8 @@ impl FnLower<'_> {
                 let ty = self.f.values.get(p).cloned().ok_or_else(|| {
                     VerifiedError::Invalid(format!("untyped block parameter %{p}"))
                 })?;
-                self.value_of(*p, &ty)?;
+                let r = self.value_of(*p, &ty).map(drop);
+                self.tolerate(r)?;
             }
             for i in &block.instructions {
                 let ty = if matches!(i.op, Op::Bind { .. } | Op::Write { .. } | Op::Unit) {
@@ -2168,7 +2325,8 @@ impl FnLower<'_> {
                 } else {
                     i.ty.clone()
                 };
-                self.value_of(i.dest, &ty)?;
+                let r = self.value_of(i.dest, &ty).map(drop);
+                self.tolerate(r)?;
             }
         }
         self.push(Lir::Label(self.me.label))?;
@@ -2207,14 +2365,22 @@ impl FnLower<'_> {
             if erased {
                 continue;
             }
-            let (slot, s) = self.local(&p.name)?;
-            for w in 0..s.len() {
-                self.push(Lir::LoadIn {
-                    dst: slot + w,
-                    index: index + w,
-                })?;
-            }
-            index += s.len();
+            let words = match self.local(&p.name) {
+                Ok((slot, s)) => {
+                    for w in 0..s.len() {
+                        self.push(Lir::LoadIn {
+                            dst: slot + w,
+                            index: index + w,
+                        })?;
+                    }
+                    s.len()
+                }
+                Err(e) => {
+                    self.tolerate(Err(e))?;
+                    0
+                }
+            };
+            index += words;
         }
         for label in self.me.caps.clone() {
             let slot = self.alloc(1)?;
@@ -2261,7 +2427,8 @@ impl FnLower<'_> {
                     self.push(Lir::Jump(self.me.label + 1))?;
                     continue;
                 }
-                self.instruction(i)?;
+                let r = self.instruction(i);
+                self.tolerate(r)?;
             }
             if tail {
                 continue;
@@ -2457,6 +2624,51 @@ pub fn function(
     next_label: &mut Label,
     max_rows: usize,
 ) -> Result<Lowered, VerifiedError> {
+    lower_function(world, program, plan, index, next_label, max_rows, None)
+}
+
+/// Lower one planned function in coverage mode: every refusal in the body
+/// is recorded in `refusals` and lowering continues past it; an error it
+/// cannot continue past is recorded too. The rows are meaningless when
+/// anything was recorded.
+pub fn function_refusals(
+    world: &World,
+    program: &Program,
+    plan: &Plan,
+    index: usize,
+    next_label: &mut Label,
+    refusals: &mut Vec<VerifiedError>,
+) -> Option<Lowered> {
+    match lower_function(
+        world,
+        program,
+        plan,
+        index,
+        next_label,
+        usize::MAX,
+        Some(&mut *refusals),
+    ) {
+        Ok(l) => Some(l),
+        Err(e) => {
+            if !(matches!(e, VerifiedError::Invalid(_)) && !refusals.is_empty())
+                && !refusals.contains(&e)
+            {
+                refusals.push(e);
+            }
+            None
+        }
+    }
+}
+
+fn lower_function(
+    world: &World,
+    program: &Program,
+    plan: &Plan,
+    index: usize,
+    next_label: &mut Label,
+    max_rows: usize,
+    refusals: Option<&mut Vec<VerifiedError>>,
+) -> Result<Lowered, VerifiedError> {
     let me = &plan.functions[index];
     let f = &program.functions[&me.name];
     let block_labels = (0..f.blocks.len())
@@ -2484,6 +2696,7 @@ pub fn function(
         next_label,
         max_rows,
         stubs: vec![],
+        refusals,
         caps: BTreeMap::new(),
         open_regions: vec![],
     }

@@ -66,6 +66,10 @@
 //! bounds (`box`, `get`, `set`, `used`; exhaustion exits with
 //! [`EXIT_REGION`]); only the Linux ELF executable maps that heap. A
 //! failure leaving a region block closes it.
+//! Dynamic indexing of a tuple whose elements have one shape is a
+//! first-match chain on the index; out of range raises
+//! `RuntimeError::IndexOutOfBounds`. [`coverage`] lists every refusal of a
+//! whole program rather than the first.
 //! Resuming or stateful handlers and every other effect, `f32`, `f64`
 //! remainder, strings, recursive enums, closures, vectors and region
 //! watermarks and `take` are rejected.
@@ -81,6 +85,7 @@ mod asm;
 pub mod certificate;
 mod cli;
 mod container;
+mod coverage;
 mod fail;
 mod lower;
 mod machine;
@@ -90,6 +95,7 @@ mod x86_64;
 
 pub use aarch64::encoding_listing as a64_encoding_listing;
 pub use cli::build_command;
+pub use coverage::{Coverage, FunctionCoverage, coverage};
 pub use machine::{
     ArithOp, Cond, FIRST_FREE_LABEL, FloatOp, Kind, Label, Lir, Loc, M, Reg, Sign, Slot, TrapKind,
     WrapOp, select, table_listing, table_rows,
