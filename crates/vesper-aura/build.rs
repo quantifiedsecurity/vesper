@@ -18,13 +18,28 @@ fn main() {
 #[cfg(feature = "vesper-port-divergent")]
 const EDITS: &[(&str, &str)] = &[
     // view.rs (validate): one child too few is accepted.
-    ("if node.ccount > lim.children {", "if node.ccount > inc(lim.children) {"),
+    (
+        "if node.ccount > lim.children {",
+        "if node.ccount > inc(lim.children) {",
+    ),
     // plan.rs: a child move reports its positions swapped.
-    ("op(10, node.id, child_id, from, index)", "op(10, node.id, child_id, index, from)"),
+    (
+        "op(10, node.id, child_id, from, index)",
+        "op(10, node.id, child_id, index, from)",
+    ),
     // session.rs: a stale plan passes the session's revision check.
-    ("    } else if p.base != r.revision {", "    } else if p.base == max_u64() {"),
+    (
+        "    } else if p.base != r.revision {",
+        "    } else if p.base == max_u64() {",
+    ),
     // recording.rs: an injected rejection fires one patch late.
-    ("if has_reject && reject == i {", "if has_reject && reject == inc(i) {"),
+    (
+        "if has_reject && reject == i {",
+        "if has_reject && reject == inc(i) {",
+    ),
     // sim_aura.rs: Inputs drop out of the focus order.
-    ("                if kind == 2 || kind == 3 {\n                    q.items.push(id);", "                if kind == 2 {\n                    q.items.push(id);"),
+    (
+        "                if kind == 2 || kind == 3 {\n                    q.items.push(id);",
+        "                if kind == 2 {\n                    q.items.push(id);",
+    ),
 ];

@@ -227,7 +227,9 @@ pub(crate) fn patches(session: u64, ops: &[Op], input: Option<&ViewTree>) -> Vec
                 widget: widget(o.a),
                 kind: kind_of(o.b),
             },
-            2 => Patch::Destroy { widget: widget(o.a) },
+            2 => Patch::Destroy {
+                widget: widget(o.a),
+            },
             3 => Patch::BindSlot {
                 widget: widget(o.a),
                 property: property_of(o.b),
@@ -441,7 +443,10 @@ pub(crate) fn snapshot(st: RStateRef<'_>) -> RecordingSnapshot {
             .entry(s.widget)
             .or_default()
             .insert(event_of(s.event), id);
-        subscriptions.insert(id, (widget(s.widget), event_of(s.event), HandlerKey(s.handler)));
+        subscriptions.insert(
+            id,
+            (widget(s.widget), event_of(s.event), HandlerKey(s.handler)),
+        );
     }
     let mut widgets = BTreeMap::new();
     let wlive = st.wlive();
@@ -461,11 +466,7 @@ pub(crate) fn snapshot(st: RStateRef<'_>) -> RecordingSnapshot {
             },
         );
     }
-    let last_events = st
-        .events()
-        .iter()
-        .map(|o| recorded(session, &o))
-        .collect();
+    let last_events = st.events().iter().map(|o| recorded(session, &o)).collect();
     RecordingSnapshot {
         revision: st.revision(),
         root: st.has_root().then(|| widget(st.root())),

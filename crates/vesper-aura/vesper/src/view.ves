@@ -1,14 +1,5 @@
 // view.rs: decoding and validating an input tree.
-use self::plan::{
-    teardown
-};
-use self::{
-    Lim,
-    TNode,
-    TProp,
-    TSub,
-    Tree,
-    ViewFault,
+use self::codes::{
     b_children,
     b_depth,
     b_nodes,
@@ -19,6 +10,17 @@ use self::{
     b_total_text,
     max_u64,
     none_id
+};
+use self::plan::{
+    teardown
+};
+use self::{
+    Lim,
+    TNode,
+    TProp,
+    TSub,
+    Tree,
+    ViewFault
 };
 use self::util::{
     add,

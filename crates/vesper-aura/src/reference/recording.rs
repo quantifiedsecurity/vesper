@@ -1,9 +1,8 @@
 //! Rust build of the recording backend (frozen, #910): the Vesper build is
 //! `recorder_apply` in vesper/aura.ves.
 use crate::{
-    Backend, BackendError, HandlerKey, Kind, Limits, Patch, RecordedEvent,
-    RecordingSnapshot, SlotId, SubscriptionId, Transaction, UiThread, Value, WidgetId,
-    WidgetSnapshot,
+    Backend, BackendError, HandlerKey, Kind, Limits, Patch, RecordedEvent, RecordingSnapshot,
+    SlotId, SubscriptionId, Transaction, UiThread, Value, WidgetId, WidgetSnapshot,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},

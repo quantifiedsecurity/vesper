@@ -7,9 +7,9 @@ use super::{
 };
 use crate::{
     Backend, CloseAction, CloseError, CloseFailure, CloseOutcome, CloseRequestError, CommitError,
-    CommitFailure, CommitReport, InitError, InitFailure, Key, Limits, PrepareError,
-    PrepareFailure, ShutdownError, ShutdownFailure, SlotId, SubscriptionId, Transaction, UiThread,
-    ViewError, ViewTree, WidgetId, WrongThread, identity::new_session,
+    CommitFailure, CommitReport, InitError, InitFailure, Key, Limits, PrepareError, PrepareFailure,
+    ShutdownError, ShutdownFailure, SlotId, SubscriptionId, Transaction, UiThread, ViewError,
+    ViewTree, WidgetId, WrongThread, identity::new_session,
 };
 use std::{marker::PhantomData, rc::Rc, thread::ThreadId};
 

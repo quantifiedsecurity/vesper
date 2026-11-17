@@ -1,4 +1,10 @@
 // sim_aura.rs: focus order, dispatch, audits and the topology encoding.
+use self::codes::{
+    b_children,
+    b_handler,
+    b_slots,
+    none_id
+};
 use self::recording::{
     child_count,
     child_edge,
@@ -17,11 +23,7 @@ use self::{
     Recorder,
     TNode,
     Tree,
-    ViewFault,
-    b_children,
-    b_handler,
-    b_slots,
-    none_id
+    ViewFault
 };
 use self::util::{
     add,

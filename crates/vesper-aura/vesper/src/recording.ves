@@ -1,4 +1,7 @@
 // recording.rs: the recording backend's state and lookups.
+use self::codes::{
+    none_id
+};
 use self::{
     BackendFault,
     Edge,
@@ -7,8 +10,7 @@ use self::{
     RState,
     RSub,
     RWidget,
-    Recorder,
-    none_id
+    Recorder
 };
 use self::util::{
     add,

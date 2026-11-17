@@ -107,4 +107,3 @@ pub struct ShutdownFailure<B: Backend> {
     pub error: ShutdownError<B::Error>,
     pub update: Option<PreparedUpdate>,
 }
-

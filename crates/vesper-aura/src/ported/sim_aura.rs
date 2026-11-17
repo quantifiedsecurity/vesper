@@ -22,9 +22,11 @@ pub fn encode_view_tree(
     if let Some(fault) = q.fault() {
         return Err(codec::view_error(fault));
     }
-    let ops = q
-        .items()
-        .chunks_exact(5)
+    let items = q.items();
+    let ops = items
+        .as_chunks::<5>()
+        .0
+        .iter()
         .map(|w| NodeOp {
             kind_tag: w[0] as u16,
             child_count: w[1] as u16,
@@ -35,7 +37,7 @@ pub fn encode_view_tree(
         .collect();
     let mut values = Vec::new();
     let mut properties = Vec::new();
-    for w in q.values().chunks_exact(3) {
+    for w in q.values().as_chunks::<3>().0 {
         let property = codec::property_of(w[0]);
         properties.push(property);
         let value = (w[2] == 1)
@@ -59,9 +61,11 @@ pub fn audit_view_tree(tree: &ViewTree, limits: &Limits) -> Result<WcagReport, V
 
 fn report(q: &binding::Query, target: impl Fn(u64) -> AuditTarget) -> WcagReport {
     let (inspected, interactive) = q.counts();
-    let violations = q
-        .items()
-        .chunks_exact(3)
+    let items = q.items();
+    let violations = items
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|w| {
             let target = target(w[1]);
             let kind = codec::kind_of(w[2]);

@@ -1,4 +1,7 @@
 // Sequence, sort, search and text helpers.
+use self::codes::{
+    none_id
+};
 use self::{
     Lim,
     MNode,
@@ -7,8 +10,7 @@ use self::{
     Op,
     TNode,
     TProp,
-    TSub,
-    none_id
+    TSub
 };
 
 pub fn get_u64(in s: Slice[u64], i: u64) -> u64 {

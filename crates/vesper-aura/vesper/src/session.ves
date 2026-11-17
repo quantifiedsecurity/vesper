@@ -1,4 +1,8 @@
 // session.rs: the reconciler a Session wraps.
+use self::codes::{
+    max_u64,
+    none_id
+};
 use self::plan::{
     copy_mounted,
     mounted_find,
@@ -13,9 +17,7 @@ use self::{
     Op,
     Prepared,
     Reconciler,
-    ViewFault,
-    max_u64,
-    none_id
+    ViewFault
 };
 use self::util::{
     inc,

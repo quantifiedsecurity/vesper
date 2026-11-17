@@ -8,6 +8,12 @@ use self::apply::{
     stale_widget,
     word
 };
+use self::codes::{
+    b_nodes,
+    i_destroy,
+    i_root_parent,
+    none_id
+};
 use self::recording::{
     child_count,
     rwidget,
@@ -20,11 +26,7 @@ use self::{
     BackendFault,
     Lim,
     RState,
-    RWidget,
-    b_nodes,
-    i_destroy,
-    i_root_parent,
-    none_id
+    RWidget
 };
 use self::util::{
     dec,

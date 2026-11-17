@@ -1,4 +1,9 @@
 // plan.rs: the mounted state and reconciliation.
+use self::codes::{
+    b_patches,
+    max_u64,
+    none_id
+};
 use self::{
     MNode,
     MProp,
@@ -7,10 +12,7 @@ use self::{
     Op,
     Prepared,
     Tree,
-    ViewFault,
-    b_patches,
-    max_u64,
-    none_id
+    ViewFault
 };
 use self::util::{
     add,

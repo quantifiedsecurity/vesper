@@ -10,6 +10,26 @@ use self::apply::{
     stale_widget,
     word
 };
+use self::codes::{
+    b_children,
+    b_disconnect_counter,
+    b_properties,
+    b_subscription_counter,
+    b_subscriptions,
+    b_text,
+    i_bound,
+    i_event,
+    i_insert_detached,
+    i_insert_position,
+    i_move_position,
+    i_parent_mismatch,
+    i_property,
+    i_redundant,
+    i_remove_position,
+    i_subscribed,
+    max_u64,
+    none_id
+};
 use self::recording::{
     child_count,
     child_edge,
@@ -35,25 +55,7 @@ use self::{
     RSlot,
     RState,
     RSub,
-    RWidget,
-    b_children,
-    b_disconnect_counter,
-    b_properties,
-    b_subscription_counter,
-    b_subscriptions,
-    b_text,
-    i_bound,
-    i_event,
-    i_insert_detached,
-    i_insert_position,
-    i_move_position,
-    i_parent_mismatch,
-    i_property,
-    i_redundant,
-    i_remove_position,
-    i_subscribed,
-    max_u64,
-    none_id
+    RWidget
 };
 use self::util::{
     dec,
@@ -287,6 +289,7 @@ pub fn patch_disconnect(inout s: RState, lim: Lim, in w: Slice[u64], base: u64, 
 
 pub fn patch_children(inout s: RState, lim: Lim, in w: Slice[u64], base: u64, in text: Slice[u8])
     -> Option[BackendFault] {
+    let tag = word(in w, base, 0);
     if !session_ok(in s, word(in w, base, 1)) {
         return foreign();
     }

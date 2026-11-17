@@ -1,4 +1,20 @@
 // recording.rs: applying a transaction and the final checks.
+use self::codes::{
+    b_depth,
+    b_event_batch,
+    b_patches,
+    b_teardown,
+    b_text,
+    b_total_text,
+    i_broken_parent,
+    i_cycle,
+    i_disconnected,
+    i_limits,
+    i_reused,
+    i_unmounted,
+    max_u64,
+    none_id
+};
 use self::recording::{
     copy_state,
     redge,
@@ -21,21 +37,7 @@ use self::{
     Op,
     RSlot,
     RState,
-    Recorder,
-    b_depth,
-    b_event_batch,
-    b_patches,
-    b_teardown,
-    b_text,
-    b_total_text,
-    i_broken_parent,
-    i_cycle,
-    i_disconnected,
-    i_limits,
-    i_reused,
-    i_unmounted,
-    max_u64,
-    none_id
+    Recorder
 };
 use self::util::{
     add,

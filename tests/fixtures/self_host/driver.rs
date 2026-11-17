@@ -328,6 +328,7 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("packages/vesper-std")
                     || path.ends_with("crates/vesper-port-build/vesper")
                     || path.ends_with("crates/vesper-beacon/vesper")
+                    || path.ends_with("crates/vesper-aura/vesper")
                 {
                     continue;
                 }

@@ -81,3 +81,22 @@ divergent "package port" root_package_modules_are_linked dependency_modules_are_
     -p vesper-port-build --features divergent --test package
 cargo test --locked -p vesper-beacon -p vesper-beacon-seed
 cargo test --locked -p vesper-beacon-arrow --test beacon_build
+# vesper-aura (port wave P1 lane 13, #910): both builds pass the crate's
+# tests, and one divergent edit per ported module fails that module's test.
+cargo test --locked -p vesper-aura
+cargo test --locked -p vesper-aura --features vesper-port
+divergent "Aura port (view.rs)" budgets_fail_before_backend_and_accepted_tree_remains_unmountable \
+    local_thread_claim_does_not_require_or_assert_os_main_thread \
+    -p vesper-aura --features vesper-port-divergent --test validation_close
+divergent "Aura port (plan.rs)" keyed_insert_remove_reorder_and_stale_handle_rejection \
+    changed_handler_disconnects_once_before_reconnect \
+    -p vesper-aura --features vesper-port-divergent --test reconcile
+divergent "Aura port (session.rs)" stale_and_foreign_plans_retain_input_and_do_not_call_backend \
+    changed_handler_disconnects_once_before_reconnect \
+    -p vesper-aura --features vesper-port-divergent --test reconcile
+divergent "Aura port (recording.rs)" initial_mount_rejection_never_publishes_widgets_slots_or_registrations \
+    changed_handler_disconnects_once_before_reconnect \
+    -p vesper-aura --features vesper-port-divergent --test reconcile
+divergent "Aura port (sim_aura.rs)" sim_aura_focus_events_atomic_wcag_gate_and_close_decision \
+    wcag_audit_detects_missing_labels_and_hidden_subscribed_controls \
+    -p vesper-aura --features vesper-port-divergent --test sim_aura
