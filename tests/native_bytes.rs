@@ -294,6 +294,28 @@ fn run() -> u64 eff [Fail[RuntimeError]] {
 }
 
 #[test]
+fn loop_variables_lent_inout_are_not_induction_values() {
+    // `change` moves the index out of range: the access must stay checked.
+    let source = program(
+        "fn change(inout x: u64) {
+    x = 1000;
+}
+fn run() -> u64 eff [Fail[RuntimeError]] {
+    let mut s: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    fill(inout s, 2);
+    let mut acc: u64 = 0;
+    for i in 0..s.len() {
+        change(inout i);
+        acc = wrapping_add(acc, s[i]);
+    }
+    acc
+}",
+    );
+    assert_eq!(hoisted(&source).1, 0);
+    assert_eq!(differential("hoist_inout_index", &source), "7777");
+}
+
+#[test]
 fn resizing_loops_are_not_versioned() {
     // The loop pushes onto the sequence it indexes.
     let source = program(

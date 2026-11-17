@@ -474,6 +474,7 @@ fn invariant_local(f: &FunctionIr, blocks: &BTreeSet<usize>, root: &str) -> bool
                 Op::Write { place, .. } => place_root(place) != root,
                 Op::Bind { pattern, .. } => !binds(pattern, root),
                 Op::Call { args, .. }
+                | Op::Indirect { args, .. }
                 | Op::Seq { args, .. }
                 | Op::Tiled { args, .. }
                 | Op::Fip { args, .. } => !lent(args),
@@ -483,13 +484,31 @@ fn invariant_local(f: &FunctionIr, blocks: &BTreeSet<usize>, root: &str) -> bool
     })
 }
 
-/// Whether `name` is bound by exactly one `Bind` and never written.
+/// Whether `name` is bound by exactly one `Bind`, never written, and never
+/// lent to an operation other than as `in` or by value.
 fn single_binding(f: &FunctionIr, name: &str) -> bool {
+    let lent = |args: &[Argument]| {
+        args.iter().any(|a| {
+            a.pass != Pass::In
+                && a.pass != Pass::Sink
+                && a.place.as_ref().is_some_and(|p| p.root == name)
+        })
+    };
     let mut count = 0;
     for i in f.blocks.iter().flat_map(|b| &b.instructions) {
         match &i.op {
             Op::Bind { pattern, .. } if binds(pattern, name) => count += 1,
             Op::Write { place, .. } if place_root(place) == name => return false,
+            Op::Call { args, .. }
+            | Op::Indirect { args, .. }
+            | Op::Seq { args, .. }
+            | Op::Tiled { args, .. }
+            | Op::Fip { args, .. }
+                if lent(args) =>
+            {
+                return false;
+            }
+            Op::Closure { .. } | Op::Handle { .. } => return false,
             _ => {}
         }
     }
