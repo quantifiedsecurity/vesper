@@ -297,3 +297,56 @@ fn lean_model_agrees_on_the_post_abort_value() {
     );
     assert!(lines.contains(&"(Except.error 4, 4)"), "{stdout}");
 }
+
+/// Failure points that do not go through an effect call (checked arithmetic,
+/// `?`), a shadowed parameter name, and a return clause that aborts after
+/// the handled body wrote an `inout` parameter: all keep the last write in
+/// the evaluator, the JIT and the extracted Lean model. (One handler per
+/// function: the extractor does not yet support two sequential handlers in
+/// one function body, independently of this change.)
+#[test]
+fn lean_model_keeps_writes_on_primitive_failures_shadows_and_return_clauses() {
+    const SOURCE: &str = "effect Ask { fn ask() -> i64; } \
+        fn inc(inout x: u8) eff [Fail[ArithOverflow]] { x = 254; x += 1; x += 1; } \
+        fn tryq(inout x: i64) eff [Fail[i64]] { x = 3; let r: Result[i64, i64] = Err(1); r?; x = 4; } \
+        fn shadow(inout x: i64) eff [Fail[i64]] { x = 7; let x: i64 = 99; Fail::raise(x) } \
+        fn retc(inout x: i64) -> i64 eff [Fail[i64]] { handle Ask in { x = 8; 0 } with { return v => Fail::raise(1), ask(k) => k(0), } } \
+        fn ta() -> u8 { let mut a: u8 = 0; let r = handle Fail[ArithOverflow] in { inc(inout a); 0 } with { return v => v, raise(e, k) => 1, }; a } \
+        fn tb() -> i64 { let mut b = 0; let r = handle Fail[i64] in { tryq(inout b); 0 } with { return v => v, raise(e, k) => e, }; b } \
+        fn tc() -> i64 { let mut c = 0; let r = handle Fail[i64] in { shadow(inout c); 0 } with { return v => v, raise(e, k) => e, }; c } \
+        fn td() -> i64 { let mut d = 0; let r = handle Fail[i64] in { retc(inout d) } with { return v => v, raise(e, k) => e, }; d } \
+        fn main() -> (u8, i64, i64, i64) { (ta(), tb(), tc(), td()) }";
+    big_stack(|| {
+        let w = world(SOURCE);
+        let interpreted = Runtime::new(&w).run("main", vec![]).unwrap().to_string();
+        let jit = native::jit(&w, "main").unwrap().to_string();
+        assert_eq!(jit, interpreted);
+        assert!(
+            interpreted.contains("255")
+                && interpreted.contains('3')
+                && interpreted.contains('7')
+                && interpreted.contains('8'),
+            "{interpreted}"
+        );
+        let text = vesper::lean::extract(&w).unwrap();
+        let Some(compiler) = lean() else {
+            eprintln!("Lean validation skipped: set VESPER_LEAN or install the pinned toolchain");
+            return;
+        };
+        let file = format!("{text}\n#eval Vesper.main\n");
+        let path = std::env::temp_dir().join(format!(
+            "vesper-inout-abort-primitive-{}.lean",
+            std::process::id()
+        ));
+        std::fs::write(&path, &file).unwrap();
+        let result = Command::new(&compiler).arg(&path).output().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(
+            result.status.success(),
+            "{stdout}\n{}\n{file}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(stdout.contains("(255, 3, 7, 8)"), "{stdout}");
+    });
+}

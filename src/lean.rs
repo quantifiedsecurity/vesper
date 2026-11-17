@@ -1627,7 +1627,7 @@ struct Generator<'a> {
     /// The current function's `inout` parameters when it takes a `$sync`
     /// capability (keep-writes, manuscript §4.3 `PostCall_abort`). `None`
     /// inside closures and handler clauses, which cannot write them.
-    own_sync: Option<Vec<String>>,
+    own_sync: Option<Vec<usize>>,
 }
 struct Saved {
     scope: BTreeMap<String, Local>,
@@ -1641,7 +1641,7 @@ struct Saved {
     alias_written: bool,
     unlabeled: BTreeMap<String, CapBinding>,
     monad: Term,
-    own_sync: Option<Vec<String>>,
+    own_sync: Option<Vec<usize>>,
 }
 
 fn effectful_type(t: &Type) -> bool {
@@ -2248,14 +2248,26 @@ impl Generator<'_> {
         self.assign_states(&result, 1, n, states, vars, out)?;
         Ok(tuple_get(result, 0, n))
     }
+    /// Before a primitive failure point (checked arithmetic, `?`, indexing):
+    /// report every observer's state, as an action that may abort does.
+    fn sync_abort(&mut self, out: &mut Statements) -> Result<(), String> {
+        self.sync(out);
+        self.sync_caller(out)?;
+        self.guard_abort(true)
+    }
     /// Reports this function's current `inout` values to its own caller.
     fn sync_caller(&self, out: &mut Statements) -> Result<(), String> {
-        let Some(names) = &self.own_sync else {
+        let Some(ids) = &self.own_sync else {
             return Ok(());
         };
-        let values = names
+        let values = ids
             .iter()
-            .map(|n| self.var(n).ok_or("missing mutable parameter"))
+            .map(|id| {
+                self.current
+                    .get(id)
+                    .map(reference)
+                    .ok_or("missing mutable parameter")
+            })
             .collect::<Result<Vec<_>, _>>()?;
         out.push(DS::Bind {
             pattern: LP::Wildcard,
@@ -2634,6 +2646,7 @@ impl Generator<'_> {
         }
         self.own_sync = None;
         if polymorphic && takes_sync(self.world, f) {
+            self.own_sync = Some(vec![]);
             let states = f
                 .params
                 .iter()
@@ -2650,14 +2663,9 @@ impl Generator<'_> {
                     ],
                 ),
             ));
-            self.own_sync = Some(
-                f.params
-                    .iter()
-                    .filter(|p| p.pass == Pass::Inout)
-                    .map(|p| p.name.clone())
-                    .collect(),
-            );
         }
+        let sync = self.own_sync.is_some();
+        self.own_sync = None;
         let mut result = vec![self.ty(&f.result)?];
         for p in f.params.iter().filter(|p| p.pass == Pass::Inout) {
             result.push(self.ty(&p.ty)?);
@@ -2673,6 +2681,17 @@ impl Generator<'_> {
             let lean = ident(&p.name)?;
             let_local(&mut out, lean.clone(), reference(&lean), None, true);
             self.declare_as(&p.name, p.ty.clone(), lean);
+        }
+        // Track the parameters by binding identity: a shadowing local of the
+        // same name must not be reported as the borrowed place's value.
+        if sync {
+            self.own_sync = Some(
+                f.params
+                    .iter()
+                    .filter(|p| p.pass == Pass::Inout)
+                    .map(|p| self.scope[&p.name].id)
+                    .collect(),
+            );
         }
         let term = self.expr(f.body.as_ref().ok_or("missing function body")?, &mut out)?;
         let r = self.temp();
@@ -2861,8 +2880,7 @@ impl Generator<'_> {
                         .as_ref()
                         .and_then(crate::numeric::IntegerKind::from_type)
                 {
-                    self.sync(out);
-                    self.guard_abort(true)?;
+                    self.sync_abort(out)?;
                     let t = self.temp();
                     let operand = self.fresh("$operand")?;
                     let ok = in_range("neg", kind, reference(&operand), unit())
@@ -2938,8 +2956,7 @@ impl Generator<'_> {
                 let (a, b) = (vs[0].clone(), vs[1].clone());
                 let key = (e.span.start, e.span.end);
                 if self.world.partial_ops.contains(&key) || self.world.overflow_ops.contains(&key) {
-                    self.sync(out);
-                    self.guard_abort(true)?;
+                    self.sync_abort(out)?;
                     let t = self.temp();
                     let (left, right) = (self.fresh("$left")?, self.fresh("$right")?);
                     let mut statements = vec![];
@@ -3078,8 +3095,7 @@ impl Generator<'_> {
             } => self.handler(e, effect, state, body, ret, ops, out)?,
             ExprKind::Try(v) => {
                 let value = self.expr(v, out)?;
-                self.sync(out);
-                self.guard_abort(true)?;
+                self.sync_abort(out)?;
                 let t = self.temp();
                 let action = Term::Match {
                     scrutinee: Box::new(value),
@@ -3131,8 +3147,7 @@ impl Generator<'_> {
                         no: Box::new(body),
                     };
                 }
-                self.sync(out);
-                self.guard_abort(true)?;
+                self.sync_abort(out)?;
                 let t = self.temp();
                 let mut statements = vec![];
                 let_local(&mut statements, tuple, vs[0].clone(), None, false);
@@ -3215,8 +3230,7 @@ impl Generator<'_> {
                         if self.world.partial_ops.contains(&key)
                             || self.world.overflow_ops.contains(&key)
                         {
-                            self.sync(out);
-                            self.guard_abort(true)?;
+                            self.sync_abort(out)?;
                             let t = self.temp();
                             let (left, right) = (self.fresh("$left")?, self.fresh("$right")?);
                             let mut statements = vec![];
@@ -4376,6 +4390,9 @@ impl Generator<'_> {
         let r = self.temp();
         let_local(&mut body_statements, r.clone(), v, Some(bt.clone()), false);
         self.sync(&mut body_statements);
+        // The return clause may abort; it cannot see this function's `inout`
+        // parameters, so report them as the body leaves them.
+        self.sync_caller(&mut body_statements)?;
         let computation_body = sequence(body_statements, pure(reference(&r)));
         self.layers.pop();
         self.restore(saved);
