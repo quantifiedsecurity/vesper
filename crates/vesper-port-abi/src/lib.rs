@@ -9,9 +9,24 @@
 //! implements it for scalars, tuples, `Option`, `Result` and the Vesper
 //! builtin error types.
 //!
+//! Export ABI v2 (`vesper.native.export-abi/2`) adds sequences, slices and
+//! owned handles. Their runtime pieces are here too: [`with_slice`] and
+//! [`with_slice_mut`] lend a Rust slice to Vesper as a `Slice[T]` view,
+//! [`with_seq_mut`] lends a `Vec<T>` as an `inout ChunkSeq[T]`,
+//! [`seq_take`] copies a returned `ChunkSeq[T]` into a `Vec<T>` and frees it,
+//! and [`SeqRef`] reads a sequence a handle owns without copying it.
+//!
 //! This crate has no dependencies, so a crate with a `vesper-port` feature
 //! can depend on it unconditionally.
 #![no_std]
+
+extern crate alloc;
+
+use alloc::vec::Vec;
+use core::marker::PhantomData;
+
+mod seq;
+pub use seq::*;
 
 /// A value with a fixed word layout at the export boundary.
 pub trait Abi: Sized {
@@ -21,6 +36,13 @@ pub trait Abi: Sized {
     fn put(&self, out: &mut [u64]);
     /// Read a value from `words[..Self::WORDS]`.
     fn get(words: &[u64]) -> Self;
+    /// Bytes per element inside a Vesper sequence buffer
+    /// (`vesper::seq::elem_bytes`): 1 for `u8` and `bool`, 4 for `u32`, and
+    /// the word size of the value for every other type. The sequence helpers
+    /// check it against [`Abi::WORDS`] before any raw access (a stride of 1
+    /// or 4 needs one word, any other stride is `WORDS * 8`) and panic on a
+    /// mismatch, so a wrong implementation cannot reach out of bounds.
+    const STRIDE: usize = Self::WORDS * 8;
 }
 
 /// `max(a, b)` in constant context.
@@ -29,9 +51,10 @@ pub const fn max(a: usize, b: usize) -> usize {
 }
 
 macro_rules! integer {
-    ($($t:ty),*) => {$(
+    ($($t:ty => $stride:expr);*) => {$(
         impl Abi for $t {
             const WORDS: usize = 1;
+            const STRIDE: usize = $stride;
             fn put(&self, out: &mut [u64]) {
                 out[0] = *self as u64;
             }
@@ -44,10 +67,14 @@ macro_rules! integer {
 // Signed kinds are sign-extended into the word (`as u64` from a signed
 // type does that), unsigned ones zero-extended; `usize`/`isize` are 64-bit
 // on every target the export ABI supports.
-integer!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+integer!(
+    u8 => 1; u16 => 8; u32 => 4; u64 => 8; usize => 8;
+    i8 => 8; i16 => 8; i32 => 8; i64 => 8; isize => 8
+);
 
 impl Abi for bool {
     const WORDS: usize = 1;
+    const STRIDE: usize = 1;
     fn put(&self, out: &mut [u64]) {
         out[0] = u64::from(*self);
     }

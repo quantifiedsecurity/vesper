@@ -317,12 +317,15 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
             if path.is_dir() {
                 // Syntax the self-hosted parser does not have yet: `use` imports
                 // (lane F0, #873; follow-up #880) and slice intervals `p[a..b]`
-                // (lane F1, #874; follow-up #887). These fixtures join the corpus once
-                // packages/vesper-compiler parses them.
+                // (lane F1, #874; follow-up #887, also used by the string fixtures of
+                // lane F2, #896). These fixtures and the @vesper-std packages (#897)
+                // join the corpus once packages/vesper-compiler parses them.
                 // Each port's Loom package (`crates/<crate>/vesper`, port wave P1)
                 // imports with `use` too, so ports list it here, one line each.
                 if path.ends_with("tests/fixtures/packages")
                     || path.ends_with("tests/fixtures/seq")
+                    || path.ends_with("tests/fixtures/strings")
+                    || path.ends_with("packages/vesper-std")
                     || path.ends_with("crates/vesper-port-build/vesper")
                     || path.ends_with("crates/vesper-beacon/vesper")
                 {
