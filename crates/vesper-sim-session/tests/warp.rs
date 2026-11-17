@@ -737,14 +737,14 @@ fn the_checker_rejects_unsound_frame_handling() {
             "E0309",
             "fn some_paths(c: bool) -> bool eff [XdpNic] { match XdpNic::harvest_rx_single() { None => false, Some(frame) => { if c { XdpNic::recycle_to_fill_ring(frame); true } else { false } } } }",
         ),
-        // Checker gap recorded for the coordinator: the §35.3 signature with
-        // `inout conns` and `Fail` cannot use `?` at all, even before any
-        // frame is live, because Fail crosses the inout parameter.
-        (
-            "E0402",
-            "fn inout_conns(inout conns: Conns) -> Result[bool, QuicError] eff [Fail[QuicError]] { let left = pn_space_left(conns)?; Ok(true) }",
-        ),
     ];
+    // The §35.3 signature with `inout conns` and `Fail` may use `?`: an
+    // abortable effect crosses a stationary inout and the caller keeps the
+    // last write (#935). This used to be E0402.
+    let inout_conns = "fn inout_conns(inout conns: Conns) -> Result[bool, QuicError] eff [Fail[QuicError]] { let left = pn_space_left(conns)?; Ok(true) }";
+    if let Err(e) = CheckedProgram::new(format!("{WARP}\n{inout_conns}")) {
+        panic!("rejected: {inout_conns}: {:?}", e.diagnostics);
+    }
     for (code, function) in cases {
         let error = match CheckedProgram::new(format!("{WARP}\n{function}")) {
             Ok(_) => panic!("accepted: {function}"),

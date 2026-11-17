@@ -147,7 +147,7 @@ fn borrowed_noncopy_consume_attempts_never_become_completed_consumption_witnesse
     labels(DOUBLE, &ds);
 }
 #[test]
-fn mutable_loan_overlap_and_abort_use_the_real_read_and_parameter_span() {
+fn mutable_loan_overlap_uses_the_real_read_and_parameter_span_and_aborts_keep_loans() {
     let source = "copy struct Pair{x:u64} effect Stop{fn act();} fn touch(inout x:Pair){} fn f(inout p:Pair){touch(inout p);p.x=1;} fn g() eff[Stop]{let mut p=Pair{x:0};touch(inout p);Stop::act();}";
     let (checked, mut program) = lower(source);
     let parameter = program.functions["f"].params[0].span.clone();
@@ -193,12 +193,14 @@ fn mutable_loan_overlap_and_abort_use_the_real_read_and_parameter_span() {
             .iter()
             .any(|l| l.span == parameter && l.message == "source span for this IR parameter")
     );
-    let abort = ds
-        .iter()
-        .find(|d| d.message == "abortable effect crosses a mutable temporary loan")
-        .unwrap();
-    assert_eq!(&source[abort.span.clone()], "Stop::act()");
-    assert!(abort.related.iter().any(|l| l.span == reads[1]));
+    // Keep-writes (#935): an `inout` loan may cross an abortable operation,
+    // so the still-active loan in `g` is not an abort diagnostic.
+    assert!(reads.len() == 2);
+    assert!(
+        ds.iter()
+            .all(|d| !d.message.contains("mutable temporary loan")),
+        "{ds:?}"
+    );
     labels(source, &ds);
 }
 fn erase_read(i: &mut Instruction) {
