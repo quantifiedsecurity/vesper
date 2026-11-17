@@ -315,6 +315,12 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
+                // Slice intervals `p[a..b]` (lane F1, #874; follow-up #887) are not in
+                // the self-hosted parser yet; the sequence fixtures join the corpus once
+                // packages/vesper-compiler parses them.
+                if path.ends_with("tests/fixtures/seq") {
+                    continue;
+                }
                 walk(&path, out);
             } else if path.extension().is_some_and(|e| e == "ves") {
                 out.push(path);
