@@ -5569,7 +5569,7 @@ dependencies = [
  "vesper-resonance",
  "vesper-semver-seed",
  "vesper-serde-seed",
- "vesper-silicon",
+ "vesper-silicon-seed",
  "vesper-simd",
  "vesper-span",
  "vesper-syntax",
@@ -6318,6 +6318,19 @@ dependencies = [
 
 [[package]]
 name = "vesper-silicon"
+version = "0.1.0"
+dependencies = [
+ "cranelift-codegen 0.125.4",
+ "cranelift-frontend 0.125.4",
+ "svd-parser",
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
+ "vesper-silicon-seed",
+]
+
+[[package]]
+name = "vesper-silicon-seed"
 version = "0.1.0"
 dependencies = [
  "cranelift-codegen 0.125.4",
