@@ -131,7 +131,13 @@ fn ack_batch(base: u64) -> u64 {
     let mut digest = 0xcbf2_9ce4_8422_2325;
     for i in 0..ACK_PACKETS {
         // Swap neighbours every seventh pair, skip every fiftieth number.
-        let j = if i % 7 == 3 { i + 1 } else if i % 7 == 4 { i - 1 } else { i };
+        let j = if i % 7 == 3 {
+            i + 1
+        } else if i % 7 == 4 {
+            i - 1
+        } else {
+            i
+        };
         if j % 50 == 49 {
             continue;
         }
@@ -139,7 +145,10 @@ fn ack_batch(base: u64) -> u64 {
         let now = (base + i) * 10_000;
         let ecn = if i % 97 == 0 { Ecn::Ce } else { Ecn::Ect0 };
         if let Ok(r) = rx.on_packet_received(pn, now, i % 3 != 0, ecn) {
-            digest = mix(digest, u64::from(r.largest) | u64::from(r.out_of_order) << 1);
+            digest = mix(
+                digest,
+                u64::from(r.largest) | u64::from(r.out_of_order) << 1,
+            );
         }
         if i % 2 == 1 {
             if let Some(ack) = rx.ack_frame(now + 5_000, 3).expect("ack frame") {
@@ -190,7 +199,10 @@ impl Transfer {
 
     fn round(&mut self) {
         let (p, id) = (&mut self.p, self.id);
-        let n = p.client.stream_write(p.c_conn, id, &self.data).expect("write");
+        let n = p
+            .client
+            .stream_write(p.c_conn, id, &self.data)
+            .expect("write");
         assert_eq!(n, self.data.len(), "the send ring keeps up");
         for _ in 0..4 {
             p.step();
@@ -227,7 +239,10 @@ impl Transfer {
             0
         );
         // Both arms see the same request sequence, so the totals agree.
-        mix(mix(0xcbf2_9ce4_8422_2325, self.returned), s.stream_packets_sent)
+        mix(
+            mix(0xcbf2_9ce4_8422_2325, self.returned),
+            s.stream_packets_sent,
+        )
     }
 }
 
@@ -261,7 +276,12 @@ impl Worker {
 
     fn batch(&mut self, n: u64) -> u64 {
         match self.workload.as_str() {
-            "frames" => frames_batch(&self.parser, &mut self.packet, &self.data, n * FRAME_PACKETS),
+            "frames" => frames_batch(
+                &self.parser,
+                &mut self.packet,
+                &self.data,
+                n * FRAME_PACKETS,
+            ),
             "ack" => ack_batch(n * ACK_PACKETS),
             "transfer" => self.transfer.as_mut().expect("transfer").batch(),
             other => panic!("unknown workload {other}"),

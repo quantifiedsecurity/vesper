@@ -284,7 +284,11 @@ fn frame_of(buf: &[u8], w: b::FrameW) -> Result<Frame<'_>, FrameError> {
 }
 
 /// Parses the frame at `buf[at..]`, returning it and the position after it.
-fn parse_at(buf: &[u8], at: usize, packet_type: PacketType) -> Result<(Frame<'_>, usize), FrameError> {
+fn parse_at(
+    buf: &[u8],
+    at: usize,
+    packet_type: PacketType,
+) -> Result<(Frame<'_>, usize), FrameError> {
     let parsed =
         b::frame_parse_at(buf, at as u64, packet_type_to(packet_type)).map_err(frame_error)?;
     Ok((frame_of(buf, parsed.f.get())?, parsed.end as usize))

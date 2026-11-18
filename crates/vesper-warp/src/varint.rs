@@ -22,7 +22,6 @@ pub enum VarIntError {
 
 pub use crate::imp::varint::{decode, encode, encode_with_len, encoded_len, prefix_len};
 
-
 /// A forward-only reader over a borrowed byte slice.
 #[derive(Debug, Clone, Copy)]
 pub struct Reader<'a> {

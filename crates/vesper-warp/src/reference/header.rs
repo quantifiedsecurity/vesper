@@ -8,7 +8,6 @@ use crate::packet_number::{PnLen, TruncatedPn};
 use crate::varint::{self, Reader, Writer};
 use vesper_ffi::{split_wire, split_wire_mut};
 
-
 impl UnprotectedHeader {
     /// Step 4, after the AEAD open succeeded: nonzero reserved bits are a
     /// PROTOCOL_VIOLATION (RFC 9000 §17.2, §17.3.1). Checking them before

@@ -67,7 +67,6 @@ pub use crate::imp::packet_number::{
     decode_quic_packet_number_rfc9000, decode_with_largest, encode, encoded_len, write_truncated,
 };
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

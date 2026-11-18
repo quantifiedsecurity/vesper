@@ -36,9 +36,7 @@
 use crate::packet_number::{PnLen, TruncatedPn};
 use crate::varint::VarIntError;
 use crate::{PacketType, TransportErrorCode};
-use vesper_ffi::{
-    Declaration, Endian, Field, Integer, Registry, ViewError, WireLayout, WireType,
-};
+use vesper_ffi::{Declaration, Endian, Field, Integer, Registry, ViewError, WireLayout, WireType};
 
 pub const QUIC_V1: u32 = 0x0000_0001;
 pub const MAX_CID_LEN: usize = 20;
@@ -239,7 +237,6 @@ pub struct VersionNegotiation<'a> {
     pub(crate) versions: &'a [u8],
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParsedPacket<'a> {
     Protected(ProtectedHeader),
@@ -314,7 +311,6 @@ impl HeaderParser {
 
 pub use crate::imp::header::{write_long, write_retry, write_version_negotiation};
 
-
 /// Fields of a version 1 Initial, 0-RTT or Handshake header to serialize.
 #[derive(Debug, Clone, Copy)]
 pub struct LongHeader<'a> {
@@ -336,4 +332,3 @@ pub struct WrittenLongHeader {
     /// `header_len + payload_len`.
     pub packet_len: usize,
 }
-

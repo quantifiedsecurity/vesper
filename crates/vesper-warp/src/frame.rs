@@ -172,7 +172,6 @@ pub enum AckRangeIter<'a> {
     Decoded(std::slice::Iter<'a, AckRange>),
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamFrame<'a> {
     pub stream_id: u64,
@@ -262,7 +261,6 @@ pub use crate::imp::frame::{
     stream_header_len,
 };
 
-
 /// Iterates the frames of an opened packet payload. Stops after the first
 /// error. Use [`scan_payload`] to also enforce the non-empty rule.
 #[derive(Debug, Clone)]
@@ -279,7 +277,6 @@ pub fn frames(payload: &[u8], packet_type: PacketType) -> Frames<'_> {
         done: false,
     }
 }
-
 
 /// What RFC 9002 needs to know about a received or sent payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
