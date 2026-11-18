@@ -31,6 +31,8 @@ pub use traceparent::*;
 #[rustfmt::skip]
 #[path = "../port/binding.rs"]
 mod port_binding;
+#[cfg(vesper_port)]
+mod port;
 
 /// Which build this is: `"vesper"` for the port-backed package
 /// `vesper-beacon`, `"rust"` for the seed copy `vesper-beacon-seed` that the
