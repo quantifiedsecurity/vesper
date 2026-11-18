@@ -17,7 +17,7 @@ use self::syntax::{
     valid_host,
     decimal,
     push_range,
-    push_lower,
+    push_token_lower,
     connection_options
 };
 
@@ -144,7 +144,18 @@ fn parse_head(in h: Slice[u8], limits: Limits) -> Result[Head, Error] {
     if !valid_target(eq_lit(in h, 0, m_hi, "OPTIONS", false), in h, t_lo, t_hi) {
         return bad(Error::InvalidTarget);
     }
-    let mut head = empty_head();
+    // Sized once from the head, so no field grows while it is filled.
+    let mut head = Head {
+        method: ChunkSeq::with_capacity[u8](m_hi),
+        target: ChunkSeq::with_capacity[u8](wrapping_sub(t_hi, t_lo)),
+        names: ChunkSeq::with_capacity[u8](n),
+        name_ends: ChunkSeq::with_capacity[u64](16),
+        values: ChunkSeq::with_capacity[u8](n),
+        value_ends: ChunkSeq::with_capacity[u64](16),
+        content_length: 0,
+        is_head: false,
+        close: false
+    };
     push_range(inout head.method, in h, 0, m_hi);
     push_range(inout head.target, in h, t_lo, t_hi);
     head.is_head = eq_lit(in h, 0, m_hi, "HEAD", false);
@@ -171,7 +182,7 @@ fn parse_head(in h: Slice[u8], limits: Limits) -> Result[Head, Error] {
         }
         let hi = dec(end);
         let colon = find(in h, at, hi, 58);
-        if colon >= hi || colon == at || !all_token(in h, at, colon) {
+        if colon >= hi || colon == at || !push_token_lower(inout head.names, in h, at, colon) {
             return bad(Error::InvalidHeader);
         }
         for i in inc(colon)..hi {
@@ -184,7 +195,10 @@ fn parse_head(in h: Slice[u8], limits: Limits) -> Result[Head, Error] {
             }
         }
         let v = trim_ows(in h, inc(colon), hi);
-        if named(in h, at, colon, "host") {
+        // Each name is compared only with the literals of its length, so most
+        // fields make no comparison call at all.
+        let name_len = wrapping_sub(colon, at);
+        if name_len == 4 && named(in h, at, colon, "host") {
             if host {
                 return bad(Error::DuplicateHost);
             }
@@ -192,7 +206,7 @@ fn parse_head(in h: Slice[u8], limits: Limits) -> Result[Head, Error] {
                 return bad(Error::InvalidHost);
             }
             host = true;
-        } else if named(in h, at, colon, "content-length") {
+        } else if name_len == 14 && named(in h, at, colon, "content-length") {
             if has_length {
                 return bad(Error::DuplicateContentLength);
             }
@@ -207,13 +221,13 @@ fn parse_head(in h: Slice[u8], limits: Limits) -> Result[Head, Error] {
             }
             head.content_length = length;
             has_length = true;
-        } else if named(in h, at, colon, "transfer-encoding") {
+        } else if name_len == 17 && named(in h, at, colon, "transfer-encoding") {
             transfer_coding = true;
-        } else if named(in h, at, colon, "upgrade") {
+        } else if name_len == 7 && named(in h, at, colon, "upgrade") {
             upgrade = true;
-        } else if named(in h, at, colon, "expect") {
+        } else if name_len == 6 && named(in h, at, colon, "expect") {
             expectation = true;
-        } else if named(in h, at, colon, "connection") {
+        } else if name_len == 10 && named(in h, at, colon, "connection") {
             let flags = connection_options(in h, v.lo, v.hi);
             if flags >= 4 {
                 return bad(Error::InvalidConnection);
@@ -221,7 +235,6 @@ fn parse_head(in h: Slice[u8], limits: Limits) -> Result[Head, Error] {
             upgrade = upgrade || (flags & 1) != 0;
             head.close = head.close || (flags & 2) != 0;
         }
-        push_lower(inout head.names, in h, at, colon);
         head.name_ends.push(head.names.len());
         push_range(inout head.values, in h, v.lo, v.hi);
         head.value_ends.push(head.values.len());

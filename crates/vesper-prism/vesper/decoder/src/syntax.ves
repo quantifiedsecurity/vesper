@@ -52,22 +52,20 @@ pub fn lower(b: u8) -> u8 {
     }
 }
 
-// The symbols of RFC 9110 `tchar`: !#$%&'*+-.^_`|~ (a comparison chain, not
-// a scan of a set string, so it costs no call).
-fn tchar_symbol(b: u8) -> bool {
-    (b == 33)
-        || (b >= 35 && b <= 39)
-        || (b == 42)
-        || (b == 43)
-        || (b == 45)
-        || (b == 46)
-        || (b >= 94 && b <= 96)
-        || (b == 124)
-        || (b == 126)
-}
-
+// The RFC 9110 `tchar` bytes (ALPHA, DIGIT and !#$%&'*+-.^_`|~) as two
+// 64-bit masks. A mask test calls nothing and stays small enough to inline;
+// a comparison chain does not. `rotate_right` is the total shift.
 pub fn token(b: u8) -> bool {
-    is_alnum(b) || tchar_symbol(b)
+    let i = widen_u64(b);
+    let low: u64 = 288068722172624896;
+    let high: u64 = 6341068274398134270;
+    if i < 64 {
+        (rotate_right(low, i) & 1) == 1
+    } else if i < 128 {
+        (rotate_right(high, wrapping_sub(i, 64)) & 1) == 1
+    } else {
+        false
+    }
 }
 
 // The hot loops read with `try_get` directly: a call to `byte` is not
@@ -182,18 +180,19 @@ pub fn find(in s: Slice[u8], lo: u64, hi: u64, b: u8) -> u64 {
     }
 }
 
-// The symbols the origin-form grammar allows unescaped: -._~!$&'()*+,;=:@/?
-fn target_symbol(b: u8) -> bool {
-    (b == 33)
-        || (b == 36)
-        || (b >= 38 && b <= 47)
-        || (b == 58)
-        || (b == 59)
-        || (b == 61)
-        || (b == 63)
-        || (b == 64)
-        || (b == 95)
-        || (b == 126)
+// The bytes the origin-form grammar allows unescaped (ALPHA, DIGIT and
+// -._~!$&'()*+,;=:@/?) as two 64-bit masks, like `token`.
+fn target_char(b: u8) -> bool {
+    let i = widen_u64(b);
+    let low: u64 = 12682136353106821120;
+    let high: u64 = 5188146764422578175;
+    if i < 64 {
+        (rotate_right(low, i) & 1) == 1
+    } else if i < 128 {
+        (rotate_right(high, wrapping_sub(i, 64)) & 1) == 1
+    } else {
+        false
+    }
 }
 
 pub fn valid_target(options: bool, in t: Slice[u8], lo: u64, hi: u64) -> bool {
@@ -223,7 +222,7 @@ pub fn valid_target(options: bool, in t: Slice[u8], lo: u64, hi: u64) -> bool {
                 return false;
             }
             i = wrapping_add(i, 3);
-        } else if is_alnum(b) || target_symbol(b) {
+        } else if target_char(b) {
             i = inc(i);
         } else {
             return false;
@@ -491,13 +490,23 @@ pub fn push_range(inout out: ChunkSeq[u8], in s: Slice[u8], lo: u64, hi: u64) {
     }
 }
 
-pub fn push_lower(inout out: ChunkSeq[u8], in s: Slice[u8], lo: u64, hi: u64) {
+// `all_token(in s, lo, hi)`, appending the lowercased bytes to `out` on
+// the way (one pass for the check and the copy of a field name).
+pub fn push_token_lower(inout out: ChunkSeq[u8], in s: Slice[u8], lo: u64, hi: u64) -> bool {
     for i in lo..hi {
         match s.try_get(i) {
-            Option::Some(b) => out.push(lower(b)),
-            Option::None => out.push(0),
+            Option::Some(b) => {
+                if !token(b) {
+                    return false;
+                }
+                out.push(lower(b));
+            },
+            Option::None => {
+                return false;
+            },
         }
     }
+    true
 }
 
 pub fn connection_options(in s: Slice[u8], lo: u64, hi: u64) -> u64 {
@@ -509,15 +518,16 @@ pub fn connection_options(in s: Slice[u8], lo: u64, hi: u64) -> u64 {
         if o.lo >= o.hi || !all_token(in s, o.lo, o.hi) {
             return 4;
         }
-        if named(in s, o.lo, o.hi, "upgrade") {
+        let option_len = wrapping_sub(o.hi, o.lo);
+        if option_len == 7 && named(in s, o.lo, o.hi, "upgrade") {
             flags = flags | 1;
         }
-        if named(in s, o.lo, o.hi, "close") {
+        if option_len == 5 && named(in s, o.lo, o.hi, "close") {
             flags = flags | 2;
         }
-        if named(in s, o.lo, o.hi, "content-length")
-            || named(in s, o.lo, o.hi, "transfer-encoding")
-            || named(in s, o.lo, o.hi, "host") {
+        if (option_len == 14 && named(in s, o.lo, o.hi, "content-length"))
+            || (option_len == 17 && named(in s, o.lo, o.hi, "transfer-encoding"))
+            || (option_len == 4 && named(in s, o.lo, o.hi, "host")) {
             return 4;
         }
         if comma >= hi {

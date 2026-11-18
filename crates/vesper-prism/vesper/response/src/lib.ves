@@ -79,22 +79,20 @@ fn lower(b: u8) -> u8 {
     }
 }
 
-// The symbols of RFC 9110 `tchar`: !#$%&'*+-.^_`|~ (a comparison chain, not
-// a scan of a set string, so it costs no call).
-fn tchar_symbol(b: u8) -> bool {
-    (b == 33)
-        || (b >= 35 && b <= 39)
-        || (b == 42)
-        || (b == 43)
-        || (b == 45)
-        || (b == 46)
-        || (b >= 94 && b <= 96)
-        || (b == 124)
-        || (b == 126)
-}
-
+// The RFC 9110 `tchar` bytes (ALPHA, DIGIT and !#$%&'*+-.^_`|~) as two
+// 64-bit masks. A mask test calls nothing and stays small enough to inline;
+// a comparison chain does not. `rotate_right` is the total shift.
 fn token(b: u8) -> bool {
-    is_alnum(b) || tchar_symbol(b)
+    let i = widen_u64(b);
+    let low: u64 = 288068722172624896;
+    let high: u64 = 6341068274398134270;
+    if i < 64 {
+        (rotate_right(low, i) & 1) == 1
+    } else if i < 128 {
+        (rotate_right(high, wrapping_sub(i, 64)) & 1) == 1
+    } else {
+        false
+    }
 }
 
 fn eq_fold(in s: Slice[u8], in lit: Str) -> bool {
@@ -371,18 +369,18 @@ pub fn response_plan_header(inout p: ResponsePlan, in name: Slice[u8], in value:
             return Option::Some(ResponseError::InvalidHeaderValue);
         }
     }
-    if eq_fold(in name, "transfer-encoding")
-        || eq_fold(in name, "trailer")
-        || eq_fold(in name, "te") {
+    if (name.len() == 17 && eq_fold(in name, "transfer-encoding"))
+        || (name.len() == 7 && eq_fold(in name, "trailer"))
+        || (name.len() == 2 && eq_fold(in name, "te")) {
         return Option::Some(ResponseError::UnsupportedTransferCoding);
     }
-    if eq_fold(in name, "upgrade") {
+    if name.len() == 7 && eq_fold(in name, "upgrade") {
         return Option::Some(ResponseError::UnsupportedUpgrade);
     }
-    if eq_fold(in name, "content-length")
-        || eq_fold(in name, "connection")
-        || eq_fold(in name, "keep-alive")
-        || eq_fold(in name, "proxy-connection") {
+    if (name.len() == 14 && eq_fold(in name, "content-length"))
+        || (name.len() == 10 && eq_fold(in name, "connection"))
+        || (name.len() == 10 && eq_fold(in name, "keep-alive"))
+        || (name.len() == 16 && eq_fold(in name, "proxy-connection")) {
         return Option::Some(ResponseError::ReservedHeader);
     }
     let field = match add(name.len(), value.len()) {

@@ -83,19 +83,19 @@ fn hex_value(b: u8) -> u8 {
     }
 }
 
-// The symbols the origin-form grammar allows unescaped: -._~!$&'()*+,;=:@/?
-// (a comparison chain, not a scan of a set string, so it costs no call).
-fn target_symbol(b: u8) -> bool {
-    (b == 33)
-        || (b == 36)
-        || (b >= 38 && b <= 47)
-        || (b == 58)
-        || (b == 59)
-        || (b == 61)
-        || (b == 63)
-        || (b == 64)
-        || (b == 95)
-        || (b == 126)
+// The bytes the origin-form grammar allows unescaped (ALPHA, DIGIT and
+// -._~!$&'()*+,;=:@/?) as two 64-bit masks, like `token`.
+fn target_char(b: u8) -> bool {
+    let i = widen_u64(b);
+    let low: u64 = 12682136353106821120;
+    let high: u64 = 5188146764422578175;
+    if i < 64 {
+        (rotate_right(low, i) & 1) == 1
+    } else if i < 128 {
+        (rotate_right(high, wrapping_sub(i, 64)) & 1) == 1
+    } else {
+        false
+    }
 }
 
 fn first_byte(in s: Slice[u8], b: u8) -> Option[u64] {
@@ -161,7 +161,7 @@ fn valid_origin(in t: Slice[u8]) -> bool {
                 return false;
             }
             i = wrapping_add(i, 3);
-        } else if is_alnum(b) || target_symbol(b) {
+        } else if target_char(b) {
             i = wrapping_add(i, 1);
         } else {
             return false;
