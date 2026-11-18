@@ -1,6 +1,7 @@
 // Module values of @vesper/quarry (see lib.ves).
 use self::{
     CTab,
+    D,
     Q,
     Val
 };
@@ -151,11 +152,11 @@ pub fn charge_row(inout q: Q, row: u64) {
 }
 
 // The parameter value bound to a name.
-pub fn bind_val(in q: Q, off: u64, len: u64) -> Val {
+pub fn bind_val(in ds: D, in q: Q, off: u64, len: u64) -> Val {
     for i in 0..q.params.len() {
         let d = param(in q, i);
         if same(in q.pool, d.noff, d.nlen, off, len) {
-            return vat(in q, d.ty);
+            return vat(in ds, in q, d.ty);
         }
     }
     null_val()
@@ -186,7 +187,7 @@ pub fn three(t: u64) -> Val {
 }
 
 // `eval` of the expression at p over the row starting at `row`.
-pub fn eval(inout q: Q, p: u64, row: u64) -> Val {
+pub fn eval(in ds: D, inout q: Q, p: u64, row: u64) -> Val {
     tick(inout q, 1);
     if q.err != 0 {
         return null_val();
@@ -197,7 +198,7 @@ pub fn eval(inout q: Q, p: u64, row: u64) -> Val {
         tick(inout q, vbytes(v));
         v
     } else if tag == 1 {
-        let v = bind_val(in q, ex(in q, wrapping_add(p, 3)), ex(in q, wrapping_add(p, 4)));
+        let v = bind_val(in ds, in q, ex(in q, wrapping_add(p, 3)), ex(in q, wrapping_add(p, 4)));
         tick(inout q, vbytes(v));
         v
     } else if tag == 2 {
@@ -208,8 +209,8 @@ pub fn eval(inout q: Q, p: u64, row: u64) -> Val {
         let op = ex(in q, wrapping_add(p, 3));
         let ap = wrapping_add(p, 4);
         let bp = ex_end(in q, ap);
-        let a = eval(inout q, ap, row);
-        let b = eval(inout q, bp, row);
+        let a = eval(in ds, inout q, ap, row);
+        let b = eval(in ds, inout q, bp, row);
         if q.err != 0 {
             return null_val();
         }
@@ -239,9 +240,9 @@ pub fn eval(inout q: Q, p: u64, row: u64) -> Val {
     } else if tag == 4 || tag == 5 {
         let ap = wrapping_add(p, 3);
         let bp = ex_end(in q, ap);
-        let av = eval(inout q, ap, row);
+        let av = eval(in ds, inout q, ap, row);
         let a = truth(inout q, av);
-        let bv = eval(inout q, bp, row);
+        let bv = eval(in ds, inout q, bp, row);
         let b = truth(inout q, bv);
         if q.err != 0 {
             return null_val();
@@ -262,7 +263,7 @@ pub fn eval(inout q: Q, p: u64, row: u64) -> Val {
             null_val()
         }
     } else if tag == 6 {
-        let xv = eval(inout q, wrapping_add(p, 3), row);
+        let xv = eval(in ds, inout q, wrapping_add(p, 3), row);
         let x = truth(inout q, xv);
         if x == 0 {
             null_val()
@@ -271,20 +272,20 @@ pub fn eval(inout q: Q, p: u64, row: u64) -> Val {
         }
     } else {
         let negated = ex(in q, wrapping_add(p, 3)) != 0;
-        let v = eval(inout q, wrapping_add(p, 4), row);
+        let v = eval(in ds, inout q, wrapping_add(p, 4), row);
         bool_val((v.t == 0) != negated)
     }
 }
 
 // Whether a predicate holds (`truth(eval(..)) == Some(true)`).
-pub fn holds(inout q: Q, p: u64, row: u64) -> bool {
-    let v = eval(inout q, p, row);
+pub fn holds(in ds: D, inout q: Q, p: u64, row: u64) -> bool {
+    let v = eval(in ds, inout q, p, row);
     let t = truth(inout q, v);
     q.err == 0 && t == 2
 }
 
-pub fn dtab(in q: Q, i: u64) -> CTab {
-    match q.dtabs.try_get(i) {
+pub fn dtab(in ds: D, in q: Q, i: u64) -> CTab {
+    match ds.dtabs.try_get(i) {
         Option::Some(t) => t,
         Option::None => CTab {
             noff: 0,
@@ -295,9 +296,9 @@ pub fn dtab(in q: Q, i: u64) -> CTab {
     }
 }
 
-pub fn find_data(in q: Q, off: u64, len: u64) -> u64 {
-    for i in 0..q.dtabs.len() {
-        let t = dtab(in q, i);
+pub fn find_data(in ds: D, in q: Q, off: u64, len: u64) -> u64 {
+    for i in 0..ds.dtabs.len() {
+        let t = dtab(in ds, in q, i);
         if same(in q.pool, t.noff, t.nlen, off, len) {
             return i;
         }

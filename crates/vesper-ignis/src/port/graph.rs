@@ -126,7 +126,7 @@ impl RenderGraph {
         } else {
             u64::MAX
         };
-        let descs: Vec<ffi::UseDesc> = desc
+        let descs: Vec<v::repr::UseDesc> = desc
             .uses
             .iter()
             .map(|u| {
@@ -134,7 +134,7 @@ impl RenderGraph {
                     UseDescRange::Bytes(r) => (true, r.offset, r.size, NO_RANGE),
                     UseDescRange::Subresources(r) => (false, 0, 0, r),
                 };
-                ffi::UseDesc {
+                v::repr::UseDesc::from_value(&ffi::UseDesc {
                     foreign: u.resource.graph() != self.id,
                     resource: u.resource.index() as u32,
                     bytes,
@@ -145,7 +145,7 @@ impl RenderGraph {
                     sync: u.sync.0,
                     has_layout: u.layout.is_some(),
                     layout: u.layout.unwrap_or(Layout::Undefined),
-                }
+                })
             })
             .collect();
         let outcome = v::graph_add_pass(&mut self.inner, queue, &descs);

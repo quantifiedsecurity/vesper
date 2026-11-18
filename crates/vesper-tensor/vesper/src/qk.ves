@@ -1,0 +1,288 @@
+// Module qk of @vesper/tensor (see lib.ves): GGML Q4_K super-blocks
+// (src/formats.rs), a transliteration of llama.cpp's
+// `quantize_row_q4_K_ref`, `make_qkx2_quants` and `dequantize_row_q4_K`.
+// Every operation is FP32 in the C source's order, without fused
+// multiply-add, so the bytes equal llama.cpp's.
+use self::num::{
+    encode_fp16,
+    decode_fp16,
+    half_at,
+    is_finite,
+    u64_zero
+};
+use self::ocp::{
+    nearest_int
+};
+
+fn f(in s: Slice[u32], i: u64) -> f32 eff [Fail[RuntimeError]] {
+    from_bits_f32(s[i])
+}
+
+fn clamp_i32(v: i32, lo: i32, hi: i32) -> i32 {
+    if v < lo {
+        lo
+    } else if v > hi {
+        hi
+    } else {
+        v
+    }
+}
+
+// GGML `get_scale_min_k4`: the 6-bit scale and minimum of sub-block `j`.
+pub fn scale_min(j: u64, in scales: Slice[u8])
+    -> (u8, u8) eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    if j < 4 {
+        (scales[j] & 63, scales[j + 4] & 63)
+    } else {
+        (
+            (scales[j + 4] & 15) | ((scales[j - 4] >> 6) << 4),
+            (scales[j + 4] >> 4) | ((scales[j] >> 6) << 4)
+        )
+    }
+}
+
+// Dequantizes one 144-byte block into `out[at..at + 256]`.
+pub fn dequantize_block(in block: Slice[u8], inout out: Slice[u32], at: u64) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    let d = half_at(in block, 0);
+    let dmin = half_at(in block, 2);
+    for j in u64_zero()..4 {
+        let (sc1, m1) = scale_min(2 * j, in block[4..16]);
+        let (sc2, m2) = scale_min(2 * j + 1, in block[4..16]);
+        let d1 = d * widen_f32(sc1);
+        let dm1 = dmin * widen_f32(m1);
+        let d2 = d * widen_f32(sc2);
+        let dm2 = dmin * widen_f32(m2);
+        let base = 16 + 32 * j;
+        let o = at + 64 * j;
+        for l in u64_zero()..32 {
+            let q = block[base + l];
+            out.set(o + l, to_bits_f32(d1 * widen_f32(q & 15) - dm1));
+            out.set(o + 32 + l, to_bits_f32(d2 * widen_f32(q >> 4) - dm2));
+        }
+    }
+}
+
+pub fn check_block(in block: Slice[u8]) -> bool eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    is_finite(half_at(in block, 0)) && is_finite(half_at(in block, 2))
+}
+
+fn err(use_mad: bool, diff: f32) -> f32 {
+    if use_mad {
+        abs(diff)
+    } else {
+        diff * diff
+    }
+}
+
+// GGML `make_qkx2_quants` over `x[0..n]` (FP32 bits); returns the bits of
+// `(scale, -min)` and writes `l[0..n]`.
+pub fn make_qkx2(
+    nmax: i32,
+    in x: Slice[u32],
+    in weights: Slice[u32],
+    inout l: Slice[u8],
+    inout laux: Slice[u8],
+    rmin: f32,
+    rdelta: f32,
+    nstep: i32,
+    use_mad: bool
+) -> (u32, u32) eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let n = x.len();
+    let mut min = f(in x, 0);
+    let mut max = f(in x, 0);
+    let mut sum_w = f(in weights, 0);
+    let mut sum_x = sum_w * f(in x, 0);
+    for i in 1..n {
+        let xi = f(in x, i);
+        if xi < min {
+            min = xi;
+        }
+        if xi > max {
+            max = xi;
+        }
+        let w = f(in weights, i);
+        sum_w = sum_w + w;
+        sum_x = sum_x + w * xi;
+    }
+    if min > 0.0 {
+        min = 0.0;
+    }
+    if max == min {
+        for i in 0..n {
+            l.set(i, 0);
+        }
+        return (0, to_bits_f32(-min));
+    }
+    let nmax_f = nearest_f32(nmax);
+    let mut iscale = nmax_f / (max - min);
+    let mut scale = 1.0 / iscale;
+    let mut best_error: f32 = 0.0;
+    for i in 0..n {
+        let xi = f(in x, i);
+        let q = clamp_i32(nearest_int(iscale * (xi - min)), 0, nmax);
+        let qb = wrapping_u8(q);
+        l.set(i, qb);
+        let diff = scale * widen_f32(qb) + min - xi;
+        best_error = best_error + f(in weights, i) * err(use_mad, diff);
+    }
+    if nstep < 1 {
+        return (to_bits_f32(scale), to_bits_f32(-min));
+    }
+    let mut is: i32 = 0;
+    loop {
+        if is > nstep {
+            break;
+        }
+        iscale = (rmin + rdelta * nearest_f32(is) + nmax_f) / (max - min);
+        let mut sum_l: f32 = 0.0;
+        let mut sum_l2: f32 = 0.0;
+        let mut sum_xl: f32 = 0.0;
+        for i in 0..n {
+            let xi = f(in x, i);
+            let q = clamp_i32(nearest_int(iscale * (xi - min)), 0, nmax);
+            laux.set(i, wrapping_u8(q));
+            let w = f(in weights, i);
+            let lf = nearest_f32(q);
+            sum_l = sum_l + w * lf;
+            sum_l2 = sum_l2 + w * lf * lf;
+            sum_xl = sum_xl + w * lf * xi;
+        }
+        let d = sum_w * sum_l2 - sum_l * sum_l;
+        if d > 0.0 {
+            let mut this_scale = (sum_w * sum_xl - sum_x * sum_l) / d;
+            let mut this_min = (sum_l2 * sum_x - sum_l * sum_xl) / d;
+            if this_min > 0.0 {
+                this_min = 0.0;
+                this_scale = sum_xl / sum_l2;
+            }
+            let mut cur_error: f32 = 0.0;
+            for i in 0..n {
+                let diff = this_scale * widen_f32(laux[i]) + this_min - f(in x, i);
+                cur_error = cur_error + f(in weights, i) * err(use_mad, diff);
+            }
+            if cur_error < best_error {
+                for i in 0..n {
+                    let v = laux[i];
+                    l.set(i, v);
+                }
+                best_error = cur_error;
+                scale = this_scale;
+                min = this_min;
+            }
+        }
+        is = is + 1;
+    }
+    (to_bits_f32(scale), to_bits_f32(-min))
+}
+
+// One `quantize_row_q4_K_ref` super-block of `x[at..at + 256]`, appended to
+// `out`. `s` is scratch of at least 320 bytes and `w` of at least 48 words.
+pub fn quantize_block(
+    in x: Slice[u32],
+    at: u64,
+    inout out: ChunkSeq[u8],
+    inout s: Slice[u8],
+    inout w: Slice[u32]
+) eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    // s: l = s[0..256], laux = s[256..288], packed = s[288..300].
+    // w: weights = w[0..32], scales = w[32..40], mins = w[40..48].
+    let mut max_scale: f32 = 0.0;
+    let mut max_min: f32 = 0.0;
+    for j in u64_zero()..8 {
+        let sub = at + 32 * j;
+        let mut sum_x2: f32 = 0.0;
+        for i in u64_zero()..32 {
+            let v = f(in x, sub + i);
+            sum_x2 = sum_x2 + v * v;
+        }
+        let av_x = sqrt(sum_x2 / 32.0);
+        for i in u64_zero()..32 {
+            w.set(i, to_bits_f32(av_x + abs(f(in x, sub + i))));
+        }
+        let lo = 32 * j;
+        let (sb, mb) = make_qkx2_quants_split(in x[sub..sub + 32], inout w, inout s, lo);
+        w.set(32 + j, sb);
+        w.set(40 + j, mb);
+        let scale = from_bits_f32(sb);
+        let min = from_bits_f32(mb);
+        if scale > max_scale {
+            max_scale = scale;
+        }
+        if min > max_min {
+            max_min = min;
+        }
+    }
+    let inv_scale: f32 = if max_scale > 0.0 {
+        63.0 / max_scale
+    } else {
+        0.0
+    };
+    let inv_min: f32 = if max_min > 0.0 {
+        63.0 / max_min
+    } else {
+        0.0
+    };
+    for j in u64_zero()..12 {
+        s.set(288 + j, 0);
+    }
+    for j in u64_zero()..8 {
+        let ls = min_u8(wrapping_u8(nearest_int(inv_scale * f(in w, 32 + j))), 63);
+        let lm = min_u8(wrapping_u8(nearest_int(inv_min * f(in w, 40 + j))), 63);
+        if j < 4 {
+            s.set(288 + j, ls);
+            s.set(292 + j, lm);
+        } else {
+            s.set(292 + j, (ls & 15) | ((lm & 15) << 4));
+            let a = s[284 + j];
+            s.set(284 + j, a | ((ls >> 4) << 6));
+            let b = s[288 + j];
+            s.set(288 + j, b | ((lm >> 4) << 6));
+        }
+    }
+    let d_bits = encode_fp16(max_scale / 63.0);
+    let dmin_bits = encode_fp16(max_min / 63.0);
+    let d_all = decode_fp16(d_bits);
+    let dmin_all = decode_fp16(dmin_bits);
+    for j in u64_zero()..8 {
+        let (sc, m) = scale_min(j, in s[288..300]);
+        let d = d_all * widen_f32(sc);
+        if d != 0.0 {
+            let dm = dmin_all * widen_f32(m);
+            for ii in u64_zero()..32 {
+                let q = clamp_i32(nearest_int((f(in x, at + 32 * j + ii) + dm) / d), 0, 15);
+                s.set(32 * j + ii, wrapping_u8(q));
+            }
+        }
+    }
+    out.push(wrapping_u8(d_bits));
+    out.push(wrapping_u8(d_bits >> 8));
+    out.push(wrapping_u8(dmin_bits));
+    out.push(wrapping_u8(dmin_bits >> 8));
+    for j in u64_zero()..12 {
+        out.push(s[288 + j]);
+    }
+    for j in u64_zero()..4 {
+        for i in u64_zero()..32 {
+            out.push(s[64 * j + i] | (s[64 * j + 32 + i] << 4));
+        }
+    }
+}
+
+fn min_u8(a: u8, b: u8) -> u8 {
+    if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+// `make_qkx2_quants(15, sub, weights, l[lo..lo + 32], laux, -1, 0.1, 20,
+// false)` with the weights in `w[0..32]`, `l` at `s[lo..]` and `laux` at
+// `s[256..288]`.
+fn make_qkx2_quants_split(in sub: Slice[u32], inout w: Slice[u32], inout s: Slice[u8], lo: u64)
+    -> (u32, u32) eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    make_qkx2(15, in sub, in w[0..32], inout s[lo..256], inout s[256..288], -1.0, 0.1, 20, false)
+}

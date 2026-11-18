@@ -1,6 +1,8 @@
 //! Canonical unsigned LEB128 and bounded opaque length-prefixed frames.
 //! Prefix parsing explicitly returns a recoverable nonclone remainder owner.
 //! Rust still permits dropping/forgetting it: no source linearity is claimed.
+#[cfg(vesper_port)]
+use crate::port;
 use crate::{Error, ErrorKind, Result, add, bound, charge};
 
 #[derive(Clone, Copy, Debug)]
@@ -23,9 +25,15 @@ impl Default for Limits {
 
 /// Prefix decoder: at most ten bytes inspected; returns consumed length. This
 /// alone does not assert whole-input canonical uniqueness or exact EOF.
+#[cfg(not(vesper_port))]
 pub fn decode_canonical_u64_leb128(input: &[u8]) -> Result<(u64, usize)> {
     let mut remaining = 10;
     decode(input, &mut remaining)
+}
+#[cfg(vesper_port)]
+pub fn decode_canonical_u64_leb128(input: &[u8]) -> Result<(u64, usize)> {
+    let p = port::vesper::fr_decode(input, 10).map_err(port::error)?;
+    Ok((p.a, p.b as usize))
 }
 pub(crate) fn decode(input: &[u8], remaining: &mut usize) -> Result<(u64, usize)> {
     let mut value = 0;
@@ -55,6 +63,7 @@ pub const fn encoded_u64_len(mut value: u64) -> usize {
     }
     count
 }
+#[cfg(not(vesper_port))]
 pub fn encode_u64_into(value: u64, output: &mut [u8], limits: Limits) -> Result<usize> {
     let len = encoded_u64_len(value);
     bound(len, limits.max_output_bytes, ErrorKind::OutputLimit)?;
@@ -64,6 +73,11 @@ pub fn encode_u64_into(value: u64, output: &mut [u8], limits: Limits) -> Result<
     }
     write_u64(value, &mut output[..len]);
     Ok(len)
+}
+#[cfg(vesper_port)]
+pub fn encode_u64_into(value: u64, output: &mut [u8], limits: Limits) -> Result<usize> {
+    let lim = port::framing_limits(limits);
+    Ok(port::vesper::fr_encode_u64_into(value, output, &lim).map_err(port::error)? as usize)
 }
 fn write_u64(mut value: u64, output: &mut [u8]) {
     for byte in output {
@@ -146,6 +160,7 @@ pub struct Frame<'a> {
     pub payload: &'a [u8],
     pub tail: Remainder<'a>,
 }
+#[cfg(not(vesper_port))]
 fn frame_parts(input: &[u8], limits: Limits) -> Result<(&[u8], usize)> {
     bound(input.len(), limits.max_input_bytes, ErrorKind::InputLimit)?;
     let mut work = limits.max_work;
@@ -158,6 +173,12 @@ fn frame_parts(input: &[u8], limits: Limits) -> Result<(&[u8], usize)> {
         .ok_or(Error::new(ErrorKind::UnexpectedEof, input.len()))?;
     charge(&mut work, len)?;
     Ok((payload, end))
+}
+#[cfg(vesper_port)]
+fn frame_parts(input: &[u8], limits: Limits) -> Result<(&[u8], usize)> {
+    let lim = port::framing_limits(limits);
+    let p = port::vesper::fr_frame_parts(input, &lim).map_err(port::error)?;
+    Ok((&input[p.a as usize..p.b as usize], p.b as usize))
 }
 pub fn parse_frame(input: &[u8], limits: Limits) -> Result<Frame<'_>> {
     let (payload, end) = frame_parts(input, limits)?;
@@ -175,6 +196,7 @@ pub fn parse_frame_exact(input: &[u8], limits: Limits) -> Result<&[u8]> {
 /// Largest payload representable in a three-byte unsigned length.
 pub const MAX_U24_PAYLOAD: usize = 0x00ff_ffff;
 
+#[cfg(not(vesper_port))]
 fn u24_frame_parts(input: &[u8], limits: Limits) -> Result<(&[u8], usize)> {
     bound(input.len(), limits.max_input_bytes, ErrorKind::InputLimit)?;
     let mut work = limits.max_work;
@@ -194,6 +216,12 @@ fn u24_frame_parts(input: &[u8], limits: Limits) -> Result<(&[u8], usize)> {
     charge(&mut work, len)?;
     Ok((payload, end))
 }
+#[cfg(vesper_port)]
+fn u24_frame_parts(input: &[u8], limits: Limits) -> Result<(&[u8], usize)> {
+    let lim = port::framing_limits(limits);
+    let p = port::vesper::fr_u24_frame_parts(input, &lim).map_err(port::error)?;
+    Ok((&input[p.a as usize..p.b as usize], p.b as usize))
+}
 
 /// Parse one opaque frame with a three-byte big-endian payload length.
 pub fn parse_u24_frame(input: &[u8], limits: Limits) -> Result<Frame<'_>> {
@@ -212,6 +240,7 @@ pub fn parse_u24_frame_exact(input: &[u8], limits: Limits) -> Result<&[u8]> {
 }
 
 /// Encode a frame transactionally, preserving the output on every error.
+#[cfg(not(vesper_port))]
 pub fn encode_u24_frame_into(payload: &[u8], output: &mut [u8], limits: Limits) -> Result<usize> {
     if payload.len() > MAX_U24_PAYLOAD {
         return Err(Error::new(ErrorKind::Overflow, 0));
@@ -232,17 +261,31 @@ pub fn encode_u24_frame_into(payload: &[u8], output: &mut [u8], limits: Limits) 
     output[3..size].copy_from_slice(payload);
     Ok(size)
 }
+#[cfg(vesper_port)]
+pub fn encode_u24_frame_into(payload: &[u8], output: &mut [u8], limits: Limits) -> Result<usize> {
+    let lim = port::framing_limits(limits);
+    let n = port::vesper::fr_encode_u24_frame_into(payload, output, &lim).map_err(port::error)?;
+    Ok(n as usize)
+}
+#[cfg(not(vesper_port))]
 pub fn parse_u64(input: &[u8], limits: Limits) -> Result<(u64, Remainder<'_>)> {
     bound(input.len(), limits.max_input_bytes, ErrorKind::InputLimit)?;
     let mut work = limits.max_work;
     let (value, count) = decode(input, &mut work)?;
     Ok((value, Remainder::at(input, count)))
 }
+#[cfg(vesper_port)]
+pub fn parse_u64(input: &[u8], limits: Limits) -> Result<(u64, Remainder<'_>)> {
+    let lim = port::framing_limits(limits);
+    let p = port::vesper::fr_parse_u64(input, &lim).map_err(port::error)?;
+    Ok((p.a, Remainder::at(input, p.b as usize)))
+}
 pub fn parse_u64_exact(input: &[u8], limits: Limits) -> Result<u64> {
     let (value, tail) = parse_u64(input, limits)?;
     tail.assert_exact_eof().map_err(|e| e.error)?;
     Ok(value)
 }
+#[cfg(not(vesper_port))]
 pub fn frame_encoded_len(payload: &[u8], limits: Limits) -> Result<usize> {
     bound(
         payload.len(),
@@ -255,6 +298,13 @@ pub fn frame_encoded_len(payload: &[u8], limits: Limits) -> Result<usize> {
     bound(size, limits.max_work, ErrorKind::WorkLimit)?;
     Ok(size)
 }
+#[cfg(vesper_port)]
+pub fn frame_encoded_len(payload: &[u8], limits: Limits) -> Result<usize> {
+    let lim = port::framing_limits(limits);
+    let n = port::vesper::fr_frame_encoded_len(payload.len() as u64, &lim).map_err(port::error)?;
+    Ok(n as usize)
+}
+#[cfg(not(vesper_port))]
 pub fn encode_frame_into(payload: &[u8], output: &mut [u8], limits: Limits) -> Result<usize> {
     let size = frame_encoded_len(payload, limits)?;
     if output.len() < size {
@@ -264,4 +314,10 @@ pub fn encode_frame_into(payload: &[u8], output: &mut [u8], limits: Limits) -> R
     write_u64(payload.len() as u64, &mut output[..prefix]);
     output[prefix..size].copy_from_slice(payload);
     Ok(size)
+}
+#[cfg(vesper_port)]
+pub fn encode_frame_into(payload: &[u8], output: &mut [u8], limits: Limits) -> Result<usize> {
+    let lim = port::framing_limits(limits);
+    let n = port::vesper::fr_encode_frame_into(payload, output, &lim).map_err(port::error)?;
+    Ok(n as usize)
 }

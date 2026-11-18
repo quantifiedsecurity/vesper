@@ -2,6 +2,7 @@
 use self::{
     CCol,
     CTab,
+    D,
     Q
 };
 use self::util::{
@@ -11,8 +12,10 @@ use self::util::{
     ex,
     fail,
     fail_name,
+    free_d,
     identifier,
     load_limits,
+    new_d,
     new_q,
     none,
     param,
@@ -54,6 +57,13 @@ use self::rows::{
 // [work, nrows, (values of one output row)*].
 pub fn execute_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     let mut q = new_q();
+    let mut ds = new_d();
+    execute_run(inout q, inout ds, in prog, in text);
+    free_d(ds);
+    q
+}
+
+pub fn execute_run(inout q: Q, inout ds: D, in prog: Slice[u64], in text: Slice[u8]) {
     q.pool.extend(in text);
     q.ex.extend(in prog);
     let nlim: u64 = 16;
@@ -63,8 +73,10 @@ pub fn execute_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     let (root, plan_end) = decode_plan(inout q, 17);
     let nproj = ex(in q, plan_end);
     let mut p = wrapping_add(plan_end, 1);
+    // The position of each projection expression in `ex`.
+    let mut projs = ChunkSeq::new[u64]();
     for k in 0..nproj {
-        q.aux2.push(p);
+        projs.push(p);
         p = ex_end(in q, p);
     }
     let ndecl = ex(in q, p);
@@ -77,7 +89,7 @@ pub fn execute_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
             nullable: ex(in q, wrapping_add(p, 3)) != 0,
             used: false
         };
-        q.decls.push(d);
+        ds.decls.push(d);
         p = wrapping_add(p, 4);
     }
     let nbinds = ex(in q, p);
@@ -87,23 +99,23 @@ pub fn execute_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
         let d = CCol {
             noff: ex(in q, p),
             nlen: ex(in q, wrapping_add(p, 1)),
-            ty: q.vals.len(),
+            ty: ds.vals.len(),
             nullable: false,
             used: false
         };
-        q.vals.push(v);
+        ds.vals.push(v);
         q.params.push(d);
         p = wrapping_add(p, 5);
     }
     p = load_catalog_ex(inout q, p);
-    load_data(inout q, p);
+    load_data(inout ds, inout q, p);
     if nbinds != ndecl {
         fail(inout q, 8, "parameter set differs from declarations");
-        return q;
+        return;
     }
     let mut parameter_bytes: u64 = 0;
     for k in 0..ndecl {
-        let d = match q.decls.try_get(k) {
+        let d = match ds.decls.try_get(k) {
             Option::Some(d) => d,
             Option::None => empty_col(),
         };
@@ -116,69 +128,69 @@ pub fn execute_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
         }
         if found == none() {
             fail_name(inout q, 8, "missing parameter :", d.noff, d.nlen);
-            return q;
+            return;
         }
-        let v = vat(in q, param(in q, found).ty);
+        let v = vat(in ds, in q, param(in q, found).ty);
         if !valid(v, d.ty, d.nullable) {
             fail_name(inout q, 5, "parameter :", d.noff, d.nlen);
-            return q;
+            return;
         }
         parameter_bytes = wrapping_add(wrapping_add(parameter_bytes, size_value(in q)), vbytes(v));
     }
     if !bound(inout q, parameter_bytes, 8, "parameter byte limit") {
-        return q;
+        return;
     }
     let mut count: u64 = 0;
     let mut bytes = parameter_bytes;
-    for i in 0..q.dtabs.len() {
-        let t = dtab(in q, i);
+    for i in 0..ds.dtabs.len() {
+        let t = dtab(in ds, in q, i);
         count = wrapping_add(count, t.n);
         bytes = wrapping_add(bytes, table_bytes(in q, t));
         if !bound(inout q, count, 7, "input row limit") {
-            return q;
+            return;
         }
         if !bound(inout q, bytes, 8, "input byte limit") {
-            return q;
+            return;
         }
         validate_rows(inout q, t);
         let mut at = t.start;
         for r in 0..t.n {
             if q.err != 0 {
-                return q;
+                return;
             }
             let nvals = ex(in q, at);
             tick(inout q, wrapping_add(1, nvals));
             at = wrapping_add(wrapping_add(at, 1), wrapping_mul(nvals, 3));
         }
         if q.err != 0 {
-            return q;
+            return;
         }
     }
     // Missing input must fail even if an optimizer could eliminate its rows.
-    check_inputs(inout q, root);
+    check_inputs(in ds, inout q, root);
     if q.err != 0 {
-        return q;
+        return;
     }
-    let (s, e) = run(inout q, root);
+    let (s, e) = run(inout ds, inout q, root);
     if q.err != 0 {
-        return q;
+        return;
     }
     q.words.push(0);
     q.words.push(0);
     let mut out: u64 = 0;
     let mut output_bytes: u64 = 0;
     for i in s..e {
-        let row = cw(in q.rowset, i);
+        let row = cw(in ds.rowset, i);
         let bn = wrapping_add(out, 1);
         if !bound(inout q, bn, 12, "output row limit") {
-            return q;
+            return;
         }
         let mut heap = size_vec(in q);
         for k in 0..nproj {
-            let e = cw(in q.aux2, k);
-            let v = eval(inout q, e, row);
+            let e = cw(in projs, k);
+            let v = eval(in ds, inout q, e, row);
             if q.err != 0 {
-                return q;
+                return;
             }
             heap = wrapping_add(wrapping_add(heap, size_value(in q)), vheap(v));
             q.words.push(v.t);
@@ -187,14 +199,13 @@ pub fn execute_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
         }
         output_bytes = wrapping_add(output_bytes, heap);
         if !bound(inout q, output_bytes, 13, "output byte limit") {
-            return q;
+            return;
         }
         out = bn;
     }
     let w = q.work;
     q.words.try_set(0, w);
     q.words.try_set(1, out);
-    q
 }
 
 // `DataSet::set_rows` checks. prog is
@@ -205,17 +216,24 @@ pub fn execute_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
 // length). On success words holds the normalized table name range.
 pub fn set_rows_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     let mut q = new_q();
+    let mut ds = new_d();
+    set_rows_run(inout q, inout ds, in prog, in text);
+    free_d(ds);
+    q
+}
+
+pub fn set_rows_run(inout q: Q, inout ds: D, in prog: Slice[u64], in text: Slice[u8]) {
     q.pool.extend(in text);
     q.ex.extend(in prog);
     if !load_limits(inout q, prog) {
-        return q;
+        return;
     }
     let toff = ex(in q, 16);
     let tlen = ex(in q, 17);
     let mut p = load_catalog_ex(inout q, 18);
     let name = identifier(inout q, toff, tlen);
     if q.err != 0 {
-        return q;
+        return;
     }
     let nrows = ex(in q, p);
     let rows = CTab {
@@ -225,11 +243,11 @@ pub fn set_rows_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
         n: nrows
     };
     if !bound(inout q, nrows, 7, "input row limit") {
-        return q;
+        return;
     }
     validate_rows(inout q, rows);
     if q.err != 0 {
-        return q;
+        return;
     }
     let mut count = nrows;
     let mut bytes = table_bytes(in q, rows);
@@ -237,21 +255,20 @@ pub fn set_rows_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     for r in 0..nrows {
         e = wrapping_add(wrapping_add(e, 1), wrapping_mul(ex(in q, e), 3));
     }
-    load_data(inout q, e);
-    for i in 0..q.dtabs.len() {
-        let t = dtab(in q, i);
+    load_data(inout ds, inout q, e);
+    for i in 0..ds.dtabs.len() {
+        let t = dtab(in ds, in q, i);
         if !same(in q.pool, t.noff, t.nlen, name, tlen) {
             count = wrapping_add(count, t.n);
             bytes = wrapping_add(bytes, table_bytes(in q, t));
         }
     }
     if !bound(inout q, count, 7, "input row limit") {
-        return q;
+        return;
     }
     if !bound(inout q, bytes, 8, "input byte limit") {
-        return q;
+        return;
     }
     q.words.push(name);
     q.words.push(tlen);
-    q
 }

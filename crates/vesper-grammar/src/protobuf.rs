@@ -52,6 +52,9 @@
 //! ```
 use core::fmt;
 
+#[cfg(vesper_port)]
+use crate::port;
+
 pub const PROFILE: &str = "vesper.protobuf.explicit-presence/1";
 pub const HARD_DEPTH: usize = 64;
 /// Protobuf message/length-delimited payload ceiling, independent of caller budgets.
@@ -239,8 +242,12 @@ pub struct Schema<'s> {
     messages: &'s [MessageSchema],
     root: usize,
     limits: Limits,
+    /// The schema flattened for the port (`port::flatten_schema`).
+    #[cfg(vesper_port)]
+    flat: Vec<u64>,
 }
 impl<'s> Schema<'s> {
+    #[cfg(not(vesper_port))]
     pub fn validate(messages: &'s [MessageSchema], root: usize, limits: Limits) -> Result<Self> {
         if messages.is_empty() || root >= messages.len() {
             return Err(Error::at(ErrorKind::Schema, root));
@@ -301,6 +308,22 @@ impl<'s> Schema<'s> {
             limits,
         })
     }
+    #[cfg(vesper_port)]
+    pub fn validate(messages: &'s [MessageSchema], root: usize, limits: Limits) -> Result<Self> {
+        let flat = port::flatten_schema(messages);
+        let lim = port::protobuf_limits(limits, size_of::<Meta>());
+        port::vesper::pb_schema_validate(&flat, root as u64, &lim).map_err(protobuf_error)?;
+        Ok(Self {
+            messages,
+            root,
+            limits,
+            flat,
+        })
+    }
+    #[cfg(vesper_port)]
+    fn port_limits(&self) -> [u64; 12] {
+        port::protobuf_limits(self.limits, size_of::<Meta>())
+    }
     pub fn root(&self) -> usize {
         self.root
     }
@@ -312,6 +335,7 @@ impl<'s> Schema<'s> {
     }
     /// Parses every input byte as part of one complete message. Protobuf itself
     /// is not self-framing; use an outer length frame for concatenated messages.
+    #[cfg(not(vesper_port))]
     pub fn parse_exact<'a>(&self, input: &'a [u8]) -> Result<Message<'a>> {
         bound(
             input.len(),
@@ -329,6 +353,14 @@ impl<'s> Schema<'s> {
         };
         parser.message(self.root, input.len(), 1)
     }
+    #[cfg(vesper_port)]
+    pub fn parse_exact<'a>(&self, input: &'a [u8]) -> Result<Message<'a>> {
+        let words =
+            port::vesper::pb_parse_exact(&self.flat, self.root as u64, &self.port_limits(), input)
+                .map_err(protobuf_error)?;
+        Ok(port::protobuf_message(&words, &mut 0, input))
+    }
+    #[cfg(not(vesper_port))]
     pub fn encoded_size(&self, message: &Message<'_>) -> Result<usize> {
         let mut budget = Budget::new(self.limits);
         let size = scan_message(self, self.root, message, &mut budget, 1)?;
@@ -337,8 +369,21 @@ impl<'s> Schema<'s> {
         budget.work(size)?;
         Ok(size)
     }
+    #[cfg(vesper_port)]
+    pub fn encoded_size(&self, message: &Message<'_>) -> Result<usize> {
+        let (values, _) = port::flatten_protobuf(message, false);
+        let n = port::vesper::pb_encoded_size(
+            &self.flat,
+            self.root as u64,
+            &self.port_limits(),
+            &values,
+        )
+        .map_err(protobuf_error)?;
+        Ok(n as usize)
+    }
     /// Every Result failure preserves every caller output byte and all borrowed
     /// schema/message owners. No output mutation happens before full preflight.
+    #[cfg(not(vesper_port))]
     pub fn encode_into(&self, message: &Message<'_>, output: &mut [u8]) -> Result<usize> {
         let size = self.encoded_size(message)?;
         if output.len() < size {
@@ -353,6 +398,21 @@ impl<'s> Schema<'s> {
         debug_assert_eq!(writer.pos, size);
         Ok(size)
     }
+    #[cfg(vesper_port)]
+    pub fn encode_into(&self, message: &Message<'_>, output: &mut [u8]) -> Result<usize> {
+        let (values, arena) = port::flatten_protobuf(message, true);
+        let n = port::vesper::pb_encode_into(
+            &self.flat,
+            self.root as u64,
+            &self.port_limits(),
+            &values,
+            &arena,
+            output,
+        )
+        .map_err(protobuf_error)?;
+        Ok(n as usize)
+    }
+    #[cfg(not(vesper_port))]
     fn lookup(&self, id: usize, number: u32, budget: &mut Budget) -> Result<FieldSchema> {
         let fields = &self.messages[id].fields;
         let (mut lo, mut hi) = (0, fields.len());
@@ -367,6 +427,7 @@ impl<'s> Schema<'s> {
         }
         Err(Error::at(ErrorKind::UnknownField, 0))
     }
+    #[cfg(not(vesper_port))]
     fn trusted_lookup(&self, id: usize, number: u32) -> FieldSchema {
         let fields = &self.messages[id].fields;
         fields[fields
@@ -374,12 +435,14 @@ impl<'s> Schema<'s> {
             .expect("validated field")]
     }
 }
+#[cfg(not(vesper_port))]
 struct Budget {
     limits: Limits,
     remaining: usize,
     nodes: usize,
     metadata: usize,
 }
+#[cfg(not(vesper_port))]
 impl Budget {
     fn new(limits: Limits) -> Self {
         Self {
@@ -426,6 +489,7 @@ impl Budget {
         Ok(())
     }
 }
+#[cfg(not(vesper_port))]
 fn schema_depth(
     id: usize,
     messages: &[MessageSchema],
@@ -456,12 +520,14 @@ fn schema_depth(
     meta[id] = Meta { color: 2, height };
     Ok(height)
 }
+#[cfg(not(vesper_port))]
 struct Parser<'s, 'd, 'a> {
     schema: &'d Schema<'s>,
     input: &'a [u8],
     pos: usize,
     budget: Budget,
 }
+#[cfg(not(vesper_port))]
 impl<'a> Parser<'_, '_, 'a> {
     fn var(&mut self, end: usize) -> Result<u64> {
         let start = self.pos;
@@ -637,6 +703,7 @@ impl<'a> Parser<'_, '_, 'a> {
         })
     }
 }
+#[cfg(not(vesper_port))]
 fn scalar_size(kind: Kind, value: &Value<'_>) -> Result<usize> {
     Ok(match (kind, value) {
         (Kind::U32, Value::U32(n)) => var_len(u64::from(*n)),
@@ -653,6 +720,7 @@ fn scalar_size(kind: Kind, value: &Value<'_>) -> Result<usize> {
         _ => return Err(Error::at(ErrorKind::TypeMismatch, 0)),
     })
 }
+#[cfg(not(vesper_port))]
 fn scan_value(
     schema: &Schema<'_>,
     kind: Kind,
@@ -703,6 +771,7 @@ fn scan_value(
         _ => scalar_size(kind, value),
     }
 }
+#[cfg(not(vesper_port))]
 fn scan_message(
     schema: &Schema<'_>,
     id: usize,
@@ -786,6 +855,7 @@ fn scan_message(
 // These second-pass calculations cannot overflow after full bounded preflight.
 // They do not allocate or clone. The depth-weighted work reservation covers
 // repeated size visits by ancestors while writing nested message lengths.
+#[cfg(not(vesper_port))]
 fn trusted_value_size(schema: &Schema<'_>, kind: Kind, value: &Value<'_>) -> usize {
     match (kind, value) {
         (Kind::String, Value::String(s)) => var_len(s.len() as u64) + s.len(),
@@ -797,6 +867,7 @@ fn trusted_value_size(schema: &Schema<'_>, kind: Kind, value: &Value<'_>) -> usi
         _ => scalar_size(kind, value).expect("preflight scalar"),
     }
 }
+#[cfg(not(vesper_port))]
 fn trusted_message_size(schema: &Schema<'_>, id: usize, message: &Message<'_>) -> usize {
     let (mut i, mut size) = (0, 0);
     while i < message.fields.len() {
@@ -820,11 +891,13 @@ fn trusted_message_size(schema: &Schema<'_>, id: usize, message: &Message<'_>) -
     }
     size
 }
+#[cfg(not(vesper_port))]
 struct Writer<'s, 'd, 'o> {
     schema: &'d Schema<'s>,
     output: &'o mut [u8],
     pos: usize,
 }
+#[cfg(not(vesper_port))]
 impl Writer<'_, '_, '_> {
     fn bytes(&mut self, bytes: &[u8]) {
         self.output[self.pos..self.pos + bytes.len()].copy_from_slice(bytes);
@@ -898,4 +971,32 @@ impl Writer<'_, '_, '_> {
             _ => unreachable!("validated scalar"),
         }
     }
+}
+
+#[cfg(vesper_port)]
+fn protobuf_error(e: port::vesper::GErr) -> Error {
+    const KINDS: [ErrorKind; 21] = [
+        ErrorKind::Schema,
+        ErrorKind::FieldNumber,
+        ErrorKind::RecursiveSchema,
+        ErrorKind::Order,
+        ErrorKind::Duplicate,
+        ErrorKind::UnknownField,
+        ErrorKind::WireType,
+        ErrorKind::NonCanonical,
+        ErrorKind::Truncated,
+        ErrorKind::Utf8,
+        ErrorKind::Overflow,
+        ErrorKind::TypeMismatch,
+        ErrorKind::InputLimit,
+        ErrorKind::OutputLimit,
+        ErrorKind::OutputTooSmall,
+        ErrorKind::PayloadLimit,
+        ErrorKind::NodeLimit,
+        ErrorKind::DepthLimit,
+        ErrorKind::WorkLimit,
+        ErrorKind::MetadataLimit,
+        ErrorKind::AllocationFailed,
+    ];
+    Error::at(KINDS[e.kind as usize], e.offset as usize)
 }

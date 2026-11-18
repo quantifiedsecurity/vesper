@@ -5549,7 +5549,7 @@ dependencies = [
  "vesper-fiber-abi",
  "vesper-fmt",
  "vesper-forge",
- "vesper-grammar",
+ "vesper-grammar-seed",
  "vesper-highlight",
  "vesper-kinetic",
  "vesper-lean-syntax",
@@ -5573,7 +5573,7 @@ dependencies = [
  "vesper-simd",
  "vesper-span",
  "vesper-syntax",
- "vesper-tensor",
+ "vesper-tensor-seed",
  "vesper-vault",
  "wasm-encoder 0.261.0",
  "wasmtime",
@@ -5872,7 +5872,7 @@ version = "0.1.0"
 dependencies = [
  "egglog",
  "vesper-resonance",
- "vesper-tensor",
+ "vesper-tensor-seed",
 ]
 
 [[package]]
@@ -5883,12 +5883,24 @@ dependencies = [
  "bytemuck",
  "naga",
  "vesper-kinetic",
- "vesper-tensor",
+ "vesper-tensor-seed",
 ]
 
 [[package]]
 name = "vesper-grammar"
 version = "0.1.0"
+dependencies = [
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
+
+[[package]]
+name = "vesper-grammar-seed"
+version = "0.1.0"
+dependencies = [
+ "vesper-bench",
+]
 
 [[package]]
 name = "vesper-highlight"
@@ -5909,6 +5921,7 @@ dependencies = [
 name = "vesper-ignis"
 version = "0.1.0"
 dependencies = [
+ "vesper-bench",
  "vesper-port-abi",
  "vesper-port-harness",
 ]
@@ -5937,7 +5950,7 @@ dependencies = [
  "sha2",
  "target-lexicon",
  "vesper-alloc-seed",
- "vesper-tensor",
+ "vesper-tensor-seed",
 ]
 
 [[package]]
@@ -6309,6 +6322,18 @@ dependencies = [
 
 [[package]]
 name = "vesper-tensor"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "memmap2",
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
+ "vesper-tensor-seed",
+]
+
+[[package]]
+name = "vesper-tensor-seed"
 version = "0.1.0"
 dependencies = [
  "memmap2",

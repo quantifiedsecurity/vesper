@@ -1,0 +1,630 @@
+// Module grammar of @vesper/grammar (see lib.ves): src/grammar.rs.
+//
+// Rules arrive flattened (src/port.rs `flatten_rules`): word 0 is the rule
+// count n, word 1 + i the offset of rule i's record in the same slice, and a record is its tag
+// followed by its operands: Empty 0; Byte 1 (byte); Literal 2 (start and
+// length in `lits`); Uleb128 3; Blob 4; Frame 5 (child); U24Frame 6
+// (child); Sequence 7 (count, children); Choice 8 (count, then id and rule
+// per branch); Repeat 9 (rule, count); Counted 10 (child).
+//
+// Limits (`lim`): max_rules, max_edges, max_literal_bytes,
+// max_total_literal_bytes, max_depth, max_input_bytes, max_frame_bytes,
+// max_events, max_metadata_bytes, max_capture_bytes, max_work,
+// max_repetitions, then the Rust byte sizes of the private `Meta` and of
+// `Capture` (the Rust budgets count them).
+//
+// Metadata (`meta`, the result of `validate`): seven words per rule, the
+// FIRST set as four 64-bit words, nullable, color and height.
+use self::{
+    GErr,
+    P2
+};
+use self::common::{
+    add_or,
+    bound,
+    charge_or,
+    fail,
+    min,
+    mul_or,
+    none,
+    sb,
+    shl,
+    shr,
+    sw
+};
+use self::framing::{
+    decode
+};
+
+pub fn rule_count(in rules: Slice[u64]) -> u64 {
+    sw(in rules, 0)
+}
+
+// The offset of rule `id`'s record.
+pub fn rec(in rules: Slice[u64], id: u64) -> u64 {
+    sw(in rules, wrapping_add(id, 1))
+}
+
+pub fn meta_word(in meta: Slice[u64], id: u64, k: u64) -> u64 {
+    sw(in meta, wrapping_add(wrapping_mul(id, 7), k))
+}
+
+fn cm(in meta: ChunkSeq[u64], id: u64, k: u64) -> u64 {
+    match meta.try_get(wrapping_add(wrapping_mul(id, 7), k)) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+fn cm_set(inout meta: ChunkSeq[u64], id: u64, k: u64, v: u64) {
+    meta.try_set(wrapping_add(wrapping_mul(id, 7), k), v);
+}
+
+// Whether `byte` is in the FIRST set of rule `id`.
+pub fn first_has(in meta: Slice[u64], id: u64, byte: u64) -> bool {
+    shr(meta_word(in meta, id, byte >> 6), byte & 63) & 1 != 0
+}
+
+// Grammar::validate: the metadata vector.
+pub fn validate(in rules: Slice[u64], in lits: Slice[u8], root: u64, in lim: Slice[u64])
+    -> ChunkSeq[u64] eff [Fail[GErr]] {
+    let n = rule_count(in rules);
+    let max_reps = sw(in lim, 11);
+    if max_reps > 4096 {
+        fail(19, 0);
+    }
+    if n == 0 || root >= n {
+        fail(19, root);
+    }
+    bound(n, sw(in lim, 0), 10);
+    let mut work = sw(in lim, 10);
+    charge_or(inout work, n, 8);
+    let mut edges: u64 = 0;
+    let mut literals: u64 = 0;
+    for id in 0..n {
+        let off = rec(in rules, id);
+        let tag = sw(in rules, off);
+        // The edges of this rule: `count` children at `first`, with `step`
+        // words between them (2 for the branches of a choice).
+        let mut count: u64 = 0;
+        let mut first: u64 = 0;
+        let mut step: u64 = 1;
+        if tag == 5 || tag == 6 || tag == 10 {
+            count = 1;
+            first = wrapping_add(off, 1);
+        } else if tag == 9 {
+            if sw(in rules, wrapping_add(off, 2)) > max_reps {
+                fail(10, id);
+            }
+            count = 1;
+            first = wrapping_add(off, 1);
+        } else if tag == 7 {
+            count = sw(in rules, wrapping_add(off, 1));
+            first = wrapping_add(off, 2);
+        } else if tag == 8 {
+            count = sw(in rules, wrapping_add(off, 1));
+            if count == 0 {
+                fail(19, id);
+            }
+            first = wrapping_add(off, 3);
+            step = 2;
+        } else if tag == 2 {
+            let len = sw(in rules, wrapping_add(off, 2));
+            bound(len, sw(in lim, 2), 5);
+            literals = add_or(literals, len, 2, 0);
+            bound(literals, sw(in lim, 3), 5);
+            charge_or(inout work, len, 8);
+        }
+        edges = add_or(edges, count, 2, 0);
+        bound(edges, sw(in lim, 1), 10);
+        charge_or(inout work, count, 8);
+        if tag == 8 {
+            for i in 0..count {
+                let branch_id = sw(
+                    in rules,
+                    wrapping_add(wrapping_add(off, 2), wrapping_mul(i, 2))
+                );
+                for j in 0..i {
+                    charge_or(inout work, 1, 8);
+                    if sw(in rules, wrapping_add(wrapping_add(off, 2), wrapping_mul(j, 2)))
+                        == branch_id {
+                        fail(21, id);
+                    }
+                }
+            }
+        }
+        for i in 0..count {
+            if sw(in rules, wrapping_add(first, wrapping_mul(i, step))) >= n {
+                fail(19, id);
+            }
+        }
+    }
+    let bytes = mul_or(n, sw(in lim, 12), 2, 0);
+    bound(bytes, sw(in lim, 8), 11);
+    let mut meta = ChunkSeq::new[u64]();
+    let words = wrapping_mul(n, 7);
+    for i in 0..words {
+        meta.push(0);
+    }
+    let max_depth = min(sw(in lim, 4), 64);
+    for id in 0..n {
+        build(in rules, in lits, inout meta, inout work, max_depth, id, 1);
+    }
+    meta
+}
+
+fn build(
+    in rules: Slice[u64],
+    in lits: Slice[u8],
+    inout meta: ChunkSeq[u64],
+    inout work: u64,
+    max_depth: u64,
+    id: u64,
+    depth: u64
+) -> Unit eff [Fail[GErr]] {
+    charge_or(inout work, 1, 8);
+    let color = cm(in meta, id, 5);
+    if color == 1 {
+        fail(20, id);
+    }
+    bound(depth, max_depth, 9);
+    if color == 2 {
+        return;
+    }
+    cm_set(inout meta, id, 5, 1);
+    let off = rec(in rules, id);
+    let tag = sw(in rules, off);
+    let next = wrapping_add(depth, 1);
+    let mut f0: u64 = 0;
+    let mut f1: u64 = 0;
+    let mut f2: u64 = 0;
+    let mut f3: u64 = 0;
+    let mut nullable = false;
+    let mut height: u64 = 1;
+    if tag == 0 {
+        nullable = true;
+    } else if tag == 1 || tag == 2 {
+        let mut has = true;
+        let mut byte: u64 = 0;
+        if tag == 1 {
+            byte = sw(in rules, wrapping_add(off, 1));
+        } else if sw(in rules, wrapping_add(off, 2)) == 0 {
+            has = false;
+        } else {
+            byte = sb(in lits, sw(in rules, wrapping_add(off, 1)));
+        }
+        if has {
+            let bit = shl(1, byte & 63);
+            let w = byte >> 6;
+            if w == 0 {
+                f0 = bit;
+            } else if w == 1 {
+                f1 = bit;
+            } else if w == 2 {
+                f2 = bit;
+            } else {
+                f3 = bit;
+            }
+        } else {
+            nullable = true;
+        }
+    } else if tag == 3 || tag == 4 {
+        f0 = none();
+        f1 = none();
+        f2 = none();
+        f3 = none();
+    } else if tag == 5 || tag == 6 || tag == 10 {
+        let child = sw(in rules, wrapping_add(off, 1));
+        build(in rules, in lits, inout meta, inout work, max_depth, child, next);
+        f0 = none();
+        f1 = none();
+        f2 = none();
+        f3 = none();
+        height = wrapping_add(cm(in meta, child, 6), 1);
+    } else if tag == 9 {
+        let child = sw(in rules, wrapping_add(off, 1));
+        let count = sw(in rules, wrapping_add(off, 2));
+        build(in rules, in lits, inout meta, inout work, max_depth, child, next);
+        height = wrapping_add(cm(in meta, child, 6), 1);
+        nullable = count == 0 || cm(in meta, child, 4) != 0;
+        if count != 0 {
+            f0 = cm(in meta, child, 0);
+            f1 = cm(in meta, child, 1);
+            f2 = cm(in meta, child, 2);
+            f3 = cm(in meta, child, 3);
+        }
+    } else if tag == 7 {
+        nullable = true;
+        let count = sw(in rules, wrapping_add(off, 1));
+        for i in 0..count {
+            let child = sw(in rules, wrapping_add(wrapping_add(off, 2), i));
+            build(in rules, in lits, inout meta, inout work, max_depth, child, next);
+            if nullable {
+                f0 = f0 | cm(in meta, child, 0);
+                f1 = f1 | cm(in meta, child, 1);
+                f2 = f2 | cm(in meta, child, 2);
+                f3 = f3 | cm(in meta, child, 3);
+            }
+            nullable = nullable && cm(in meta, child, 4) != 0;
+            let h = wrapping_add(cm(in meta, child, 6), 1);
+            if h > height {
+                height = h;
+            }
+        }
+    } else {
+        let count = sw(in rules, wrapping_add(off, 1));
+        for i in 0..count {
+            let child = sw(in rules, wrapping_add(wrapping_add(off, 3), wrapping_mul(i, 2)));
+            build(in rules, in lits, inout meta, inout work, max_depth, child, next);
+            if cm(in meta, child, 4) != 0 {
+                fail(23, id);
+            }
+            let c0 = cm(in meta, child, 0);
+            let c1 = cm(in meta, child, 1);
+            let c2 = cm(in meta, child, 2);
+            let c3 = cm(in meta, child, 3);
+            if (f0 & c0) != 0 || (f1 & c1) != 0 || (f2 & c2) != 0 || (f3 & c3) != 0 {
+                fail(22, id);
+            }
+            f0 = f0 | c0;
+            f1 = f1 | c1;
+            f2 = f2 | c2;
+            f3 = f3 | c3;
+            let h = wrapping_add(cm(in meta, child, 6), 1);
+            if h > height {
+                height = h;
+            }
+        }
+    }
+    bound(height, max_depth, 9);
+    cm_set(inout meta, id, 0, f0);
+    cm_set(inout meta, id, 1, f1);
+    cm_set(inout meta, id, 2, f2);
+    cm_set(inout meta, id, 3, f3);
+    cm_set(
+        inout meta,
+        id,
+        4,
+        if nullable {
+            1
+        } else {
+            0
+        }
+    );
+    cm_set(inout meta, id, 5, 2);
+    cm_set(inout meta, id, 6, height);
+}
+
+// The state of one parse: position, the end of the current frame, the
+// remaining work, and the capture capacity.
+pub copy struct Run {
+    pos: u64,
+    end: u64,
+    work: u64,
+    capacity: u64,
+    max_depth: u64,
+    max_events: u64,
+    max_frame: u64,
+    max_reps: u64
+}
+
+// Captures: ten words each (rule, has branch, branch, start, end, has
+// number, number, has payload, payload start, payload end).
+fn cap_set(inout caps: ChunkSeq[u64], event: u64, k: u64, v: u64) {
+    caps.try_set(wrapping_add(wrapping_mul(event, 10), k), v);
+}
+
+// Grammar::parse_prefix: the captures, then the final position.
+pub fn parse_prefix(
+    in rules: Slice[u64],
+    in lits: Slice[u8],
+    in meta: Slice[u64],
+    root: u64,
+    in lim: Slice[u64],
+    in input: Slice[u8]
+) -> ChunkSeq[u64] eff [Fail[GErr]] {
+    bound(input.len(), sw(in lim, 5), 5);
+    let capture_size = sw(in lim, 13);
+    let by_bytes = if capture_size == 0 {
+        none()
+    } else {
+        sw(in lim, 9) / capture_size
+    };
+    let capacity = min(min(sw(in lim, 7), sw(in lim, 10)), by_bytes);
+    let (lo, hi) = mul_wide(capacity, capture_size);
+    if hi != 0 || lo > 9223372036854775807 {
+        fail(12, 0);
+    }
+    let mut run = Run {
+        pos: 0,
+        end: input.len(),
+        work: sw(in lim, 10),
+        capacity: capacity,
+        max_depth: min(sw(in lim, 4), 64),
+        max_events: sw(in lim, 7),
+        max_frame: sw(in lim, 6),
+        max_reps: sw(in lim, 11)
+    };
+    let mut caps = ChunkSeq::new[u64]();
+    let mut events: u64 = 0;
+    rule(in rules, in lits, in meta, in input, inout run, inout caps, inout events, root, 1);
+    caps.push(run.pos);
+    caps
+}
+
+fn number(in input: Slice[u8], inout run: Run) -> u64 eff [Fail[GErr]] {
+    let mut work = run.work;
+    let p = decode(in input, run.pos, run.end, inout work, run.pos);
+    run.work = work;
+    run.pos = wrapping_add(run.pos, p.b);
+    p.a
+}
+
+fn literal(in input: Slice[u8], in lits: Slice[u8], inout run: Run, start: u64, len: u64)
+    -> Unit eff [Fail[GErr]] {
+    let mut work = run.work;
+    charge_or(inout work, len, 8);
+    run.work = work;
+    let end = add_or(run.pos, len, 2, 0);
+    if end > run.end {
+        fail(0, run.end);
+    }
+    if !same(in input[run.pos..end], in lits[start..wrapping_add(start, len)]) {
+        fail(24, run.pos);
+    }
+    run.pos = end;
+}
+
+pub fn same(in a: Slice[u8], in b: Slice[u8]) -> bool {
+    a.eq(in b)
+}
+
+fn byte_literal(in input: Slice[u8], inout run: Run, byte: u64) -> Unit eff [Fail[GErr]] {
+    let mut work = run.work;
+    charge_or(inout work, 1, 8);
+    run.work = work;
+    let end = add_or(run.pos, 1, 2, 0);
+    if end > run.end {
+        fail(0, run.end);
+    }
+    if sb(in input, run.pos) != byte {
+        fail(24, run.pos);
+    }
+    run.pos = end;
+}
+
+// decode_u24 inside the current frame; errors at the parse position.
+pub fn u24(in input: Slice[u8], inout run: Run) -> u64 eff [Fail[GErr]] {
+    let mut value: u64 = 0;
+    let three: u64 = 3;
+    let mut work = run.work;
+    for i in 0..three {
+        charge_or_at(inout work, 1, run.pos);
+        let at = wrapping_add(run.pos, i);
+        if at >= run.end {
+            fail(0, at);
+        }
+        value = shl(value, 8) | sb(in input, at);
+    }
+    run.work = work;
+    run.pos = wrapping_add(run.pos, 3);
+    value
+}
+
+// `charge` whose WorkLimit is reported at `offset` (an error inside a
+// helper the Rust code shifts by the parse position).
+pub fn charge_or_at(inout remaining: u64, units: u64, offset: u64) -> Unit eff [Fail[GErr]] {
+    if units > remaining {
+        fail(8, offset);
+    }
+    remaining = wrapping_sub(remaining, units);
+}
+
+fn rule(
+    in rules: Slice[u64],
+    in lits: Slice[u8],
+    in meta: Slice[u64],
+    in input: Slice[u8],
+    inout run: Run,
+    inout caps: ChunkSeq[u64],
+    inout events: u64,
+    id: u64,
+    depth: u64
+) -> Unit eff [Fail[GErr]] {
+    let mut work = run.work;
+    charge_or(inout work, 1, 8);
+    run.work = work;
+    bound(depth, run.max_depth, 9);
+    bound(add_or(events, 1, 2, 0), run.max_events, 10);
+    if events >= run.capacity {
+        fail(11, run.pos);
+    }
+    let event = events;
+    events = wrapping_add(events, 1);
+    caps.push(id);
+    caps.push(0);
+    caps.push(0);
+    caps.push(run.pos);
+    caps.push(run.pos);
+    caps.push(0);
+    caps.push(0);
+    caps.push(0);
+    caps.push(0);
+    caps.push(0);
+    let off = rec(in rules, id);
+    let tag = sw(in rules, off);
+    let next = wrapping_add(depth, 1);
+    if tag == 1 {
+        byte_literal(in input, inout run, sw(in rules, wrapping_add(off, 1)));
+    } else if tag == 2 {
+        literal(
+            in input,
+            in lits,
+            inout run,
+            sw(in rules, wrapping_add(off, 1)),
+            sw(in rules, wrapping_add(off, 2))
+        );
+    } else if tag == 3 {
+        let v = number(in input, inout run);
+        cap_set(inout caps, event, 5, 1);
+        cap_set(inout caps, event, 6, v);
+    } else if tag == 4 || tag == 5 || tag == 6 {
+        let len = if tag == 6 {
+            u24(in input, inout run)
+        } else {
+            number(in input, inout run)
+        };
+        bound(len, run.max_frame, 7);
+        let start = run.pos;
+        let end = add_or(start, len, 2, 0);
+        if end > run.end {
+            fail(0, run.end);
+        }
+        cap_set(inout caps, event, 7, 1);
+        cap_set(inout caps, event, 8, start);
+        cap_set(inout caps, event, 9, end);
+        if tag == 4 {
+            let mut w = run.work;
+            charge_or(inout w, len, 8);
+            run.work = w;
+            run.pos = end;
+        } else {
+            let previous = run.end;
+            run.end = end;
+            rule(
+                in rules,
+                in lits,
+                in meta,
+                in input,
+                inout run,
+                inout caps,
+                inout events,
+                sw(in rules, wrapping_add(off, 1)),
+                next
+            );
+            if run.pos != end {
+                fail(3, run.pos);
+            }
+            run.end = previous;
+        }
+    } else if tag == 7 {
+        let count = sw(in rules, wrapping_add(off, 1));
+        for i in 0..count {
+            rule(
+                in rules,
+                in lits,
+                in meta,
+                in input,
+                inout run,
+                inout caps,
+                inout events,
+                sw(in rules, wrapping_add(wrapping_add(off, 2), i)),
+                next
+            );
+        }
+    } else if tag == 9 {
+        repeat(
+            in rules,
+            in lits,
+            in meta,
+            in input,
+            inout run,
+            inout caps,
+            inout events,
+            sw(in rules, wrapping_add(off, 1)),
+            sw(in rules, wrapping_add(off, 2)),
+            depth
+        );
+    } else if tag == 10 {
+        let count = number(in input, inout run);
+        cap_set(inout caps, event, 5, 1);
+        cap_set(inout caps, event, 6, count);
+        repeat(
+            in rules,
+            in lits,
+            in meta,
+            in input,
+            inout run,
+            inout caps,
+            inout events,
+            sw(in rules, wrapping_add(off, 1)),
+            count,
+            depth
+        );
+    } else if tag == 8 {
+        if run.pos >= run.end || run.pos >= input.len() {
+            fail(0, run.pos);
+        }
+        let byte = sb(in input, run.pos);
+        let count = sw(in rules, wrapping_add(off, 1));
+        let mut chosen = none();
+        let mut branch: u64 = 0;
+        let mut w = run.work;
+        for i in 0..count {
+            if chosen == none() {
+                charge_or(inout w, 1, 8);
+                let at = wrapping_add(wrapping_add(off, 2), wrapping_mul(i, 2));
+                let child = sw(in rules, wrapping_add(at, 1));
+                if first_has(in meta, child, byte) {
+                    chosen = child;
+                    branch = sw(in rules, at);
+                }
+            }
+        }
+        run.work = w;
+        if chosen == none() {
+            fail(24, run.pos);
+        }
+        cap_set(inout caps, event, 1, 1);
+        cap_set(inout caps, event, 2, branch);
+        rule(
+            in rules,
+            in lits,
+            in meta,
+            in input,
+            inout run,
+            inout caps,
+            inout events,
+            chosen,
+            next
+        );
+    }
+    cap_set(inout caps, event, 4, run.pos);
+}
+
+fn repeat(
+    in rules: Slice[u64],
+    in lits: Slice[u8],
+    in meta: Slice[u64],
+    in input: Slice[u8],
+    inout run: Run,
+    inout caps: ChunkSeq[u64],
+    inout events: u64,
+    child: u64,
+    count: u64,
+    depth: u64
+) -> Unit eff [Fail[GErr]] {
+    if count > run.max_reps {
+        fail(10, run.pos);
+    }
+    let visits = add_or(events, count, 2, 0);
+    bound(visits, run.max_events, 10);
+    if visits > run.capacity {
+        fail(11, run.pos);
+    }
+    bound(count, run.work, 8);
+    let next = wrapping_add(depth, 1);
+    for i in 0..count {
+        rule(
+            in rules,
+            in lits,
+            in meta,
+            in input,
+            inout run,
+            inout caps,
+            inout events,
+            child,
+            next
+        );
+    }
+}

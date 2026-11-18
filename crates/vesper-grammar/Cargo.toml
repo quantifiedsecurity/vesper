@@ -3,4 +3,31 @@ name = "vesper-grammar"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Bounded canonical framing, primitive Arrow validation, and deterministic byte grammar execution"
+description = "Bounded canonical framing, primitive Arrow validation, and deterministic byte grammar execution (port-backed build)"
+build = "build.rs"
+
+# This is the port-backed build: build.rs links the Vesper package in vesper/
+# and sets cfg(vesper_port). The compiler and every crate inside
+# `cargo tree -p vesper -e normal,build` use the frozen Rust seed copy,
+# crates/vesper-grammar/seed (package vesper-grammar-seed, same library
+# name), instead; see "Crates the compiler links" in
+# docs/maintenance/porting-a-crate.md. No crate outside the compiler's
+# closure depends on Grammar today, so every dependent links the Rust build.
+
+[features]
+# A deliberately wrong Vesper build, one change per ported module (build.rs
+# DIVERGENT): the crate's tests must fail (scripts/test-port-harness.sh and
+# Bazel assert it).
+vesper-port-divergent = []
+
+[dependencies]
+vesper-port-abi = { path = "../vesper-port-abi" }
+
+[dev-dependencies]
+vesper-bench = { path = "../vesper-bench" }
+
+[build-dependencies]
+vesper-port-harness = { path = "../vesper-port-harness" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(vesper_port)"] }

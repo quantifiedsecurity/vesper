@@ -1,6 +1,8 @@
 //! Actual Arrow primitive signed-i64 values/validity validation. This accepts
 //! explicit FieldNode/Buffer descriptors over a borrowed body, not IPC envelopes,
 //! compression, dictionaries, child arrays, offsets, DMA or typed pointer casts.
+#[cfg(vesper_port)]
+use crate::port;
 use crate::{Error, ErrorKind, Result, add, bound, charge, mul};
 use core::ops::Range;
 
@@ -14,6 +16,7 @@ pub struct FieldNode {
     pub row_length: i64,
     pub null_count: i64,
 }
+#[cfg(not(vesper_port))]
 fn pair(bytes: &[u8]) -> Result<(i64, i64)> {
     if bytes.len() != 16 {
         return Err(Error::new(ErrorKind::Descriptor, 0));
@@ -22,6 +25,11 @@ fn pair(bytes: &[u8]) -> Result<(i64, i64)> {
         i64::from_le_bytes(bytes[..8].try_into().expect("eight bytes")),
         i64::from_le_bytes(bytes[8..].try_into().expect("eight bytes")),
     ))
+}
+#[cfg(vesper_port)]
+fn pair(bytes: &[u8]) -> Result<(i64, i64)> {
+    let p = port::vesper::ar_from_wire(bytes).map_err(port::error)?;
+    Ok((p.a as i64, p.b as i64))
 }
 impl BufferDesc {
     pub fn from_wire(bytes: &[u8]) -> Result<Self> {
@@ -80,6 +88,7 @@ fn nonnegative(n: i64) -> Result<usize> {
     usize::try_from(n).map_err(|_| Error::new(ErrorKind::Overflow, 0))
 }
 /// Descriptor arithmetic helper; it cannot publish a validated column.
+#[cfg(not(vesper_port))]
 pub fn checked_buffer_range(
     total_body_bytes: u64,
     descriptor: BufferDesc,
@@ -100,6 +109,21 @@ pub fn checked_buffer_range(
     }
     Ok(offset..end)
 }
+#[cfg(vesper_port)]
+pub fn checked_buffer_range(
+    total_body_bytes: u64,
+    descriptor: BufferDesc,
+    alignment: usize,
+) -> Result<Range<usize>> {
+    let p = port::vesper::ar_checked_buffer_range(
+        total_body_bytes,
+        descriptor.offset_bytes as u64,
+        descriptor.byte_length as u64,
+        alignment as u64,
+    )
+    .map_err(port::error)?;
+    Ok(p.a as usize..p.b as usize)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct I64Column<'a> {
@@ -112,6 +136,7 @@ impl<'a> I64Column<'a> {
     /// Requires known null count (negative/unknown counts unsupported). Values
     /// length is exactly rows*8. A present bitmap may have padding bytes/bits;
     /// only row bits count. Empty bitmap is permitted iff null_count is zero.
+    #[cfg(not(vesper_port))]
     pub fn validate(
         body: &'a [u8],
         node: FieldNode,
@@ -181,6 +206,43 @@ impl<'a> I64Column<'a> {
             nulls,
         })
     }
+    #[cfg(vesper_port)]
+    pub fn validate(
+        body: &'a [u8],
+        node: FieldNode,
+        validity: BufferDesc,
+        values: BufferDesc,
+        profile: AlignmentProfile,
+        limits: Limits,
+    ) -> Result<Self> {
+        let request = port::vesper::ArReq {
+            row_length: node.row_length as u64,
+            null_count: node.null_count as u64,
+            validity_offset: validity.offset_bytes as u64,
+            validity_length: validity.byte_length as u64,
+            values_offset: values.offset_bytes as u64,
+            values_length: values.byte_length as u64,
+            profile: profile as u64,
+            body_address: body.as_ptr() as usize as u64,
+            max_body_bytes: limits.max_body_bytes as u64,
+            max_rows: limits.max_rows as u64,
+            max_work: limits.max_work as u64,
+        };
+        let c = port::vesper::ar_validate(body, request).map_err(port::error)?;
+        Ok(Self::from_parts(body, c))
+    }
+    /// A column the port validated, from its ranges of `body`.
+    #[cfg(vesper_port)]
+    pub(crate) fn from_parts(body: &'a [u8], c: port::vesper::ArCol) -> Self {
+        Self {
+            values: &body[c.values_start as usize..c.values_end as usize],
+            validity: c
+                .has_validity
+                .then(|| &body[c.validity_start as usize..c.validity_end as usize]),
+            rows: c.rows as usize,
+            nulls: c.nulls as usize,
+        }
+    }
     pub fn len(self) -> usize {
         self.rows
     }
@@ -196,6 +258,7 @@ impl<'a> I64Column<'a> {
     pub fn validity_bytes(self) -> Option<&'a [u8]> {
         self.validity
     }
+    #[cfg(not(vesper_port))]
     pub fn get(self, row: usize) -> Option<Option<i64>> {
         if row >= self.rows {
             return None;
@@ -213,8 +276,24 @@ impl<'a> I64Column<'a> {
                 .expect("validated i64 bytes"),
         )))
     }
+    #[cfg(vesper_port)]
+    pub fn get(self, row: usize) -> Option<Option<i64>> {
+        let p = port::vesper::ar_get(
+            self.values,
+            self.validity.unwrap_or(&[]),
+            self.validity.is_some(),
+            self.rows as u64,
+            row as u64,
+        );
+        match p.a {
+            0 => None,
+            1 => Some(None),
+            _ => Some(Some(p.b as i64)),
+        }
+    }
     /// Sequential checked arithmetic; intermediate overflow fails even if a later
     /// value could cancel it. Empty/all-null columns produce None, not zero.
+    #[cfg(not(vesper_port))]
     pub fn checked_sum(self, max_work: usize) -> Result<Option<i64>> {
         bound(self.rows, max_work, ErrorKind::WorkLimit)?;
         let mut sum = 0i64;
@@ -228,5 +307,17 @@ impl<'a> I64Column<'a> {
             }
         }
         Ok(any.then_some(sum))
+    }
+    #[cfg(vesper_port)]
+    pub fn checked_sum(self, max_work: usize) -> Result<Option<i64>> {
+        let p = port::vesper::ar_checked_sum(
+            self.values,
+            self.validity.unwrap_or(&[]),
+            self.validity.is_some(),
+            self.rows as u64,
+            max_work as u64,
+        )
+        .map_err(port::error)?;
+        Ok((p.a == 1).then_some(p.b as i64))
     }
 }

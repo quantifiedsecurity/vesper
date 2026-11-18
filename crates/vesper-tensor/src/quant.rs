@@ -14,6 +14,9 @@
 //! These are the GGML `Q8_0`/`Q4_0` layouts. The quantizers follow GGML's
 //! reference (scalar) rounding rules. Blocks are parsed from bytes with no
 //! unsafe casts and no padding assumptions.
+// The port-backed build (src/port.rs) replaces some Rust bodies, leaving
+// their helpers unused there.
+#![cfg_attr(vesper_port, allow(dead_code, unused_imports))]
 use crate::formats::{self, Fp8, MXFP4_BYTES, Q4_K_BYTES, QK_K};
 use crate::host::decode_fp16;
 use crate::mmap::WeightBytes;
@@ -26,6 +29,7 @@ pub const Q4_0_BYTES: usize = 18;
 
 /// IEEE binary32 → binary16 with round-to-nearest-even. Overflow becomes a
 /// signed infinity; NaNs stay NaNs (quiet, top payload bits kept).
+#[cfg(not(vesper_port))]
 pub fn encode_fp16(value: f32) -> u16 {
     let bits = value.to_bits();
     let sign = ((bits >> 16) & 0x8000) as u16;
@@ -54,6 +58,10 @@ pub fn encode_fp16(value: f32) -> u16 {
     // produce infinity).
     sign | round_shift(((e as u32) << 23) | mantissa, 13) as u16
 }
+#[cfg(vesper_port)]
+pub fn encode_fp16(value: f32) -> u16 {
+    crate::port::must(crate::port::binding::encode_fp16(value.to_bits()))
+}
 
 fn round_shift(value: u32, shift: u32) -> u32 {
     let kept = value >> shift;
@@ -67,12 +75,17 @@ fn round_shift(value: u32, shift: u32) -> u32 {
 }
 
 /// IEEE binary32 → BF16 with round-to-nearest-even; NaNs stay quiet NaNs.
+#[cfg(not(vesper_port))]
 pub fn encode_bf16(value: f32) -> u16 {
     let bits = value.to_bits();
     if value.is_nan() {
         return ((bits >> 16) as u16) | 0x0040;
     }
     round_shift_carry(bits)
+}
+#[cfg(vesper_port)]
+pub fn encode_bf16(value: f32) -> u16 {
+    crate::port::must(crate::port::binding::encode_bf16(value.to_bits()))
 }
 fn round_shift_carry(bits: u32) -> u16 {
     let kept = bits >> 16;
@@ -84,8 +97,13 @@ fn round_shift_carry(bits: u32) -> u16 {
     };
     rounded as u16
 }
+#[cfg(not(vesper_port))]
 pub fn decode_bf16(bits: u16) -> f32 {
     f32::from_bits(u32::from(bits) << 16)
+}
+#[cfg(vesper_port)]
+pub fn decode_bf16(bits: u16) -> f32 {
+    f32::from_bits(crate::port::must(crate::port::binding::decode_bf16(bits)))
 }
 
 /// Encoding of a weight matrix's elements.
@@ -147,6 +165,22 @@ impl WeightFormat {
             Self::F8E5M2 => Some(Fp8::E5M2),
             _ => None,
         }
+    }
+}
+
+/// The port's code for a format (`decode_piece` in `vesper/src/rows.ves`).
+#[cfg(vesper_port)]
+fn port_format(format: WeightFormat) -> u8 {
+    match format {
+        WeightFormat::F32 => 0,
+        WeightFormat::F16 => 1,
+        WeightFormat::Bf16 => 2,
+        WeightFormat::Q8_0 => 3,
+        WeightFormat::Q4_0 => 4,
+        WeightFormat::Q4K => 5,
+        WeightFormat::Mxfp4 => 6,
+        WeightFormat::F8E4M3 => 7,
+        WeightFormat::F8E5M2 => 8,
     }
 }
 
@@ -244,6 +278,12 @@ impl Matrix {
             None if scale != 1.0 => return Err(Error::Shape("only FP8 matrices carry a scale")),
             _ => {}
         }
+        #[cfg(vesper_port)]
+        let finite = crate::port::must(crate::port::binding::finite_payload(
+            port_format(format),
+            raw,
+        ));
+        #[cfg(not(vesper_port))]
         let finite = match format {
             WeightFormat::F32 => raw
                 .as_chunks::<4>()
@@ -401,6 +441,7 @@ impl Matrix {
     /// Calls `f(first_column, values)` for consecutive pieces of row `row`,
     /// decoded to FP32. Every piece but the last has a length that is a
     /// multiple of eight.
+    #[cfg(not(vesper_port))]
     fn row_chunks(&self, row: usize, mut f: impl FnMut(usize, &[f32])) {
         let cols = self.cols;
         let bytes = match &self.storage {
@@ -468,6 +509,37 @@ impl Matrix {
             }
         }
     }
+    #[cfg(vesper_port)]
+    fn row_chunks(&self, row: usize, mut f: impl FnMut(usize, &[f32])) {
+        let cols = self.cols;
+        let bytes = match &self.storage {
+            Storage::F32(data) => {
+                f(0, &data[row * cols..(row + 1) * cols]);
+                return;
+            }
+            Storage::Bytes(b) => b.as_slice(),
+        };
+        let elements = self.format.block_elements();
+        let width = self.format.block_bytes();
+        let row_bytes = (cols / elements) * width;
+        let raw = &bytes[row * row_bytes..(row + 1) * row_bytes];
+        let mut buf = [0.0f32; ELEMENT_CHUNK];
+        // Pieces of ELEMENT_CHUNK values (a whole number of blocks of every
+        // format), decoded by the port in one call each.
+        let piece_bytes = ELEMENT_CHUNK / elements * width;
+        let code = port_format(self.format);
+        for (c, chunk) in raw.chunks(piece_bytes).enumerate() {
+            let n = chunk.len() / width * elements;
+            let out = &mut buf[..n];
+            crate::port::must(crate::port::binding::decode_piece(
+                code,
+                self.scale.to_bits(),
+                chunk,
+                crate::port::bits_mut(out),
+            ));
+            f(c * ELEMENT_CHUNK, out);
+        }
+    }
     /// `out[r] = sum_c W[r, c] * x[c]`, accumulated in FP32 in ascending column
     /// order ([`Kernel::Scalar`]). Quantized weights are dequantized element by
     /// element (rounded to FP32) before the product; activations stay FP32.
@@ -527,18 +599,40 @@ impl Matrix {
     }
 }
 
+#[cfg(not(vesper_port))]
 pub fn dequantize_q8_0_block(block: &[u8], out: &mut [f32]) {
     let d = decode_fp16(u16::from_le_bytes([block[0], block[1]]));
     for (q, out) in block[2..Q8_0_BYTES].iter().zip(out) {
         *out = d * f32::from(*q as i8);
     }
 }
+#[cfg(vesper_port)]
+pub fn dequantize_q8_0_block(block: &[u8], out: &mut [f32]) {
+    // The Rust build writes the first `min(out.len(), 32)` values.
+    let mut buf = [0u32; BLOCK];
+    crate::port::must(crate::port::binding::dequantize_q8_0_block(block, &mut buf));
+    let n = out.len().min(BLOCK);
+    for (o, b) in out[..n].iter_mut().zip(buf) {
+        *o = f32::from_bits(b);
+    }
+}
+#[cfg(not(vesper_port))]
 pub fn dequantize_q4_0_block(block: &[u8], out: &mut [f32]) {
     let d = decode_fp16(u16::from_le_bytes([block[0], block[1]]));
     for (i, out) in out.iter_mut().enumerate().take(BLOCK) {
         let packed = block[2 + i % 16];
         let nibble = if i < 16 { packed & 15 } else { packed >> 4 };
         *out = d * f32::from(i16::from(nibble) - 8);
+    }
+}
+#[cfg(vesper_port)]
+pub fn dequantize_q4_0_block(block: &[u8], out: &mut [f32]) {
+    // The Rust build writes the first `min(out.len(), 32)` values.
+    let mut buf = [0u32; BLOCK];
+    crate::port::must(crate::port::binding::dequantize_q4_0_block(block, &mut buf));
+    let n = out.len().min(BLOCK);
+    for (o, b) in out[..n].iter_mut().zip(buf) {
+        *o = f32::from_bits(b);
     }
 }
 
@@ -554,6 +648,7 @@ fn check_rows(data: &[f32], cols: usize) -> Result<(), Error> {
 
 /// GGML reference Q8_0: `d = amax / 127`, `q = round(x / d)` (half away from
 /// zero), scale stored as binary16.
+#[cfg(not(vesper_port))]
 pub fn quantize_q8_0(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
     check_rows(data, cols)?;
     let mut out = Vec::with_capacity(data.len() / BLOCK * Q8_0_BYTES);
@@ -566,9 +661,22 @@ pub fn quantize_q8_0(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
     }
     Ok(out)
 }
+#[cfg(vesper_port)]
+pub fn quantize_q8_0(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
+    crate::port::check(
+        crate::port::binding::quantize_q8_0(crate::port::bits(data), cols as u64),
+        |fault| match fault {
+            crate::port::Fault::Shape => {
+                Error::Shape("quantized rows need whole 32-element blocks")
+            }
+            _ => Error::NonFinite,
+        },
+    )
+}
 
 /// GGML reference Q4_0: the signed value with the largest magnitude `m` gives
 /// `d = m / -8`; `q = min(15, trunc(x / d + 8.5))`.
+#[cfg(not(vesper_port))]
 pub fn quantize_q4_0(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
     check_rows(data, cols)?;
     let mut out = Vec::with_capacity(data.len() / BLOCK * Q4_0_BYTES);
@@ -590,4 +698,16 @@ pub fn quantize_q4_0(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
         }
     }
     Ok(out)
+}
+#[cfg(vesper_port)]
+pub fn quantize_q4_0(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
+    crate::port::check(
+        crate::port::binding::quantize_q4_0(crate::port::bits(data), cols as u64),
+        |fault| match fault {
+            crate::port::Fault::Shape => {
+                Error::Shape("quantized rows need whole 32-element blocks")
+            }
+            _ => Error::NonFinite,
+        },
+    )
 }

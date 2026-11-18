@@ -1,12 +1,14 @@
 # Aura reconciliation core
 
-> **Frozen (port wave P1 lane 13, [#910](https://github.com/robot-head/vesper/issues/910)):**
-> the Rust implementation takes bug fixes only. The Vesper port (`vesper/`,
-> built with the `vesper-port` feature) passes the same tests and stays
-> non-default until it reaches performance parity; see
+> **Implemented in Vesper ([#979](https://github.com/robot-head/vesper/issues/979)):**
+> the logic is the Loom package in `vesper/`, linked through the export ABI by
+> `build.rs`; `src/` keeps the public Rust types and thin wrappers. The Vesper
+> port replaced the Rust implementation after it passed the same tests and ran
+> the ABBA workloads in 0.42x to 0.85x of its time; see
+> [the parity report](../../docs/parallel-results/port-parity-aura.md) and
 > [the port report](../../docs/parallel-results/port-p1-aura.md).
 
-By default this dependency-free host library implements a bounded keyed view runtime and
+This host library implements a bounded keyed view runtime and
 an executable recording backend. It is an initial library milestone for design
 [manuscript §37.2](../../docs/manuscript/README.md), not a Vesper compiler feature or a native UI toolkit.
 

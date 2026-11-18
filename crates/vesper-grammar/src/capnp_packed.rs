@@ -27,6 +27,9 @@
 
 use core::fmt;
 
+#[cfg(vesper_port)]
+use crate::port;
+
 const HARD_BYTES: usize = 64 * 1024 * 1024;
 const HARD_WORDS: usize = HARD_BYTES / 8;
 const HARD_WORK: usize = 512 * 1024 * 1024;
@@ -141,6 +144,7 @@ fn take(input: &[u8], pos: &mut usize, count: usize) -> Result<()> {
 /// Validates a complete packed byte sequence and returns its unpacked length.
 /// This is a word codec only: even an empty sequence is accepted and is not
 /// asserted to be a complete or valid Cap'n Proto message.
+#[cfg(not(vesper_port))]
 pub fn unpacked_len(input: &[u8], limits: Limits) -> Result<usize> {
     input_preflight(input.len(), limits, 2)?;
     let mut pos = 0usize;
@@ -170,8 +174,40 @@ pub fn unpacked_len(input: &[u8], limits: Limits) -> Result<usize> {
     work(input.len(), size, 2, limits)?;
     Ok(size)
 }
+#[cfg(vesper_port)]
+pub fn unpacked_len(input: &[u8], limits: Limits) -> Result<usize> {
+    Ok(
+        port::vesper::pk_unpacked_len(input, &packed_limits(limits)).map_err(packed_error)?
+            as usize,
+    )
+}
+#[cfg(vesper_port)]
+fn packed_limits(l: Limits) -> [u64; 4] {
+    [
+        l.max_input_bytes as u64,
+        l.max_output_bytes as u64,
+        l.max_words as u64,
+        l.max_work as u64,
+    ]
+}
+#[cfg(vesper_port)]
+fn packed_error(e: port::vesper::GErr) -> Error {
+    const KINDS: [ErrorKind; 9] = [
+        ErrorKind::InvalidLimits,
+        ErrorKind::InputLimit,
+        ErrorKind::OutputLimit,
+        ErrorKind::WordLimit,
+        ErrorKind::WorkLimit,
+        ErrorKind::Overflow,
+        ErrorKind::UnalignedInput,
+        ErrorKind::Truncated,
+        ErrorKind::OutputTooSmall,
+    ];
+    Error::new(KINDS[e.kind as usize], e.offset as usize)
+}
 
 /// Decode into caller storage after full preflight; all failures preserve it.
+#[cfg(not(vesper_port))]
 pub fn unpack_into(input: &[u8], output: &mut [u8], limits: Limits) -> Result<usize> {
     let size = unpacked_len(input, limits)?;
     if output.len() < size {
@@ -209,6 +245,12 @@ pub fn unpack_into(input: &[u8], output: &mut [u8], limits: Limits) -> Result<us
     debug_assert_eq!(written, size);
     Ok(size)
 }
+#[cfg(vesper_port)]
+pub fn unpack_into(input: &[u8], output: &mut [u8], limits: Limits) -> Result<usize> {
+    let n = port::vesper::pk_unpack_into(input, output, &packed_limits(limits))
+        .map_err(packed_error)?;
+    Ok(n as usize)
+}
 
 fn tag(word: &[u8]) -> u8 {
     word.iter()
@@ -234,6 +276,7 @@ fn group(input: &[u8], index: usize) -> (u8, usize) {
 }
 
 /// Returns the encoded size after validating input alignment and budgets.
+#[cfg(not(vesper_port))]
 pub fn packed_len(input: &[u8], limits: Limits) -> Result<usize> {
     input_preflight(input.len(), limits, 4)?;
     if !input.len().is_multiple_of(8) {
@@ -256,9 +299,14 @@ pub fn packed_len(input: &[u8], limits: Limits) -> Result<usize> {
     work(input.len(), size, 4, limits)?;
     Ok(size)
 }
+#[cfg(vesper_port)]
+pub fn packed_len(input: &[u8], limits: Limits) -> Result<usize> {
+    Ok(port::vesper::pk_packed_len(input, &packed_limits(limits)).map_err(packed_error)? as usize)
+}
 
 /// Encode complete words deterministically after full preflight. This encoder
 /// is one legal representation, not a canonical Cap'n Proto encoding.
+#[cfg(not(vesper_port))]
 pub fn pack_into(input: &[u8], output: &mut [u8], limits: Limits) -> Result<usize> {
     let size = packed_len(input, limits)?;
     if output.len() < size {
@@ -290,4 +338,10 @@ pub fn pack_into(input: &[u8], output: &mut [u8], limits: Limits) -> Result<usiz
     }
     debug_assert_eq!(written, size);
     Ok(size)
+}
+#[cfg(vesper_port)]
+pub fn pack_into(input: &[u8], output: &mut [u8], limits: Limits) -> Result<usize> {
+    let n =
+        port::vesper::pk_pack_into(input, output, &packed_limits(limits)).map_err(packed_error)?;
+    Ok(n as usize)
 }
