@@ -116,7 +116,15 @@ pub fn parse(in b: Slice[u8], mode: u64, inout w: ChunkSeq[u64], inout d: ChunkS
     -> u64 eff [Fail[AErr]] {
     let mut r = rd(0, b.len(), 0);
     w.reserve(16);
-    d.reserve(b.len());
+    // A hint only: capped so a short quote at the front of a large
+    // buffer (prefix mode) or an input rejected at the header reserves
+    // no more than a real quote needs.
+    let hint = if b.len() < 16384 {
+        b.len()
+    } else {
+        16384
+    };
+    d.reserve(hint);
     let version = rd_u16(in b, inout r, 80);
     let att_key_type = rd_u16(in b, inout r, 81);
     let tee_type = rd_u32(in b, inout r, 82);
