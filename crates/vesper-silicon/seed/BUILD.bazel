@@ -23,6 +23,15 @@ _ENV = {
     "CARGO_PKG_VERSION": "0.1.0",
 }
 
+# As vesper_crate does for integration tests: compiled code must not keep
+# Bazel's absolute CARGO_MANIFEST_DIR (tests/rp2040.rs names it on its
+# VESPER_REGEN_PAC path).
+_TEST_ENV = dict(
+    _ENV,
+    CARGO_MANIFEST_DIR = ".",
+    CARGO_TARGET_TMPDIR = ".",
+)
+
 rust_library(
     name = "seed",
     srcs = ["//crates/vesper-silicon:rust_srcs"],
@@ -55,7 +64,7 @@ rust_test(
         compile_data = ["//crates/vesper-silicon:fixtures"],
         crate_root = "//crates/vesper-silicon:tests/%s.rs" % t,
         edition = "2024",
-        rustc_env = _ENV,
+        rustc_env = _TEST_ENV,
         deps = [":seed"] + _NORMAL + _DEV,
     )
     for t in [
