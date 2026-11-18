@@ -956,7 +956,18 @@ pub fn render_builtin_graph(
     }
     #[cfg(vesper_port)]
     {
-        // `CompiledGraph::new`'s checks, then the Vesper run.
+        // The checks of `LatentMix::new` (in node order, as the Rust build
+        // builds the processors) and `CompiledGraph::new`, then the Vesper run.
+        for (n, k) in nodes.iter().zip(kinds) {
+            if matches!(k, BuiltinKind::Latent) && n.latency > 0 {
+                if n.latency > MAX_DELAY_SAMPLES {
+                    return Err(PdcError::DelayTooLong(n.latency));
+                }
+                if block == 0 || block > MAX_DELAY_SAMPLES as usize {
+                    return Err(PdcError::BadBlockLength(block));
+                }
+            }
+        }
         if block == 0 || block > MAX_DELAY_SAMPLES as usize {
             return Err(PdcError::BadBlockLength(block));
         }

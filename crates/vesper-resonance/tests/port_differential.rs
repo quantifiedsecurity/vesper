@@ -344,6 +344,48 @@ fn schedules_match_the_rust_build() {
     }
 }
 
+/// Over-long latent processors are typed errors in both builds, before any
+/// delay ring is allocated (a `u32::MAX` latency would be 16 GiB).
+#[test]
+fn over_long_latent_processors_are_typed_errors() {
+    for (latency, block) in [
+        (u32::MAX, 16),
+        (port::pdc::MAX_DELAY_SAMPLES + 1, 16),
+        (5, 0),
+    ] {
+        let pn = [port::pdc::NodeSpec {
+            id: port::pdc::NodeId(0),
+            latency,
+            inputs: vec![],
+        }];
+        let rn = [rust::pdc::NodeSpec {
+            id: rust::pdc::NodeId(0),
+            latency,
+            inputs: vec![],
+        }];
+        let a = port::pdc::render_builtin_graph(
+            &pn,
+            &[port::pdc::BuiltinKind::Latent],
+            block,
+            1,
+            port::pdc::NodeId(0),
+        );
+        let b = rust::pdc::render_builtin_graph(
+            &rn,
+            &[rust::pdc::BuiltinKind::Latent],
+            block,
+            1,
+            rust::pdc::NodeId(0),
+        );
+        assert!(a.is_err());
+        assert_eq!(
+            format!("{a:?}"),
+            format!("{b:?}"),
+            "latency {latency}, block {block}"
+        );
+    }
+}
+
 /// pdc.rs and slab.rs: a `CompiledGraph` of the built-in processors (the
 /// ported `MixGain`, `LatentMix`, `DelayLine` and `DelaySlab` kernels), and
 /// the all-Vesper `Box[dyn DspProcessor]` graph, against the Rust build.
