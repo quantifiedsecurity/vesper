@@ -5,6 +5,43 @@
 pub(crate) use crate::port_binding as vesper;
 use crate::port_binding::GErr;
 use crate::{Error, ErrorKind};
+use std::collections::HashMap;
+
+/// The byte payloads of a flattened value. Each distinct borrowed slice is
+/// copied once (shared slices are not repeated), and a size-only operation
+/// copies nothing: its offsets are 0 and the port reads only the lengths.
+pub(crate) struct Arena {
+    pub(crate) bytes: Vec<u8>,
+    seen: HashMap<(usize, usize), u64>,
+    copy: bool,
+}
+
+impl Arena {
+    pub(crate) fn new(copy: bool) -> Self {
+        Self {
+            bytes: Vec::new(),
+            seen: HashMap::new(),
+            copy,
+        }
+    }
+
+    /// (start, length) of `b` in the arena.
+    pub(crate) fn put(&mut self, b: &[u8]) -> [u64; 2] {
+        if !self.copy || b.is_empty() {
+            return [0, b.len() as u64];
+        }
+        let bytes = &mut self.bytes;
+        let start = *self
+            .seen
+            .entry((b.as_ptr() as usize, b.len()))
+            .or_insert_with(|| {
+                let start = bytes.len() as u64;
+                bytes.extend_from_slice(b);
+                start
+            });
+        [start, b.len() as u64]
+    }
+}
 
 /// `crate::ErrorKind` in declaration order: the port raises the index.
 const KINDS: [ErrorKind; 25] = [
@@ -183,20 +220,32 @@ pub(crate) fn codec_value<'a>(words: &[u64], at: &mut usize, input: &'a [u8]) ->
     }
 }
 
-/// A value as the encoder reads it (codec.ves), with every blob copied to
-/// one arena. Iterative, so an arbitrarily deep value cannot overflow the
-/// Rust stack before the port's depth budget rejects it.
-pub(crate) fn flatten_codec_value(value: &CodecValue<'_>) -> (Vec<u64>, Vec<u8>) {
+/// A value as the encoder reads it (codec.ves), in prefix order, with the
+/// blobs in an arena (copied only when `copy`). Iterative, so an
+/// arbitrarily deep value cannot overflow the Rust stack. At most
+/// `max_nodes` nodes are written: the encoder visits nodes in this order and
+/// fails once its visits pass `max_values`, so it never reads past them, and
+/// a value far larger than the budget is not copied in full.
+pub(crate) fn flatten_codec_value(
+    value: &CodecValue<'_>,
+    max_nodes: usize,
+    copy: bool,
+) -> (Vec<u64>, Vec<u8>) {
     let mut words = Vec::new();
-    let mut arena = Vec::new();
+    let mut arena = Arena::new(copy);
     let mut stack = vec![value];
+    let mut nodes = 0;
     while let Some(v) = stack.pop() {
+        if nodes == max_nodes {
+            break;
+        }
+        nodes += 1;
         match v {
             CodecValue::Unit => words.push(0),
             CodecValue::Number(n) => words.extend([1, *n]),
             CodecValue::Bytes(b) => {
-                words.extend([2, arena.len() as u64, b.len() as u64]);
-                arena.extend_from_slice(b);
+                let [start, len] = arena.put(b);
+                words.extend([2, start, len]);
             }
             CodecValue::Sequence(values) | CodecValue::Repeat(values) => {
                 let tag = if matches!(v, CodecValue::Sequence(_)) {
@@ -217,7 +266,7 @@ pub(crate) fn flatten_codec_value(value: &CodecValue<'_>) -> (Vec<u64>, Vec<u8>)
             }
         }
     }
-    (words, arena)
+    (words, arena.bytes)
 }
 
 // protobuf.rs
@@ -320,24 +369,27 @@ pub(crate) fn protobuf_message<'a>(
     PbMessage { fields }
 }
 
-/// A message as the encoder reads it (protobuf.ves), with every string and
-/// byte payload copied to one arena. Iterative, so an arbitrarily deep
-/// message cannot overflow the Rust stack before the port's budgets do.
-pub(crate) fn flatten_protobuf(message: &PbMessage<'_>) -> (Vec<u64>, Vec<u8>) {
+/// A message as the encoder reads it (protobuf.ves), with the string and
+/// byte payloads in an arena (copied only when `copy`). A nested message's
+/// record holds the index just past its subtree, so the port skips a field
+/// without walking it. Iterative, so an arbitrarily deep message cannot
+/// overflow the Rust stack before the port's budgets do.
+pub(crate) fn flatten_protobuf(message: &PbMessage<'_>, copy: bool) -> (Vec<u64>, Vec<u8>) {
     let mut words = vec![message.fields.len() as u64];
-    let mut arena = Vec::new();
-    let mut stack = vec![message.fields.iter()];
-    while let Some(fields) = stack.last_mut() {
+    let mut arena = Arena::new(copy);
+    // Each open message: its fields, and the index of its record's end word
+    // (none for the root).
+    let mut stack = vec![(message.fields.iter(), usize::MAX)];
+    while let Some((fields, record)) = stack.last_mut() {
         let Some(field) = fields.next() else {
+            let record = *record;
+            if record != usize::MAX {
+                words[record] = words.len() as u64;
+            }
             stack.pop();
             continue;
         };
         let number = u64::from(field.number);
-        let mut bytes = |b: &[u8]| {
-            let start = arena.len() as u64;
-            arena.extend_from_slice(b);
-            [start, b.len() as u64]
-        };
         let (tag, x, y) = match &field.value {
             PbValue::U32(n) => (0, u64::from(*n), 0),
             PbValue::U64(n) => (1, *n, 0),
@@ -351,20 +403,21 @@ pub(crate) fn flatten_protobuf(message: &PbMessage<'_>) -> (Vec<u64>, Vec<u8>) {
             PbValue::Sfixed32(n) => (9, *n as i64 as u64, 0),
             PbValue::Sfixed64(n) => (10, *n as u64, 0),
             PbValue::String(text) => {
-                let [x, y] = bytes(text.as_bytes());
+                let [x, y] = arena.put(text.as_bytes());
                 (11, x, y)
             }
             PbValue::Bytes(b) => {
-                let [x, y] = bytes(b);
+                let [x, y] = arena.put(b);
                 (12, x, y)
             }
             PbValue::Message(child) => {
+                let record = words.len() + 2;
                 words.extend([number, 13, 0, 0, child.fields.len() as u64]);
-                stack.push(child.fields.iter());
+                stack.push((child.fields.iter(), record));
                 continue;
             }
         };
         words.extend([number, tag, x, y]);
     }
-    (words, arena)
+    (words, arena.bytes)
 }

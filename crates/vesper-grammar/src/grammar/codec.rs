@@ -537,7 +537,11 @@ pub fn encoded_len(grammar: &Grammar<'_>, value: &Value<'_>, limits: CodecLimits
 #[cfg(vesper_port)]
 pub fn encoded_len(grammar: &Grammar<'_>, value: &Value<'_>, limits: CodecLimits) -> Result<usize> {
     let (flat, _, _, root) = grammar.port_parts();
-    let (values, _) = port::flatten_codec_value(value);
+    let (values, _) = port::flatten_codec_value(
+        value,
+        limits.max_values.min(CodecLimits::HARD.max_values) + 1,
+        false,
+    );
     let n = port::vesper::cd_encoded_len(
         flat,
         root,
@@ -625,7 +629,11 @@ pub fn encode_into(
     limits: CodecLimits,
 ) -> Result<usize> {
     let (flat, lits, _, root) = grammar.port_parts();
-    let (values, arena) = port::flatten_codec_value(value);
+    let (values, arena) = port::flatten_codec_value(
+        value,
+        limits.max_values.min(CodecLimits::HARD.max_values) + 1,
+        true,
+    );
     let n = port::vesper::cd_encode_into(
         flat,
         lits,

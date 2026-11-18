@@ -371,7 +371,7 @@ impl<'s> Schema<'s> {
     }
     #[cfg(vesper_port)]
     pub fn encoded_size(&self, message: &Message<'_>) -> Result<usize> {
-        let (values, _) = port::flatten_protobuf(message);
+        let (values, _) = port::flatten_protobuf(message, false);
         let n = port::vesper::pb_encoded_size(
             &self.flat,
             self.root as u64,
@@ -400,7 +400,7 @@ impl<'s> Schema<'s> {
     }
     #[cfg(vesper_port)]
     pub fn encode_into(&self, message: &Message<'_>, output: &mut [u8]) -> Result<usize> {
-        let (values, arena) = port::flatten_protobuf(message);
+        let (values, arena) = port::flatten_protobuf(message, true);
         let n = port::vesper::pb_encode_into(
             &self.flat,
             self.root as u64,

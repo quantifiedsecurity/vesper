@@ -128,3 +128,50 @@ fn random_bytes_never_panic_in_any_decoder() {
     }
     println!("no_panic digest {:016x} over {CASES} inputs", digest.0);
 }
+
+/// Hostile encoder inputs fail within their budgets on both builds: a
+/// 200,000-deep Protobuf message (the port must not walk it recursively
+/// before the depth check) and a codec value of a million nodes (the port
+/// flattens only what the visit budget lets the encoder reach).
+#[test]
+fn hostile_encoder_values_fail_within_budgets() {
+    use vesper_grammar::grammar::codec::{Value as CodecValue, encoded_len};
+    use vesper_grammar::protobuf::{FieldValue, Message, Value};
+    let messages = [
+        MessageSchema {
+            fields: vec![FieldSchema {
+                number: 3,
+                kind: Kind::Message(1),
+                repeated: false,
+            }],
+        },
+        MessageSchema {
+            fields: vec![FieldSchema {
+                number: 1,
+                kind: Kind::U64,
+                repeated: false,
+            }],
+        },
+    ];
+    let schema = Schema::validate(&messages, 0, PbLimits::default()).unwrap();
+    let mut deep = Message { fields: Vec::new() };
+    for _ in 0..200_000 {
+        deep = Message {
+            fields: vec![FieldValue {
+                number: 3,
+                value: Value::Message(deep),
+            }],
+        };
+    }
+    assert!(schema.encoded_size(&deep).is_err());
+    let mut out = [0u8; 64];
+    assert!(schema.encode_into(&deep, &mut out).is_err());
+    // Dropping a 200,000-deep tree recurses; the test does not need it back.
+    std::mem::forget(deep);
+
+    let rules = [Rule::Uleb128];
+    let grammar = Grammar::validate(&rules, 0, GrammarLimits::default()).unwrap();
+    // A million-value sequence, far past the visit budget.
+    let top = CodecValue::Sequence((0..1_000_000).map(CodecValue::Number).collect());
+    assert!(encoded_len(&grammar, &top, CodecLimits::default()).is_err());
+}

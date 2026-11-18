@@ -572,20 +572,6 @@ fn w(in vals: Slice[u64], at: u64) -> u64 {
     sw(in vals, at)
 }
 
-// The stream offset just past the message starting at `at`.
-fn skip_message(in vals: Slice[u64], at: u64) -> u64 {
-    let count = w(in vals, at);
-    let mut cur = wrapping_add(at, 1);
-    for i in 0..count {
-        let tag = w(in vals, wrapping_add(cur, 1));
-        cur = wrapping_add(cur, 4);
-        if tag == 13 {
-            cur = skip_message(in vals, cur);
-        }
-    }
-    cur
-}
-
 // scan_message: the encoded size of the message at `at`; nested message
 // sizes are recorded in `sizes` in preorder for the writer.
 fn scan_message(
@@ -681,12 +667,13 @@ fn scan_message(
 }
 
 // The stream offset of the field after the one at `cur`.
+// The record after the field at `cur`: a nested message's record holds
+// the index just past its subtree (src/port.rs), so no walk is needed.
 fn next_field(in vals: Slice[u64], cur: u64) -> u64 {
-    let after = wrapping_add(cur, 4);
     if w(in vals, wrapping_add(cur, 1)) == 13 {
-        skip_message(in vals, after)
+        w(in vals, wrapping_add(cur, 2))
     } else {
-        after
+        wrapping_add(cur, 4)
     }
 }
 

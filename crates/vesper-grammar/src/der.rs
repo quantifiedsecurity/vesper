@@ -1282,13 +1282,11 @@ mod port {
 
     /// The value graph and the arena of its primitive payloads.
     pub(super) fn flatten_value(value: &Value<'_>) -> (Vec<u64>, Vec<u8>) {
-        let mut arena = Vec::new();
+        // Shared payload slices are copied once.
+        let mut arena = crate::port::Arena::new(true);
         let words = graph(value, |v, children, out| {
             out.push(v.kind() as u64);
-            let mut bytes = |out: &mut Vec<u64>, b: &[u8]| {
-                out.extend([arena.len() as u64, b.len() as u64]);
-                arena.extend_from_slice(b);
-            };
+            let mut bytes = |out: &mut Vec<u64>, b: &[u8]| out.extend(arena.put(b));
             match v {
                 Value::Boolean(b) => out.push(u64::from(*b)),
                 Value::Null => {}
@@ -1314,6 +1312,6 @@ mod port {
                 }
             }
         });
-        (words, arena)
+        (words, arena.bytes)
     }
 }
