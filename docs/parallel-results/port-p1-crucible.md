@@ -27,7 +27,7 @@ dependent uses until the port matches Rust in speed.
   `[workspace.dependencies]` entry points at it, so the compiler and all of
   its dependents get the Rust build.
 - `port/binding.rs` is the checked-in generated binding.
-  `port/check.sh` is the Cargo harness check on macOS and Windows.
+  `port/check.sh` is the Cargo harness check (the Linux Platforms job since #1011).
 - `tests/parity.rs` is new and runs against both packages.
   `tests/port_memory.rs` is new and runs against the port package only.
 - `examples/abba.rs` and `bench-abba.sh` are the ABBA benchmark.
@@ -140,8 +140,10 @@ binding module only (Grammar and Beacon do the same).
   Bazel builds each divergent object to check that it still compiles.
 - **CI.** Linux runs through Bazel: `vesper_port_object` plus the crate's
   tests against the port, and the seed's `rust_test`s for every test file
-  except `lean_model`, which runs against the seed in Cargo. macOS and Windows
-  run through `scripts/test-port-harness.sh`, which sources `port/check.sh`.
+  except `lean_model`, which runs against the seed in Cargo. The Linux
+  Platforms job runs `scripts/test-port-harness.sh`, which sources
+  `port/check.sh` (since #1011, macOS and Windows stop after the export ABI
+  tier).
 - `cargo +1.100.0 clippy --all-targets -- -D warnings` is clean for both
   packages and for the divergent feature. `cargo fmt --check` and
   `vesper fmt` are clean.
