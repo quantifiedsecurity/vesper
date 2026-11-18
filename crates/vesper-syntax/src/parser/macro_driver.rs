@@ -29,7 +29,7 @@ fn parser<'a>(
         diagnostics: vec![],
         no_struct: false,
         row_names: Default::default(),
-        bound_values: item_names,
+        bound_values: item_names.into(),
         model_uses: vec![],
         trait_bounds: vec![],
         uses: vec![],
