@@ -258,8 +258,12 @@ pub fn loop_boxes_reclaimed(world: &World, f: &crate::ir::FunctionIr) -> bool {
             let ok = match &i.op {
                 // A place read: what the place owns stays owned there.
                 Op::Read { pass, .. } => *pass != Pass::Sink,
+                // `s[i]`, also once bounds hoisting has removed its check.
                 Op::Seq {
-                    op: crate::seq::SeqOp::Get | crate::seq::SeqOp::SliceGet,
+                    op:
+                        crate::seq::SeqOp::Get
+                        | crate::seq::SeqOp::SliceGet
+                        | crate::seq::SeqOp::Hoisted(crate::seq::Access::Get),
                     ..
                 } => crate::dyn_trait::is_boxed(&i.ty) && owning == 0,
                 _ => owning == 1 && count == 1,
@@ -2132,7 +2136,8 @@ pub fn elaborate_non_fip_drops(world: &World, program: &mut crate::ir::Program) 
                             let lent_element = matches!(
                                 &inst.op,
                                 Op::Seq {
-                                    op: crate::seq::SeqOp::Get,
+                                    op: crate::seq::SeqOp::Get
+                                        | crate::seq::SeqOp::Hoisted(crate::seq::Access::Get),
                                     ..
                                 }
                             ) && crate::dyn_trait::is_boxed(&inst.ty);
