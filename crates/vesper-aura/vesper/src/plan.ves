@@ -137,7 +137,8 @@ pub fn prepared_empty(session: u64, base: u64, serial: u64) -> Prepared {
 
 // A prepared update for the validated `tree`, with the next mounted state
 // sized to the tree's shape.
-pub fn prepared_for(session: u64, base: u64, serial: u64, sink tree: Tree, text_len: u64) -> Prepared {
+pub fn prepared_for(session: u64, base: u64, serial: u64, sink tree: Tree, text_len: u64)
+    -> Prepared {
     let n = tree.nodes.len();
     let np = tree.props.len();
     let ns = tree.subs.len();
@@ -562,7 +563,8 @@ pub fn attach(inout p: Prepared, max: u64) -> bool {
             let child = seq_u64(in p.m.kids, add(node.cstart, index));
             let here = index < work.len() && seq_u64(in work, index) == child;
             if !here {
-                let child_id = mnode(in p.m.nodes, seq_u64(in p.m.kidx, add(node.cstart, index))).id;
+                let child_id = mnode(in p.m.nodes, seq_u64(in p.m.kidx, add(node.cstart, index)))
+                    .id;
                 let from = position(in work, child);
                 if from != none_id() {
                     if !emit(inout p, max, op(10, node.id, child_id, from, index)) {
