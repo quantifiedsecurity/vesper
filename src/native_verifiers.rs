@@ -349,7 +349,7 @@ fn resolve_list(names: &Names, list: &[String], what: &str) -> Result<Vec<String
 }
 
 /// Compile every emitted function with exactly the ISA and flags object
-/// emission uses ([`crate::native::object_isa`]), measure each activation's
+/// emission uses ([`crate::native::object_isa_optimized`]), measure each activation's
 /// stack bytes from the emitted prologue with Silicon's decoders, cross-check
 /// against Cranelift's frame layout, and build the contract call graph
 /// (direct calls by `u0:N` name, imports as external calls, libcalls from
@@ -364,7 +364,10 @@ fn measure_emitted(
         Context, FinalizedRelocTarget, control::ControlPlane, ir::ExternalName,
     };
     use vesper_silicon::stack::{CallGraph, CallSite, ExternalCall, FnId, FnNode, IndirectCall};
-    let isa = crate::native::object_isa_for(world, target)?;
+    // Exactly the ISA the object was built with: optimized builds run
+    // Cranelift at `opt_level=speed` (#959).
+    let optimized = functions.iter().any(|f| f.optimized);
+    let isa = crate::native::object_isa_optimized(world, target, optimized)?;
     let x86 = match isa.triple().architecture {
         target_lexicon::Architecture::X86_64 => true,
         target_lexicon::Architecture::Aarch64(_) => false,
@@ -553,6 +556,20 @@ pub fn verify_emitted(
                     ct.secret_params.push(index + sret);
                 }
             }
+            // An optimized build may inline a listed callee (#959): its body
+            // is then checked as part of `name`, which can only add findings.
+            for callee in entry.declassify.iter().chain(&entry.constant_time_callees) {
+                let called = names
+                    .by_name
+                    .get(callee)
+                    .is_some_and(|id| emitted.callees.iter().any(|(c, _)| c == id));
+                if !called && names.by_name.contains_key(callee) {
+                    report.notes.push(format!(
+                        "const-time: '{name}' does not call '{callee}' in the emitted code (inlined or unused); \
+                         its body is checked as part of '{name}'. Build with --no-opt to keep the call"
+                    ));
+                }
+            }
             ct.declassify
                 .extend(resolve_list(&names, &entry.declassify, "declassify")?);
             ct.constant_time_callees.extend(resolve_list(
@@ -660,6 +677,19 @@ pub fn verify_emitted(
                 function.clone(),
                 effects.iter().map(|e| effect(e)).collect(),
             );
+        }
+        // An optimized build may have inlined a function with declared
+        // effects; the function holding the copy performs them too (#959).
+        for f in functions {
+            for inlined in &f.inlined {
+                if let Some(effects) = policy.realtime.effects.get(inlined) {
+                    table
+                        .defined_effects
+                        .entry(f.key.clone())
+                        .or_default()
+                        .extend(effects.iter().map(|e| effect(e)));
+                }
+            }
         }
         table.loop_bounds = policy.realtime.loop_bounds.clone();
         let input: Vec<(String, cranelift_codegen::ir::Function)> = functions

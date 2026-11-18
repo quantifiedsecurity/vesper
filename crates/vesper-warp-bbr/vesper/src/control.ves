@@ -96,8 +96,8 @@ pub fn inflight_at_loss(size: u64, tx_in_flight: u64, lost: u64) -> u64 {
     let inflight_prev = sat_sub(tx_in_flight, size);
     let lost_prev = sat_sub(lost, size);
     // numerator = inflight_prev * 20 - lost_prev * 1000, in 128 bits.
-    let (h1, l1) = mul_full(inflight_prev, 20);
-    let (h2, l2) = mul_full(lost_prev, 1000);
+    let (l1, h1) = mul_wide(inflight_prev, 20);
+    let (l2, h2) = mul_wide(lost_prev, 1000);
     let positive = h1 > h2 || (h1 == h2 && l1 > l2);
     let lost_prefix = if positive {
         let borrow: u64 = if l1 < l2 {

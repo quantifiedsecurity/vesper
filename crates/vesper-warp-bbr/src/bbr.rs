@@ -147,106 +147,142 @@ pub struct RateSample {
     pub lost: u64,
 }
 
+// The controller's fields, defined once for both builds: the Rust build's
+// `Bbrv3` itself, and in the Vesper build the Rust value type of the Vesper
+// `Bbrv3` (`Bbrv3Value`), which the binding converts to and from its mirror.
+macro_rules! bbrv3_fields {
+    ($(#[$meta:meta])* $vis:vis struct $name:ident) => {
+        $(#[$meta])*
+        $vis struct $name {
+            // Configuration.
+            pub(crate) smss: u64,
+            pub(crate) initial_cwnd: u64,
+            pub(crate) has_selective_acks: bool,
+            pub(crate) offload: OffloadModel,
+            // SplitMix64 state of the randomized probe wait.
+            pub(crate) rng: u64,
+            // Connection (C) state.
+            pub(crate) delivered: u64,
+            pub(crate) delivered_ns: u64,
+            pub(crate) first_sent_ns: u64,
+            pub(crate) app_limited: u64,
+            pub(crate) lost: u64,
+            pub(crate) ce_bytes: u64,
+            pub(crate) inflight: u64,
+            pub(crate) cwnd: u64,
+            pub(crate) pacing_rate: u64,
+            pub(crate) send_quantum: u64,
+            pub(crate) next_edt_ns: u64,
+            pub(crate) srtt_ns: Option<u64>,
+            pub(crate) lifetime_min_rtt_ns: Option<u64>,
+            pub(crate) pacing_from_rtt: bool,
+            pub(crate) is_cwnd_limited: bool,
+            pub(crate) cwnd_limited_this_round: bool,
+            pub(crate) in_recovery: bool,
+            pub(crate) recovery_start_ns: u64,
+            pub(crate) last_now_ns: u64,
+            pub(crate) ce_pending: bool,
+            pub(crate) ce_in_loss_round: bool,
+            pub(crate) rs: RateSample,
+            // BBR state.
+            pub(crate) bbr_state: BbrState,
+            pub(crate) pacing_gain: u64,
+            pub(crate) cwnd_gain: u64,
+            pub(crate) round_count: u64,
+            pub(crate) round_start: bool,
+            pub(crate) next_round_delivered: u64,
+            pub(crate) idle_restart: bool,
+            pub(crate) drain_start_round: u64,
+            pub(crate) max_bw_filter: CycleMax,
+            pub(crate) max_bw: u64,
+            pub(crate) bw_shortterm: u64,
+            pub(crate) bw: u64,
+            pub(crate) cycle_count: u64,
+            pub(crate) min_rtt_ns: Option<u64>,
+            pub(crate) min_rtt_stamp_ns: u64,
+            pub(crate) min_rtt_expired: bool,
+            pub(crate) bdp: u64,
+            pub(crate) extra_acked_filter: WindowedMax,
+            pub(crate) extra_acked: u64,
+            pub(crate) extra_acked_interval_start_ns: u64,
+            pub(crate) extra_acked_delivered: u64,
+            pub(crate) offload_budget: u64,
+            pub(crate) max_inflight: u64,
+            pub(crate) inflight_longterm: u64,
+            pub(crate) inflight_shortterm: u64,
+            pub(crate) bw_latest: u64,
+            pub(crate) inflight_latest: u64,
+            pub(crate) loss_round_delivered: u64,
+            pub(crate) loss_round_start: bool,
+            pub(crate) is_loss_in_round: bool,
+            pub(crate) loss_events_in_round: u64,
+            pub(crate) full_bw_reached: bool,
+            pub(crate) full_bw_now: bool,
+            pub(crate) full_bw: u64,
+            pub(crate) full_bw_count: u32,
+            pub(crate) is_bw_probe_stopping: bool,
+            pub(crate) check_probe_loss: bool,
+            pub(crate) bw_probe_up_acked: u64,
+            pub(crate) probe_up_acked_per_inc: u64,
+            pub(crate) bw_probe_up_rounds: u32,
+            pub(crate) rounds_since_probe_up: u64,
+            pub(crate) bw_probe_wait_ns: u64,
+            pub(crate) cycle_stamp_ns: u64,
+            pub(crate) prev_probe_too_high: bool,
+            pub(crate) prev_probe_precautionary: bool,
+            pub(crate) undo_state: Option<BbrState>,
+            pub(crate) undo_bw_shortterm: u64,
+            pub(crate) undo_inflight_shortterm: u64,
+            pub(crate) undo_inflight_longterm: u64,
+            pub(crate) prior_cwnd: u64,
+            pub(crate) probe_rtt_done_stamp_ns: Option<u64>,
+            pub(crate) probe_rtt_round_done: bool,
+            pub(crate) probe_rtt_cwnd: u64,
+        }
+    };
+}
+
+// The fields are `pub(crate)`; their names and types match the Vesper
+// `Bbrv3` in `vesper/src/types.ves`.
+#[cfg(not(feature = "vesper-port"))]
+bbrv3_fields! {
+    /// BBRv3 controller and EDT pacer for one flow (§35.5 `Bbrv3FlowState`).
+    ///
+    /// Sans-IO: every input carries a caller-supplied virtual nanosecond time,
+    /// and the controller never reads a clock or allocates. Rejected inputs
+    /// return [`BbrError`] and leave the state unchanged.
+    #[derive(Clone, Debug)]
+    pub struct Bbrv3
+}
+
+// The Rust value of the Vesper `Bbrv3`, which the binding converts to and
+// from `crate::port::repr::Bbrv3` (it is `crate::port_types::Bbrv3`).
+#[cfg(feature = "vesper-port")]
+bbrv3_fields! {
+    #[derive(Clone, Debug)]
+    pub(crate) struct Bbrv3Value
+}
+
 /// BBRv3 controller and EDT pacer for one flow (§35.5 `Bbrv3FlowState`).
 ///
 /// Sans-IO: every input carries a caller-supplied virtual nanosecond time,
 /// and the controller never reads a clock or allocates. Rejected inputs
 /// return [`BbrError`] and leave the state unchanged.
 //
-// The fields are `pub(crate)` so that the generated binding (`port/binding.rs`)
-// can move the state across the export ABI under `vesper-port`; their names
-// and types match the Vesper `Bbrv3` in `vesper/src/bbr.ves`.
-#[derive(Clone, Debug)]
+// The Vesper build keeps the state in the binding's `#[repr(C)]` mirror of
+// the Vesper `Bbrv3` (export ABI v3, #934), so every call lends it to
+// Vesper in place instead of converting 70 words in and out.
+#[cfg(feature = "vesper-port")]
+#[derive(Clone)]
 pub struct Bbrv3 {
-    // Configuration.
-    pub(crate) smss: u64,
-    pub(crate) initial_cwnd: u64,
-    pub(crate) has_selective_acks: bool,
-    pub(crate) offload: OffloadModel,
-    // SplitMix64 state of the randomized probe wait.
-    pub(crate) rng: u64,
-    // Connection (C) state.
-    pub(crate) delivered: u64,
-    pub(crate) delivered_ns: u64,
-    pub(crate) first_sent_ns: u64,
-    pub(crate) app_limited: u64,
-    pub(crate) lost: u64,
-    pub(crate) ce_bytes: u64,
-    pub(crate) inflight: u64,
-    pub(crate) cwnd: u64,
-    pub(crate) pacing_rate: u64,
-    pub(crate) send_quantum: u64,
-    pub(crate) next_edt_ns: u64,
-    pub(crate) srtt_ns: Option<u64>,
-    pub(crate) lifetime_min_rtt_ns: Option<u64>,
-    pub(crate) pacing_from_rtt: bool,
-    pub(crate) is_cwnd_limited: bool,
-    pub(crate) cwnd_limited_this_round: bool,
-    pub(crate) in_recovery: bool,
-    pub(crate) recovery_start_ns: u64,
-    pub(crate) last_now_ns: u64,
-    pub(crate) ce_pending: bool,
-    pub(crate) ce_in_loss_round: bool,
-    pub(crate) rs: RateSample,
-    // BBR state.
-    pub(crate) bbr_state: BbrState,
-    pub(crate) pacing_gain: u64,
-    pub(crate) cwnd_gain: u64,
-    pub(crate) round_count: u64,
-    pub(crate) round_start: bool,
-    pub(crate) next_round_delivered: u64,
-    pub(crate) idle_restart: bool,
-    pub(crate) drain_start_round: u64,
-    pub(crate) max_bw_filter: CycleMax,
-    pub(crate) max_bw: u64,
-    pub(crate) bw_shortterm: u64,
-    pub(crate) bw: u64,
-    pub(crate) cycle_count: u64,
-    pub(crate) min_rtt_ns: Option<u64>,
-    pub(crate) min_rtt_stamp_ns: u64,
-    pub(crate) min_rtt_expired: bool,
-    pub(crate) bdp: u64,
-    pub(crate) extra_acked_filter: WindowedMax,
-    pub(crate) extra_acked: u64,
-    pub(crate) extra_acked_interval_start_ns: u64,
-    pub(crate) extra_acked_delivered: u64,
-    pub(crate) offload_budget: u64,
-    pub(crate) max_inflight: u64,
-    pub(crate) inflight_longterm: u64,
-    pub(crate) inflight_shortterm: u64,
-    pub(crate) bw_latest: u64,
-    pub(crate) inflight_latest: u64,
-    pub(crate) loss_round_delivered: u64,
-    pub(crate) loss_round_start: bool,
-    pub(crate) is_loss_in_round: bool,
-    pub(crate) loss_events_in_round: u64,
-    pub(crate) full_bw_reached: bool,
-    pub(crate) full_bw_now: bool,
-    pub(crate) full_bw: u64,
-    pub(crate) full_bw_count: u32,
-    pub(crate) is_bw_probe_stopping: bool,
-    pub(crate) check_probe_loss: bool,
-    pub(crate) bw_probe_up_acked: u64,
-    pub(crate) probe_up_acked_per_inc: u64,
-    pub(crate) bw_probe_up_rounds: u32,
-    pub(crate) rounds_since_probe_up: u64,
-    pub(crate) bw_probe_wait_ns: u64,
-    pub(crate) cycle_stamp_ns: u64,
-    pub(crate) prev_probe_too_high: bool,
-    pub(crate) prev_probe_precautionary: bool,
-    pub(crate) undo_state: Option<BbrState>,
-    pub(crate) undo_bw_shortterm: u64,
-    pub(crate) undo_inflight_shortterm: u64,
-    pub(crate) undo_inflight_longterm: u64,
-    pub(crate) prior_cwnd: u64,
-    pub(crate) probe_rtt_done_stamp_ns: Option<u64>,
-    pub(crate) probe_rtt_round_done: bool,
-    pub(crate) probe_rtt_cwnd: u64,
+    pub(crate) m: crate::port::repr::Bbrv3,
 }
 
 /// The §35.5 name for the controller.
 pub type Bbrv3FlowState = Bbrv3;
 
+// The field getters; the Vesper build's read the mirror (`bbr/forward.rs`).
+#[cfg(not(feature = "vesper-port"))]
 impl Bbrv3 {
     /// `C.pacing_rate` in bytes per second (always `>= 1`).
     #[must_use]
@@ -361,7 +397,9 @@ impl Bbrv3 {
     pub const fn last_rate_sample(&self) -> RateSample {
         self.rs
     }
+}
 
+impl Bbrv3 {
     /// Dispatch a contract [`CongestionEvent`] at `now_ns`.
     pub fn on_event(&mut self, now_ns: u64, event: CongestionEvent<'_>) -> Result<(), BbrError> {
         match event {
@@ -387,6 +425,20 @@ mod forward;
 use forward::{inflight_at_loss, mul_gain};
 #[cfg(all(test, not(feature = "vesper-port")))]
 use reference::{inflight_at_loss, mul_gain};
+
+// The unit tests read and write fields by name through these: the Rust
+// build's are the struct itself, the Vesper build's (`bbr/forward.rs`)
+// convert from and to the mirror.
+#[cfg(all(test, not(feature = "vesper-port")))]
+impl Bbrv3 {
+    fn fields(&self) -> &Self {
+        self
+    }
+
+    fn fields_mut(&mut self) -> &mut Self {
+        self
+    }
+}
 
 #[cfg(test)]
 mod tests;

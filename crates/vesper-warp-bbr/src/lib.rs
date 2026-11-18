@@ -62,6 +62,19 @@ pub use pacing::{clamp_target_cwnd, edt_step, pacing_delay_ns, send_allowed};
 #[path = "../port/binding.rs"]
 mod port;
 
+/// The Rust value types the binding converts the Vesper types to and from
+/// (`rust_types` in build.rs). They are the crate's own types, except that
+/// the Vesper `Bbrv3` is `Bbrv3Value`: the public `Bbrv3` of this build holds
+/// the binding's mirror instead (export ABI v3).
+#[cfg(feature = "vesper-port")]
+mod port_types {
+    pub(crate) use crate::bbr::Bbrv3Value as Bbrv3;
+    pub(crate) use crate::{
+        AckProgress, AckedPacket, BbrConfig, BbrFault, BbrState, CycleMax, LostPacket,
+        OffloadModel, PacketDeliveryState, RateSample, RttSample, SentPacket, WindowedMax,
+    };
+}
+
 /// The Vesper side's `BbrError`: the configuration message is a code (0:
 /// `smss` out of range, 1: `initial_cwnd` below `smss`), because a
 /// `&'static str` cannot cross the export ABI.
