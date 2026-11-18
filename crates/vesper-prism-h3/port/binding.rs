@@ -5,6 +5,69 @@
 
 use vesper_port_abi::Abi;
 
+impl Abi for crate::qpack::port::abi::CapsuleError {
+    const WORDS: usize = 3;
+    fn put(&self, out: &mut [u64]) {
+        match self {
+            crate::qpack::port::abi::CapsuleError::TooLarge { capsule_type: f0, len: f1 } => {
+                out[0] = 0;
+                Abi::put(f0, &mut out[1..]);
+                Abi::put(f1, &mut out[2..]);
+            }
+            crate::qpack::port::abi::CapsuleError::Malformed { capsule_type: f0 } => {
+                out[0] = 1;
+                Abi::put(f0, &mut out[1..]);
+            }
+            crate::qpack::port::abi::CapsuleError::Truncated => {
+                out[0] = 2;
+            }
+        }
+    }
+    fn get(words: &[u64]) -> Self {
+        match words[0] {
+            0 => crate::qpack::port::abi::CapsuleError::TooLarge { capsule_type: Abi::get(&words[1..]), len: Abi::get(&words[2..]) },
+            1 => crate::qpack::port::abi::CapsuleError::Malformed { capsule_type: Abi::get(&words[1..]) },
+            2 => crate::qpack::port::abi::CapsuleError::Truncated,
+            tag => panic!("invalid CapsuleError tag {tag} from Vesper"),
+        }
+    }
+}
+
+impl Abi for crate::qpack::port::abi::CapsuleOut {
+    const WORDS: usize = 2;
+    fn put(&self, out: &mut [u64]) {
+        match self {
+            crate::qpack::port::abi::CapsuleOut::None => {
+                out[0] = 0;
+            }
+            crate::qpack::port::abi::CapsuleOut::Datagram => {
+                out[0] = 1;
+            }
+            crate::qpack::port::abi::CapsuleOut::CloseSession(f0) => {
+                out[0] = 2;
+                Abi::put(f0, &mut out[1..]);
+            }
+            crate::qpack::port::abi::CapsuleOut::DrainSession => {
+                out[0] = 3;
+            }
+            crate::qpack::port::abi::CapsuleOut::Unknown(f0) => {
+                out[0] = 4;
+                Abi::put(f0, &mut out[1..]);
+            }
+        }
+    }
+    fn get(words: &[u64]) -> Self {
+        match words[0] {
+            0 => crate::qpack::port::abi::CapsuleOut::None,
+            1 => crate::qpack::port::abi::CapsuleOut::Datagram,
+            2 => crate::qpack::port::abi::CapsuleOut::CloseSession(Abi::get(&words[1..])),
+            3 => crate::qpack::port::abi::CapsuleOut::DrainSession,
+            4 => crate::qpack::port::abi::CapsuleOut::Unknown(Abi::get(&words[1..])),
+            tag => panic!("invalid CapsuleOut tag {tag} from Vesper"),
+        }
+    }
+}
+
 impl Abi for crate::qpack::port::abi::DecoderConfig {
     const WORDS: usize = 4;
     fn put(&self, out: &mut [u64]) {
@@ -42,6 +105,103 @@ impl Abi for crate::qpack::port::abi::EncoderStats {
     }
     fn get(words: &[u64]) -> Self {
         crate::qpack::port::abi::EncoderStats { sections: Abi::get(&words[0..]), inserts: Abi::get(&words[1..]), static_refs: Abi::get(&words[2..]), dynamic_refs: Abi::get(&words[3..]), literals: Abi::get(&words[4..]), blocking_sections: Abi::get(&words[5..]) }
+    }
+}
+
+impl Abi for crate::qpack::port::abi::FrameError {
+    const WORDS: usize = 3;
+    fn put(&self, out: &mut [u64]) {
+        match self {
+            crate::qpack::port::abi::FrameError::Malformed => {
+                out[0] = 0;
+            }
+            crate::qpack::port::abi::FrameError::TooLarge { frame_type: f0, len: f1 } => {
+                out[0] = 1;
+                Abi::put(f0, &mut out[1..]);
+                Abi::put(f1, &mut out[2..]);
+            }
+            crate::qpack::port::abi::FrameError::Http2Frame(f0) => {
+                out[0] = 2;
+                Abi::put(f0, &mut out[1..]);
+            }
+            crate::qpack::port::abi::FrameError::BadSetting(f0) => {
+                out[0] = 3;
+                Abi::put(f0, &mut out[1..]);
+            }
+        }
+    }
+    fn get(words: &[u64]) -> Self {
+        match words[0] {
+            0 => crate::qpack::port::abi::FrameError::Malformed,
+            1 => crate::qpack::port::abi::FrameError::TooLarge { frame_type: Abi::get(&words[1..]), len: Abi::get(&words[2..]) },
+            2 => crate::qpack::port::abi::FrameError::Http2Frame(Abi::get(&words[1..])),
+            3 => crate::qpack::port::abi::FrameError::BadSetting(Abi::get(&words[1..])),
+            tag => panic!("invalid FrameError tag {tag} from Vesper"),
+        }
+    }
+}
+
+impl Abi for crate::qpack::port::abi::FrameOut {
+    const WORDS: usize = 10;
+    fn put(&self, out: &mut [u64]) {
+        match self {
+            crate::qpack::port::abi::FrameOut::None => {
+                out[0] = 0;
+            }
+            crate::qpack::port::abi::FrameOut::Data => {
+                out[0] = 1;
+            }
+            crate::qpack::port::abi::FrameOut::Headers => {
+                out[0] = 2;
+            }
+            crate::qpack::port::abi::FrameOut::SettingsFrame(f0) => {
+                out[0] = 3;
+                Abi::put(f0, &mut out[1..]);
+            }
+            crate::qpack::port::abi::FrameOut::GoAway(f0) => {
+                out[0] = 4;
+                Abi::put(f0, &mut out[1..]);
+            }
+            crate::qpack::port::abi::FrameOut::CancelPush(f0) => {
+                out[0] = 5;
+                Abi::put(f0, &mut out[1..]);
+            }
+            crate::qpack::port::abi::FrameOut::MaxPushId(f0) => {
+                out[0] = 6;
+                Abi::put(f0, &mut out[1..]);
+            }
+            crate::qpack::port::abi::FrameOut::PushPromise => {
+                out[0] = 7;
+            }
+            crate::qpack::port::abi::FrameOut::PriorityUpdateFrame(f0) => {
+                out[0] = 8;
+                Abi::put(f0, &mut out[1..]);
+            }
+            crate::qpack::port::abi::FrameOut::WebTransportStream(f0) => {
+                out[0] = 9;
+                Abi::put(f0, &mut out[1..]);
+            }
+            crate::qpack::port::abi::FrameOut::Unknown(f0) => {
+                out[0] = 10;
+                Abi::put(f0, &mut out[1..]);
+            }
+        }
+    }
+    fn get(words: &[u64]) -> Self {
+        match words[0] {
+            0 => crate::qpack::port::abi::FrameOut::None,
+            1 => crate::qpack::port::abi::FrameOut::Data,
+            2 => crate::qpack::port::abi::FrameOut::Headers,
+            3 => crate::qpack::port::abi::FrameOut::SettingsFrame(Abi::get(&words[1..])),
+            4 => crate::qpack::port::abi::FrameOut::GoAway(Abi::get(&words[1..])),
+            5 => crate::qpack::port::abi::FrameOut::CancelPush(Abi::get(&words[1..])),
+            6 => crate::qpack::port::abi::FrameOut::MaxPushId(Abi::get(&words[1..])),
+            7 => crate::qpack::port::abi::FrameOut::PushPromise,
+            8 => crate::qpack::port::abi::FrameOut::PriorityUpdateFrame(Abi::get(&words[1..])),
+            9 => crate::qpack::port::abi::FrameOut::WebTransportStream(Abi::get(&words[1..])),
+            10 => crate::qpack::port::abi::FrameOut::Unknown(Abi::get(&words[1..])),
+            tag => panic!("invalid FrameOut tag {tag} from Vesper"),
+        }
     }
 }
 
@@ -108,6 +268,29 @@ impl Abi for crate::qpack::port::abi::PrefixError {
             3 => crate::qpack::port::abi::PrefixError::Huffman(Abi::get(&words[1..])),
             tag => panic!("invalid PrefixError tag {tag} from Vesper"),
         }
+    }
+}
+
+impl Abi for crate::qpack::port::abi::Priority {
+    const WORDS: usize = 2;
+    fn put(&self, out: &mut [u64]) {
+        Abi::put(&self.urgency, &mut out[0..]);
+        Abi::put(&self.incremental, &mut out[1..]);
+    }
+    fn get(words: &[u64]) -> Self {
+        crate::qpack::port::abi::Priority { urgency: Abi::get(&words[0..]), incremental: Abi::get(&words[1..]) }
+    }
+}
+
+impl Abi for crate::qpack::port::abi::PriorityUpdate {
+    const WORDS: usize = 4;
+    fn put(&self, out: &mut [u64]) {
+        Abi::put(&self.push, &mut out[0..]);
+        Abi::put(&self.element_id, &mut out[1..]);
+        Abi::put(&self.priority, &mut out[2..]);
+    }
+    fn get(words: &[u64]) -> Self {
+        crate::qpack::port::abi::PriorityUpdate { push: Abi::get(&words[0..]), element_id: Abi::get(&words[1..]), priority: Abi::get(&words[2..]) }
     }
 }
 
@@ -226,6 +409,103 @@ impl Abi for crate::qpack::port::abi::Reason {
             16 => crate::qpack::port::abi::Reason::StreamAlreadyBlocked(Abi::get(&words[1..])),
             tag => panic!("invalid Reason tag {tag} from Vesper"),
         }
+    }
+}
+
+impl Abi for crate::qpack::port::abi::Settings {
+    const WORDS: usize = 9;
+    fn put(&self, out: &mut [u64]) {
+        Abi::put(&self.qpack_max_table_capacity, &mut out[0..]);
+        Abi::put(&self.qpack_blocked_streams, &mut out[1..]);
+        Abi::put(&self.max_field_section_size, &mut out[2..]);
+        Abi::put(&self.enable_connect_protocol, &mut out[4..]);
+        Abi::put(&self.h3_datagram, &mut out[5..]);
+        Abi::put(&self.webtransport_max_sessions, &mut out[6..]);
+        Abi::put(&self.no_rfc7540_priorities, &mut out[8..]);
+    }
+    fn get(words: &[u64]) -> Self {
+        crate::qpack::port::abi::Settings { qpack_max_table_capacity: Abi::get(&words[0..]), qpack_blocked_streams: Abi::get(&words[1..]), max_field_section_size: Abi::get(&words[2..]), enable_connect_protocol: Abi::get(&words[4..]), h3_datagram: Abi::get(&words[5..]), webtransport_max_sessions: Abi::get(&words[6..]), no_rfc7540_priorities: Abi::get(&words[8..]) }
+    }
+}
+
+/// Owned handle of a Vesper `CapsuleReaderCore` value: its words, which own the Vesper
+/// allocations they point to. Dropping it calls `vesper_h3_CapsuleReaderCore_drop`.
+pub struct CapsuleReaderCore {
+    words: [u64; 8],
+}
+
+impl CapsuleReaderCore {
+    /// # Safety
+    /// `words` must hold a `CapsuleReaderCore` value of this library that the caller owns.
+    unsafe fn from_words(words: &[u64]) -> Self {
+        let mut owned = [0u64; 8];
+        owned.copy_from_slice(&words[..8]);
+        Self { words: owned }
+    }
+
+    /// A borrowed view of the value.
+    pub fn as_ref(&self) -> CapsuleReaderCoreRef<'_> {
+        CapsuleReaderCoreRef { words: &self.words }
+    }
+}
+
+impl Drop for CapsuleReaderCore {
+    fn drop(&mut self) {
+        // SAFETY: the handle owns its words and is dropped once.
+        unsafe { vesper_h3_CapsuleReaderCore_drop(self.words.as_mut_ptr()) };
+    }
+}
+
+impl core::fmt::Debug for CapsuleReaderCore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("CapsuleReaderCore { .. }")
+    }
+}
+
+// SAFETY: the handle owns its Vesper allocations exclusively (no Vesper
+// code keeps a reference to them), and they are plain heap memory.
+unsafe impl Send for CapsuleReaderCore {}
+// SAFETY: shared access only reads the words and the memory they own.
+unsafe impl Sync for CapsuleReaderCore {}
+
+/// A borrowed view of a Vesper `CapsuleReaderCore` value, read in place.
+#[derive(Clone, Copy)]
+pub struct CapsuleReaderCoreRef<'a> {
+    words: &'a [u64],
+}
+
+impl<'a> CapsuleReaderCoreRef<'a> {
+    pub fn buf(&self) -> vesper_port_abi::SeqRef<'a, u8> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[0]) }
+    }
+    pub fn head(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[1..])
+    }
+    pub fn mode(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[2..])
+    }
+    pub fn remaining(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[3..])
+    }
+    pub fn ty(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[4..])
+    }
+    pub fn len(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[5..])
+    }
+    pub fn max_value(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[6..])
+    }
+    pub fn out(&self) -> vesper_port_abi::SeqRef<'a, u8> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[7]) }
     }
 }
 
@@ -456,6 +736,91 @@ impl<'a> EncoderCoreRef<'a> {
     pub fn failed(&self) -> Option<crate::qpack::port::abi::QpackError> {
         let w: &'a [u64] = self.words;
         <Option<crate::qpack::port::abi::QpackError> as Abi>::get(&w[31..])
+    }
+}
+
+/// Owned handle of a Vesper `FrameReaderCore` value: its words, which own the Vesper
+/// allocations they point to. Dropping it calls `vesper_h3_FrameReaderCore_drop`.
+pub struct FrameReaderCore {
+    words: [u64; 9],
+}
+
+impl FrameReaderCore {
+    /// # Safety
+    /// `words` must hold a `FrameReaderCore` value of this library that the caller owns.
+    unsafe fn from_words(words: &[u64]) -> Self {
+        let mut owned = [0u64; 9];
+        owned.copy_from_slice(&words[..9]);
+        Self { words: owned }
+    }
+
+    /// A borrowed view of the value.
+    pub fn as_ref(&self) -> FrameReaderCoreRef<'_> {
+        FrameReaderCoreRef { words: &self.words }
+    }
+}
+
+impl Drop for FrameReaderCore {
+    fn drop(&mut self) {
+        // SAFETY: the handle owns its words and is dropped once.
+        unsafe { vesper_h3_FrameReaderCore_drop(self.words.as_mut_ptr()) };
+    }
+}
+
+impl core::fmt::Debug for FrameReaderCore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("FrameReaderCore { .. }")
+    }
+}
+
+// SAFETY: the handle owns its Vesper allocations exclusively (no Vesper
+// code keeps a reference to them), and they are plain heap memory.
+unsafe impl Send for FrameReaderCore {}
+// SAFETY: shared access only reads the words and the memory they own.
+unsafe impl Sync for FrameReaderCore {}
+
+/// A borrowed view of a Vesper `FrameReaderCore` value, read in place.
+#[derive(Clone, Copy)]
+pub struct FrameReaderCoreRef<'a> {
+    words: &'a [u64],
+}
+
+impl<'a> FrameReaderCoreRef<'a> {
+    pub fn buf(&self) -> vesper_port_abi::SeqRef<'a, u8> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[0]) }
+    }
+    pub fn head(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[1..])
+    }
+    pub fn mode(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[2..])
+    }
+    pub fn remaining(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[3..])
+    }
+    pub fn ty(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[4..])
+    }
+    pub fn len(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[5..])
+    }
+    pub fn max_payload(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[6..])
+    }
+    pub fn webtransport(&self) -> bool {
+        let w: &'a [u64] = self.words;
+        <bool as Abi>::get(&w[7..])
+    }
+    pub fn out(&self) -> vesper_port_abi::SeqRef<'a, u8> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[8]) }
     }
 }
 
@@ -739,28 +1104,47 @@ const _: () = assert!(<() as Abi>::WORDS == 1);
 const _: () = assert!(<Option<crate::qpack::port::abi::HuffmanError> as Abi>::WORDS == 2);
 const _: () = assert!(<Result<(), crate::qpack::port::abi::QpackError> as Abi>::WORDS == 4);
 const _: () = assert!(<Result<bool, crate::qpack::port::abi::QpackError> as Abi>::WORDS == 4);
+const _: () = assert!(<Result<crate::qpack::port::abi::CapsuleOut, crate::qpack::port::abi::CapsuleError> as Abi>::WORDS == 4);
+const _: () = assert!(<Result<crate::qpack::port::abi::FrameOut, crate::qpack::port::abi::FrameError> as Abi>::WORDS == 11);
 const _: () = assert!(<Result<crate::qpack::port::abi::IntRead, crate::qpack::port::abi::PrefixError> as Abi>::WORDS == 3);
+const _: () = assert!(<Result<crate::qpack::port::abi::PriorityUpdate, crate::qpack::port::abi::FrameError> as Abi>::WORDS == 5);
+const _: () = assert!(<Result<crate::qpack::port::abi::Settings, crate::qpack::port::abi::FrameError> as Abi>::WORDS == 10);
 const _: () = assert!(<Result<u64, crate::qpack::port::abi::PrefixError> as Abi>::WORDS == 3);
+const _: () = assert!(<bool as Abi>::WORDS == 1);
+const _: () = assert!(<crate::qpack::port::abi::CapsuleError as Abi>::WORDS == 3);
+const _: () = assert!(<crate::qpack::port::abi::CapsuleOut as Abi>::WORDS == 2);
 const _: () = assert!(<crate::qpack::port::abi::DecoderConfig as Abi>::WORDS == 4);
 const _: () = assert!(<crate::qpack::port::abi::EncoderConfig as Abi>::WORDS == 3);
 const _: () = assert!(<crate::qpack::port::abi::EncoderStats as Abi>::WORDS == 6);
+const _: () = assert!(<crate::qpack::port::abi::FrameError as Abi>::WORDS == 3);
+const _: () = assert!(<crate::qpack::port::abi::FrameOut as Abi>::WORDS == 10);
 const _: () = assert!(<crate::qpack::port::abi::HuffmanError as Abi>::WORDS == 1);
 const _: () = assert!(<crate::qpack::port::abi::IntRead as Abi>::WORDS == 2);
 const _: () = assert!(<crate::qpack::port::abi::PrefixError as Abi>::WORDS == 2);
+const _: () = assert!(<crate::qpack::port::abi::Priority as Abi>::WORDS == 2);
+const _: () = assert!(<crate::qpack::port::abi::PriorityUpdate as Abi>::WORDS == 4);
 const _: () = assert!(<crate::qpack::port::abi::QpackError as Abi>::WORDS == 3);
 const _: () = assert!(<crate::qpack::port::abi::Reason as Abi>::WORDS == 2);
+const _: () = assert!(<crate::qpack::port::abi::Settings as Abi>::WORDS == 9);
 const _: () = assert!(<u64 as Abi>::WORDS == 1);
 
 unsafe extern "C" {
     fn vesper_h3_seq_new(capacity: i64, stride: i64) -> i64;
     fn vesper_h3_seq_free(seq: i64) -> i64;
     fn vesper_h3_live_allocations() -> i64;
+    fn vesper_h3_CapsuleReaderCore_drop(value: *mut u64) -> i64;
     fn vesper_h3_DecoderCore_drop(value: *mut u64) -> i64;
     fn vesper_h3_EncoderCore_drop(value: *mut u64) -> i64;
+    fn vesper_h3_FrameReaderCore_drop(value: *mut u64) -> i64;
     fn vesper_h3_Huff_drop(value: *mut u64) -> i64;
     fn vesper_h3_Sections_drop(value: *mut u64) -> i64;
     fn vesper_h3_vesper__prism_2h3__table__Static_drop(value: *mut u64) -> i64;
     fn vesper_h3_vesper__prism_2h3__table__Table_drop(value: *mut u64) -> i64;
+    fn vesper_h3_capsule_reader_core_at_boundary(r: *mut u64) -> i64;
+    fn vesper_h3_capsule_reader_core_buffered(r: *mut u64) -> i64;
+    fn vesper_h3_capsule_reader_core_new(result: *mut u64, max_value: i64) -> i64;
+    fn vesper_h3_capsule_reader_core_next(result: *mut u64, r: *mut u64) -> i64;
+    fn vesper_h3_capsule_reader_core_push(r: *mut u64, bytes: *mut u64) -> i64;
     fn vesper_h3_decoder_core_blocked_streams(d: *mut u64) -> i64;
     fn vesper_h3_decoder_core_cancel_stream(d: *mut u64, stream_id: i64) -> i64;
     fn vesper_h3_decoder_core_decode_section(result: *mut u64, d: *mut u64, h: *mut u64, stream_id: i64, data: *mut u64) -> i64;
@@ -780,6 +1164,23 @@ unsafe extern "C" {
     fn vesper_h3_encoder_core_outstanding_sections(e: *mut u64) -> i64;
     fn vesper_h3_encoder_core_table_capacity(e: *mut u64) -> i64;
     fn vesper_h3_encoder_core_take_encoder_stream(e: *mut u64) -> i64;
+    fn vesper_h3_frame_reader_core_at_boundary(r: *mut u64) -> i64;
+    fn vesper_h3_frame_reader_core_buffered(r: *mut u64) -> i64;
+    fn vesper_h3_frame_reader_core_new(result: *mut u64, max_payload: i64, webtransport: i64) -> i64;
+    fn vesper_h3_frame_reader_core_next(result: *mut u64, r: *mut u64) -> i64;
+    fn vesper_h3_frame_reader_core_push(r: *mut u64, bytes: *mut u64) -> i64;
+    fn vesper_h3_frame_reader_core_take_rest(r: *mut u64) -> i64;
+    fn vesper_h3_h3_close_session(code: i64, reason: *mut u64) -> i64;
+    fn vesper_h3_h3_priority_parse(result: *mut u64, value: *mut u64) -> i64;
+    fn vesper_h3_h3_priority_serialize(p: *mut u64) -> i64;
+    fn vesper_h3_h3_priority_update_encode(u: *mut u64) -> i64;
+    fn vesper_h3_h3_priority_update_parse(result: *mut u64, frame_type: i64, payload: *mut u64) -> i64;
+    fn vesper_h3_h3_put_varint(value: i64) -> i64;
+    fn vesper_h3_h3_record_header(ty: i64, len: i64) -> i64;
+    fn vesper_h3_h3_schedule(streams: *mut u64, rotate: i64) -> i64;
+    fn vesper_h3_h3_settings_encode(s: *mut u64) -> i64;
+    fn vesper_h3_h3_settings_parse(result: *mut u64, payload: *mut u64) -> i64;
+    fn vesper_h3_h3_varint_frame(ty: i64, value: i64) -> i64;
     fn vesper_h3_huff_append(h: *mut u64, data: *mut u64, out: *mut u64) -> i64;
     fn vesper_h3_huff_decode_int(result: *mut u64, h: *mut u64, buf: *mut u64, bits: i64) -> i64;
     fn vesper_h3_huff_decode_string(result: *mut u64, h: *mut u64, buf: *mut u64, bits: i64, max_len: i64, out: *mut u64) -> i64;
@@ -800,6 +1201,55 @@ pub const RUNTIME: vesper_port_abi::SeqRuntime = vesper_port_abi::SeqRuntime {
 pub fn live_allocations() -> i64 {
     // SAFETY: the function only reads two counters.
     unsafe { vesper_h3_live_allocations() }
+}
+
+/// Calls `capsule_reader_core_at_boundary` of the Vesper library `h3` (`vesper_h3_capsule_reader_core_at_boundary`).
+pub fn capsule_reader_core_at_boundary(r: &CapsuleReaderCore) -> bool {
+    let mut arg_r = r.words;
+    // SAFETY: `vesper_h3_capsule_reader_core_at_boundary` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_capsule_reader_core_at_boundary(arg_r.as_mut_ptr()) };
+    raw != 0
+}
+
+/// Calls `capsule_reader_core_buffered` of the Vesper library `h3` (`vesper_h3_capsule_reader_core_buffered`).
+pub fn capsule_reader_core_buffered(r: &CapsuleReaderCore) -> u64 {
+    let mut arg_r = r.words;
+    // SAFETY: `vesper_h3_capsule_reader_core_buffered` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_capsule_reader_core_buffered(arg_r.as_mut_ptr()) };
+    raw as u64
+}
+
+/// Calls `capsule_reader_core_new` of the Vesper library `h3` (`vesper_h3_capsule_reader_core_new`).
+pub fn capsule_reader_core_new(max_value: u64) -> CapsuleReaderCore {
+    let mut result = [0u64; 8];
+    // SAFETY: `vesper_h3_capsule_reader_core_new` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_capsule_reader_core_new(result.as_mut_ptr(), max_value as i64) };
+    unsafe { CapsuleReaderCore::from_words(&result[0..]) }
+}
+
+/// Calls `capsule_reader_core_next` of the Vesper library `h3` (`vesper_h3_capsule_reader_core_next`).
+pub fn capsule_reader_core_next(r: &mut CapsuleReaderCore) -> Result<crate::qpack::port::abi::CapsuleOut, crate::qpack::port::abi::CapsuleError> {
+    let mut result = [0u64; 4];
+    // SAFETY: `vesper_h3_capsule_reader_core_next` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_capsule_reader_core_next(result.as_mut_ptr(), r.words.as_mut_ptr()) };
+    <Result<crate::qpack::port::abi::CapsuleOut, crate::qpack::port::abi::CapsuleError> as Abi>::get(&result[0..])
+}
+
+/// Calls `capsule_reader_core_push` of the Vesper library `h3` (`vesper_h3_capsule_reader_core_push`).
+pub fn capsule_reader_core_push(r: &mut CapsuleReaderCore, bytes: &[u8]) -> () {
+    // SAFETY: `vesper_h3_capsule_reader_core_push` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(bytes, |view_bytes| unsafe { vesper_h3_capsule_reader_core_push(r.words.as_mut_ptr(), view_bytes) });
+    { let _ = raw; }
 }
 
 /// Calls `decoder_core_blocked_streams` of the Vesper library `h3` (`vesper_h3_decoder_core_blocked_streams`).
@@ -994,6 +1444,172 @@ pub fn encoder_core_take_encoder_stream(e: &mut EncoderCore) -> Vec<u8> {
     unsafe { vesper_port_abi::seq_take::<u8>(RUNTIME, raw as u64) }
 }
 
+/// Calls `frame_reader_core_at_boundary` of the Vesper library `h3` (`vesper_h3_frame_reader_core_at_boundary`).
+pub fn frame_reader_core_at_boundary(r: &FrameReaderCore) -> bool {
+    let mut arg_r = r.words;
+    // SAFETY: `vesper_h3_frame_reader_core_at_boundary` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_frame_reader_core_at_boundary(arg_r.as_mut_ptr()) };
+    raw != 0
+}
+
+/// Calls `frame_reader_core_buffered` of the Vesper library `h3` (`vesper_h3_frame_reader_core_buffered`).
+pub fn frame_reader_core_buffered(r: &FrameReaderCore) -> u64 {
+    let mut arg_r = r.words;
+    // SAFETY: `vesper_h3_frame_reader_core_buffered` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_frame_reader_core_buffered(arg_r.as_mut_ptr()) };
+    raw as u64
+}
+
+/// Calls `frame_reader_core_new` of the Vesper library `h3` (`vesper_h3_frame_reader_core_new`).
+pub fn frame_reader_core_new(max_payload: u64, webtransport: bool) -> FrameReaderCore {
+    let mut result = [0u64; 9];
+    // SAFETY: `vesper_h3_frame_reader_core_new` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_frame_reader_core_new(result.as_mut_ptr(), max_payload as i64, webtransport as i64) };
+    unsafe { FrameReaderCore::from_words(&result[0..]) }
+}
+
+/// Calls `frame_reader_core_next` of the Vesper library `h3` (`vesper_h3_frame_reader_core_next`).
+pub fn frame_reader_core_next(r: &mut FrameReaderCore) -> Result<crate::qpack::port::abi::FrameOut, crate::qpack::port::abi::FrameError> {
+    let mut result = [0u64; 11];
+    // SAFETY: `vesper_h3_frame_reader_core_next` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_frame_reader_core_next(result.as_mut_ptr(), r.words.as_mut_ptr()) };
+    <Result<crate::qpack::port::abi::FrameOut, crate::qpack::port::abi::FrameError> as Abi>::get(&result[0..])
+}
+
+/// Calls `frame_reader_core_push` of the Vesper library `h3` (`vesper_h3_frame_reader_core_push`).
+pub fn frame_reader_core_push(r: &mut FrameReaderCore, bytes: &[u8]) -> () {
+    // SAFETY: `vesper_h3_frame_reader_core_push` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(bytes, |view_bytes| unsafe { vesper_h3_frame_reader_core_push(r.words.as_mut_ptr(), view_bytes) });
+    { let _ = raw; }
+}
+
+/// Calls `frame_reader_core_take_rest` of the Vesper library `h3` (`vesper_h3_frame_reader_core_take_rest`).
+pub fn frame_reader_core_take_rest(r: &mut FrameReaderCore) -> Vec<u8> {
+    // SAFETY: `vesper_h3_frame_reader_core_take_rest` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_frame_reader_core_take_rest(r.words.as_mut_ptr()) };
+    unsafe { vesper_port_abi::seq_take::<u8>(RUNTIME, raw as u64) }
+}
+
+/// Calls `h3_close_session` of the Vesper library `h3` (`vesper_h3_h3_close_session`).
+pub fn h3_close_session(code: u32, reason: &[u8]) -> Vec<u8> {
+    // SAFETY: `vesper_h3_h3_close_session` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(reason, |view_reason| unsafe { vesper_h3_h3_close_session(code as i64, view_reason) });
+    unsafe { vesper_port_abi::seq_take::<u8>(RUNTIME, raw as u64) }
+}
+
+/// Calls `h3_priority_parse` of the Vesper library `h3` (`vesper_h3_h3_priority_parse`).
+pub fn h3_priority_parse(value: &[u8]) -> crate::qpack::port::abi::Priority {
+    let mut result = [0u64; 2];
+    // SAFETY: `vesper_h3_h3_priority_parse` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(value, |view_value| unsafe { vesper_h3_h3_priority_parse(result.as_mut_ptr(), view_value) });
+    <crate::qpack::port::abi::Priority as Abi>::get(&result[0..])
+}
+
+/// Calls `h3_priority_serialize` of the Vesper library `h3` (`vesper_h3_h3_priority_serialize`).
+pub fn h3_priority_serialize(p: crate::qpack::port::abi::Priority) -> Vec<u8> {
+    let mut arg_p = [0u64; <crate::qpack::port::abi::Priority as Abi>::WORDS];
+    Abi::put(&p, &mut arg_p);
+    // SAFETY: `vesper_h3_h3_priority_serialize` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_h3_priority_serialize(arg_p.as_mut_ptr()) };
+    unsafe { vesper_port_abi::seq_take::<u8>(RUNTIME, raw as u64) }
+}
+
+/// Calls `h3_priority_update_encode` of the Vesper library `h3` (`vesper_h3_h3_priority_update_encode`).
+pub fn h3_priority_update_encode(u: crate::qpack::port::abi::PriorityUpdate) -> Vec<u8> {
+    let mut arg_u = [0u64; <crate::qpack::port::abi::PriorityUpdate as Abi>::WORDS];
+    Abi::put(&u, &mut arg_u);
+    // SAFETY: `vesper_h3_h3_priority_update_encode` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_h3_priority_update_encode(arg_u.as_mut_ptr()) };
+    unsafe { vesper_port_abi::seq_take::<u8>(RUNTIME, raw as u64) }
+}
+
+/// Calls `h3_priority_update_parse` of the Vesper library `h3` (`vesper_h3_h3_priority_update_parse`).
+pub fn h3_priority_update_parse(frame_type: u64, payload: &[u8]) -> Result<crate::qpack::port::abi::PriorityUpdate, crate::qpack::port::abi::FrameError> {
+    let mut result = [0u64; 5];
+    // SAFETY: `vesper_h3_h3_priority_update_parse` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(payload, |view_payload| unsafe { vesper_h3_h3_priority_update_parse(result.as_mut_ptr(), frame_type as i64, view_payload) });
+    <Result<crate::qpack::port::abi::PriorityUpdate, crate::qpack::port::abi::FrameError> as Abi>::get(&result[0..])
+}
+
+/// Calls `h3_put_varint` of the Vesper library `h3` (`vesper_h3_h3_put_varint`).
+pub fn h3_put_varint(value: u64) -> Vec<u8> {
+    // SAFETY: `vesper_h3_h3_put_varint` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_h3_put_varint(value as i64) };
+    unsafe { vesper_port_abi::seq_take::<u8>(RUNTIME, raw as u64) }
+}
+
+/// Calls `h3_record_header` of the Vesper library `h3` (`vesper_h3_h3_record_header`).
+pub fn h3_record_header(ty: u64, len: u64) -> Vec<u8> {
+    // SAFETY: `vesper_h3_h3_record_header` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_h3_record_header(ty as i64, len as i64) };
+    unsafe { vesper_port_abi::seq_take::<u8>(RUNTIME, raw as u64) }
+}
+
+/// Calls `h3_schedule` of the Vesper library `h3` (`vesper_h3_h3_schedule`).
+pub fn h3_schedule(streams: &[u64], rotate: u64) -> Vec<u64> {
+    // SAFETY: `vesper_h3_h3_schedule` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(streams, |view_streams| unsafe { vesper_h3_h3_schedule(view_streams, rotate as i64) });
+    unsafe { vesper_port_abi::seq_take::<u64>(RUNTIME, raw as u64) }
+}
+
+/// Calls `h3_settings_encode` of the Vesper library `h3` (`vesper_h3_h3_settings_encode`).
+pub fn h3_settings_encode(s: crate::qpack::port::abi::Settings) -> Vec<u8> {
+    let mut arg_s = [0u64; <crate::qpack::port::abi::Settings as Abi>::WORDS];
+    Abi::put(&s, &mut arg_s);
+    // SAFETY: `vesper_h3_h3_settings_encode` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_h3_settings_encode(arg_s.as_mut_ptr()) };
+    unsafe { vesper_port_abi::seq_take::<u8>(RUNTIME, raw as u64) }
+}
+
+/// Calls `h3_settings_parse` of the Vesper library `h3` (`vesper_h3_h3_settings_parse`).
+pub fn h3_settings_parse(payload: &[u8]) -> Result<crate::qpack::port::abi::Settings, crate::qpack::port::abi::FrameError> {
+    let mut result = [0u64; 10];
+    // SAFETY: `vesper_h3_h3_settings_parse` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(payload, |view_payload| unsafe { vesper_h3_h3_settings_parse(result.as_mut_ptr(), view_payload) });
+    <Result<crate::qpack::port::abi::Settings, crate::qpack::port::abi::FrameError> as Abi>::get(&result[0..])
+}
+
+/// Calls `h3_varint_frame` of the Vesper library `h3` (`vesper_h3_h3_varint_frame`).
+pub fn h3_varint_frame(ty: u64, value: u64) -> Vec<u8> {
+    // SAFETY: `vesper_h3_h3_varint_frame` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_h3_h3_varint_frame(ty as i64, value as i64) };
+    unsafe { vesper_port_abi::seq_take::<u8>(RUNTIME, raw as u64) }
+}
+
 /// Calls `huff_append` of the Vesper library `h3` (`vesper_h3_huff_append`).
 pub fn huff_append(h: &Huff, data: &[u8], out: &mut Vec<u8>) -> () {
     let mut arg_h = h.words;
@@ -1075,6 +1691,33 @@ pub fn huff_unpack(h: &Huff, data: &[u8], max_len: u64, out: &mut Vec<u8>) -> Op
     // every handle passed is owned or borrowed as its mode requires.
     let raw = vesper_port_abi::with_slice(data, |view_data| vesper_port_abi::with_seq_mut(RUNTIME, out, |seq_out| unsafe { vesper_h3_huff_unpack(result.as_mut_ptr(), arg_h.as_mut_ptr(), view_data, max_len as i64, seq_out) }));
     <Option<crate::qpack::port::abi::HuffmanError> as Abi>::get(&result[0..])
+}
+
+impl CapsuleReaderCore {
+    /// `capsule_reader_core_at_boundary` (`vesper_h3_capsule_reader_core_at_boundary`).
+    pub fn at_boundary(&self) -> bool {
+        capsule_reader_core_at_boundary(self)
+    }
+
+    /// `capsule_reader_core_buffered` (`vesper_h3_capsule_reader_core_buffered`).
+    pub fn buffered(&self) -> u64 {
+        capsule_reader_core_buffered(self)
+    }
+
+    /// `capsule_reader_core_new` (`vesper_h3_capsule_reader_core_new`).
+    pub fn new(max_value: u64) -> CapsuleReaderCore {
+        capsule_reader_core_new(max_value)
+    }
+
+    /// `capsule_reader_core_next` (`vesper_h3_capsule_reader_core_next`).
+    pub fn next(&mut self) -> Result<crate::qpack::port::abi::CapsuleOut, crate::qpack::port::abi::CapsuleError> {
+        capsule_reader_core_next(self)
+    }
+
+    /// `capsule_reader_core_push` (`vesper_h3_capsule_reader_core_push`).
+    pub fn push(&mut self, bytes: &[u8]) -> () {
+        capsule_reader_core_push(self, bytes)
+    }
 }
 
 impl DecoderCore {
@@ -1173,6 +1816,38 @@ impl EncoderCore {
     /// `encoder_core_take_encoder_stream` (`vesper_h3_encoder_core_take_encoder_stream`).
     pub fn take_encoder_stream(&mut self) -> Vec<u8> {
         encoder_core_take_encoder_stream(self)
+    }
+}
+
+impl FrameReaderCore {
+    /// `frame_reader_core_at_boundary` (`vesper_h3_frame_reader_core_at_boundary`).
+    pub fn at_boundary(&self) -> bool {
+        frame_reader_core_at_boundary(self)
+    }
+
+    /// `frame_reader_core_buffered` (`vesper_h3_frame_reader_core_buffered`).
+    pub fn buffered(&self) -> u64 {
+        frame_reader_core_buffered(self)
+    }
+
+    /// `frame_reader_core_new` (`vesper_h3_frame_reader_core_new`).
+    pub fn new(max_payload: u64, webtransport: bool) -> FrameReaderCore {
+        frame_reader_core_new(max_payload, webtransport)
+    }
+
+    /// `frame_reader_core_next` (`vesper_h3_frame_reader_core_next`).
+    pub fn next(&mut self) -> Result<crate::qpack::port::abi::FrameOut, crate::qpack::port::abi::FrameError> {
+        frame_reader_core_next(self)
+    }
+
+    /// `frame_reader_core_push` (`vesper_h3_frame_reader_core_push`).
+    pub fn push(&mut self, bytes: &[u8]) -> () {
+        frame_reader_core_push(self, bytes)
+    }
+
+    /// `frame_reader_core_take_rest` (`vesper_h3_frame_reader_core_take_rest`).
+    pub fn take_rest(&mut self) -> Vec<u8> {
+        frame_reader_core_take_rest(self)
     }
 }
 

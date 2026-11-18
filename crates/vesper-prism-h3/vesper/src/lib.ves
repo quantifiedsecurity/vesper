@@ -37,6 +37,35 @@ use self::encoder::{
     enc_apply_peer_settings,
     enc_blocking_streams
 };
+use self::frame::{
+    settings_parse,
+    settings_write,
+    reader_new,
+    reader_push,
+    reader_buffered,
+    reader_at_boundary,
+    reader_take_rest,
+    reader_next
+};
+use self::priority::{
+    priority_parse_value,
+    priority_serialize_to,
+    priority_update_parse,
+    priority_update_write,
+    schedule_into
+};
+use self::capsule::{
+    capsule_reader_new,
+    capsule_push,
+    capsule_buffered,
+    capsule_at_boundary,
+    capsule_next,
+    capsule_write_close
+};
+use self::varint::{
+    vput,
+    put_record
+};
 use self::decoder::{
     dec_on_encoder_stream,
     dec_decode_section,
@@ -384,4 +413,231 @@ pub fn decoder_core_cancel_stream(inout d: DecoderCore, stream_id: u64) {
 
 pub fn decoder_core_take_decoder_stream(inout d: DecoderCore) -> ChunkSeq[u8] {
     dec_take_decoder_stream(inout d)
+}
+
+// ---------------------------------------------------------------------
+// Part 2: frames, priorities and capsules (frame.rs, priority.rs,
+// capsule.rs)
+// ---------------------------------------------------------------------
+
+pub copy enum FrameError {
+    Malformed,
+    TooLarge {
+        frame_type: u64,
+        len: u64
+    },
+    Http2Frame(u64),
+    BadSetting(u64)
+}
+
+pub copy struct Settings {
+    qpack_max_table_capacity: u64,
+    qpack_blocked_streams: u64,
+    max_field_section_size: Option[u64],
+    enable_connect_protocol: bool,
+    h3_datagram: bool,
+    webtransport_max_sessions: Option[u64],
+    no_rfc7540_priorities: bool
+}
+
+pub copy struct Priority {
+    urgency: u8,
+    incremental: bool
+}
+
+pub copy struct PriorityUpdate {
+    push: bool,
+    element_id: u64,
+    priority: Priority
+}
+
+// A frame from the reader; DATA and HEADERS bytes are in the reader's
+// `out` (`Frame` without its payloads).
+pub copy enum FrameOut {
+    None,
+    Data,
+    Headers,
+    SettingsFrame(Settings),
+    GoAway(u64),
+    CancelPush(u64),
+    MaxPushId(u64),
+    PushPromise,
+    PriorityUpdateFrame(PriorityUpdate),
+    WebTransportStream(u64),
+    Unknown(u64)
+}
+
+pub struct FrameReaderCore {
+    buf: ChunkSeq[u8],
+    head: u64,
+    mode: u64,
+    remaining: u64,
+    ty: u64,
+    len: u64,
+    max_payload: u64,
+    webtransport: bool,
+    out: ChunkSeq[u8]
+}
+
+pub copy enum CapsuleError {
+    TooLarge {
+        capsule_type: u64,
+        len: u64
+    },
+    Malformed {
+        capsule_type: u64
+    },
+    Truncated
+}
+
+// A capsule from the reader; a datagram's payload or a close reason is in
+// the reader's `out`.
+pub copy enum CapsuleOut {
+    None,
+    Datagram,
+    CloseSession(u32),
+    DrainSession,
+    Unknown(u64)
+}
+
+pub struct CapsuleReaderCore {
+    buf: ChunkSeq[u8],
+    head: u64,
+    mode: u64,
+    remaining: u64,
+    ty: u64,
+    len: u64,
+    max_value: u64,
+    out: ChunkSeq[u8]
+}
+
+// The writers return the bytes they write, empty when a value does not fit
+// a varint: an `inout ChunkSeq` from Rust copies the caller's whole buffer
+// in and out on every call (see the report), so appending stays in Rust.
+
+pub fn h3_put_varint(value: u64) -> ChunkSeq[u8] {
+    let mut out = ChunkSeq::new[u8]();
+    if !vput(inout out, value) {
+        out.clear();
+    }
+    out
+}
+
+// A frame or capsule header for a payload of `len` bytes (`write_frame`,
+// `write_data_header`, `write_capsule`).
+pub fn h3_record_header(ty: u64, len: u64) -> ChunkSeq[u8] {
+    let mut out = ChunkSeq::new[u8]();
+    let a = vput(inout out, ty);
+    let b = vput(inout out, len);
+    if !(a && b) {
+        out.clear();
+    }
+    out
+}
+
+// `write_varint_frame`.
+pub fn h3_varint_frame(ty: u64, value: u64) -> ChunkSeq[u8] {
+    let mut p = ChunkSeq::new[u8]();
+    let mut out = ChunkSeq::new[u8]();
+    let ok = vput(inout p, value);
+    if !(put_record(inout out, ty, in p.as_slice()) && ok) {
+        out.clear();
+    }
+    out
+}
+
+pub fn h3_settings_parse(in payload: Slice[u8]) -> Result[Settings, FrameError] {
+    settings_parse(in payload)
+}
+
+pub fn h3_settings_encode(s: Settings) -> ChunkSeq[u8] {
+    let mut out = ChunkSeq::new[u8]();
+    if !settings_write(s, inout out) {
+        out.clear();
+    }
+    out
+}
+
+pub fn h3_priority_parse(in value: Slice[u8]) -> Priority {
+    priority_parse_value(in value)
+}
+
+pub fn h3_priority_serialize(p: Priority) -> ChunkSeq[u8] {
+    let mut out = ChunkSeq::new[u8]();
+    priority_serialize_to(p, inout out);
+    out
+}
+
+pub fn h3_priority_update_parse(frame_type: u64, in payload: Slice[u8])
+    -> Result[PriorityUpdate, FrameError] {
+    priority_update_parse(frame_type, in payload)
+}
+
+pub fn h3_priority_update_encode(u: PriorityUpdate) -> ChunkSeq[u8] {
+    let mut out = ChunkSeq::new[u8]();
+    if !priority_update_write(u, inout out) {
+        out.clear();
+    }
+    out
+}
+
+// `schedule`: (id, urgency, incremental) triples in, groups out as a length
+// followed by that many ids.
+pub fn h3_schedule(in streams: Slice[u64], rotate: u64) -> ChunkSeq[u64] {
+    let mut out = ChunkSeq::new[u64]();
+    schedule_into(in streams, rotate, inout out);
+    out
+}
+
+pub fn frame_reader_core_new(max_payload: u64, webtransport: bool) -> FrameReaderCore {
+    reader_new(max_payload, webtransport)
+}
+
+pub fn frame_reader_core_push(inout r: FrameReaderCore, in bytes: Slice[u8]) {
+    reader_push(inout r, in bytes);
+}
+
+pub fn frame_reader_core_buffered(in r: FrameReaderCore) -> u64 {
+    reader_buffered(in r)
+}
+
+pub fn frame_reader_core_at_boundary(in r: FrameReaderCore) -> bool {
+    reader_at_boundary(in r)
+}
+
+pub fn frame_reader_core_take_rest(inout r: FrameReaderCore) -> ChunkSeq[u8] {
+    reader_take_rest(inout r);
+    replace(inout r.out, ChunkSeq::new[u8]())
+}
+
+pub fn frame_reader_core_next(inout r: FrameReaderCore) -> Result[FrameOut, FrameError] {
+    reader_next(inout r)
+}
+
+pub fn capsule_reader_core_new(max_value: u64) -> CapsuleReaderCore {
+    capsule_reader_new(max_value)
+}
+
+pub fn capsule_reader_core_push(inout r: CapsuleReaderCore, in bytes: Slice[u8]) {
+    capsule_push(inout r, in bytes);
+}
+
+pub fn capsule_reader_core_buffered(in r: CapsuleReaderCore) -> u64 {
+    capsule_buffered(in r)
+}
+
+pub fn capsule_reader_core_at_boundary(in r: CapsuleReaderCore) -> bool {
+    capsule_at_boundary(in r)
+}
+
+pub fn capsule_reader_core_next(inout r: CapsuleReaderCore) -> Result[CapsuleOut, CapsuleError] {
+    capsule_next(inout r)
+}
+
+pub fn h3_close_session(code: u32, in reason: Slice[u8]) -> ChunkSeq[u8] {
+    let mut out = ChunkSeq::new[u8]();
+    if !capsule_write_close(inout out, code, in reason) {
+        out.clear();
+    }
+    out
 }

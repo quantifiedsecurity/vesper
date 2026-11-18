@@ -1,11 +1,11 @@
 # Port P3b lane 5: vesper-prism-h3 (#1067)
 
-Status: part 1 of 3 (QPACK). The Rust build stays the default. The Vesper build is behind the non-default `vesper-port` feature, per the standing parity rule.
+Status: parts 1 (QPACK) and 2 (frames, priorities, capsules) of 3. The Rust build stays the default. The Vesper build is behind the non-default `vesper-port` feature, per the standing parity rule.
 
 | Part | Scope | State |
 |---|---|---|
-| 1 | QPACK: Huffman code, prefixed integers, static and dynamic tables, encoder, decoder (`src/qpack/**`) | this PR |
-| 2 | `frame.rs`, `priority.rs`, `capsule.rs`, plus a frame-parsing ABBA | next |
+| 1 | QPACK: Huffman code, prefixed integers, static and dynamic tables, encoder, decoder (`src/qpack/**`) | #1075 |
+| 2 | `frame.rs`, `priority.rs`, `capsule.rs`, plus a frame-parsing ABBA | this PR |
 | 3 | `message.rs`, `session.rs`, `error.rs` | last, closes #1067 |
 
 ## Layout
@@ -86,7 +86,81 @@ How it got there:
 
 Not at parity. Rust stays the default. The remaining encode gap is mostly the dynamic table's newest-first scans (`dynamic_exact`, `dynamic_name`). The Rust build does the same scans, but in Vesper each step pays a slice read of `lo`/`nlen`/`vlen` plus bounds checks. Decode wall-clock is above its instruction ratio. This is probably allocation: each decoded field is copied into the output buffers, and Rust then copies it into `Field`s.
 
-## Compiler gaps
+## Part 2: frames, priorities, capsules
+
+New Vesper files:
+- `varint.ves`: QUIC varints.
+- `frame.ves`: SETTINGS and the frame reader.
+- `priority.ves`: the RFC 8941 dictionary subset, PRIORITY_UPDATE and the §10 scheduler.
+- `capsule.ves`: the capsule reader and a strict UTF-8 check for close reasons.
+
+The Rust API is unchanged, except that `PriorityUpdate` now derives `Copy` (all its fields are copy).
+
+| Item | Port build |
+|---|---|
+| `frame::{put_varint, write_frame, write_data_header, write_varint_frame}` | The header bytes come from Vesper and the payload is appended in Rust. |
+| `frame::Settings::{parse, encode}` | `Settings` maps onto the Vesper copy struct, including its `Option` fields. |
+| `frame::FrameReader` (`new`, `with_webtransport`, `push`, `next_frame`, `take_rest`, `at_boundary`, `buffered`, `finish`) | Vesper `FrameReaderCore`. The reader keeps unread bytes from `head` on and compacts on push, so a frame is moved at most once. DATA and HEADERS bytes are read from its `out` buffer. |
+| `priority::{Priority::parse, Priority::serialize, PriorityUpdate::{parse, encode}, schedule}` | Vesper. `schedule` passes (id, urgency, incremental) triples in and gets back group lengths and ids. |
+| `capsule::{CapsuleReader, write_capsule, write_close_session}` | Vesper `CapsuleReaderCore`. |
+| Constants, the `const fn` predicates (`is_http2_frame`, `is_http2_setting`, `is_reserved`), `FrameError::code`, `stream_type` | Rust in both builds. Constants and `const fn`s cannot call into the library, and `stream_type` is one `vesper_warp::varint::decode` call. |
+
+The Rust reader's `data_started` field was never read, so the port drops it.
+
+Tests:
+- The frame, priority and capsule unit tests run in both builds.
+- New `tests/frame_codec.rs` runs in Cargo and Bazel. It covers:
+  - frames split at every byte, including every varint width;
+  - SETTINGS wire bytes;
+  - WebTransport stream signals;
+  - the RFC 9218 examples and the scheduler;
+  - capsules split at every byte;
+  - malformed UTF-8 in close reasons (overlong, surrogate, above U+10FFFF, truncated, stray continuation byte).
+- The end-to-end tests (`h3_mem`, `priority_bodies`, `webtransport_mem`, the interop tests) now run the driver over the ported frames, priorities and capsules.
+
+Divergence checks for part 2. Each guarding test fails and each control test passes. Part 1's controls moved off `frame_reader_survives_random_input`, which now runs ported code.
+
+| Module | Edit | Guarding test fails | Control passes |
+|---|---|---|---|
+| varint | 64 written in one byte | `frames_round_trip_split_anywhere` | `rfc9218_priorities` |
+| frame | one-varint payloads accept trailing bytes | `malformed_frames_are_typed_errors` | `capsules_round_trip_split_anywhere` |
+| priority | urgency 8 accepted | `rfc9218_priorities` | `malformed_frames_are_typed_errors` |
+| capsule | close code's high byte shifted | `capsules_round_trip_split_anywhere` | `appendix_b_decoder_side` |
+
+### ABBA, all workloads
+
+Instruction counts are now the difference between 6 and 1 batches, so setup (loading the corpus, building inputs and tables) is not counted. This moves the part 1 figures slightly.
+
+The `frames` workload, per batch:
+- 64 request streams, each HEADERS plus four 1–16 KiB DATA frames plus a grease frame;
+- a control stream with SETTINGS, 256 PRIORITY_UPDATEs and GOAWAY. Each update is also serialized and re-parsed.
+- 512 capsules, mostly DATAGRAM, with unknown ones and a close.
+
+Each stream is pushed in 1,200-byte pieces.
+
+| Workload | Rust instructions | Vesper instructions | Instruction ratio | Wall-clock median (95% interval) | 2x gate |
+|---|---|---|---|---|---|
+| decode | 169.75M | 176.54M | 1.04x | 1.23x (1.10–1.43x) | Pass |
+| encode | 60.09M | 78.55M | 1.31x | 1.27x (1.14–1.32x) | Pass |
+| frames | 60.34M | 61.77M | 1.02x | 1.02x (0.99–1.10x) | Pass |
+
+Frame parsing is at parity. QPACK encoding is the remaining gap (see above).
+
+### Compiler gaps found in part 2
+
+7. **Enum variant names shadow struct names in struct literals.** A copy enum `FrameOut { Settings(Settings), ... }` makes `Settings { ... }` resolve to the variant:
+
+   ```
+   pub copy struct S { a: u64 }
+   pub copy enum E { S(S) }
+   pub fn mk() -> S { S { a: 1 } }
+   ```
+
+   fails with `constructor 'S' requires 1 fields`, `unknown field 'a'`. The port names the variants `SettingsFrame` and `PriorityUpdateFrame`.
+8. **`inout ChunkSeq[u8]` from Rust copies the whole buffer in and out on every call.** `vesper_port_abi::with_seq_mut` does `seq_from`, then the call, then `seq_take`. An export that appends a few bytes to a caller's growing output buffer is therefore O(buffer) per call. Building the 64-stream workload through such writers cost 72M instructions, against 8M in Rust. The port's writers return the bytes they write, and Rust appends them. A borrowed-`Vec` `inout` handle (reserve, write in place, set the length) would remove the copies.
+9. **Integer literals in a tuple do not take their type from use.** In `let (lo, hi) = if c == 224 { (160, 191) } else { (128, 191) };`, `lo` and `hi` are `i64`, so passing them as `u8` fails (E0200). Annotating each binding works.
+
+## Compiler gaps found in part 1
 
 1. **`wrapping_shl_u64`/`wrapping_shr_u64` assigned to a loop variable fails ownership validation after optimization.** Repro (`vesper build --lib`):
 
