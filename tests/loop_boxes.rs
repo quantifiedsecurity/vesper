@@ -261,9 +261,10 @@ fn main() -> i64 {{ run(4) }}
 /// A boxed object lent `sink` to a function whose handler effects are
 /// specialized at the call (inlined natively): the box's block is freed when
 /// the call returns, when the handler resumes it, and when the handler
-/// aborts it. An inlined callee does not drop a `sink` parameter it leaves
-/// unconsumed (of any type, a known gap), so the objects it does not
-/// consume here own nothing.
+/// aborts it, and an object the callee leaves unconsumed is dropped
+/// through its vtable first. A call that consumes its object does not drop
+/// it again; an operation clause of a handler the callee installs itself
+/// does not free its caller's object.
 #[test]
 fn sink_lends_to_handler_specialized_callees() {
     let src = format!(
@@ -275,20 +276,31 @@ fn stop_early(sink x: dyn Step, stop: bool) -> i64 eff [Stop] {{
     if stop {{ Stop::stop(); }}
     x.step(1)
 }}
+fn halt() -> i64 eff [Stop] {{
+    Stop::stop();
+    1
+}}
+// Specialized for its function-valued parameter, with no handler outside
+// it: the handler it installs aborts, then it keeps using its object.
+fn own_handler(sink x: dyn Step, sink f: fn(i64) -> i64) -> i64 {{
+    let s = handle Stop in {{ halt() }} with {{ return v => v, stop(k) => 7, }};
+    f(x.step(s))
+}}
 fn main() -> i64 {{
     let a = handle Ask in {{ ask_finish(sink note(1)) }} with {{ return x => x, ask(k) => k(10), }};
-    let b = handle Ask in {{ ask_step(sink plain(3)) }} with {{ return x => x, ask(k) => k(5), }};
+    let b = handle Ask in {{ ask_step(sink note(3)) }} with {{ return x => x, ask(k) => k(5), }};
+    let c = own_handler(sink note(4), |v| v);
     let mut t: i64 = 0;
     for i in 0..3 {{
-        let s = handle Stop in {{ stop_early(sink plain(i), i == 1) }} with {{ return x => x, stop(k) => 100, }};
+        let s = handle Stop in {{ stop_early(sink note(i), i == 1) }} with {{ return x => x, stop(k) => 100, }};
         t = wrapping_add(t, s);
     }}
-    wrapping_add(wrapping_add(a, b), t)
+    wrapping_add(wrapping_add(wrapping_add(a, b), c), t)
 }}
 "
     );
-    // a = 1001 + 10, b = 15; stops: 1*0, 100, 1*2.
-    assert_eq!(execute(&src), (1011 + 15 + 100 + 2).to_string());
+    // a = 1001 + 10; b = 5+3+1 = 9; c = 7+4+1 = 12; stops: 1+0+1, 100, 1+2+1.
+    assert_eq!(execute(&src), (1011 + 9 + 12 + 2 + 100 + 4).to_string());
 }
 
 /// An `@fip` function drops nothing, so with a loop it still may not own a

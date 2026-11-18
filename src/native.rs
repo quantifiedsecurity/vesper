@@ -2118,6 +2118,19 @@ enum ClosureTarget {
         control: HandlerControl,
     },
 }
+/// A boxed object lent `sink` to a callee inlined for its handler effects
+/// (§7.3): the inlined body reads the object in its box's block, so the
+/// block lives until the call returns, or until a handler installed outside
+/// the call (below `depth`, the handler count at the call) aborts it.
+#[derive(Clone, Copy)]
+struct LentSinkBlock {
+    depth: usize,
+    /// The box's block; 0 once freed.
+    block: Variable,
+    /// The `{data, vtable}` pair lent to the callee; its vtable word is 0
+    /// once the callee consumed the object.
+    pair: Variable,
+}
 /// Where a `return` from a graph's owner continues: its caller's join block
 /// (an inlined graph) or the Cranelift return, through `sret` when present.
 #[derive(Clone)]
@@ -2160,11 +2173,9 @@ struct Codegen<'a, 'b, M: Module> {
     /// ([`crate::ir::Op::Exit`]) by lowered function or closure name.
     exits: Vec<ExitTarget>,
     inline_depth: usize,
-    /// Blocks of boxed objects lent `sink` to a callee inlined for its
-    /// handler effects, with the handler depth at the call: a handler
-    /// installed below that depth that aborts frees them; the call frees
-    /// them when it returns. A freed block's variable holds 0.
-    sink_blocks: Vec<(usize, Variable)>,
+    /// Boxed objects lent `sink` to callees inlined for their handler
+    /// effects ([`LentSinkBlock`]), innermost call last.
+    sink_blocks: Vec<LentSinkBlock>,
     /// The failure-record pointer of a `fail_only` function being compiled,
     /// with the error type of each of its `Fail` instances.
     fail_record: Option<(ir::Value, Vec<Type>)>,
@@ -5848,7 +5859,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                 let pair = if crate::dyn_trait::is_boxed(actual) {
                     let (pair, block) = self.dyn_lend_boxed(arg, param.pass)?;
                     if param.pass == Pass::Sink {
-                        sink_blocks.push(block);
+                        sink_blocks.push((pair, block));
                     }
                     pair
                 } else {
@@ -5969,10 +5980,17 @@ impl<M: Module> Codegen<'_, '_, M> {
             // The inlined body reads the object in its block, so the block
             // lives until the body returns or a handler outside it aborts.
             let lent = self.sink_blocks.len();
-            for block in sink_blocks.drain(..) {
-                let var = self.b.declare_var(self.m.target_config().pointer_type());
-                self.def_var(var, block);
-                self.sink_blocks.push((self.handlers.len(), var));
+            for (pair, block) in sink_blocks.drain(..) {
+                let pointer = self.m.target_config().pointer_type();
+                let block_var = self.b.declare_var(pointer);
+                self.def_var(block_var, block);
+                let pair_var = self.b.declare_var(pointer);
+                self.def_var(pair_var, pair);
+                self.sink_blocks.push(LentSinkBlock {
+                    depth: self.handlers.len(),
+                    block: block_var,
+                    pair: pair_var,
+                });
             }
             if self.inline_depth >= 64 {
                 return Err("recursive effect specialization exceeds 64 inline frames".into());
@@ -6051,8 +6069,8 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.in_fip_fn = fip_scope;
             self.capabilities = capability_scope;
             let result = result?;
-            for (_, var) in self.sink_blocks.split_off(lent) {
-                self.free_sink_block(var)?;
+            for lent in self.sink_blocks.split_off(lent) {
+                self.free_sink_block(lent)?;
             }
             match into {
                 Some(out) if result_layout.aggregate() => {
@@ -6157,7 +6175,11 @@ impl<M: Module> Codegen<'_, '_, M> {
             // box it was lent from. Free the blocks before a failure status
             // can leave this continuation (through `fail_exit` or a
             // handler's dispatch block).
-            for block in boxed_free.take().into_iter().chain(sink_blocks.drain(..)) {
+            for block in boxed_free
+                .take()
+                .into_iter()
+                .chain(sink_blocks.drain(..).map(|(_, block)| block))
+            {
                 self.fip_box_free(block)?;
             }
             let result = if let Some(words) = callee_abi.result_words {
@@ -6229,33 +6251,37 @@ impl<M: Module> Codegen<'_, '_, M> {
     fn fip_box_free(&mut self, ptr: ir::Value) -> Result<(), String> {
         emit_fip_box_free(&mut self.b, self.m, ptr)
     }
-    /// Frees the block a lent `sink` object's variable holds, unless it
-    /// was freed already (0), and empties the variable.
-    fn free_sink_block(&mut self, var: Variable) -> Result<(), String> {
-        let block = self.use_var(var);
+    /// Drops a lent `sink` object the inlined callee left unconsumed (its
+    /// pair still names a vtable) and frees its box's block, unless that
+    /// was done already (the block variable holds 0), then empties it.
+    fn free_sink_block(&mut self, lent: LentSinkBlock) -> Result<(), String> {
+        let block = self.use_var(lent.block);
         let live = self.b.ins().icmp_imm(IntCC::NotEqual, block, 0);
         let free = self.b.create_block();
         let done = self.b.create_block();
         self.branch(live, free, &[], done, &[]);
         self.b.switch_to_block(free);
+        let pair = self.use_var(lent.pair);
+        dyn_native::emit_drop_object(&mut self.b, self.m, pair)?;
         self.fip_box_free(block)?;
         self.jump(done, &[]);
         self.b.switch_to_block(done);
         let zero = self.zero();
-        self.def_var(var, zero);
+        self.def_var(lent.block, zero);
         Ok(())
     }
-    /// Frees the lent `sink` blocks of calls made inside the handler at
-    /// `depth` (all of them for 0): control is leaving their bodies.
-    fn free_sink_blocks_within(&mut self, depth: usize) -> Result<(), String> {
-        let vars: Vec<Variable> = self
+    /// Frees the lent `sink` objects of calls made inside the handler at
+    /// index `handler`, or of every call when the whole function is left
+    /// (`None`): control is leaving their bodies.
+    fn free_sink_blocks_within(&mut self, handler: Option<usize>) -> Result<(), String> {
+        let lent: Vec<LentSinkBlock> = self
             .sink_blocks
             .iter()
-            .filter(|(at, _)| *at > depth || depth == 0)
-            .map(|(_, var)| *var)
+            .filter(|l| handler.is_none_or(|h| l.depth > h))
+            .copied()
             .collect();
-        for var in vars {
-            self.free_sink_block(var)?;
+        for l in lent {
+            self.free_sink_block(l)?;
         }
         Ok(())
     }
@@ -6436,7 +6462,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         let payload = self.offset(record, 8);
         self.store(payload, values[0], &ty)?;
         self.seq_drop_exit(0)?;
-        self.free_sink_blocks_within(0)?;
+        self.free_sink_blocks_within(None)?;
         let returns = self.b.func.signature.returns[0].value_type;
         let placeholder = if is_float_type(returns) {
             self.float_const(returns, 0.0)
@@ -6655,7 +6681,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         let output = self.coerce(output, Some(&h.output_type));
         // Leaving the handled body frees the blocks lent inside it (a
         // resumed body has freed them already).
-        self.free_sink_blocks_within(index)?;
+        self.free_sink_blocks_within(Some(index))?;
         self.jump(h.control.dispatch, &[output.into()]);
         self.b.switch_to_block(entry);
         if let Some(state) = h.state {
@@ -6672,7 +6698,7 @@ impl<M: Module> Codegen<'_, '_, M> {
     fn return_trace_placeholder(&mut self) {
         // A trace failure leaves the whole function; it cannot fail here.
         let _ = self.seq_drop_exit(0);
-        let _ = self.free_sink_blocks_within(0);
+        let _ = self.free_sink_blocks_within(None);
         let returns = self.b.func.signature.returns[0].value_type;
         let placeholder = if is_float_type(returns) {
             self.float_const(returns, 0.0)

@@ -55,13 +55,15 @@ and stored `dyn Trait`). Baseline: `main` at `8212ddf`.
 - **`sink` lends to handler-specialized callees** (`src/native.rs`). The
   inlined body reads the object in its box's block, so the block could not
   be freed before the body ran, and an aborting handler skipped the free
-  after it; #1060 refused the lend. Now the block's address is kept in a
-  variable recorded with the handler depth at the call. The call frees it
-  when its body returns; an operation clause of a handler installed outside
-  the call frees it before jumping to the handler's dispatch (a resumed body
-  freed it already, so the variable holds 0 and the free is skipped); a
-  `Fail` or trace exit that leaves the whole function frees every pending
-  block. The refusal is gone; nothing in this lane still needs it.
+  after it; #1060 refused the lend. Now the block and the lent
+  `{data, vtable}` pair are kept in variables, recorded with the handler
+  count at the call (`LentSinkBlock`). When the body returns, when an
+  operation clause of a handler installed outside the call aborts it, or
+  when a `Fail` or trace exit leaves the whole function, the object is
+  dropped through its vtable if the callee left it unconsumed (a consumed
+  pair's vtable word is 0) and the block is freed; a resumed body has done
+  so already (the block variable holds 0). A handler the callee installs
+  itself never frees its caller's object. The refusal is gone.
 
 ## Tests
 
@@ -81,8 +83,9 @@ AArch64 and x86-64 objects:
 - a `sink` box parameter and a plain `Box[T]` local in the same loop;
 - a struct owning a `Box[dyn Step]` and an `Option[Box[dyn Step]]` field,
   with a field reassigned inside the loop;
-- `sink` lends to handler-specialized callees that return, resume and abort
-  (the abort inside a loop);
+- `sink` lends to handler-specialized callees that consume, borrow, resume
+  and abort (the abort inside a loop), and one whose own handler aborts
+  before it keeps using the object;
 - `@fip` functions with a loop still may not drop an owned box (`E0806`).
 
 `tests/dyn_box.rs` `loops_own_aggregates_owning_boxes` (was
@@ -132,8 +135,8 @@ branch is linked from the PR.
 ## Remaining gaps
 
 - An inlined (handler-specialized) callee does not drop a `sink` parameter
-  it leaves unconsumed, of any type (a `ChunkSeq` too); the box's block is
-  freed, the object's own contents follow that rule.
+  of another type it leaves unconsumed (a `ChunkSeq`, for one); boxed
+  objects lent `sink` are dropped by the caller.
 - Box drops do not run when a `Fail` leaves the function (acyclic functions
   too): a box owned at a failing call is not freed. Sequences already drop on that path (`seq_drop_exit`).
 - Bounds-check hoisting skips loops in functions with Box drops.
