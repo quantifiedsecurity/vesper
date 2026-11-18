@@ -156,17 +156,27 @@ fn stack_rejects_recursion_and_budgets_and_accepts_a_bounded_root() {
         "tight.json",
         r#"{"schema":"vesper.native-verifiers/1","stack":{"roots":{"ct_main":8}}}"#,
     );
+    let policy = tight.to_str().unwrap();
     for target in TARGETS {
-        let (o, _) = emit(
-            &temp,
-            "ct_main",
-            target,
-            &["--verify-stack", "--verify-policy", tight.to_str().unwrap()],
-        );
-        let t = text(&o);
-        assert!(!o.status.success(), "{t}");
-        assert!(t.contains("silicon.stack.budget_exceeded"), "{t}");
-        assert!(t.contains("(exceeded) via ct_main -> select"), "{t}");
+        // Unoptimized objects keep every call, so the path names the callee.
+        // Optimized objects inline `select` into `ct_main` (#959) and the
+        // verifier budgets the frame that ships.
+        for (flags, path) in [
+            (
+                &["--verify-stack", "--verify-policy", policy, "--no-opt"][..],
+                "(exceeded) via ct_main -> select",
+            ),
+            (
+                &["--verify-stack", "--verify-policy", policy][..],
+                "(exceeded) via ct_main\n",
+            ),
+        ] {
+            let (o, _) = emit(&temp, "ct_main", target, flags);
+            let t = text(&o);
+            assert!(!o.status.success(), "{t}");
+            assert!(t.contains("silicon.stack.budget_exceeded"), "{t}");
+            assert!(t.contains(path), "{flags:?}: {t}");
+        }
     }
     let roomy = temp.policy(
         "roomy.json",
@@ -242,6 +252,29 @@ fn realtime_rejects_recursion_and_undeclared_imports_and_accepts_a_confined_root
         ],
         "realtime",
     );
+    // Effects declared for a helper still count once the optimized build
+    // inlines it into the root (#959), and with `--no-opt` through the call.
+    let alloc = temp.policy(
+        "rt-alloc.json",
+        r#"{"schema":"vesper.native-verifiers/1","realtime":{"roots":{"clean_main":null},"effects":{"forward":["Alloc"]}}}"#,
+    );
+    for no_opt in [false, true] {
+        let mut flags = vec![
+            "--verify-realtime",
+            "--verify-policy",
+            alloc.to_str().unwrap(),
+        ];
+        if no_opt {
+            flags.push("--no-opt");
+        }
+        rejects(
+            &temp,
+            "clean_main",
+            &flags,
+            "realtime/rt-forbidden-effect",
+            "clean_main",
+        );
+    }
 }
 
 #[test]

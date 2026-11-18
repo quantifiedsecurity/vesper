@@ -129,7 +129,7 @@ impl Pipe {
     }
 
     fn reach_probe_bw(&mut self) {
-        assert!(self.run_until(|b| b.bbr_state.is_probe_bw(), 5_000 * MS));
+        assert!(self.run_until(|b| b.fields().bbr_state.is_probe_bw(), 5_000 * MS));
     }
 }
 
@@ -200,7 +200,7 @@ fn rate_sample_is_delivered_over_interval() {
 #[test]
 fn full_pipe_detector_needs_three_rounds_without_25pct_growth() {
     let mut b = Bbrv3::new(BbrConfig::quic(MSS), 0).unwrap();
-    b.round_start = true;
+    b.fields_mut().round_start = true;
     for (rate, count, reached) in [
         (100, 0, false),
         (124, 1, false), // < 1.25x: no growth
@@ -209,29 +209,29 @@ fn full_pipe_detector_needs_three_rounds_without_25pct_growth() {
         (150, 2, false),
         (156, 3, true),
     ] {
-        b.rs.delivery_rate = rate;
+        b.fields_mut().rs.delivery_rate = rate;
         b.check_full_bw_reached();
         assert_eq!(
-            (b.full_bw_count, b.full_bw_reached),
+            (b.fields().full_bw_count, b.fields().full_bw_reached),
             (count, reached),
             "rate {rate}"
         );
     }
     // App-limited samples and non-round-start ACKs are ignored.
     let mut c = Bbrv3::new(BbrConfig::quic(MSS), 0).unwrap();
-    c.round_start = true;
-    c.rs.delivery_rate = 10;
+    c.fields_mut().round_start = true;
+    c.fields_mut().rs.delivery_rate = 10;
     c.check_full_bw_reached();
-    c.rs.is_app_limited = true;
+    c.fields_mut().rs.is_app_limited = true;
     for _ in 0..5 {
         c.check_full_bw_reached();
     }
-    c.rs.is_app_limited = false;
-    c.round_start = false;
+    c.fields_mut().rs.is_app_limited = false;
+    c.fields_mut().round_start = false;
     for _ in 0..5 {
         c.check_full_bw_reached();
     }
-    assert!(!c.full_bw_reached);
+    assert!(!c.fields().full_bw_reached);
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn startup_to_drain_to_probe_bw_on_bandwidth_plateau() {
     assert_eq!(p.bbr.state(), BbrState::Drain);
     assert!(p.bbr.full_bw_reached());
     assert_eq!(p.bbr.pacing_gain(), DRAIN_PACING_GAIN);
-    assert_eq!(p.bbr.undo_state, None, "plateau exit, not loss");
+    assert_eq!(p.bbr.fields().undo_state, None, "plateau exit, not loss");
     let drain_round = p.bbr.round_count();
     assert!(p.run_until(|b| b.state() != BbrState::Drain, 2_000 * MS));
     assert!(p.bbr.state().is_probe_bw());
@@ -256,7 +256,7 @@ fn drain_exits_after_three_rounds_even_if_inflight_stays_high() {
     for _ in 0..200 {
         p.send(false);
     }
-    let start = p.bbr.drain_start_round;
+    let start = p.bbr.fields().drain_start_round;
     while p.bbr.state() == BbrState::Drain {
         p.ack_next();
         p.send(false);
@@ -298,7 +298,7 @@ fn probe_bw_cycle_down_cruise_refill_up_down() {
         refill_round + 1,
         "REFILL lasts one round"
     );
-    assert!(p.bbr.check_probe_loss);
+    assert!(p.bbr.fields().check_probe_loss);
     assert_eq!(
         (p.bbr.pacing_gain(), p.bbr.cwnd_gain()),
         (PROBE_UP_PACING_GAIN, PROBE_UP_CWND_GAIN)
@@ -306,7 +306,7 @@ fn probe_bw_cycle_down_cruise_refill_up_down() {
 
     assert!(p.run_until(|b| b.state() != BbrState::ProbeBwUp, 20_000 * MS));
     assert_eq!(p.bbr.state(), BbrState::ProbeBwDown);
-    assert!(!p.bbr.prev_probe_too_high, "plateau exit from UP");
+    assert!(!p.bbr.fields().prev_probe_too_high, "plateau exit from UP");
     // One round after leaving UP the bw filter advances a cycle.
     let cycles = p.bbr.cycle_count();
     assert!(p.run_until(|b| b.cycle_count() > cycles, 20_000 * MS));
@@ -316,18 +316,22 @@ fn probe_bw_cycle_down_cruise_refill_up_down() {
 fn probe_rtt_entered_after_min_rtt_window_and_exits_to_cruise() {
     let mut p = Pipe::new(RATE, RTT);
     p.reach_probe_bw();
-    let stamp = p.bbr.min_rtt_stamp_ns;
-    let saved_cwnd = p.bbr.cwnd;
+    let stamp = p.bbr.fields().min_rtt_stamp_ns;
+    let saved_cwnd = p.bbr.fields().cwnd;
     assert!(p.run_until(|b| b.state() == BbrState::ProbeRtt, 20_000 * MS));
     assert!(p.now > stamp + MIN_RTT_FILTER_LEN_NS);
     assert_eq!(p.bbr.cwnd_gain(), PROBE_RTT_CWND_GAIN);
     assert_eq!(p.bbr.pacing_gain(), UNIT_PACING_GAIN);
-    assert!(p.bbr.prior_cwnd >= saved_cwnd.min(p.bbr.prior_cwnd));
+    assert!(p.bbr.fields().prior_cwnd >= saved_cwnd.min(p.bbr.fields().prior_cwnd));
     let entered = p.now;
     assert!(p.run_until(|b| b.state() != BbrState::ProbeRtt, 30_000 * MS));
     assert!(p.now - entered >= PROBE_RTT_DURATION_NS);
     assert_eq!(p.bbr.state(), BbrState::ProbeBwCruise);
-    assert_eq!(p.bbr.min_rtt_stamp_ns, p.now, "next ProbeRTT scheduled");
+    assert_eq!(
+        p.bbr.fields().min_rtt_stamp_ns,
+        p.now,
+        "next ProbeRTT scheduled"
+    );
     assert_eq!(p.bbr.inflight_lo(), None, "short-term model reset");
 }
 
@@ -338,15 +342,15 @@ fn probe_rtt_bounds_cwnd_to_half_bdp() {
     assert!(p.run_until(|b| b.state() == BbrState::ProbeRtt, 20_000 * MS));
     p.step();
     let bound = p.bbr.probe_rtt_cwnd_bound();
-    assert!(p.bbr.cwnd <= bound);
+    assert!(p.bbr.fields().cwnd <= bound);
     assert!(bound <= p.bbr.bdp_bytes() / 2 + 4 * MSS as u64);
 }
 
 #[test]
 fn probe_rtt_exits_to_startup_if_pipe_never_filled() {
     let mut b = Bbrv3::new(BbrConfig::quic(MSS), 0).unwrap();
-    b.bbr_state = BbrState::ProbeRtt;
-    b.probe_rtt_done_stamp_ns = Some(100);
+    b.fields_mut().bbr_state = BbrState::ProbeRtt;
+    b.fields_mut().probe_rtt_done_stamp_ns = Some(100);
     b.check_probe_rtt_done(101);
     assert_eq!(b.state(), BbrState::Startup);
 }
@@ -375,9 +379,9 @@ fn startup_exits_on_high_loss_and_spurious_undo_restores_startup() {
     // ACK until the loss round ends: CheckStartupHighLoss fires.
     assert!(p.run_until(|b| b.state() != BbrState::Startup, 2_000 * MS));
     assert_eq!(p.bbr.state(), BbrState::Drain);
-    assert_eq!(p.bbr.undo_state, Some(BbrState::Startup));
+    assert_eq!(p.bbr.fields().undo_state, Some(BbrState::Startup));
     let hi = p.bbr.inflight_hi().expect("inflight_hi from loss");
-    assert!(hi >= p.bbr.inflight_latest.min(hi));
+    assert!(hi >= p.bbr.fields().inflight_latest.min(hi));
 
     p.bbr.on_spurious_loss_detected(p.now).unwrap();
     assert_eq!(p.bbr.state(), BbrState::Startup);
@@ -404,7 +408,7 @@ fn startup_ignores_too_few_loss_events_with_selective_acks() {
     }
     let r = p.bbr.round_count();
     assert!(p.run_until(|b| b.round_count() >= r + 2, 2_000 * MS));
-    assert!(p.bbr.undo_state != Some(BbrState::Startup));
+    assert!(p.bbr.fields().undo_state != Some(BbrState::Startup));
 }
 
 #[test]
@@ -424,7 +428,7 @@ fn without_selective_acks_any_recovery_loss_exits_startup() {
     }
     p.lose_next();
     assert!(p.run_until(|b| b.state() != BbrState::Startup, 2_000 * MS));
-    assert_eq!(p.bbr.undo_state, Some(BbrState::Startup));
+    assert_eq!(p.bbr.fields().undo_state, Some(BbrState::Startup));
 }
 
 fn into_probe_up(p: &mut Pipe) {
@@ -449,9 +453,9 @@ fn loss_above_threshold_in_probe_up_sets_inflight_hi_and_goes_down() {
         }
     }
     assert_eq!(p.bbr.state(), BbrState::ProbeBwDown);
-    assert!(p.bbr.prev_probe_too_high);
-    assert!(!p.bbr.check_probe_loss, "react once per probe");
-    assert_eq!(p.bbr.undo_state, Some(BbrState::ProbeBwUp));
+    assert!(p.bbr.fields().prev_probe_too_high);
+    assert!(!p.bbr.fields().check_probe_loss, "react once per probe");
+    assert_eq!(p.bbr.fields().undo_state, Some(BbrState::ProbeBwUp));
     let hi = p.bbr.inflight_hi().expect("set");
     assert!(hi >= mul_gain(target, BETA));
 
@@ -497,55 +501,55 @@ fn loss_while_cruising_cuts_short_term_model_by_beta_once_per_round() {
     assert!(p.run_until(|b| b.state() == BbrState::ProbeBwCruise, 20_000 * MS));
     let max_bw = p.bbr.max_bw();
     p.lose_next();
-    assert!(p.bbr.is_loss_in_round);
+    assert!(p.bbr.fields().is_loss_in_round);
     assert!(p.run_until(|b| b.bw_lo().is_some(), 5_000 * MS));
     let bw_lo = p.bbr.bw_lo().unwrap();
     // InitLowerBounds then LossLowerBounds: max(bw_latest, 0.7 * max_bw).
     assert!(bw_lo >= mul_gain(max_bw, BETA) && bw_lo <= max_bw);
     assert!(p.bbr.inflight_lo().is_some());
     assert!(p.bbr.bw() <= bw_lo);
-    assert!(!p.bbr.is_loss_in_round, "consumed at round end");
+    assert!(!p.bbr.fields().is_loss_in_round, "consumed at round end");
 }
 
 #[test]
 fn inflight_hi_grows_in_probe_up_when_cwnd_limited() {
     let mut b = Bbrv3::new(BbrConfig::quic(MSS), 0).unwrap();
-    b.bbr_state = BbrState::ProbeBwUp;
-    b.cwnd = 100_000;
-    b.inflight_longterm = 100_000;
-    b.is_cwnd_limited = true;
-    b.bw_probe_up_rounds = 0;
+    b.fields_mut().bbr_state = BbrState::ProbeBwUp;
+    b.fields_mut().cwnd = 100_000;
+    b.fields_mut().inflight_longterm = 100_000;
+    b.fields_mut().is_cwnd_limited = true;
+    b.fields_mut().bw_probe_up_rounds = 0;
     b.raise_inflight_longterm_slope();
-    assert_eq!(b.probe_up_acked_per_inc, 100_000);
-    b.rs.newly_acked = 250_000;
-    b.round_start = true;
+    assert_eq!(b.fields().probe_up_acked_per_inc, 100_000);
+    b.fields_mut().rs.newly_acked = 250_000;
+    b.fields_mut().round_start = true;
     b.probe_inflight_longterm_upward();
-    assert_eq!(b.inflight_longterm, 100_000 + 2 * 1200);
-    assert_eq!(b.bw_probe_up_acked, 50_000);
+    assert_eq!(b.fields().inflight_longterm, 100_000 + 2 * 1200);
+    assert_eq!(b.fields().bw_probe_up_acked, 50_000);
     // Slope doubles each round: per-increment volume halves.
-    assert_eq!(b.probe_up_acked_per_inc, 50_000);
+    assert_eq!(b.fields().probe_up_acked_per_inc, 50_000);
     // Not cwnd-limited: no growth.
-    b.is_cwnd_limited = false;
+    b.fields_mut().is_cwnd_limited = false;
     b.probe_inflight_longterm_upward();
-    assert_eq!(b.inflight_longterm, 100_000 + 2 * 1200);
+    assert_eq!(b.fields().inflight_longterm, 100_000 + 2 * 1200);
 }
 
 #[test]
 fn precautionary_probe_stops_up_at_inflight_hi() {
     let mut b = Bbrv3::new(BbrConfig::quic(MSS), 0).unwrap();
-    b.prev_probe_too_high = true;
-    b.inflight_longterm = 10_000;
-    b.inflight = 10_000;
+    b.fields_mut().prev_probe_too_high = true;
+    b.fields_mut().inflight_longterm = 10_000;
+    b.fields_mut().inflight = 10_000;
     assert!(b.is_time_to_go_down());
-    assert!(b.prev_probe_precautionary);
+    assert!(b.fields().prev_probe_precautionary);
     // And if the precautionary probe saw no excess loss, the end of its
     // feedback round goes straight back to REFILL.
     let mut c = Bbrv3::new(BbrConfig::quic(MSS), 0).unwrap();
-    c.bbr_state = BbrState::ProbeBwDown;
-    c.is_bw_probe_stopping = true;
-    c.round_start = true;
-    c.prev_probe_precautionary = true;
-    c.prev_probe_too_high = false;
+    c.fields_mut().bbr_state = BbrState::ProbeBwDown;
+    c.fields_mut().is_bw_probe_stopping = true;
+    c.fields_mut().round_start = true;
+    c.fields_mut().prev_probe_precautionary = true;
+    c.fields_mut().prev_probe_too_high = false;
     assert!(c.adapt_long_term_model(0));
     assert_eq!(c.state(), BbrState::ProbeBwRefill);
 }
@@ -557,7 +561,7 @@ fn ecn_ce_above_threshold_in_probe_up_goes_down() {
     p.bbr.on_ecn_ce(p.now, 5).unwrap();
     p.ack_next();
     assert_eq!(p.bbr.state(), BbrState::ProbeBwDown);
-    assert!(p.bbr.prev_probe_too_high);
+    assert!(p.bbr.fields().prev_probe_too_high);
     assert!(p.bbr.inflight_hi().is_some());
     assert_eq!(p.bbr.lost_bytes(), 0, "CE is not loss");
 }
@@ -577,7 +581,7 @@ fn persistent_congestion_collapses_cwnd_then_floors_at_min_pipe() {
     p.reach_probe_bw();
     let inflight = p.bbr.bytes_in_flight();
     p.bbr.on_persistent_congestion(p.now).unwrap();
-    assert_eq!(p.bbr.cwnd, inflight + MSS as u64);
+    assert_eq!(p.bbr.fields().cwnd, inflight + MSS as u64);
     assert!(p.bbr.in_recovery());
     // Losing everything outstanding and ACKing new data restores cwnd to
     // at least the pipelining floor and, on recovery exit, the saved cwnd.
@@ -586,7 +590,7 @@ fn persistent_congestion_collapses_cwnd_then_floors_at_min_pipe() {
     }
     p.send(false);
     p.ack_next();
-    assert!(p.bbr.cwnd >= 4 * MSS as u64);
+    assert!(p.bbr.fields().cwnd >= 4 * MSS as u64);
     assert!(!p.bbr.in_recovery());
 }
 
@@ -618,7 +622,7 @@ fn app_limited_samples_do_not_lower_max_bw_and_marker_clears() {
         p.ack_next();
     }
     // Once delivery passes the marker, it clears.
-    p.bbr.app_limited = p.bbr.delivered + 1;
+    p.bbr.fields_mut().app_limited = p.bbr.fields().delivered + 1;
     p.send(true);
     p.ack_next();
     assert!(!p.bbr.is_app_limited());
@@ -641,11 +645,11 @@ fn inflight_at_loss_solves_for_the_threshold_crossing() {
 #[test]
 fn target_cwnd_bytes_respects_clamp() {
     let mut b = Bbrv3::new(BbrConfig::quic(MSS), 0).unwrap();
-    b.cwnd = 1000;
+    b.fields_mut().cwnd = 1000;
     assert_eq!(b.target_cwnd_bytes(MSS), 4800);
-    b.cwnd = 1_000_000;
+    b.fields_mut().cwnd = 1_000_000;
     assert_eq!(b.target_cwnd_bytes(MSS), 1_000_000);
-    b.inflight_longterm = 60_000;
+    b.fields_mut().inflight_longterm = 60_000;
     assert_eq!(b.target_cwnd_bytes(MSS), 60_000);
 }
 
@@ -734,7 +738,7 @@ fn rejected_inputs_leave_state_unchanged() {
         Err(BbrError::CwndFull { .. })
     ));
     assert_eq!(before, format!("{:?}", q.bbr));
-    assert!(q.bbr.bytes_in_flight() < q.bbr.cwnd + MSS as u64);
+    assert!(q.bbr.bytes_in_flight() < q.bbr.fields().cwnd + MSS as u64);
 }
 
 #[test]
@@ -821,7 +825,7 @@ fn ce_only_congestion_can_exit_startup() {
         p.ack_next();
     }
     assert!(!p.bbr.in_recovery());
-    assert_eq!(p.bbr.undo_state, Some(BbrState::Startup));
+    assert_eq!(p.bbr.fields().undo_state, Some(BbrState::Startup));
     assert!(p.bbr.full_bw_reached());
     assert_ne!(p.bbr.state(), BbrState::Startup);
     assert!(p.bbr.inflight_hi().is_some());

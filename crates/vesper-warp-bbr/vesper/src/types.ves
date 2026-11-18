@@ -10,13 +10,19 @@
 // arithmetic: volumes in bytes, rates in bytes per second, times in caller-
 // supplied virtual nanoseconds, gains per mille (1000 means 1.0). The
 // draft's "Infinity" is 18446744073709551615 (`u64::MAX`). Products the Rust
-// code computed in `u128` use the 64x64 -> 128 helpers of part 2 and saturate
-// to `u64::MAX`; differences of counters saturate at 0.
+// code computed in `u128` use the full product `mul_wide` and the helpers of
+// part 2, and saturate to `u64::MAX`; differences of counters saturate at 0.
 //
-// Fail cannot cross an inout parameter, so every entry point that can
-// reject its input returns `Result[.., BbrFault]` as a value and checks
-// everything before it changes the state: a rejected call leaves the
-// controller unchanged.
+// Every entry point that can reject its input raises `Fail[BbrFault]`
+// (the binding returns it as `Result<_, BbrFault>`) and checks everything
+// before it changes the state. A failure keeps the writes made to an
+// `inout` parameter before it, and there are none: a rejected call leaves
+// the controller unchanged.
+//
+// Export ABI v3 (#934): the Rust crate keeps `repr::Bbrv3`, the binding's
+// mirror of `Bbrv3`, as its storage in the Vesper build and lends it to
+// every call in place.
+// @export abi 3
 
 // ---------------------------------------------------------------------
 // Types shared with the Rust crate (same names, fields and variants).
