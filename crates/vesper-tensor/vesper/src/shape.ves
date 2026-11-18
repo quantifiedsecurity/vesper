@@ -1,0 +1,138 @@
+// Module shape of @vesper/tensor (see lib.ves): the dimension planner's
+// normal form (src/shape.rs `Dimensions::normalize`) and the GQA head maps.
+// The Rust wrapper keeps the arena's names, owner tags and limits; it lends
+// the arena here as flat tables of `u64` words:
+// - `nodes`: three words per node: kind (0 constant, 1 symbol, 2 product),
+//   then the constant, or the symbol's index, or the two factor nodes.
+// - `bound`: two words per symbol: bound (0 or 1) and its value.
+// - `ranks`: each symbol's position in name order, so sorting ranks sorts
+//   names.
+// - `work`: four zeroed words per node up to `id`: needed, coefficient,
+//   factor count and path count.
+//
+// The Rust build copies and sorts each product's factor list. Here a node's
+// factors are counted, not listed: the forward pass checks every needed
+// product's coefficient and factor count in node order, as the Rust build
+// does, then a backward pass counts the paths from `id` to each unbound
+// symbol, and the symbol is listed once per path.
+use self::num::{
+    u64_zero
+};
+
+fn max_u64() -> u64 {
+    18446744073709551615
+}
+
+// Whether `a * b` fits in `u64`.
+fn fits(a: u64, b: u64) -> bool eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    a == 0 || b <= max_u64() / a
+}
+
+// The normal form of node `id`: writes the coefficient, the factor count and
+// the factors' ranks in order to `out`. Returns 0, else 1 Overflow or 2 when
+// a product has more than `max_factors` factors.
+pub fn normalize(
+    in nodes: Slice[u64],
+    id: u64,
+    in bound: Slice[u64],
+    in ranks: Slice[u64],
+    max_factors: u64,
+    inout work: Slice[u64],
+    inout out: Slice[u64]
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let n = id + 1;
+    work.set(4 * id, 1);
+    for k in u64_zero()..n {
+        let i = id - k;
+        if work[4 * i] == 1 && nodes[3 * i] == 2 {
+            let a = nodes[3 * i + 1];
+            let b = nodes[3 * i + 2];
+            work.set(4 * a, 1);
+            work.set(4 * b, 1);
+        }
+    }
+    for i in u64_zero()..n {
+        if work[4 * i] == 1 {
+            let kind = nodes[3 * i];
+            let x = nodes[3 * i + 1];
+            if kind == 0 {
+                work.set(4 * i + 1, x);
+            } else if kind == 1 {
+                if bound[2 * x] == 1 {
+                    let value = bound[2 * x + 1];
+                    work.set(4 * i + 1, value);
+                } else {
+                    work.set(4 * i + 1, 1);
+                    work.set(4 * i + 2, 1);
+                }
+            } else {
+                let y = nodes[3 * i + 2];
+                let ca = work[4 * x + 1];
+                let cb = work[4 * y + 1];
+                if !fits(ca, cb) {
+                    return 1;
+                }
+                let count = work[4 * x + 2] + work[4 * y + 2];
+                if count > max_factors {
+                    return 2;
+                }
+                work.set(4 * i + 1, ca * cb);
+                work.set(4 * i + 2, count);
+            }
+        }
+    }
+    // Paths from `id`, through nodes with factors only: each such node's
+    // path count times its factor count is at most `id`'s factor count.
+    work.set(4 * id + 3, 1);
+    for k in u64_zero()..n {
+        let i = id - k;
+        if work[4 * i] == 1 && work[4 * i + 2] > 0 && nodes[3 * i] == 2 {
+            let paths = work[4 * i + 3];
+            let a = nodes[3 * i + 1];
+            let b = nodes[3 * i + 2];
+            if work[4 * a + 2] > 0 {
+                let pa = work[4 * a + 3] + paths;
+                work.set(4 * a + 3, pa);
+            }
+            if work[4 * b + 2] > 0 {
+                let pb = work[4 * b + 3] + paths;
+                work.set(4 * b + 3, pb);
+            }
+        }
+    }
+    let total = work[4 * id + 2];
+    let mut at: u64 = 0;
+    for i in u64_zero()..n {
+        if work[4 * i] == 1 && nodes[3 * i] == 1 && work[4 * i + 2] == 1 {
+            let rank = ranks[nodes[3 * i + 1]];
+            for r in u64_zero()..work[4 * i + 3] {
+                out.set(2 + at + r, rank);
+            }
+            at = at + work[4 * i + 3];
+        }
+    }
+    // Insertion sort: at most `max_factors` (128) ranks.
+    for j in u64_zero()..total {
+        let v = out[2 + j];
+        let mut p = j;
+        for q in u64_zero()..j {
+            if p > 0 && out[2 + p - 1] > v {
+                let w = out[2 + p - 1];
+                out.set(2 + p, w);
+                p = p - 1;
+            }
+        }
+        out.set(2 + p, v);
+    }
+    out.set(0, work[4 * id + 1]);
+    out.set(1, total);
+    0
+}
+
+// The query heads per K/V head, or 0 for an invalid ratio.
+pub fn gqa_ratio(query_heads: u64, kv_heads: u64) -> u64 eff [Fail[RuntimeError]] {
+    if query_heads == 0 || kv_heads == 0 || query_heads % kv_heads != 0 {
+        return 0;
+    }
+    query_heads / kv_heads
+}

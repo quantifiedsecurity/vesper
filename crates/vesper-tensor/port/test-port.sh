@@ -33,5 +33,6 @@ expect tokenizer_sampling rng_matches_run_c_xorshift \
     sampling_follows_the_distribution_and_the_nucleus encoder_matches_run_c_and_round_trips
 expect inference_ops rope_matches_f64_rotation_and_rejects_odd_widths silu_swiglu_softmax_argmax
 expect abba both_builds_encode_the_same_prompt \
-    both_builds_read_the_same_safetensors_headers both_builds_read_the_same_gguf_files
+    both_builds_read_the_same_safetensors_headers both_builds_read_the_same_gguf_files \
+    both_builds_run_the_same_kv_scripts both_builds_plan_the_same_shapes
 echo "divergent vesper-tensor port detected (one failing test per ported module)"

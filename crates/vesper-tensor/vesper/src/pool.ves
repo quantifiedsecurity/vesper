@@ -1,0 +1,505 @@
+// Module pool of @vesper/tensor (see lib.ves): the paged K/V pool's
+// bookkeeping and byte moves (src/kv.rs). The Rust wrapper owns every buffer
+// and lends it here; the pool's identity check (`ForeignOwner`) stays Rust.
+//
+// Layouts, all `u64` words:
+// - `cfg`: heads, head_dim, pages, max_sequences, max_tokens_per_sequence,
+//   token_bytes, page_bytes, page references per slot (`refs`).
+// - `pages`: four words per page: owned (0 or 1), owner slot, owner
+//   generation, page generation.
+// - `slots`: five words per slot: generation, active (0 or 1), epoch,
+//   tokens, leased page count.
+// - `leases`: `2 * refs` words per slot, one `(page, generation)` pair per
+//   leased page in order.
+//
+// Every call returns a code: 0 on success, else 1 Overflow, 2 Position, 3
+// TokenLimit, 4 StaleGeneration, 5 OutOfPages, 6 GenerationExhausted, 7
+// SequenceLimit, 8 StaleCheckpoint, 9 Shape, 10 Format, 11 InvalidConfig, 12
+// Budget, 13 ForeignOwner. Results go to `out`. A failed call changes nothing.
+use self::num::{
+    u64_zero
+};
+
+fn max_u64() -> u64 {
+    18446744073709551615
+}
+
+// Whether `a * b` fits in `u64`.
+fn fits(a: u64, b: u64) -> bool eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    a == 0 || b <= max_u64() / a
+}
+
+// Page size in tokens.
+fn tpp() -> u64 {
+    16
+}
+
+// The layout of a pool for `config` (heads, head_dim, pages, max_sequences,
+// max_tokens_per_sequence, max_bytes, element bytes): writes token_bytes,
+// page_bytes, total bytes and refs to `out`.
+pub fn kv_layout(in config: Slice[u64], inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let heads = config[0];
+    let head_dim = config[1];
+    let pages = config[2];
+    let sequences = config[3];
+    let tokens = config[4];
+    let max_bytes = config[5];
+    let element = config[6];
+    if heads
+        == 0
+        || head_dim
+        == 0
+        || pages
+        == 0
+        || pages
+        > 4096
+        || sequences
+        == 0
+        || sequences
+        > 1024
+        || tokens
+        == 0
+        || tokens
+        > 65536
+        || max_bytes
+        == 0
+        || max_bytes
+        > 67108864 {
+        return 11;
+    }
+    // Checked products, as the Rust build's `checked_mul`.
+    if !fits(heads, head_dim) {
+        return 1;
+    }
+    let elements = heads * head_dim;
+    if !fits(elements, element) {
+        return 1;
+    }
+    let token_bytes = elements * element;
+    if !fits(token_bytes, 2 * tpp()) {
+        return 1;
+    }
+    let page_bytes = token_bytes * tpp() * 2;
+    if !fits(page_bytes, pages) {
+        return 1;
+    }
+    let bytes = page_bytes * pages;
+    if bytes > max_bytes {
+        return 12;
+    }
+    if tokens > pages * tpp() {
+        return 11;
+    }
+    let refs = (tokens + tpp() - 1) / tpp();
+    if refs * sequences > 65536 {
+        return 12;
+    }
+    out.set(0, token_bytes);
+    out.set(1, page_bytes);
+    out.set(2, bytes);
+    out.set(3, refs);
+    0
+}
+
+// Whether `(slot, generation)` names an active sequence: 0 or 4.
+fn state_code(in slots: Slice[u64], slot: u64, generation: u64)
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    if 5 * slot + 5 > slots.len() {
+        return 4;
+    }
+    if slots[5 * slot + 1] == 0 || slots[5 * slot] != generation {
+        return 4;
+    }
+    0
+}
+
+// Whether lease `(page, page_generation)` is held by `(slot, generation)`.
+fn lease_ok(in pages: Slice[u64], slot: u64, generation: u64, page: u64, page_generation: u64)
+    -> bool eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    if 4 * page + 4 > pages.len() {
+        return false;
+    }
+    pages[4 * page]
+        == 1
+        && pages[4 * page + 1]
+        == slot
+        && pages[4 * page + 2]
+        == generation
+        && pages[4 * page + 3]
+        == page_generation
+}
+
+fn validate_pages(
+    in pages: Slice[u64],
+    in slots: Slice[u64],
+    in leases: Slice[u64],
+    refs: u64,
+    slot: u64,
+    generation: u64
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let count = slots[5 * slot + 4];
+    let base = 2 * refs * slot;
+    for i in u64_zero()..count {
+        if !lease_ok(in pages, slot, generation, leases[base + 2 * i], leases[base + 2 * i + 1]) {
+            return 4;
+        }
+    }
+    0
+}
+
+// The state check alone (`len`, `page_count`, and the start of the other
+// calls): writes tokens and the leased page count.
+pub fn kv_len(in slots: Slice[u64], slot: u64, generation: u64, inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let code = state_code(in slots, slot, generation);
+    if code != 0 {
+        return code;
+    }
+    out.set(0, slots[5 * slot + 3]);
+    out.set(1, slots[5 * slot + 4]);
+    0
+}
+
+// Writes active sequences and allocated pages.
+pub fn kv_stats(in pages: Slice[u64], in slots: Slice[u64], inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let mut active: u64 = 0;
+    for s in u64_zero()..slots.len() / 5 {
+        if slots[5 * s + 1] == 1 {
+            active = active + 1;
+        }
+    }
+    let mut allocated: u64 = 0;
+    for p in u64_zero()..pages.len() / 4 {
+        if pages[4 * p] == 1 {
+            allocated = allocated + 1;
+        }
+    }
+    out.set(0, active);
+    out.set(1, allocated);
+    0
+}
+
+// Starts a sequence in the first inactive slot whose generation can grow:
+// writes its slot and generation.
+pub fn kv_begin(inout slots: Slice[u64], inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let n = slots.len() / 5;
+    let mut any_inactive = false;
+    for s in u64_zero()..n {
+        if slots[5 * s + 1] == 0 {
+            any_inactive = true;
+            if slots[5 * s] < max_u64() {
+                let generation = slots[5 * s] + 1;
+                slots.set(5 * s, generation);
+                slots.set(5 * s + 1, 1);
+                slots.set(5 * s + 2, 0);
+                slots.set(5 * s + 3, 0);
+                out.set(0, s);
+                out.set(1, generation);
+                return 0;
+            }
+        }
+    }
+    if any_inactive {
+        6
+    } else {
+        7
+    }
+}
+
+fn zero_view(inout view: Slice[u8]) {
+    view.fill(0);
+}
+
+fn zero(inout storage: Slice[u8], start: u64, end: u64) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    zero_view(inout storage[start..end]);
+}
+
+// Appends the token at `position` (the current length). `shape_ok` and
+// `format_ok` are the wrapper's step checks, reported after the state check
+// as in the Rust build. `key` and `value` are the token's bytes, or, with
+// `words` set, its f32 elements as bits, stored little-endian.
+pub fn kv_append(
+    inout storage: Slice[u8],
+    inout pages: Slice[u64],
+    inout slots: Slice[u64],
+    inout leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64,
+    position: u64,
+    format_ok: bool,
+    shape_ok: bool,
+    in key: Slice[u8],
+    in value: Slice[u8]
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let code = state_code(in slots, slot, generation);
+    if code != 0 {
+        return code;
+    }
+    if !format_ok {
+        return 10;
+    }
+    if !shape_ok {
+        return 9;
+    }
+    let token_bytes = cfg[5];
+    let page_bytes = cfg[6];
+    let refs = cfg[7];
+    if key.len() != token_bytes || value.len() != token_bytes {
+        return 9;
+    }
+    // append_with: the same state check again, then the position.
+    let tokens = slots[5 * slot + 3];
+    if position != tokens {
+        return 2;
+    }
+    if position == max_u64() {
+        return 1;
+    }
+    let new_len = position + 1;
+    if new_len > cfg[4] {
+        return 3;
+    }
+    let checked = validate_pages(in pages, in slots, in leases, refs, slot, generation);
+    if checked != 0 {
+        return checked;
+    }
+    let count = slots[5 * slot + 4];
+    let base = 2 * refs * slot;
+    let new_page = position % tpp() == 0;
+    let mut page: u64 = 0;
+    let mut page_generation: u64 = 0;
+    if new_page {
+        let n = pages.len() / 4;
+        let mut found = false;
+        let mut any_free = false;
+        for p in u64_zero()..n {
+            if !found && pages[4 * p] == 0 {
+                any_free = true;
+                if pages[4 * p + 3] < max_u64() {
+                    found = true;
+                    page = p;
+                }
+            }
+        }
+        if !found {
+            return if any_free {
+                6
+            } else {
+                5
+            };
+        }
+        page_generation = pages[4 * page + 3] + 1;
+    } else {
+        if count == 0 {
+            return 4;
+        }
+        page = leases[base + 2 * (count - 1)];
+        page_generation = leases[base + 2 * (count - 1) + 1];
+    }
+    // No failure remains.
+    if new_page {
+        let start = page * page_bytes;
+        zero(inout storage, start, start + page_bytes);
+        pages.set(4 * page, 1);
+        pages.set(4 * page + 1, slot);
+        pages.set(4 * page + 2, generation);
+        pages.set(4 * page + 3, page_generation);
+        leases.set(base + 2 * count, page);
+        leases.set(base + 2 * count + 1, page_generation);
+        slots.set(5 * slot + 4, count + 1);
+    }
+    let start = page * page_bytes + (position % tpp()) * token_bytes;
+    storage.copy_from(start, in key);
+    storage.copy_from(start + tpp() * token_bytes, in value);
+    slots.set(5 * slot + 3, new_len);
+    0
+}
+
+// The byte offset of the key of token `position` (its value is one plane,
+// `16 * token_bytes`, later).
+pub fn kv_read(
+    in pages: Slice[u64],
+    in slots: Slice[u64],
+    in leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64,
+    position: u64,
+    inout out: Slice[u64]
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let code = state_code(in slots, slot, generation);
+    if code != 0 {
+        return code;
+    }
+    if position >= slots[5 * slot + 3] {
+        return 2;
+    }
+    let base = 2 * cfg[7] * slot + 2 * (position / tpp());
+    let page = leases[base];
+    if !lease_ok(in pages, slot, generation, page, leases[base + 1]) {
+        return 4;
+    }
+    out.set(0, page * cfg[6] + (position % tpp()) * cfg[5]);
+    0
+}
+
+// Leased page `index`: writes its first position, filled tokens and byte
+// offset.
+pub fn kv_read_page(
+    in pages: Slice[u64],
+    in slots: Slice[u64],
+    in leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64,
+    index: u64,
+    inout out: Slice[u64]
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let code = state_code(in slots, slot, generation);
+    if code != 0 {
+        return code;
+    }
+    if index >= slots[5 * slot + 4] {
+        return 2;
+    }
+    let base = 2 * cfg[7] * slot + 2 * index;
+    let page = leases[base];
+    if !lease_ok(in pages, slot, generation, page, leases[base + 1]) {
+        return 4;
+    }
+    let first = index * tpp();
+    let mut tokens = slots[5 * slot + 3] - first;
+    if tokens > tpp() {
+        tokens = tpp();
+    }
+    out.set(0, first);
+    out.set(1, tokens);
+    out.set(2, page * cfg[6]);
+    0
+}
+
+// Writes the epoch and token count a checkpoint records.
+pub fn kv_checkpoint(in slots: Slice[u64], slot: u64, generation: u64, inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let code = state_code(in slots, slot, generation);
+    if code != 0 {
+        return code;
+    }
+    if slots[5 * slot + 2] == max_u64() {
+        return 6;
+    }
+    out.set(0, slots[5 * slot + 2]);
+    out.set(1, slots[5 * slot + 3]);
+    0
+}
+
+// Frees and zeroes page `page`.
+fn clear_page(inout storage: Slice[u8], inout pages: Slice[u64], page_bytes: u64, page: u64) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    let start = page * page_bytes;
+    zero(inout storage, start, start + page_bytes);
+    pages.set(4 * page, 0);
+    pages.set(4 * page + 1, 0);
+    pages.set(4 * page + 2, 0);
+}
+
+// Rolls back to a checkpoint `(epoch, tokens)` of this sequence; the
+// wrapper checked that the checkpoint belongs to it (`same_owner`).
+pub fn kv_rollback(
+    inout storage: Slice[u8],
+    inout pages: Slice[u64],
+    inout slots: Slice[u64],
+    in leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64,
+    same_owner: bool,
+    epoch: u64,
+    tokens: u64
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let code = state_code(in slots, slot, generation);
+    if code != 0 {
+        return code;
+    }
+    if !same_owner {
+        return 13;
+    }
+    let current = slots[5 * slot + 2];
+    if epoch != current || tokens > slots[5 * slot + 3] {
+        return 8;
+    }
+    if current == max_u64() {
+        return 6;
+    }
+    let refs = cfg[7];
+    let checked = validate_pages(in pages, in slots, in leases, refs, slot, generation);
+    if checked != 0 {
+        return checked;
+    }
+    let token_bytes = cfg[5];
+    let page_bytes = cfg[6];
+    let keep = (tokens + tpp() - 1) / tpp();
+    let base = 2 * refs * slot;
+    let mut count = slots[5 * slot + 4];
+    loop {
+        if count <= keep {
+            break;
+        }
+        count = count - 1;
+        clear_page(inout storage, inout pages, page_bytes, leases[base + 2 * count]);
+    }
+    slots.set(5 * slot + 4, count);
+    let tail = tokens % tpp();
+    if tail != 0 {
+        let start = leases[base + 2 * (keep - 1)] * page_bytes;
+        let plane = tpp() * token_bytes;
+        zero(inout storage, start + tail * token_bytes, start + plane);
+        zero(inout storage, start + plane + tail * token_bytes, start + page_bytes);
+    }
+    slots.set(5 * slot + 3, tokens);
+    slots.set(5 * slot + 2, current + 1);
+    0
+}
+
+// Releases a sequence: frees and zeroes its pages and deactivates the slot.
+pub fn kv_release(
+    inout storage: Slice[u8],
+    inout pages: Slice[u64],
+    inout slots: Slice[u64],
+    in leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let code = state_code(in slots, slot, generation);
+    if code != 0 {
+        return code;
+    }
+    let refs = cfg[7];
+    let checked = validate_pages(in pages, in slots, in leases, refs, slot, generation);
+    if checked != 0 {
+        return checked;
+    }
+    let base = 2 * refs * slot;
+    let mut count = slots[5 * slot + 4];
+    loop {
+        if count == 0 {
+            break;
+        }
+        count = count - 1;
+        clear_page(inout storage, inout pages, cfg[6], leases[base + 2 * count]);
+    }
+    slots.set(5 * slot + 4, 0);
+    slots.set(5 * slot + 3, 0);
+    slots.set(5 * slot + 1, 0);
+    0
+}
