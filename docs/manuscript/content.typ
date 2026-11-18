@@ -71,7 +71,7 @@ The overview introduces four design goals and maps them to the eight parts below
     table.header([*Architectural Part*], [*Chapters*], [*Design Scope, Packages, and Host Crates*]),
     [*Part I: Language & Type Theory*],
     [#link(<part-1>)[Chapters 1--7]],
-    [PL foundations, proposed LL(2) grammar, $lambda_(upright("Vesper"))$ 4-axis `ModeVec` lattice, `@0` ghost linearity, `in`/`inout`/`out`/`sink` field & slice projections, liquid refinements, one-shot lexical & pomonoid-graded effects, guarded clocks, quotients, *Pact* traits (`vesper-pact`), and *Forge* WASI macros (`vesper-forge`).],
+    [PL foundations, proposed LL(2) grammar, $lambda_(upright("Vesper"))$ 4-axis `ModeVec` lattice, `@0` ghost linearity, `in`/`inout`/`out`/`sink` field & slice projections, liquid refinements, one-shot lexical & pomonoid-graded effects, guarded clocks, quotients, *Pact* traits (`vesper-pact`), and *Forge* `sugar` enforestation and WASI macros (`vesper-forge`).],
     [*Part II: Compiler, Proofs & Governance*],
     [#link(<part-2>)[Chapters 8--12]],
     [5-stage compiler & workspace (`vesper-syntax`, `vesper-hir`, `vesper-refine`, `vesper-mir-pcg`, `vesper-opt-egglog`, `vesper-codegen-clif`), *Lean 4 Proof Extractor* (`vesper-verify-lean`), *Verified Bootstrap & DDC* (`vesper-codegen-verified`), *Vesper Loom* (`vesper-loom-*`), and *SemVer Variance* (`vesper-semver`).],
@@ -102,7 +102,7 @@ The overview introduces four design goals and maps them to the eight parts below
 #chapter-deck[Language Foundations, Proposed Syntax, Ownership, Borrowing, Effects, and Abstraction]
 
 #_part-summary("Part I Architectural Scope")[
-  Part I introduces Vesper's proposed language and type theory. #link(<ch-1>)[Chapter 1] explains the design rationale, and #link(<ch-2>)[Chapter 2] sketches the surface grammar and its unresolved ambiguities. #link(<ch-3>)[Chapters 3]–#link(<ch-5>)[5] present ownership modes, ghost values, place projections, refinements, effects, clocks, and quotients. #link(<ch-fission>)[Chapter 6] proposes continuation fission and escrow custody for cancellation. #link(<ch-6>)[Chapter 7] describes traits in *Pact* and macros in *Forge*. The rules describe intended behavior; Appendix A states which fragments have mechanized proofs.
+  Part I introduces Vesper's proposed language and type theory. #link(<ch-1>)[Chapter 1] explains the design rationale, and #link(<ch-2>)[Chapter 2] sketches the surface grammar and its unresolved ambiguities. #link(<ch-3>)[Chapters 3]–#link(<ch-5>)[5] present ownership modes, ghost values, place projections, refinements, effects, clocks, and quotients. #link(<ch-fission>)[Chapter 6] proposes continuation fission and escrow custody for cancellation. #link(<ch-6>)[Chapter 7] describes traits in *Pact*, and import-free syntactic sugar (`sugar`) and macros in *Forge*. The rules describe intended behavior; Appendix A states which fragments have mechanized proofs.
 ]
 
 #figure(
@@ -116,7 +116,7 @@ The overview introduces four design goals and maps them to the eight parts below
     [#link(<ch-4>)[Chapter 4]], [Place Projections, Destinations, and Refinements], [`[T-Let]`, `[T-CallProj]`, `[T-CallSliceProj]`, `[T-OutSplitSlice]`, `[T-StrongUpdate]`, `[M-ContendStrip]`],
     [#link(<ch-5>)[Chapter 5]], [Lexical Effects, Resource Grades, and Quotients], [`[T-Perform]`, `[T-Handle]`, pomonoid budgets (`Region`, `Stack`, `ConstTime`), `Later[k, T]`, `quotient`],
     [#link(<ch-fission>)[Chapter 6]], [Continuation Fission, Escrow, and Reapers], [`[T-Let-Fission]`, additive continuations, `escrow`, quarantine budgets],
-    [#link(<ch-6>)[Chapter 7]], [Traits, Coherence, and Hygienic WASI Macros], [`trait`, canonical `impl` vs. named `model`, `[T-ModelBrand]`, `[T-MacroConfinement]`],
+    [#link(<ch-6>)[Chapter 7]], [Traits, Coherence, Sugar, and Hygienic WASI Macros], [`trait`, canonical `impl` vs. named `model`, `[T-ModelBrand]`, `sugar` enforestation (`[WF-SugarPass]`), `[T-MacroConfinement]`],
   ),
   kind: table,
 )
@@ -277,6 +277,7 @@ The following are design intentions; the productions and examples do not yet est
 + *Subset and Pattern Refinements Without Expression Collisions:* Subset refinement types begin with `'{' LowerIdent ':'` in type position (`{ v: u64 | v != 0 }`), which never collides with nominal, tuple, or function types; ergonomic range/pattern refinements use `'is'` (`u64 is 1..=4096`).
 + *Four-Mode Place Projections and Strong Update Arrows:* Parameter projections explicitly state `in` (default), `inout`, `out`, or `sink` over nested field trees (`inout broker.{index, metrics}`) or slice intervals (`out pkt[0..mid]`), with strong postcondition type transitions written `'~>'` (`inout v: Vec[T, @n] ~> Vec[T, @(n + 1)]`), distinct from function return `'->'`.
 + *Moded, Capability-Labeled, and Resource-Graded Effects:* Effect declarations specify whether handlers may abort (`effect Fail[E]`, binding `affine` continuations) or must resume (`linear effect Storage`, binding `linear` continuations), while `eff [...]` clauses attach optional lexical labels and `@` pomonoid resource grades (`eff [scratch: Region @ <= 64 * count, Stack @ <= 512 | r]`).
++ *Import-Free Phrase-Skeleton Slots for User Syntactic Sugar:* User-defined syntactic sugar (`sugar`, #link(<ch-6-sugar>)[Section 7.5]) extends surface notation without changing parser tables on `import`. Stage 1 parses three structured *Phrase Skeleton* slots whose two-token lookahead sets (`FIRST_2`) are meant to be disjoint from core expressions: (a) *clause, block-tail, and item forms* (`LowerIdent` followed by `let`, a pass-mode keyword, a literal, another identifier, or a spaced `'{'`, which avoids `PostfixOp`'s `'(' | '[' | '.' | '?'`), (b) *lexically tiered operators* (`'|>' | '|?>'` at pipeline precedence, and `.`-prefixed symbolic operators such as `.+`, `.*`, and `.==` that take their precedence from the glyph after the `.`), and (c) *tagged delimited literals* (a `TagIdent`, a `LowerIdent` written directly against its `'"'` or `'{'` with no space, distinct from `UpperIdent '{'` struct literals). The disambiguation rules that make these slots deterministic follow the grammar.
 
 === 2.2 Proposed Surface Grammar (Incomplete EBNF)
 <ch-2-2>
@@ -294,7 +295,9 @@ Attr           ::= '@' LowerIdent ( '(' AttrArgs? ')' )?
 
 Item           ::= Vis? ( StructDecl | EnumDecl | QuotientDecl | TypeAliasDecl
                         | EffectDecl | TraitDecl | ImplDecl | ModelDecl
-                        | MeasureDecl | MacroDecl | FnDecl ) ;
+                        | MeasureDecl | SugarDecl | MacroDecl | FnDecl )
+                 | ItemSugar ;
+ItemSugar      ::= LowerIdent PhraseHead* SugarGroup ;   (* `test "name" { ... }` *)
 Vis            ::= 'pub' ;
 
 (* ==================== 2. MODALITIES, GHOST & GENERIC BINDERS =========== *)
@@ -344,6 +347,22 @@ ModelDecl      ::= Vis? 'model' UpperIdent TypeParams? ':' Path 'for' Type
 
 MeasureDecl    ::= 'ghost' 'measure' LowerIdent TypeParams?
                    '(' 'in' LowerIdent ':' Type ')' '->' BaseType Block ;
+SugarDecl      ::= 'sugar' LowerIdent ':' SugarSort SugarEmits?
+                   '{' SugarRule+ '}' ;
+SugarSort      ::= 'stmt' | 'expr' | 'pat' | 'tag' | 'item'
+                 | 'infix' '(' CustomSym ',' PrecBand ',' Assoc ')' ;
+CustomSym      ::= '`' ( '|>' | '|?>' | DottedBinOp ) '`' ;
+PrecBand       ::= 'pipeline' | 'logical' | 'compare' | 'additive' | 'multiplicative' ;
+Assoc          ::= 'left' | 'right' | 'none' ;
+SugarEmits     ::= 'emits' EffClause ;
+SugarRule      ::= 'rule' '(' SugarAtom+ ')' '=>' Block ;
+SugarAtom      ::= LowerIdent | Keyword | Punct | SugarHole
+                 | '(' SugarAtom* ')' | '[' SugarAtom* ']' | '{' SugarAtom* '}' ;
+SugarHole      ::= HolePass? '$' LowerIdent ':' HoleSort
+                 | '$' '..' LowerIdent ':' ( 'stmts' | 'scope' | 'args' | 'items' | 'pats' )
+                 | '$' '(' SugarAtom+ ')' Punct? ( '*' | '+' ) ;   (* repetition *)
+HolePass       ::= 'in' | 'inout' | 'out' | 'sink' ;   (* omitted defaults to 'in' *)
+HoleSort       ::= 'ident' | 'pat' | 'ty' | 'expr' | 'place' | 'block' | 'scope' ;
 MacroDecl      ::= 'macro' LowerIdent '{' MacroRule+ '}' ;
 
 (* ==================== 4. FUNCTIONS, PROJECTIONS & STRONG UPDATES ======= *)
@@ -394,12 +413,21 @@ GradeExpr      ::= ( '<=' | '==' ) RefineExpr | 'exact' ;
 
 (* ==================== 6. STATEMENTS, EXPRESSIONS & HANDLERS ============ *)
 Block          ::= '{' Stmt* Expr? '}' ;
-Stmt           ::= LetStmt | UseModelStmt | Expr ';' ;
+Stmt           ::= LetStmt | UseModelStmt | TailSugarStmt | Expr ';' ;
 LetStmt        ::= 'let' GhostMod? 'mut'? Pat ( ':' Type )? '=' Expr ';' ;
+TailSugarStmt  ::= GhostMod? LowerIdent PhraseHead* ( SugarGroup ';'? | ';' ) ;
 UseModelStmt   ::= 'use' 'model' Path ';' ;
 
 Expr           ::= HandleExpr | MatchExpr | IfExpr | LoopExpr | ForExpr
-                 | ClosureExpr | ReturnExpr | BreakExpr | GhostExpr | AssignExpr ;
+                 | ClauseSugarExpr | ClosureExpr | ReturnExpr | BreakExpr
+                 | GhostExpr | AssignExpr ;
+ClauseSugarExpr ::= GhostMod? LowerIdent PhraseHead* SugarGroup
+                    ( SameLine HeadWord PhraseHead* SugarGroup )* ;
+SugarGroup     ::= '{' SugarToken* '}' ;      (* token tree, enforested in Stage 2 *)
+PhraseHead     ::= 'let' Pat '=' HeaderExpr | PassMode PostfixExpr
+                 | '(' ArgList? ')' | '[' SugarToken* ']' | HeadWord | HeaderExpr ;
+HeadWord       ::= LowerIdent | 'else' | 'model' | 'where' ;
+HeaderExpr     ::= Expr ;   (* parsed in header mode: stops before '{' and HeadWord *)
 
 HandleExpr     ::= 'handle' ( LowerIdent ':' )? Path TypeArgs?
                    ( 'state' Pat '=' Expr )? 'in' Block
@@ -407,8 +435,8 @@ HandleExpr     ::= 'handle' ( LowerIdent ':' )? Path TypeArgs?
 ReturnClause   ::= 'return' Pat '=>' Expr ;
 OpClause       ::= LowerIdent '(' PatList? ')' '=>' Expr ','? ;
 
-MatchExpr      ::= 'match' Expr '{' ( Pat '=>' Expr ','? )* '}' ;
-IfExpr         ::= 'if' Expr Block ( 'else' ( IfExpr | Block ) )? ;
+MatchExpr      ::= 'match' HeaderExpr '{' ( Pat '=>' Expr ','? )* '}' ;
+IfExpr         ::= 'if' HeaderExpr Block ( 'else' ( IfExpr | Block ) )? ;
 LoopExpr       ::= 'loop' Block ;
 ForExpr        ::= 'for' Pat 'in' RangeExpr Block ;
 RangeExpr      ::= BinaryExpr ( '..' | '..=' ) BinaryExpr ;
@@ -419,11 +447,14 @@ ClosureExpr    ::= ( '||' | '|' ClosureParams '|' ) ( '@' ModeSpec )?
 ClosureParams  ::= ( 'cap' LowerIdent | Param ) ( ',' ClosureParams )? ;
 GhostExpr      ::= 'ghost' PrimaryExpr ;
 
-AssignExpr     ::= BinaryExpr ( ( '=' | '+=' | '-=' | '|=' | '&=' ) Expr )? ;
-BinaryExpr     ::= UnaryExpr ( BinOp UnaryExpr )* ;
+AssignExpr     ::= PipeExpr ( ( '=' | '+=' | '-=' | '|=' | '&=' ) Expr )? ;
+PipeExpr       ::= BinaryExpr ( ( '|>' | '|?>' ) BinaryExpr )* ;
+BinaryExpr     ::= UnaryExpr ( ( BinOp | DottedBinOp ) UnaryExpr )* ;
 BinOp          ::= '||' | '&&' | '==' | '!=' | '<' | '<=' | '>' | '>='
                  | '|' | '^' | '&' | '<<' | '>>'      (* loosest to tightest, *)
                  | '+' | '-' | '*' | '/' | '%' ;      (* left-associative    *)
+DottedBinOp    ::= '.' ( '+' | '-' | '*' | '/' | '%' | '&' | '|' | '^'
+                       | '==' | '!=' | '<' | '>' ) SymbolTail? ;
 UnaryExpr      ::= ( '!' | '-' | '~' )? PostfixExpr ;
 PostfixExpr    ::= PrimaryExpr PostfixOp* ;
 PostfixOp      ::= '(' ArgList? ')'                    (* value or effect call *)
@@ -435,8 +466,10 @@ PostfixOp      ::= '(' ArgList? ')'                    (* value or effect call *
 ArgList        ::= Arg ( ',' Arg )* ','? ;
 Arg            ::= GhostMod? PassMode? Expr ;
 
-PrimaryExpr    ::= Literal | LowerIdent | '(' ExprList? ')' | Block
-                 | Path ( '{' FieldInitList? '}' )? ;
+PrimaryExpr    ::= Literal | TaggedDelimExpr | LowerIdent | '(' ExprList? ')'
+                 | Block | Path ( '{' FieldInitList? '}' )? ;
+TaggedDelimExpr ::= TagIdent ( StringLit | '{' SugarToken* '}' ) ;
+TagIdent       ::= LowerIdent ;   (* no trivia between it and the delimiter *)
 Path           ::= ( '@' LowerIdent ( '-' LowerIdent )* '/' LowerIdent '::' )?
                    UpperIdent ( '::' ( UpperIdent | LowerIdent ) )* ;
 
@@ -451,6 +484,19 @@ LowerIdent     ::= /[a-z_][A-Za-z0-9_]*/ ;
 ```
 
 *Loops and early exits.* `loop`, `for`, `break` and `return` are contextual keywords outside their statement positions, and a statement-position `loop`, `for`, `if` or `match` ending in `}` needs no `;`. `loop B` has the join of its `break` values as its type, or `Never` when it has no `break`; `for p in a..b B` and `a..=b` bind successive values of one integer type to the irrefutable pattern `p`, have type `()`, and accept `break` without a value only. The closed range leaves at its bound before incrementing, so `for b in 0..=255` over `u8` does not overflow. `return e` leaves the innermost function or closure, including from inside a handled block (skipping the handler's return clause), and is rejected inside handler clauses and region blocks (`E0213`). A linear value live at a `break` or `return` that would drop it is rejected (`E0302`), as is a linear value moved by one iteration and needed by the next (`E0312`). Assigning to a `let` binding, or passing it `inout`, requires `let mut` (`E0313`); parameters stay assignable, since `mut` is not part of parameter syntax. `for` over `Slice` and `ChunkSeq` waits for the port-readiness Slice lane.
+
+*Sugar disambiguation.* `sugar` declarations (#link(<ch-6-sugar>)[Section 7.5]) never add productions; every user form must fit `ItemSugar`, `TailSugarStmt`, `ClauseSugarExpr`, `PipeExpr`, `DottedBinOp`, or `TaggedDelimExpr`. `SugarToken` is any token except an unbalanced closing delimiter, and `SymbolTail` continues an operator glyph sequence. Eight rules make the choice between core syntax and a sugar slot deterministic, using only tokens and the lossless CST's trivia, never imports:
+
++ *Adjacent tags.* The lexer emits a `TagIdent` only when a `LowerIdent` touches a `'"'` or `'{'` with no whitespace or comment between them, as in `hex"dead beef"` or `bits{ ver: u4 = 4 }`. A spaced `name {` is never a tagged literal. Stylus never inserts or removes that space.
++ *Header mode.* The scrutinee of `match`, the condition of `if`, the range of `for`, and every `HeaderExpr` head of a sugar form parse in header mode: the expression ends before a `{` that follows a complete operand and before a `HeadWord`. A struct literal or clause sugar in those positions needs parentheses, as with Rust's restriction on struct literals in conditions. So `if ready { ... }`, `scratch tmp[256] { ... }`, and `decreases hi - lo { ... }` all end their header at the `{`, and `send (AppendReq { entry }) on sink ch;` parenthesizes its struct literal.
++ *Skeleton entry.* At an item or statement start, or where an expression starts, a `LowerIdent` (optionally after `ghost`) begins a skeleton when the next token is a spaced `{`, another identifier, a literal, `let`, `else`, or a pass-mode keyword; none of these can follow an identifier in core syntax. `ghost calc { ... }` is therefore a ghost `TailSugarStmt`, not a `GhostExpr`.
++ *Calls versus parenthesized heads.* `name(args)` is parsed as an argument list in either case. If the token after `)` is a spaced `{` or a skeleton-entry token, the form is a sugar head (`errdefer(e) { ... }`); otherwise it stays a call. So `x;` and `f(x);` remain expression statements without backtracking.
++ *Same-line continuation.* A continuation clause (`} else {`, `} on_error(e) {`, `} and {`) must start on the same line as the `}` it follows. A `HeadWord` on a new line after `}` starts a new statement. A statement-position sugar ending in `}` needs no `;`, like `loop` and `if`.
++ *Token-tree groups.* Stage 1 keeps every `SugarGroup` as a balanced token tree. Stage 2 re-parses it by the sort of the hole it binds (`$b:block` as a `Block`, `$( ... ),*` as a field or arm list), so `emplace out pkt { magic: 1, crc: c }` and `modify_reg inout r { .txe = 1 }` need no block-shaped contents. Stylus formats a group as a block when it parses as one, and as a token tree otherwise.
++ *No word operators.* A `LowerIdent` after a complete operand always ends a header; there are no infix word operators such as `x matches p`, because choosing them would require knowing which sugars are imported.
++ *Stage 2 classification.* Stage 2 resolves the skeleton's head word against in-scope `sugar` bindings. An unbound head raises `E0142` (`UnresolvedSugar`); a binding whose sort does not fit the slot (an `expr` sugar used as an item, or a `tag` sugar written spaced) raises `E0141` (`SugarSortMismatch`). Formatting and Chroma Tier 0 highlighting never depend on this step.
+
+With these rules every slot is chosen from at most two tokens after the head word plus the trivia flag on `TagIdent`, and the call case decides at the token after `)`. Inside a `PipeExpr` right-hand call, a bare `_` argument is the pipeline placeholder (`frame |> parse(_, in cfg)`); `_` is rejected as an expression elsewhere.
 
 *Integer kinds.* The ten integer `PrimType`s are distinct types with no implicit conversions; `usize` and `isize` are 64 bits wide on every target. Under the checked-arithmetic contract `vesper.arith.checked/1`, `+`, `-`, `*`, negation and signed `MIN / -1` raise `Fail[ArithOverflow]`, and division by zero raises `Fail[RuntimeError]`. `&`, `|`, `^` and prefix `~` are total; `a << n` and `a >> n` accept an amount `n` of any integer kind and raise `Fail[ArithOverflow]` unless `0 <= n < bits(a)` (`>>` is arithmetic on signed kinds). Conversions are explicit calls named after the target kind `k`: `widen_k` (accepted only when lossless), `narrow_k` (checked, `Fail[ArithOverflow]`) and `wrapping_k` (modulo `2^bits(k)`). `rotate_left`/`rotate_right` and the byte-order functions `to_le_bytes_k`, `to_be_bytes_k`, `from_le_bytes_k`, `from_be_bytes_k` (over tuples of `u8`) are total. The reserved function `mul_wide(a: u64, b: u64) -> (u64, u64)` is the total full product of two `u64` values as `(low, high)` words, `a * b = high * 2^64 + low`; a module cannot define a function of that name. The reserved bit functions, one per integer kind `k`, are total: `leading_zeros_k(x: k) -> u32`, `trailing_zeros_k(x: k) -> u32` and `count_ones_k(x: k) -> u32` count over the two's-complement bit pattern of `x` (the first two are `bits(k)` at zero), and `wrapping_shl_k(x: k, n: u32) -> k` and `wrapping_shr_k(x: k, n: u32) -> k` shift by `n mod bits(k)` (`wrapping_shr` is arithmetic on signed kinds); a module cannot define functions of those names.
 
@@ -1254,11 +1300,11 @@ The proposed lowering targets no additional overhead for functions without `escr
 + *Stage 5A — Dual-Target Landing Pads (`(resume_ip, reap_ip)`):* Each fissioned suspension descriptor emits a 16-byte pair `(resume_ip, reap_ip)` in `.rodata`. Invoking `k.resume(v, s)` jumps directly to `resume_ip`. Invoking `k.reap()` jumps to `reap_ip`, which executes synchronous `reap` blocks inline, enqueues `{ escrow_cell_ptr, async_reap_step_fn }` onto `PulseWorkerShard::reap_ring` in 4 instructions, and immediately returns the 64 KiB CPU fiber stack to the shard pool.
 + *SemVer Substitutability (#link(<ch-11-2>)[Section 12.2] Integration):* Adding a `reap` declaration to an existing `linear struct` (or lowering its `EscrowMem` / `IoReap` grade) is *SemVer Minor-compatible* ($I_(upright("new")) prec.curly.eq_(upright("pub")) I_(upright("old"))$), because every existing caller that manually consumed the obligation continues to typecheck unchanged while new callers gain `?` and `Cancel` composability; removing a `reap` declaration or raising its `EscrowMem` ceiling is *Major-breaking*.
 
-== 7. Vesper Pact and Forge: Traits, Coherence, and WASI Macros
+== 7. Vesper Pact and Forge: Traits, Coherence, Sugar, and WASI Macros
 <ch-6>
-#chapter-deck[Effect-Polymorphic Traits, Coherence, Named Models, and Hygienic Macros]
+#chapter-deck[Effect-Polymorphic Traits, Coherence, Named Models, Syntactic Sugar, and Hygienic Macros]
 
-*Vesper Pact* (`crates/vesper-pact`) describes trait polymorphism, while *Vesper Forge* (`crates/vesper-forge`) describes compile-time macros. Pact combines type-class coherence, tabled goal resolution, and capability-passing effect polymorphism. Forge uses Lean 4's two-way macro-hygiene approach. The research references are #link("https://arxiv.org/abs/2502.20546")[On the State of Coherence in the Land of Type Classes] (Racordon et al., 2025), the #link("https://blog.rust-lang.org/2026/08/21/enabling-next-solver-on-nightly/")[Next-Generation Trait Solver] (2026), and #link("https://arxiv.org/abs/2001.10490")[Beyond Notations] (Ullrich and de Moura).
+*Vesper Pact* (`crates/vesper-pact`) describes trait polymorphism, while *Vesper Forge* (`crates/vesper-forge`) describes user-defined syntactic sugar and compile-time macros. Pact combines type-class coherence, tabled goal resolution, and capability-passing effect polymorphism. Forge adapts skeletal enforestation for `sugar` and Lean 4's two-way approach for macro hygiene. The research references are #link("https://arxiv.org/abs/2502.20546")[On the State of Coherence in the Land of Type Classes] (Racordon et al., 2025), the #link("https://blog.rust-lang.org/2026/08/21/enabling-next-solver-on-nightly/")[Next-Generation Trait Solver] (2026), #link("https://gopiandcode.uk/pdfs/rhombus-oopsla23.pdf")[Rhombus] (Flatt et al., OOPSLA 2023) for Shrubbery enforestation, and #link("https://arxiv.org/abs/2001.10490")[Beyond Notations] (Ullrich and de Moura).
 
 === 7.1 Core Abstraction and Metaprogramming Invariants
 <ch-6-1>
@@ -1267,7 +1313,8 @@ The proposed lowering targets no additional overhead for functions without `escr
 - *Stratified Coherence Without `newtype` Wrappers:* Pact pairs orphan-checked anonymous `impl` blocks—preserving *Global Model Uniqueness (GMU)* across dependency graphs—with explicit *named `model` declarations* and zero-sized type branding (`[T-ModelBrand]`) for local third-party adaptation without wrapper-struct indirection.
 - *Zero-Allocation Second-Class Trait Objects (`in dyn`, `inout dyn`, `sink dyn`):* Because second-class borrows never escape, `inout writer: dyn ByteSink[r]` lowers to a 16-byte `(data_ptr, vtable_ptr)` register pair requiring zero heap `Alloc` authority while forwarding active `EvidenceVector` pointers (`r15` / `x28`) and supporting `sink self` consumption via a move-vtable slot.
 - *Hermetic `wasm32-wasip2` Macro Sandboxes:* Procedural and derive macros (`#[wasm_macro]`) distribute as precompiled WebAssembly Components executed inside `vesper-loom-sandbox` (`wasmtime`) with deterministic instruction-fuel metering, epoch-zero clocks, and zero ambient filesystem or network access.
-- *Two-Way Hygiene and Static Anti-Smuggling (`[T-MacroConfinement]`):* Identifier tokens combine Flatt scope sets with quotation-time pre-resolved `DefId` targets, while post-expansion confinement forbids any macro from injecting capabilities outside its declared `macro_emits_effects` ceiling.
+- *Import-Free Skeletal Enforestation and Pass-Mode Transparency (`sugar`, `[WF-SugarPass]`):* User-defined syntactic sugar (`sugar`) rewrites Stage 1 `PhraseSkeleton` CST nodes without changing the parser on `import`. Unexpanded sugar can therefore be formatted by *Vesper Stylus* (#link(<ch-18>)[Chapter 19]) before import resolution. A rule may not mutate, initialize, or consume a caller place unless the call site writes the matching `inout`, `out`, or `sink` keyword. Rules marked `@lean_notation` are intended to emit Lean 4 `@[app_unexpander]` mirrors.
+- *Two-Way Hygiene and Static Anti-Smuggling (`[T-MacroConfinement]`):* Identifier tokens combine Flatt scope sets with quotation-time pre-resolved `DefId` targets, while post-expansion confinement forbids any macro or `sugar` rule from injecting capabilities outside its declared `emits` / `macro_emits_effects` ceiling.
 
 === 7.2 Vesper Pact: Colorless Modal and Effect-Polymorphic Traits
 <ch-6-2>
@@ -1386,7 +1433,639 @@ pub fn derive_wire_hash(in schema: AdtSchema) -> Result[CstItem, MacroDiag] {
 }
 ```
 
-=== 7.5 Trait Solver and Hygiene Engine (`crates/vesper-pact` and `crates/vesper-forge`)
+=== 7.5 Skeletal Enforestation and Substructural `sugar` Calculus
+<ch-6-sugar>
+
+User-extensible syntax usually forces a trade-off that conflicts with verified systems programming. Unstructured token-tree macros (`macro_rules!`) preserve import-free lexing at the cost of mandatory `!` call-site sigils, opaque interiors where canonical formatters bail out, and silent mutation or consumption of caller variables (`my_macro!(x)` expanding to `&mut x` or `drop(x)`). Conversely, dynamic parser-table extensions (#link("https://arxiv.org/abs/2001.10490")[Lean 4 `syntax`], Agda mixfix) couple Stage 1 parsing to transitive module imports. That coupling defeats the import-free parsing goal (#link(<ch-2-1>)[Section 2.1]), the snippet-level *Chroma* Tier 0 highlighting target (#link(<ch-20>)[Chapter 21]), and comment-preserving *Stylus* formatting (#link(<ch-18>)[Chapter 19]).
+
+Vesper proposes to address both problems through *Skeletal Enforestation* (`sugar`, Tier 0 of Vesper Forge), adapting #link("https://gopiandcode.uk/pdfs/rhombus-oopsla23.pdf")[Rhombus Shrubbery enforestation] to Vesper's LL(2) grammar and four-mode place calculus. This section is a design proposal: neither `crates/vesper-forge` nor the self-hosted parser implements `sugar` yet, and its slots rely on the disambiguation rules in #link(<ch-2-2>)[Section 2.2]. The table compares the intended properties:
+
+#figure(
+  table(
+    columns: (21%, 19%, 20%, 19%, 21%),
+    align: (left, left, left, left, left),
+    table.header(
+      [*Property*],
+      [*Token-Tree Macros (`macro_rules!`)*],
+      [*Parser-Mutating `syntax` (Lean 4)*],
+      [*Shrubbery Macros (Rhombus)*],
+      [*Vesper `sugar` Enforestation*],
+    ),
+    [*Import-Free Stage 1 Parse*],
+    [Yes (flat token trees)],
+    [*No* (imports mutate parser)],
+    [Yes (indentation groups)],
+    [*Yes* (deterministic LL(2) CST)],
+    [*Zero-Plugin Formatting*],
+    [*No* (bails on custom syntax)],
+    [Requires custom pretty rules],
+    [Shrubbery-level only],
+    [*Yes* (Stylus formats skeleton nodes)],
+    [*Call-Site Mutation Clarity*],
+    [*Opaque* (hides `&mut` / moves)],
+    [Opaque until elaboration],
+    [Dynamic / untyped],
+    [*Exact* (`[WF-SugarPass]`)],
+    [*Termination & Latency*],
+    [Bounded recursion depth],
+    [Arbitrary elaborator IO],
+    [Turing-complete phases],
+    [*Rank-bounded* (at most 64 levels)],
+    [*Proof-Goal Preservation*],
+    [Expands to `$tmp` noise],
+    [*Yes* (`@[app_unexpander]`)],
+    [N/A],
+    [*Yes* (`@lean_notation` mirror)],
+  ),
+  kind: table,
+)
+
+Four rules govern `sugar` well-formedness, block-tail continuation splicing, effect honesty, and Lean 4 notation preservation:
+
++ *Substructural Pass-Mode Transparency and Single Evaluation (`[WF-SugarPass]`):* Pattern holes separate rvalue expressions (`$e:expr`) from lvalue caller places (`mu_p $p:place` with explicit pass floor $mu_p in {upright("in"), upright("inout"), upright("out"), upright("sink")}$; omitted $mu_p$ defaults to `in`). Define the *pass-visibility relation* $mu_(upright("pat")) gt.closed.eq_(upright("vis")) mu_(upright("use"))$ by:
+  $ upright("in") gt.closed.eq_(upright("vis")) upright("in"), quad upright("inout") gt.closed.eq_(upright("vis")) mu in {upright("in"), upright("inout")}, quad upright("out") gt.closed.eq_(upright("vis")) upright("out"), quad upright("sink") gt.closed.eq_(upright("vis")) mu in {upright("in"), upright("inout"), upright("sink")} $
+  Every rvalue `$e:expr` evaluates at most once on every path, and only on the paths where the template uses it. A hole that appears at most once on each control-flow path of $T$ is substituted in place, so `ensure ok else make_error();` calls `make_error()` only when `ok` is false. A hole that appears more than once on some path binds once through a hygienic `let __h = $e;` header placed at the nearest point that dominates those uses (preventing duplicate side effects or `linear` temporary cloning and barring lvalue `inout`/`out` uses of `__h`). Meanwhile every place hole `p` checks every template occurrence $mu_j$ against $mu_(upright("pat"))$:
+
+#_infer(
+  "[WF-SugarPass]",
+  $forall j in {1 .. m}, quad mu_(upright("pat")) gt.closed.eq_(upright("vis")) mu_j \ (exists j, med mu_j in {upright("inout"), upright("out"), upright("sink")}) arrow.r.double.long upright("LinearSinglePath")(p, t)$,
+  $Delta tack.r (mu_(upright("pat")) med p : upright("place") arrow.r.double t) med upright("wf")$,
+)
+
+  Consequently, no well-formed `sugar` expansion can mutate (`inout`), initialize (`out`), or consume (`sink`) a caller place unless that exact pass-mode keyword appears lexically at the call site.
+
+2. *Stratified Clause and Operator Enforestation (`[E-Enforest-Clause]`):* After Stage 1 builds `PhraseSkeleton` CST nodes (`ClauseSugarExpr`, `PipeExpr`, `DottedBinOp`, `TaggedDelimExpr`), Stage 2 matches the head keyword or operator symbol against lexically in-scope `sugar` bindings, stamps a fresh `ScopeMark(k)`, and enforces strictly decreasing stratification rank ($upright("rank")(S') < upright("rank")(S) lt.eq 64$) so that expansion terminates without starting a WASI sandbox:
+
+#_infer(
+  "[E-Enforest-Clause]",
+  $Sigma_(upright("syn"))(upright("kw")) = (upright("sugar ") upright("kw") : kappa upright(" rule ") P arrow.r.double T) quad upright("match")(P, S) = sigma \ k = upright("fresh_mark")() quad upright("rank")(T) < upright("rank")(S) lt.eq 64$,
+  $Sigma_(upright("syn")) tack.r S arrow.r.squiggly_(upright("sugar")) upright("stamp")(k, T)[sigma]$,
+)
+
+  For `DottedBinOp` symbols (`.+`, `.*`, `.==`), Stage 1 fixes operator precedence and associativity purely from the first glyph after `.`; mixing two distinct custom operators at the same `Assoc::None` band raises `E0140` (`AmbiguousCustomOperatorMix`) demanding explicit parentheses.
+
+3. *Block-Tail Continuation Splicing (`[E-Enforest-Tail]`):* Statement-level `sugar` patterns ending in `$..rest:stmts` capture the remaining statements and trailing tail expression of the enclosing `{ ... }` block, enabling library-defined scoped cleanup (`defer`) and early-exit pattern guards (`guard let ... else`) without compiler special cases:
+
+#_infer(
+  "[E-Enforest-Tail]",
+  $Sigma_(upright("syn"))(upright("kw")) = (upright("sugar ") upright("kw") : upright("stmt rule ") (P ; med r : upright("stmts")) arrow.r.double T) \ upright("match")(P, s_1) = sigma quad k = upright("fresh_mark")()$,
+  $Sigma_(upright("syn")) tack.r { s_1 ; s_2 ; dots ; s_n ; e_? } arrow.r.squiggly_(upright("sugar")) upright("stamp")(k, T)[sigma, r mapsto (s_2 ; dots ; s_n ; e_?)]$,
+)
+
+4. *Effect Honesty, Dual-Span Diagnostics, and `@lean_notation` Unexpanders (`[T-SugarEffectHonesty]`):* If template $T$ introduces an effect operation `perform l.op` not originating from a caller expression hole, `SugarDecl` must declare `emits eff [epsilon_s]` subject to `[T-MacroConfinement]` (#link(<ch-6-4>)[Section 7.4]):
+
+#_infer(
+  "[T-SugarEffectHonesty]",
+  $d in upright("PreResolvedDefs")(T) quad upright("caps")(d) subset.eq epsilon_s inter upright("macro_emits_effects")(M) inter upright("capability_ceiling")(P_(upright("caller")))$,
+  $Delta ; Sigma_(upright("syn")) tack.r (upright("sugar ") upright("kw") upright(" emits eff ")[epsilon_s] med { T }) med upright("confined")$,
+)
+
+  When $upright("res")(epsilon_s) = upright("affine")$ (`Fail` or `Cancel`), *Vesper Chroma* Tier 1 (#link(<ch-20>)[Chapter 21]) decorates `kw` (or `|?>`) with an abortable-checkpoint badge directly on the unexpanded CST, and `[T-Let]` diagnostics (`E0301` / `E0402`) attach dual `(call_span, rule_def_span)` labels. Annotating a pure or monadic rule with `@lean_notation` is intended to synthesize a companion Lean 4 `syntax` + `macro_rules` + `@[app_unexpander]` module (`Notations.lean`, #link(<ch-8-2>)[Section 9.2]) whose expansion should unfold by `rfl` to extracted `Funs.lean` definitions while keeping `Specs.lean` goals in surface Vesper notation:
+
+#_compact-listing[
+```rust
+// 1. Block-tail `defer` and `guard let` defined in `std/sugar` (no compiler special case):
+pub sugar defer : stmt {
+    rule (defer $cleanup:block $..rest:scope) => {
+        {
+            let __exit = $..rest;   // Exit value: Normal(v), Return(r), Break(b), or Raise(e)
+            $cleanup;
+            __exit.resume()
+        }
+    }
+}
+
+pub sugar guard : stmt {
+    rule (guard let $pat:pat = $rhs:expr else $diverge:block ; $..rest:stmts) => {
+        match $rhs {
+            $pat => { $..rest },
+            _    => $diverge, // Stage 2 checks `$diverge : Never`
+        }
+    }
+}
+
+// 2. Multi-clause transaction sugar enforcing `[WF-SugarPass]` on `inout $db`:
+pub sugar with_txn : expr emits eff [Storage] {
+    rule (
+        with_txn $tx:ident on inout $db:place $body:block
+        on_error($err:pat) $recover:block
+    ) => {
+        {
+            let mut $tx = @vesper-quarry/txn::Storage::begin(inout $db);
+            let __res = handle Fail in $body with {
+                return(v)   => Ok(v),
+                raise(e, _) => Err(e),
+            };
+            match __res {
+                Ok(v)     => { $tx.commit(inout $db); Ok(v) }
+                Err($err) => { $tx.rollback(inout $db); $recover }
+            }
+        }
+    }
+}
+
+// 3. Fallible pipeline sugar mirrored 1-to-1 into Lean 4 `Notations.lean`:
+@lean_notation
+pub sugar pipe_try : infix(`|?>`, pipeline, left) emits eff [Fail] {
+    rule ($lhs:expr |?> $callee:ident ( $..args:args )) => {
+        $callee($lhs?, $..args)
+    }
+}
+
+// Call site — formatted natively by `vesper fmt` before import resolution;
+// omitting `inout` before `shard.db` is statically rejected by `[WF-SugarPass]`:
+pub fn ingest_packet(
+    inout shard: DbShard,
+    in frame: ByteSlice,
+) -> Result[CommitReceipt, QuarryErr] eff [Storage, Fail[QuarryErr]] {
+    guard let Some(hdr) = frame |?> decode_hdr(in shard.cfg) else {
+        return Err(QuarryErr::EmptyFrame);
+    };
+    defer { shard.metrics.frames_processed += 1; }
+    with_txn tx on inout shard.db {
+        tx.append_verified(in hdr)?
+    } on_error(e) {
+        Err(e)
+    }
+}
+```
+]
+
+`defer` binds the rest of the block as a `scope` hole rather than `stmts`. A `scope` hole is the one exit-aware mechanism `sugar` needs from the compiler: Stage 2 runs the spliced statements so that a `return`, a `break` out of the hole, or an unhandled `Fail` produces an `Exit` value instead of leaving the expansion, and `Exit::resume` then performs that exit after the template's own code has run. The cleanup therefore runs on every exit path, and a `linear` value released in `$cleanup` passes the exhaustion check on early exits too. A `stmts` hole, by contrast, runs only on fallthrough.
+
+
+=== 7.6 Standard Library Sugar Catalog (`std/*`)
+<ch-6-std-sugar>
+
+The standard library sugars proposed here have two jobs. They move ad hoc syntax out of the compiler core, and they remove the ceremony around Vesper's substructural guardrails: `linear` unwinds, `out` slot initialization, `Region` closures, `Pulse::scope` fork-join, `@ lifo` guards, and `@0` ghost proofs. Each one expands under `[WF-SugarPass]` and `[T-SugarEffectHonesty]` (#link(<ch-6-sugar>)[Section 7.5]), so none can hide a mutation or a capability. Like the rest of `sugar`, the catalog is a design proposal; no `std` module ships these rules yet.
+
+#figure(
+  table(
+    columns: (19%, 27%, 21%, 33%),
+    align: (left, left, left, left),
+    table.header([*Module and Sugar*], [*Call-Site Shape*], [*Skeleton Slot and Pass Floor*], [*Compiler Feature or Boilerplate Replaced*]),
+    [`std/control::errdefer`], [`errdefer(e) { tx.rollback(); }`], [`TailSugarStmt` (`$..rest:stmts`)], [Replaces a nine-line `handle Fail` plus `match Result` block, so `Mode::Linear` handles can cross `?` with cleanup the PCG checks.],
+    [`std/control::ensure`], [`ensure len <= 4096 else Err::TooBig;`], [`TailSugarStmt` (`emits eff [Fail]`)], [Replaces `if !(...) { Fail::raise(...) }` and mirrors to a one-line guard in `Notations.lean`.],
+    [`std/control::guard`], [`guard let Some(x) = e else { ... };`], [`TailSugarStmt` (`$diverge : Never`)], [Removes rightward `match` drift while keeping path-sensitive refinements in $Phi$.],
+    [`std/mem::emplace`], [`emplace out pkt { ver: 1, ... };`], [`TailSugarStmt` (`out $p:place`)], [Field-by-field `OutSlot` initialization with struct-literal ergonomics and no stack temporary.],
+    [`std/strata::scratch`], [`scratch arena[4096] { ... }`], [`ClauseSugarExpr`], [Wraps `Region::scoped_exact[B](|cap arena| ...)` in a flat lexical block.],
+    [`std/hw::holding`], [`holding irq = Irq::mask() { ... }`], [`ClauseSugarExpr`], [Pairs `@ lifo` guard acquisition with reverse-order release on normal and `Fail` paths.],
+    [`std/pulse::par`], [`par { a(out s[0..k]) } and { b(...) }`], [`ClauseSugarExpr` (`emits eff [Scope]`)], [Expands multi-arm fork-join blocks to `Pulse::scope` with `[T-OutSplitSlice]` and `[T-CallProj]`.],
+    [`std/pulse::within`], [`within 5.ms() { ... } on_timeout { ... }`], [`ClauseSugarExpr` (`emits eff [Clock]`)], [Handles `Cancel` locally and requires an explicit timeout recovery arm at the call site.],
+    [`std/wire::bits`], [`bits{ ver: u4 = 4, len: u12 = n }`], [`TaggedDelimExpr` (`@lean_notation`)], [Packs bitfields with `QF_BV`-checked shifts and masks, mirrored to `BitVec.append` for `bv_decide`.],
+    [`std/verify::calc`], [`ghost calc { a*(b+1) == a*b + a; <= c }`], [`ClauseSugarExpr` (`@0` ghost)], [Chains intermediate nonlinear arithmetic lemmas for Bitwuzla at no runtime cost, mirrored to a Lean `calc` block.],
+  ),
+  kind: table,
+)
+
+==== Linear-Checked Unwind Cleanup: `errdefer` and `ensure` (`std/control`)
+
+In Zig, an `errdefer` block that forgets to release a resource leaks it silently. In Vesper, the expansion places `match __res` _outside_ a local `handle Fail`. Because the outgoing row of `handle Fail` is `linear`, `Mode::Linear` values such as `WriteTxn` and `OwnedFd` may stay live across `?` inside `$..rest`. `[T-Match]` then requires the `Err` arm to consume them, so an `errdefer` block that forgets `tx` is rejected as a dropped linear value (`E0302`).
+
+#figure(
+  {
+    let node(title, detail, fill: luma(96%), stroke: 0.5pt + _rule) = box(
+      inset: (x: 8pt, y: 6pt), radius: 10pt, fill: fill, stroke: stroke,
+      align(center, stack(dir: ttb, spacing: 4pt, text(size: 8.5pt, title), text(font: "DejaVu Sans Mono", size: 7.5pt, detail))),
+    )
+    let arrow(label) = align(center + horizon, text(size: 8pt, fill: _muted, label + " →"))
+    grid(
+      columns: (auto, auto, auto, auto, auto),
+      column-gutter: 6pt, row-gutter: 8pt, align: center + horizon,
+      grid.cell(rowspan: 2, node([`errdefer` scope], [tx: linear live])),
+      grid.cell(rowspan: 2, arrow[]),
+      grid.cell(rowspan: 2, node([Local `handle Fail`], [res(out) = linear], fill: luma(98%), stroke: 0.8pt + _accent)),
+      arrow[`Ok`], node([Normal tail], [tx.commit() ran]),
+      arrow[`Err`], node([Cleanup and re-raise], [tx.rollback() ran]),
+    )
+  },
+  kind: image,
+  caption: [`errdefer` keeps `tx` live inside a local `handle Fail`; each exit arm must consume it.],
+)
+
+#_compact-listing[
+```rust
+// Defined in `std/control`:
+pub sugar errdefer : stmt emits eff [Fail] {
+    rule (errdefer($err:pat) $cleanup:block $..rest:stmts) => {
+        {
+            let __res = handle Fail in { Ok({ $..rest }) } with {
+                return(v)   => v,
+                raise(e, _) => Err(e),
+            };
+            match __res {
+                Ok(v)     => v,
+                Err($err) => { $cleanup; Fail::raise($err) }
+            }
+        }
+    }
+}
+
+@lean_notation
+pub sugar ensure : stmt emits eff [Fail] {
+    rule (ensure $cond:expr else $err:expr ; $..rest:stmts) => {
+        if $cond { $..rest } else { Fail::raise($err) }
+    }
+}
+
+// Usage: linear `tx` crosses both `?` checkpoints without boilerplate.
+fn append_wal_verified(inout db: Db, in batch: Batch) -> Receipt eff [Storage, Fail[IoErr]] {
+    ensure batch.len() <= 4096 else IoErr::BatchTooLarge;
+    let mut tx: WriteTxn = Storage::begin_txn(inout db);
+    errdefer(e) { tx.rollback(inout db); } // the PCG checks that `tx` is consumed on Err
+
+    validate_crc(in batch)?;
+    stage_pages(inout tx, in batch)?;
+    tx.commit(inout db)
+}
+```
+]
+
+==== Zero-Copy Memory Ergonomics: `emplace`, `swap`, and `scratch` (`std/mem` and `std/strata`)
+
+Writing directly into an `out` destination (#link(<ch-4-4>)[Section 4.4]) avoids intermediate stack slots, which matters under eBPF and interrupt-handler `Stack @ <= 512` budgets. `scratch` flattens nested region closures (#link(<ch-12-2>)[Section 13.2]). `emplace` uses the repetition hole `$( ... ),*` of the `SugarHole` production (#link(<ch-2-2>)[Section 2.2]).
+
+#_compact-listing[
+```rust
+// Struct placement into an `out` slot with no temporary (`OutInitTree` checks exhaustiveness):
+pub sugar emplace : stmt {
+    rule (emplace out $dst:place { $( $field:ident : $val:expr ),* } ;) => {
+        { $( $dst.$field = $val; )* }
+    }
+}
+
+// Symmetric in-place swap under `[WF-SugarPass]` (`inout` required on both places):
+pub sugar swap : stmt {
+    rule (swap inout $a:place with inout $b:place ;) => {
+        @std/mem::swap_disjoint(inout $a, inout $b);
+    }
+}
+
+// Flat lexical `VirtualArena` scope (`Region::scoped_exact[B]`):
+pub sugar scratch : expr {
+    rule (scratch $cap:ident [ $bytes:expr ] $body:block) => {
+        @vesper-alloc/region::Region::scoped_exact[$bytes](|cap $cap| $body)
+    }
+}
+
+// Usage:
+fn build_reply(out pkt: ReplyFrame, in items: Slice[u64, @n]) where n <= 32 {
+    let checksum = scratch tmp[256] {
+        let mut acc = RegionVec::with_exact_cap[u64, @n](in tmp);
+        acc.extend_hashed(in items);
+        acc.fold_xor()
+    };
+    emplace out pkt { magic: 0x5653_5031, count: narrow_u32(items.len()), crc: checksum };
+}
+```
+]
+
+==== Concurrency and LIFO Hardware Guards: `par`, `within`, and `holding` (`std/pulse` and `std/hw`)
+
+`Pulse::scope` spawn and join ceremonies (#link(<ch-14-4>)[Section 15.4]) and bare-metal `@ lifo` interrupt masks (`IrqGuard`, #link(<ch-24>)[Chapter 25]) compress into short structured blocks. The solver still checks slice disjointness (`[T-OutSplitSlice]`) after expansion.
+
+#_compact-listing[
+```rust
+// Parallel disjoint `out` / `inout` fork-join:
+pub sugar par : expr emits eff [Scope] {
+    rule (par $left:block and $right:block) => {
+        @vesper-pulse/scope::Pulse::scope(|inout __s| {
+            let __f1 = __s.spawn(|| $left);
+            let __f2 = __s.spawn(|| $right);
+            (__f1.join(), __f2.join())
+        })
+    }
+}
+
+// `@ lifo` hardware guard scope that cannot be inverted (released on `Fail` too):
+pub sugar holding : expr {
+    rule (holding $g:ident = $acquire:expr $body:block) => {
+        {
+            let $g = $acquire;
+            errdefer(_) { @std/hw::LifoGuard::release(sink $g); }
+            let __v = $body;
+            @std/hw::LifoGuard::release(sink $g);
+            __v
+        }
+    }
+}
+
+// Usage:
+fn stage_tx_ring(inout nic: NicRegs, out frame: ByteArray[1536], in payload: Bytes) {
+    let (_, _) = par {
+        write_eth_ip_hdr(out frame[0..54], in payload)
+    } and {
+        copy_payload_simd(out frame[54..1536], in payload)
+    };
+    holding irq = Irq::disable_local() {
+        nic.ring_doorbell(in frame);
+    }
+}
+```
+]
+
+==== Proof and Vector Notation: `bits{...}`, `ghost calc`, and Elementwise Operators (`std/wire`, `std/verify`, and `std/vector`)
+
+Tagged literals and `@lean_notation` sugars connect low-level bit manipulation to Lean 4 proof automation (`bv_decide` and `calc`). Because tags must touch their delimiter, the spaced call `ghost calc { ... }` is a ghost `TailSugarStmt` under the skeleton-entry rule (#link(<ch-2-2>)[Section 2.2]), not a `GhostExpr` over a tagged literal.
+
+#_compact-listing[
+```rust
+// 1. `@0` equational proof chain with no runtime cost: feeds intermediate lemmas to
+//    Bitwuzla and unexpands one-to-one into a Lean 4 `calc` block in `Specs.lean`:
+@lean_notation
+pub sugar ghost_calc : stmt {
+    rule (ghost calc { $lhs:expr == $mid:expr ; <= $bound:expr ; } $..rest:stmts) => {
+        {
+            let ghost _ = @std/verify::assert_eq_ghost($lhs, $mid);
+            let ghost _ = @std/verify::assert_le_ghost($mid, $bound);
+            $..rest
+        }
+    }
+}
+
+// 2. Elementwise portable `VVec` SIMD operators at arithmetic precedence:
+@lean_notation
+pub sugar vadd : infix(`.+`, additive, left) {
+    rule ($a:expr .+ $b:expr) => { @vesper-simd/vvec::VVec::add($a, $b) }
+}
+@lean_notation
+pub sugar vmul : infix(`.*`, multiplicative, left) {
+    rule ($a:expr .* $b:expr) => { @vesper-simd/vvec::VVec::mul($a, $b) }
+}
+
+// Usage in XPBD physics (Chapter 40): `.*` binds tighter than `.+`, as `*` does over `+`.
+let next_pos = pos .+ vel .* dt_splat;
+```
+]
+
+==== Shrinking the Compiler Core
+
+Once `std/control` and `std/pulse` ship in the standard prelude, several forms that now need dedicated HIR lowering could become library sugar: `for pat in iter { ... }` (as `loop` over `Iterator::next(inout iter)`), `if let pat = e { ... }`, `assert`, and the `|>` and `|?>` pipeline operators. That would shrink Stage 2 (`vesper-hir`) and the Lean extractor while `vesper fmt` and Chroma output stay the same, because both already work on the unexpanded skeleton. Today `for` is a core form over integer ranges (#link(<ch-2-2>)[Section 2.2]); moving it into `std` waits on `sugar` and an `Iterator` trait.
+
+=== 7.7 Domain Sugar Catalog (`std/*` and Ecosystem Packages)
+<ch-6-domain-sugar>
+
+Beyond control flow and memory helpers, `sugar` can give Vesper's specialized subsystems domain-level notation: linear session protocols, opt-in transactional rollback of `inout` places, constant-time cryptography, `@fip` in-place ADT rewriting, W1C-safe MMIO batching, DBSP stream comprehensions, and checked loop invariants. Each form below expands to ordinary library calls under `[WF-SugarPass]` and `[T-SugarEffectHonesty]` (#link(<ch-6-sugar>)[Section 7.5]), so none needs a compiler special case. Like #link(<ch-6-std-sugar>)[Section 7.6], this catalog is a design proposal; the helper functions it names (`Chan::send`, `fip::unpack_reuse`, `RmwReg::read`, and so on) are part of the proposal and are not yet specified in their chapters.
+
+#figure(
+  table(
+    columns: (19%, 27%, 21%, 33%),
+    align: (left, left, left, left),
+    table.header([*Module and Sugar*], [*Call-Site Shape*], [*Skeleton Slot and Pass Floor*], [*Problem Solved Without a Compiler Special Case*]),
+    [`std/txn::transact`], [`transact inout bbr { ... }`], [`ClauseSugarExpr` (`inout $p:place`)], [Opt-in snapshot rollback on top of the default keep-writes behavior (#link(<ch-4-3>)[Section 4.3]) when `$p : copy`, with exact `Stack` accounting for the snapshot.],
+    [`std/chorus::send` / `recv`], [`send req on sink ch; recv ack from sink ch;`], [`TailSugarStmt` (`sink $ch:place`)], [Threads linear session-type transitions (`Send` to `Recv` to `End`) without manual `let ch = ...` rebinding.],
+    [`std/vault::ct_if`], [`ct_if mask { a } else { b }`], [`ClauseSugarExpr` (`eff [ConstTime]`)], [Writes a secret-dependent choice as `if`/`else` while expanding to branchless `SecMask` selection with no `brif`.],
+    [`std/fip::morph`], [`morph sink node { Black(l, r) => Red(l, r) }`], [`ClauseSugarExpr` (`sink $p:place`)], [Unpacks an owned heap or slab enum into a same-size `@fip` `ReuseSlot` token, so the rewrite allocates nothing.],
+    [`std/silicon::modify_reg`], [`modify_reg inout uart.cr { .txe = 1, .rxe = 1 };`], [`TailSugarStmt` (`inout $r:place`)], [Coalesces multi-field MMIO updates into one bus read, ALU masks, and one bus write; rejects `W1C` registers statically.],
+    [`std/aura::focus`], [`focus inout app.{ nav => ..., pane => ... }`], [`ClauseSugarExpr` (`inout $p:place`)], [Opens named disjoint `FieldTree` sub-borrows together under `[T-CallProj]` without repeating paths.],
+    [`std/flux::zset`], [`zset{ (r.k, r.v) => +1 | r in batch, r.ok }`], [`TaggedDelimExpr` (`@lean_notation`)], [Compiles relational comprehensions to pre-sized `TiledSeq` AoSoA loops, mirrored to `ZSet.filterMap`.],
+    [`std/verify::while_verified`], [`while c invariant phi decreases d { ... }`], [`ClauseSugarExpr` (`@lean_notation`)], [Expands to `loop` with `@0` ghost entry and step checks for Bitwuzla and `termination_by d` in Lean 4.],
+    [`std/pact::using`], [`using model ReverseOrd { map.insert(k, v) }`], [`ClauseSugarExpr`], [Confines a non-canonical Pact `model` override (#link(<ch-6-3>)[Section 7.3]) to one expression instead of a whole block.],
+    [`std/beacon::trace_span`], [`trace_span "wal.sync" [lsn = s] { ... }`], [`ClauseSugarExpr` (`emits eff [Trace]`)], [Stack-allocates a W3C TraceContext span, checks `@pii` redaction through `Telemetrable` (#link(<ch-31>)[Chapter 32]), and records unwinds.],
+  ),
+  kind: table,
+)
+
+==== Linear Session-Type Rebinding: `send`, `recv`, and `close` (`std/chorus`)
+
+Linear session channels (#link(<ch-14-4>)[Section 15.4] and #link(<ch-34>)[Chapter 35]) normally force repeated shadowing, as in `let ch = ch.send(m); let (ack, ch) = ch.recv(); ch.close();`, because every step consumes the old protocol typestate and produces the next. Block-tail `$..rest:stmts` splicing turns a multi-step protocol into flat code. `Mode::Linear` exhaustion still applies: forgetting `close` leaves a live linear channel at the end of the block, which is rejected (`E0302`). Because the expansion rebinds `$ch` with `let`, the hole must name a local binding rather than a field path.
+
+#figure(
+  {
+    let node(title, detail, fill: luma(96%), stroke: 0.5pt + _rule) = box(
+      inset: (x: 8pt, y: 6pt), radius: 10pt, fill: fill, stroke: stroke,
+      align(center, stack(dir: ttb, spacing: 4pt, text(size: 8.5pt, title), text(font: "DejaVu Sans Mono", size: 7.5pt, detail))),
+    )
+    let arrow(label) = align(center + horizon, text(size: 8pt, fill: _muted, label + " →"))
+    grid(
+      columns: (auto, auto, auto, auto, auto, auto, auto),
+      column-gutter: 6pt, align: center + horizon,
+      node([`Send[Req, …]`], [linear]),
+      arrow[`send`],
+      node([`Recv[Ack, End]`], [rebound], fill: luma(98%), stroke: 0.8pt + _accent),
+      arrow[`recv`],
+      node([`End`], [ack bound]),
+      arrow[`close`],
+      node([Discharged], [Theorem 2 holds]),
+    )
+  },
+  kind: image,
+  caption: [Each `send` or `recv` consumes the channel and rebinds the next protocol state for the rest of the block.],
+)
+
+#_compact-listing[
+```rust
+pub sugar send : stmt emits eff [Net] {
+    rule (send $msg:expr on sink $ch:place ; $..rest:stmts) => {
+        {
+            let $ch = @vesper-chorus/chan::Chan::send(sink $ch, $msg);
+            $..rest
+        }
+    }
+}
+
+pub sugar recv : stmt emits eff [Net] {
+    rule (recv $pat:pat from sink $ch:place ; $..rest:stmts) => {
+        {
+            let ($pat, $ch) = @vesper-chorus/chan::Chan::recv(sink $ch);
+            $..rest
+        }
+    }
+}
+
+// Usage: no rebinding noise; omitting `ch.close()` is still rejected (E0302).
+fn replicate_entry(sink ch: Chan[Send[AppendReq, Recv[AppendAck, End]]], in entry: LogEntry) -> AppendAck
+eff [Net] {
+    send (AppendReq { entry }) on sink ch;   // header mode: struct literal in parentheses
+    recv ack from sink ch;
+    ch.close();
+    ack
+}
+```
+]
+
+==== Opt-In Rollback and Allocation-Free Tree Rewrites: `transact` (`std/txn`) and `morph` (`std/fip`)
+
+Keep-writes is Vesper's default for `inout` across an abort (#link(<ch-4-3>)[Section 4.3]): callee writes stay in the caller's place. `transact` lets a caller ask for rollback instead, with one word, whenever the state is `copy`; the snapshot `let __snap = $p` is what checks `$p : copy`. `morph` makes `@fip` in-place constructor reuse (#link(<ch-12-4>)[Section 13.4]) direct for balanced trees and AST passes. It relies on the repetition hole and a `$..xs:pats` sequence hole from #link(<ch-2-2>)[Section 2.2].
+
+#_compact-listing[
+```rust
+// 1. Opt-in rollback over keep-writes (`let __snap = $p` requires `$p : copy`):
+pub sugar transact : expr emits eff [Fail] {
+    rule (transact inout $p:place $body:block) => {
+        {
+            let __snap = $p;
+            errdefer(_) { $p = __snap; }
+            $body
+        }
+    }
+}
+
+// 2. Allocation-free `@fip` in-place variant rewrite:
+pub sugar morph : expr {
+    rule (morph sink $node:place { $( $Src:ident ( $..xs:pats ) => $Dst:ident ( $..ys:args ) ),* }) => {
+        match @vesper-alloc/fip::unpack_reuse(sink $node) {
+            $( ($Src($..xs), __slot) => @vesper-alloc/fip::place_in(sink __slot, $Dst($..ys)) ),*
+        }
+    }
+}
+
+// Usage:
+transact inout bbr_model {
+    bbr_model.advance_round(in sample)?;
+    bbr_model.probe_bw(in rtt)? // if `probe_bw` raises Fail, `bbr_model` is restored
+}
+```
+]
+
+==== Branchless Cryptography and Single-Write MMIO: `ct_if` (`std/vault`) and `modify_reg` (`std/silicon`)
+
+Constant-time cryptography (#link(<ch-27>)[Chapter 28]) and bare-metal drivers (#link(<ch-24>)[Chapter 25]) both suffer when safe primitives force unreadable bit manipulation. `ct_if` evaluates both arms unconditionally, as constant-time code must, so each arm's effects always happen; only the selected value depends on the mask. `modify_reg` reads the register once, applies each field setter, and writes once; a register whose access type is `W1C` has no read-modify-write combinator, so the expansion fails to type-check on it.
+
+#_compact-listing[
+```rust
+// 1. Branchless secret selection inside `eff [ConstTime]` (no `brif` instructions):
+@lean_notation
+pub sugar ct_if : expr emits eff [ConstTime] {
+    rule (ct_if $mask:expr $then_b:block else $else_b:block) => {
+        {
+            let __t = $then_b;
+            let __f = $else_b;
+            @vesper-vault/secret::ct_select($mask, __t, __f)
+        }
+    }
+}
+
+// 2. Coalesced single-read, single-write MMIO bitfield update (rejects `W1C` registers):
+pub sugar modify_reg : stmt {
+    rule (modify_reg inout $reg:place { $( . $field:ident = $val:expr ),* } ;) => {
+        {
+            let mut __word = @vesper-hw/mmio::RmwReg::read(in $reg);
+            $( __word = __word.$field($val); )*
+            @vesper-hw/mmio::RmwReg::write(inout $reg, __word);
+        }
+    }
+}
+
+// Usage:
+let tag_acc = ct_if mask_eq { acc ^ block_mac } else { acc ^ dummy_mac };
+modify_reg inout spi1.ctrl1 { .baud_div = 4, .master = 1, .spe = 1 };
+```
+]
+
+==== Checked Loop Invariants and Stream Comprehensions: `while ... invariant ... decreases` (`std/verify`) and `zset{...}` (`std/flux`)
+
+Loop invariants and differential DBSP comprehensions (#link(<ch-36>)[Chapter 37]) stay concise in `.ves` source while lowering to Bitwuzla verification conditions and Lean 4 `termination_by` proofs. `while` is not a core keyword (#link(<ch-2-2>)[Section 2.2]), so the library can define it. The ghost checks have `@0` presence and erase in Stage 5A.
+
+#_compact-listing[
+```rust
+// Checked loop invariant and strict well-founded variant:
+@lean_notation
+pub sugar while_verified : expr {
+    rule (while $cond:expr invariant $inv:expr decreases $v:expr $body:block) => {
+        {
+            let ghost _ = @std/verify::assert_ghost($inv);
+            loop {
+                if !($cond) { break; }
+                let ghost __v0: usize = $v;
+                $body;
+                let ghost _ = @std/verify::assert_ghost($inv);
+                let ghost _ = @std/verify::assert_lt_ghost($v, __v0);
+            }
+        }
+    }
+}
+
+// Usage: no runtime overhead once ghosts erase; termination is checked in Bitwuzla and `Funs.lean`:
+while lo < hi
+    invariant lo <= hi && hi <= table.len()
+    decreases hi - lo
+{
+    let mid = lo + (hi - lo) / 2;
+    if table[mid] < target { lo = mid + 1; } else { hi = mid; }
+}
+```
+]
+
+=== 7.8 Readability Sugar Catalog
+<ch-6-read-sugar>
+
+The sugars in this section target the places where Vesper code is noisiest: resource scopes, formatting, literal data, pipelines, waiting, retries, folds, typestate changes, tests, and proof steps. Each one fits a slot defined by the disambiguation rules in #link(<ch-2-2>)[Section 2.2], and each declares the effects it introduces. Like #link(<ch-6-std-sugar>)[Sections 7.6] and #link(<ch-6-domain-sugar>)[7.7], this catalog is a design proposal. Infix word operators such as `r matches Ok(v)` are deliberately absent: the no-word-operators rule keeps parsing independent of imports, so variant tests use `guard let` or `match`.
+
+#figure(
+  table(
+    columns: (19%, 30%, 18%, 33%),
+    align: (left, left, left, left),
+    table.header([*Module and Sugar*], [*Call-Site Shape*], [*Slot*], [*What It Replaces*]),
+    [`std/control::holding`], [`holding f = File::open(p)? { ... }`], [`ClauseSugarExpr` (`$body:scope`)], [Generalizes the `@ lifo` guard form of #link(<ch-6-std-sugar>)[Section 7.6] to any `Release` value, released on every exit path.],
+    [`std/fmt::fmt`, `std/beacon::log`], [`fmt"lsn={lsn} len={n:x}"`, `log"replayed {count} pages"`], [`TaggedDelimExpr`], [Hand-written `Writer` call chains; `log` also checks `@pii` fields through `Telemetrable`.],
+    [`std/lit::hex`, `bytes`, `dur`, `ip`, `re`], [`hex"dead beef"`, `bytes"4KiB"`, `dur"5ms"`, `ip"10.0.0.1"`, `re"[a-z]+"`], [`TaggedDelimExpr`], [Byte-array test vectors, magic size constants, and runtime parsing of configuration literals; each is validated during expansion and becomes a constant.],
+    [`std/control::|>` placeholder], [`frame |> parse(_, in cfg) |?> validate(_)`], [`PipeExpr`], [Temporary bindings when the piped value is not the first argument.],
+    [`std/pulse::race`], [`race { r = recv(in ch) => ..., timeout 5.ms() => ... }`], [`ClauseSugarExpr` (`emits eff [Scope, Clock]`)], [Manual `Pulse::race` closures; cancellation of the losing arms stays visible at the call site.],
+    [`std/pulse::retry`], [`retry 3 backoff 10.ms() { ... }`], [`ClauseSugarExpr` (`emits eff [Clock]`)], [Counter loops with sleeps and error bookkeeping.],
+    [`std/iter::sum`, `max`, `any`, `all`], [`sum{ x * w | (x, w) in zip(a, b) }`], [`TaggedDelimExpr`], [Accumulator loops; each expands to one counted loop with no allocation.],
+    [`std/vector::lanes`], [`lanes v in xs { ... }`], [`ClauseSugarExpr`], [`VVec` strip-mining with a separate remainder loop.],
+    [`std/control::update`], [`update cfg { port = 80, tls = true }`], [`ClauseSugarExpr`], [Copy-and-assign sequences for `copy` configuration structs.],
+    [`std/typestate::transition`], [`transition inout conn from Handshake to Open { ... }`], [`ClauseSugarExpr` (`inout $p:place`)], [Hand-threaded typestate rebinding in Prism and Warp connection machines.],
+    [`std/verify::assert`], [`assert len <= cap because lemma_bounded(in buf);`], [`TailSugarStmt` (`@lean_notation`)], [Unnamed assertions; the named lemma is passed to the solver and mirrors to Lean `by exact`.],
+    [`std/test::test`, `prop`], [`test "wal replay" { ... }`, `prop "roundtrip" for x: Frame { ... }`], [`ItemSugar`], [Test registration boilerplate; `prop` hooks into Crucible (#link(<ch-21>)[Chapter 22]) and Codex doctests (#link(<ch-19>)[Chapter 20]).],
+  ),
+  kind: table,
+)
+
+#_compact-listing[
+```rust
+// 1. Exit-aware resource scope over any `Release` value (`$body:scope`, Section 7.5):
+pub sugar holding : expr {
+    rule (holding $r:ident = $acquire:expr $body:scope) => {
+        {
+            let $r = $acquire;
+            let __exit = $body;
+            @std/control::Release::release(sink $r);
+            __exit.resume()
+        }
+    }
+}
+
+// 2. Bounded retry with backoff; the attempt count and delay stay at the call site:
+pub sugar retry : expr emits eff [Clock] {
+    rule (retry $n:expr backoff $delay:expr $body:block) => {
+        @std/pulse::retry_with_backoff($n, $delay, || $body)
+    }
+}
+
+// 3. A fold comprehension as a tagged literal (the tag touches its brace):
+pub sugar sum : tag {
+    rule (sum{ $e:expr | $p:pat in $src:expr }) => {
+        {
+            let mut __acc = 0;
+            for $p in $src { __acc += $e; }
+            __acc
+        }
+    }
+}
+
+// Usage:
+fn replay_segment(in path: Path, in cfg: WalCfg) -> u64 eff [Storage, Clock, Fail[IoErr]] {
+    holding f = File::open(in path)? {
+        let hdr = f.read_header()? |?> validate(_, in cfg);
+        assert hdr.len <= cfg.max_segment because lemma_segment_bounded(in hdr);
+        let pages = retry 3 backoff dur"10ms" { f.read_pages(in hdr) };
+        log"replayed {pages.len()} pages from {path}";
+        sum{ p.checksum | p in pages }
+    }
+}
+
+test "replay rejects truncated segments" {
+    let bytes = hex"5653 5031 0000 00ff";
+    assert replay_bytes(in bytes).is_err() because lemma_truncation_detected(in bytes);
+}
+```
+]
+
+The usage above shows how the rules keep these forms apart: `log"..."`, `hex"..."`, `dur"..."`, and `sum{` are tags because they touch their delimiters; `holding f = ... {` and `retry 3 backoff ... {` are clause forms whose headers end at the spaced `{`; `assert ... because ...;` is a tail statement whose header ends at the head word `because`; and `test "..." {` is an item because a `LowerIdent` cannot begin a core item.
+
+=== 7.9 Trait Solver, Enforester, and Hygiene Engine (`crates/vesper-pact` and `crates/vesper-forge`)
 <ch-6-5>
 
 ```rust
@@ -1516,6 +2195,66 @@ pub fn verify_macro_anti_smuggling(
     }
     Ok(())
 }
+
+/// Pass-mode visibility floor declared on a `sugar` place hole (`[WF-SugarPass]`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HolePassFloor {
+    SharedIn,
+    MutInout,
+    InitOut,
+    MoveSink,
+}
+
+impl HolePassFloor {
+    pub fn permits_template_use(self, demanded: Self) -> bool {
+        matches!(
+            (self, demanded),
+            (Self::SharedIn, Self::SharedIn)
+                | (Self::MutInout, Self::SharedIn | Self::MutInout)
+                | (Self::InitOut, Self::InitOut)
+                | (Self::MoveSink, Self::SharedIn | Self::MutInout | Self::MoveSink)
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SugarTransparencyError {
+    HiddenPassEscalation {
+        hole_name: SmolStr,
+        declared_floor: HolePassFloor,
+        template_demanded: HolePassFloor,
+    },
+    DuplicatedExclusiveHole {
+        hole_name: SmolStr,
+    },
+}
+
+/// Verifies `[WF-SugarPass]` on a `sugar` rule template prior to registration.
+pub fn verify_sugar_pass_transparency(
+    hole_name: &SmolStr,
+    declared_floor: HolePassFloor,
+    template_uses: &[(HolePassFloor, bool)], // (demanded_mode, same_exec_path)
+) -> Result<(), SugarTransparencyError> {
+    let mut exclusive_uses_on_path = 0usize;
+    for &(demanded, same_path) in template_uses {
+        if !declared_floor.permits_template_use(demanded) {
+            return Err(SugarTransparencyError::HiddenPassEscalation {
+                hole_name: hole_name.clone(),
+                declared_floor,
+                template_demanded: demanded,
+            });
+        }
+        if same_path && demanded != HolePassFloor::SharedIn {
+            exclusive_uses_on_path += 1;
+            if exclusive_uses_on_path > 1 {
+                return Err(SugarTransparencyError::DuplicatedExclusiveHole {
+                    hole_name: hole_name.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
 ```
 
 = Part II. Compiler Architecture, Verification, Bootstrap, and Governance
@@ -1551,8 +2290,8 @@ Vesper's compiler and supporting tools share a modular workspace. This chapter f
 
 Compilation lowers `.ves` source modules through five deterministic stages targeting native machine code and pure Lean 4 verification models simultaneously:
 
-+ *Stage 1 — Resilient SIMD Lexing and Lossless CST (`vesper-span` + `vesper-syntax`):* Zero-copy SIMD-accelerated tokenization (`logos`) feeds an LL(2) recursive-descent parser constructing a lossless `rowan` Red-Green Concrete Syntax Tree memoized inside `salsa` incremental queries for sub-millisecond editor diagnostics (`ariadne`).
-+ *Stage 2 — Bidirectional Modal, Effect, and Refinement Elaboration (`vesper-hir` + `vesper-pact` + `vesper-forge`):* Expands hygienic `macro` and fuel-metered `wasm32-wasip2` `#[wasm_macro]` components under `[T-MacroConfinement]`, desugars surface syntax into $lambda_(upright("Vesper"))$ HIR, resolves tabled trait/model goals, and runs bidirectional inference with mode crossing (`[T-Cross]`) and lexical effect-row unification.
++ *Stage 1 — Resilient SIMD Lexing and Lossless `PhraseSkeleton` CST (`vesper-span` + `vesper-syntax`):* Zero-copy SIMD-accelerated tokenization (`logos`) feeds an import-free LL(2) recursive-descent parser constructing a lossless `rowan` Red-Green Concrete Syntax Tree, including open `PhraseSkeleton` clause, operator, and tagged-literal nodes (#link(<ch-2-1>)[Section 2.1]), memoized inside `salsa` incremental queries for sub-millisecond editor diagnostics (`ariadne`).
++ *Stage 2 — Skeletal Enforestation and Bidirectional Modal Elaboration (`vesper-hir` + `vesper-pact` + `vesper-forge`):* Enforests stratified `sugar` rules under `[WF-SugarPass]` (#link(<ch-6-sugar>)[Section 7.5]), expands hygienic `macro` and fuel-metered `wasm32-wasip2` `#[wasm_macro]` components under `[T-MacroConfinement]`, desugars surface syntax into $lambda_(upright("Vesper"))$ HIR, resolves tabled trait/model goals, and runs bidirectional inference with mode crossing (`[T-Cross]`) and lexical effect-row unification.
 + *Stage 3 — Place Capability Graph, LIFO, and Horn VC Solver (`vesper-mir-pcg` + `vesper-refine`):* Lowers HIR into basic-block `PlaceIr`, constructs a Place Capability Graph (`petgraph`) over field trees and slice intervals, and discharges Horn `QF_LIA` + `QF_BV` + `QF_UF` obligations in Bitwuzla to enforce:
   - *Alias-XOR-Mutability:* Zero active `inout` or `out` projection overlaps any sibling `in`, `inout`, `out`, or `sink` projection (`[T-CallProj]`, `[T-CallSliceProj]`).
   - *Total Linear, `out`, and LIFO Exhaustion:* Every `linear` binding is consumed exactly once across $100%$ of control-flow and `Fail` unwind edges (`[T-Let]`, `[T-Match]`), every `out` destination is $100%$ initialized prior to `Ok` return, and every `lifo` guard releases in strict stack order.
@@ -1961,6 +2700,7 @@ inductive EffM : EffRowSig -> Type -> Type 1 where
 ```
 
 + *Loops and Termination:* Natural CFG loops lower via functional SSA conversion into tail-recursive `f.loop` definitions carrying only mutated locals, with `decreases` clauses emitting `termination_by` obligations discharged via `omega`.
++ *Surface Sugar Preservation (`Notations.lean`):* `sugar` rules annotated with `@lean_notation` (#link(<ch-6-sugar>)[Section 7.5]) are intended to emit companion Lean 4 `syntax`, `macro_rules`, and `@[app_unexpander]` declarations. Each expansion should unfold by `rfl` to the extracted `PlaceIr` term, so `Specs.lean` proof states can show the user's surface notation. The extractor does not emit `Notations.lean` yet.
 
 === 9.3 End-to-End Verification Showcase: `WriteTxn` and `append_batch`
 <ch-8-3>
@@ -3941,7 +4681,7 @@ impl LensIncrementalState {
 
 === 19.1 Canonical Formatting and Substructural Static-Analysis Guarantees
 <ch-18-1>
-+ *Comment-Preserving Formatting (`vesper fmt`):* Stylus uses the lossless `rowan` concrete syntax tree to retain comments, blank lines, and attributes while formatting code. The proposed formatter lowers nodes to a Wadler-Lindig / Oppen document algebra, including `macro { ... }` quotations (#link(<ch-6-4>)[Section 7.4]) and partial IDE buffers. Its requirements are zero configuration, deterministic output, idempotence (`fmt(fmt(src)) == fmt(src)`), and preservation of the non-trivia token stream and every comment. These formatting requirements are distinct from the unresolved grammar guarantees in #link(<ch-2>)[Chapter 2].
++ *Comment-Preserving Formatting (`vesper fmt`):* Stylus uses the lossless `rowan` concrete syntax tree to retain comments, blank lines, and attributes while formatting code. The proposed formatter lowers nodes to a Wadler-Lindig / Oppen document algebra, including unexpanded `sugar` `PhraseSkeleton` clauses, lexically tiered operators, and tagged literals (#link(<ch-6-sugar>)[Section 7.5]), `macro { ... }` quotations (#link(<ch-6-4>)[Section 7.4]), and partial IDE buffers, without resolving imports or running macro plugins. Its requirements are zero configuration, deterministic output, idempotence (`fmt(fmt(src)) == fmt(src)`), and preservation of the non-trivia token stream and every comment. These formatting requirements are distinct from the unresolved grammar guarantees in #link(<ch-2>)[Chapter 2].
 
 + *Substructural Mode, FieldTree, and Effect-Row Static Analysis (`vesper lint`):* Because `cargo clippy` runs on Rust HIR/MIR without modal kinds, disjoint field-tree projections, or lexical effect rows, it cannot reason about over-broad struct borrows, redundant heap authority, or sub-optimal modal bounds. Vesper Lint queries `vesper-hir` and `vesper-mir-pcg` directly to surface five high-signal systems lints with zero false positives: (2a) *Projection Narrowing (`overbroad_inout_projection`)* detects when `fn update(inout shard: WorkerShard)` mutates only `shard.metrics` and reads `shard.config`, offering a 1-click autofix to narrow the signature to `inout shard.{metrics}, in shard.{config}: WorkerShard`—unlocking caller-side `[T-CallProj]` parallelism (#link(<ch-4>)[Chapter 4]) as a Minor-compatible SemVer evolution (`[SV-Fn]`, #link(<ch-11-2>)[Section 12.2]); (2b) *Zero-Heap Arena Demotion (`demote_alloc_to_region`)* detects functions requesting global `eff [Alloc]` whose allocations never escape the return type, rewriting heap containers into a stack-bounded `Region::scoped` `VirtualArena` (#link(<ch-12-2>)[Section 13.2]) and removing `Alloc` from `eff [...]`; (2c) *Unused Capability and Over-Restrictive Mode Bounds (`unused_effect_capability`, `overly_restrictive_mode`)* flags declared effects in `eff [...]` never performed in the body and generic bounds like `[T: mod copy]` where `T` is consumed at most once (relaxable to `[T: mod linear]`); (2d) *FIP Constructor Pairing (`missed_fip_opportunity`)* queries Stage 4's `ReuseSlot` analysis (#link(<ch-12-4>)[Section 13.4]) when reordering an owned `match` unpack before a same-sized constructor enables `@fip` zero-allocation in-place reuse; and (2e) *Cancel-Point Proximity and Secret Hygiene (`early_cancel_checkpoint`, `unredacted_pii_boundary`)* hoists `Cancel::check()?` above `Mode::Linear` acquisitions (#link(<ch-14-2>)[Section 15.2]) and guards `@pii` / Vault `Sec*` values (#link(<ch-31-4>)[Section 32.4] and #link(<ch-27-2>)[Section 28.2]).
 
@@ -4448,7 +5188,7 @@ pub struct BatchedJitDoctest {
 
 === 21.1 Semantic Highlighting, Perceptual Contrast, and Card-Rendering Guarantees
 <ch-20-1>
-+ *Syntax and Semantic Highlighting:* Chroma separates syntax-only rendering from type-enriched rendering. Tier 0 uses the lossless CST for arbitrary or incomplete snippets, with a target below 0.2 milliseconds and no regex backtracking. Tier 1 uses HIR/PCG information to mark `Mode::Linear` obligations from creation to terminal consumption, distinguish mutated `FieldTree` leaves from shared `in` leaves, and distinguish linear effects from abortable `Fail`/`Cancel` checkpoints. Mode crossing (#link(<ch-3>)[Chapter 3]) requires semantic information because syntax alone does not determine an instantiated binding's mode.
++ *Syntax and Semantic Highlighting:* Chroma separates syntax-only rendering from type-enriched rendering. Tier 0 uses the lossless CST for arbitrary or incomplete snippets, including unexpanded `sugar` `PhraseSkeleton` clauses and tagged literals (#link(<ch-6-sugar>)[Section 7.5]), with a target below 0.2 milliseconds and no regex backtracking. Tier 1 uses HIR/PCG information to mark `Mode::Linear` obligations from creation to terminal consumption, distinguish mutated `FieldTree` leaves from shared `in` leaves, and distinguish linear effects from abortable `Fail`/`Cancel` checkpoints, including `sugar` forms that declare `emits eff [Fail | Cancel]`. Mode crossing (#link(<ch-3>)[Chapter 3]) requires semantic information because syntax alone does not determine an instantiated binding's mode.
 
 + *Perceptually Uniform OKLCH Palettes with Verified WCAG AAA and APCA Contrast:* Hand-tuned sRGB syntax themes routinely suffer uneven perceived brightness—making punctuation, inout projections, or linear obligation markers either glaring or illegible across dark and light backgrounds. Chroma defines its flagship themes (*Vesper Dusk* deep obsidian dark and *Vesper Dawn* warm alabaster light) in *OKLCH perceptual color space* (Lightness, Chroma, Hue), assigning orthogonal hue families to Vesper's three language pillars: warm amber-coral for linear types, sink transfers, and obligation underlines; cool cyan-teal for second-class inout mutable FieldTree projections; luminous iris-violet for `eff [.\.\.]` lexical capabilities and handle blocks; emerald for `@proof` anchors and wire struct endian scalars (u32be, u64le); and neutral slate for copy/in bindings—all audited statically for at least 7.0:1 WCAG AAA contrast on primary tokens and at least 4.5:1 on comments.
 
@@ -10811,6 +11551,9 @@ The matrix below describes local properties of the listed models, not proofs of 
     [`uncompacted_zset_eq_compacted`],
     [#link(<ch-5-4>)[Section 5.4], #link(<ch-36>)[Ch 37]],
     [Constructive `Quot.sound` quotient equivalence equating uncompacted and consolidated Z-Set tiles.],
+    [`sugar_shared_hole_forbids_hidden_mutation`, `sugar_out_hole_disjoint_from_reads`],
+    [#link(<ch-6-sugar>)[Section 7.5] (`[WF-SugarPass]`)],
+    [The pass-visibility table lets a shared `in` hole reach only shared uses and an `out` hole only `out` uses; this checks the table, not expansion of real `sugar` rules.],
   ),
   kind: table,
 )
@@ -11713,6 +12456,40 @@ theorem uncompacted_zset_eq_compacted :
   apply Quot.sound
   unfold ZWeightEquiv
   decide
+
+-- ==================== 8. SKELETAL SUGAR PASS-MODE TRANSPARENCY =============
+inductive SugarPass where
+  | sharedIn | mutInout | initOut | moveSink
+  deriving DecidableEq, Repr
+
+def passPermitsUse (patHole templateUse : SugarPass) : Bool :=
+  match patHole, templateUse with
+  | .sharedIn, .sharedIn => true
+  | .mutInout, .sharedIn | .mutInout, .mutInout => true
+  | .initOut,  .initOut  => true
+  | .moveSink, .sharedIn | .moveSink, .mutInout | .moveSink, .moveSink => true
+  | _, _ => false
+
+def isMutatingOrConsuming (u : SugarPass) : Bool :=
+  match u with
+  | .sharedIn => false
+  | .mutInout | .initOut | .moveSink => true
+
+theorem sugar_shared_hole_forbids_hidden_mutation
+    (u : SugarPass)
+    (h_wf : passPermitsUse .sharedIn u = true) :
+    isMutatingOrConsuming u = false := by
+  cases u <;> first | rfl | cases h_wf
+
+theorem sugar_pass_permits_refl (p : SugarPass) :
+    passPermitsUse p p = true := by
+  cases p <;> rfl
+
+theorem sugar_out_hole_disjoint_from_reads
+    (u : SugarPass)
+    (h_wf : passPermitsUse .initOut u = true) :
+    u = .initOut := by
+  cases u <;> first | rfl | cases h_wf
 
 end Vesper.UnifiedTypeTheory
 ```
