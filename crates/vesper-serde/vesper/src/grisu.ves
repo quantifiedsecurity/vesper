@@ -1,0 +1,338 @@
+// @export abi 3
+//
+// @vesper/serde: Grisu shortest digits, Rust's
+// `core::num::flt2dec::strategy::grisu::format_shortest_opt` (Grisu3 with
+// the cached powers of ten for alpha = -60, gamma = -32). It either returns
+// exactly the digits and exponent of the exact Dragon algorithm or gives up
+// (`ok` false), and then `dragon.ves` decides, as Rust's
+// `grisu::format_shortest` falls back to `dragon::format_shortest`. The
+// digits are kept as one integer (at most 17 of them), so no sequence is
+// written on the fast path.
+
+// Shortest digits `d1 d2 ... dn` (as the integer `digits`) of a value
+// `0.d1 d2 ... dn * 10^k`.
+pub copy struct Digits {
+    ok: bool,
+    digits: u64,
+    n: u64,
+    k: i64
+}
+
+fn none() -> Digits {
+    Digits {
+        ok: false,
+        digits: 0,
+        n: 0,
+        k: 0
+    }
+}
+
+// Leading zeros of a 64-bit word (64 for zero), by halving.
+pub fn clz64(v: u64) -> u64 {
+    if v == 0 {
+        return 64;
+    }
+    let mut x = v;
+    let mut n: u64 = 0;
+    if x >> 32 == 0 {
+        n = wrapping_add(n, 32);
+        x = x << 32;
+    }
+    if x >> 48 == 0 {
+        n = wrapping_add(n, 16);
+        x = x << 16;
+    }
+    if x >> 56 == 0 {
+        n = wrapping_add(n, 8);
+        x = x << 8;
+    }
+    if x >> 60 == 0 {
+        n = wrapping_add(n, 4);
+        x = x << 4;
+    }
+    if x >> 62 == 0 {
+        n = wrapping_add(n, 2);
+        x = x << 2;
+    }
+    if x >> 63 == 0 {
+        n = wrapping_add(n, 1);
+    }
+    n
+}
+
+// `diy_float::Fp::mul`: the high word of the 128-bit product, rounded
+// half up (the same value as Rust's four 32-bit partial products).
+fn fp_mul(a: u64, b: u64) -> u64 {
+    let (lo, hi) = mul_wide(a, b);
+    wrapping_add(hi, lo >> 63)
+}
+
+// `max_pow10_no_more_than`: (kappa, 10^kappa) with 10^kappa <= x < 10^(kappa+1).
+fn max_pow10_no_more_than(x: u64) -> (u64, u64) {
+    if x < 10000 {
+        if x < 100 {
+            if x < 10 {
+                (0, 1)
+            } else {
+                (1, 10)
+            }
+        } else if x < 1000 {
+            (2, 100)
+        } else {
+            (3, 1000)
+        }
+    } else if x < 1000000 {
+        if x < 100000 {
+            (4, 10000)
+        } else {
+            (5, 100000)
+        }
+    } else if x < 100000000 {
+        if x < 10000000 {
+            (6, 1000000)
+        } else {
+            (7, 10000000)
+        }
+    } else if x < 1000000000 {
+        (8, 100000000)
+    } else {
+        (9, 1000000000)
+    }
+}
+
+// `x / 10^kappa` and `x % 10^kappa` for kappa in 0..=9, each with a
+// literal divisor.
+fn div_pow10(x: u64, kappa: u64) -> (u64, u64) {
+    match kappa {
+        0 => (x, 0),
+        1 => (x / 10, x % 10),
+        2 => (x / 100, x % 100),
+        3 => (x / 1000, x % 1000),
+        4 => (x / 10000, x % 10000),
+        5 => (x / 100000, x % 100000),
+        6 => (x / 1000000, x % 1000000),
+        7 => (x / 10000000, x % 10000000),
+        8 => (x / 100000000, x % 100000000),
+        _ => (x / 1000000000, x % 1000000000),
+    }
+}
+
+// `CACHED_POW10[idx]` as (f, e); its k is `8 * idx - 308`.
+fn cached_pow10(idx: u64) -> (u64, i64) {
+    match idx {
+        0 => (0xe61acf033d1a45df, -1087),
+        1 => (0xab70fe17c79ac6ca, -1060),
+        2 => (0xff77b1fcbebcdc4f, -1034),
+        3 => (0xbe5691ef416bd60c, -1007),
+        4 => (0x8dd01fad907ffc3c, -980),
+        5 => (0xd3515c2831559a83, -954),
+        6 => (0x9d71ac8fada6c9b5, -927),
+        7 => (0xea9c227723ee8bcb, -901),
+        8 => (0xaecc49914078536d, -874),
+        9 => (0x823c12795db6ce57, -847),
+        10 => (0xc21094364dfb5637, -821),
+        11 => (0x9096ea6f3848984f, -794),
+        12 => (0xd77485cb25823ac7, -768),
+        13 => (0xa086cfcd97bf97f4, -741),
+        14 => (0xef340a98172aace5, -715),
+        15 => (0xb23867fb2a35b28e, -688),
+        16 => (0x84c8d4dfd2c63f3b, -661),
+        17 => (0xc5dd44271ad3cdba, -635),
+        18 => (0x936b9fcebb25c996, -608),
+        19 => (0xdbac6c247d62a584, -582),
+        20 => (0xa3ab66580d5fdaf6, -555),
+        21 => (0xf3e2f893dec3f126, -529),
+        22 => (0xb5b5ada8aaff80b8, -502),
+        23 => (0x87625f056c7c4a8b, -475),
+        24 => (0xc9bcff6034c13053, -449),
+        25 => (0x964e858c91ba2655, -422),
+        26 => (0xdff9772470297ebd, -396),
+        27 => (0xa6dfbd9fb8e5b88f, -369),
+        28 => (0xf8a95fcf88747d94, -343),
+        29 => (0xb94470938fa89bcf, -316),
+        30 => (0x8a08f0f8bf0f156b, -289),
+        31 => (0xcdb02555653131b6, -263),
+        32 => (0x993fe2c6d07b7fac, -236),
+        33 => (0xe45c10c42a2b3b06, -210),
+        34 => (0xaa242499697392d3, -183),
+        35 => (0xfd87b5f28300ca0e, -157),
+        36 => (0xbce5086492111aeb, -130),
+        37 => (0x8cbccc096f5088cc, -103),
+        38 => (0xd1b71758e219652c, -77),
+        39 => (0x9c40000000000000, -50),
+        40 => (0xe8d4a51000000000, -24),
+        41 => (0xad78ebc5ac620000, 3),
+        42 => (0x813f3978f8940984, 30),
+        43 => (0xc097ce7bc90715b3, 56),
+        44 => (0x8f7e32ce7bea5c70, 83),
+        45 => (0xd5d238a4abe98068, 109),
+        46 => (0x9f4f2726179a2245, 136),
+        47 => (0xed63a231d4c4fb27, 162),
+        48 => (0xb0de65388cc8ada8, 189),
+        49 => (0x83c7088e1aab65db, 216),
+        50 => (0xc45d1df942711d9a, 242),
+        51 => (0x924d692ca61be758, 269),
+        52 => (0xda01ee641a708dea, 295),
+        53 => (0xa26da3999aef774a, 322),
+        54 => (0xf209787bb47d6b85, 348),
+        55 => (0xb454e4a179dd1877, 375),
+        56 => (0x865b86925b9bc5c2, 402),
+        57 => (0xc83553c5c8965d3d, 428),
+        58 => (0x952ab45cfa97a0b3, 455),
+        59 => (0xde469fbd99a05fe3, 481),
+        60 => (0xa59bc234db398c25, 508),
+        61 => (0xf6c69a72a3989f5c, 534),
+        62 => (0xb7dcbf5354e9bece, 561),
+        63 => (0x88fcf317f22241e2, 588),
+        64 => (0xcc20ce9bd35c78a5, 614),
+        65 => (0x98165af37b2153df, 641),
+        66 => (0xe2a0b5dc971f303a, 667),
+        67 => (0xa8d9d1535ce3b396, 694),
+        68 => (0xfb9b7cd9a4a7443c, 720),
+        69 => (0xbb764c4ca7a44410, 747),
+        70 => (0x8bab8eefb6409c1a, 774),
+        71 => (0xd01fef10a657842c, 800),
+        72 => (0x9b10a4e5e9913129, 827),
+        73 => (0xe7109bfba19c0c9d, 853),
+        74 => (0xac2820d9623bf429, 880),
+        75 => (0x80444b5e7aa7cf85, 907),
+        76 => (0xbf21e44003acdd2d, 933),
+        77 => (0x8e679c2f5e44ff8f, 960),
+        78 => (0xd433179d9c8cb841, 986),
+        79 => (0x9e19db92b4e31ba9, 1013),
+        80 => (0xeb96bf6ebadf77d9, 1039),
+        _ => (0, 0),
+    }
+}
+
+// `round_and_weed`: move the last digit down while that brings the
+// candidate closer to `v`, then accept only when the result is provably
+// the shortest correctly rounded one. Rust's std arithmetic wraps here, so
+// every operation is a wrapping one.
+fn round_and_weed(
+    digits0: u64,
+    n: u64,
+    k: i64,
+    remainder: u64,
+    threshold: u64,
+    plus1v: u64,
+    ten_kappa: u64,
+    ulp: u64
+) -> Digits {
+    let plus1v_down = wrapping_add(plus1v, ulp);
+    let plus1v_up = wrapping_sub(plus1v, ulp);
+    let mut digits = digits0;
+    let mut plus1w = remainder;
+    loop {
+        if !(plus1w < plus1v_up && wrapping_sub(threshold, plus1w) >= ten_kappa) {
+            break;
+        }
+        let next = wrapping_add(plus1w, ten_kappa);
+        if !(next < plus1v_up || wrapping_sub(plus1v_up, plus1w) >= wrapping_sub(next, plus1v_up)) {
+            break;
+        }
+        digits = wrapping_sub(digits, 1);
+        plus1w = next;
+    }
+    if plus1w < plus1v_down && wrapping_sub(threshold, plus1w) >= ten_kappa {
+        let next = wrapping_add(plus1w, ten_kappa);
+        if next
+            < plus1v_down
+            || wrapping_sub(plus1v_down, plus1w)
+            >= wrapping_sub(next, plus1v_down) {
+            return none();
+        }
+    }
+    if wrapping_mul(2, ulp) <= plus1w && plus1w <= wrapping_sub(threshold, wrapping_mul(4, ulp)) {
+        Digits {
+            ok: true,
+            digits: digits,
+            n: n,
+            k: k
+        }
+    } else {
+        none()
+    }
+}
+
+// `format_shortest_opt` for the decoded `mant * 2^exp` with neighbors
+// `mant - minus` and `mant + plus` (Rust's `flt2dec::Decoded`; the
+// interval ends' inclusiveness does not matter to Grisu).
+pub fn grisu_shortest(mant: u64, minus: u64, plus: u64, exp: i64) -> Digits {
+    // `Fp::normalize` of mant + plus, the others normalized to its exponent.
+    let s = clz64(wrapping_add(mant, plus));
+    let plus_f = bit_shl(wrapping_add(mant, plus), s);
+    let plus_e = wrapping_sub(exp, wrapping_i64(s));
+    let minus_f = bit_shl(wrapping_sub(mant, minus), s);
+    let v_f = bit_shl(mant, s);
+    // `cached_power(ALPHA - plus.e - 64, GAMMA - plus.e - 64)`.
+    let gamma = wrapping_sub(wrapping_sub(-32, plus_e), 64);
+    let idx = wrapping_mul(wrapping_u64(wrapping_add(gamma, 1087)), 80) / 2126;
+    let (cf, ce) = cached_pow10(idx);
+    let minusk = wrapping_sub(wrapping_mul(8, wrapping_i64(idx)), 308);
+    let plus_m = fp_mul(plus_f, cf);
+    let minus_m = fp_mul(minus_f, cf);
+    let v_m = fp_mul(v_f, cf);
+    let e = wrapping_u64(wrapping_sub(0, wrapping_add(wrapping_add(plus_e, ce), 64)));
+    let plus1 = wrapping_add(plus_m, 1);
+    let minus1 = wrapping_sub(minus_m, 1);
+    let mask = wrapping_sub(bit_shl(1, e), 1);
+    let plus1int = bit_shr(plus1, e);
+    let plus1frac = plus1 & mask;
+    let (max_kappa, max_ten_kappa) = max_pow10_no_more_than(plus1int);
+    let k = wrapping_add(wrapping_sub(wrapping_i64(max_kappa), minusk), 1);
+    let delta1 = wrapping_sub(plus1, minus1);
+    let delta1frac = delta1 & mask;
+    let plus1v = wrapping_sub(plus1, v_m);
+    // The integral part, one digit per power of ten.
+    let mut digits: u64 = 0;
+    let mut i: u64 = 0;
+    let mut kappa = max_kappa;
+    let mut ten_kappa = max_ten_kappa;
+    let mut remainder = plus1int;
+    loop {
+        let (q, r) = div_pow10(remainder, kappa);
+        digits = wrapping_add(wrapping_mul(digits, 10), q);
+        i = wrapping_add(i, 1);
+        let plus1rem = wrapping_add(bit_shl(r, e), plus1frac);
+        if plus1rem < delta1 {
+            return round_and_weed(digits, i, k, plus1rem, delta1, plus1v, bit_shl(ten_kappa, e), 1);
+        }
+        if i > max_kappa {
+            break;
+        }
+        kappa = wrapping_sub(kappa, 1);
+        ten_kappa = ten_kappa / 10;
+        remainder = r;
+    }
+    // The fractional part, scaled by ten per digit.
+    let mut remainder = plus1frac;
+    let mut threshold = delta1frac;
+    let mut ulp: u64 = 1;
+    loop {
+        remainder = wrapping_mul(remainder, 10);
+        threshold = wrapping_mul(threshold, 10);
+        ulp = wrapping_mul(ulp, 10);
+        let q = bit_shr(remainder, e);
+        let r = remainder & mask;
+        digits = wrapping_add(wrapping_mul(digits, 10), q);
+        i = wrapping_add(i, 1);
+        if r < threshold {
+            return round_and_weed(
+                digits,
+                i,
+                k,
+                r,
+                threshold,
+                wrapping_mul(plus1v, ulp),
+                bit_shl(1, e),
+                ulp
+            );
+        }
+        if i > 17 {
+            // Unreachable by Grisu's bounds; never trust more digits.
+            return none();
+        }
+        remainder = r;
+    }
+}
