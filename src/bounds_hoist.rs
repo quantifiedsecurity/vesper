@@ -903,13 +903,7 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
         // words are spilled and reloaded anyway, and many of them push other
         // values out of registers: such a loop hoists one receiver at most
         // (Ignis's pass loops ran 4% more instructions with no cap).
-        let calls = insts().any(|i| match &i.op {
-            Op::Call { .. } | Op::Tiled { .. } | Op::Fip { .. } => true,
-            Op::Seq { op, .. } => {
-                !(keeps_length(*op) || matches!(op, SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. }))
-            }
-            _ => false,
-        });
+        let calls = insts().any(|i| calls_out(&i.op));
         let mut places: BTreeMap<String, HeaderHoist> = BTreeMap::new();
         for i in insts() {
             let Op::Read {
@@ -964,6 +958,10 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
                 .reads
                 .insert(i.dest);
         }
+        // More than one receiver in a loop that calls costs more than it
+        // saves, whichever receivers are picked (#1023: by read count, by
+        // reads against calls, or only in loops of at most 8-32 blocks;
+        // docs/parallel-results/port-speed-params-and-hoisting.md).
         if calls && places.len() > 1 {
             continue;
         }
@@ -988,6 +986,24 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
         }
     }
     out
+}
+
+/// Whether `op` may call out of the function (a call, or a sequence
+/// operation that may reach the allocator), clobbering the caller-saved
+/// registers.
+pub(crate) fn calls_out(op: &Op) -> bool {
+    match op {
+        Op::Call { .. }
+        | Op::Tiled { .. }
+        | Op::Fip { .. }
+        | Op::Indirect { .. }
+        | Op::Closure { .. }
+        | Op::Handle { .. } => true,
+        Op::Seq { op, .. } => {
+            !(keeps_length(*op) || matches!(op, SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. }))
+        }
+        _ => false,
+    }
 }
 
 fn parse_place(place: &str) -> Place {

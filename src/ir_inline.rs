@@ -152,8 +152,12 @@ pub struct Report {
     /// Inlined call sites whose known arguments removed branches or blocks
     /// from the copy.
     pub folded: usize,
-    /// Instructions the copies of each callee added.
+    /// Instructions the copies of each callee added, including the copies
+    /// that arrived inside another inlined body.
     pub growth: BTreeMap<String, usize>,
+    /// Function -> units of each callee body copied into it (directly or
+    /// nested), so inlining that function charges those callees again.
+    contents: BTreeMap<String, BTreeMap<String, usize>>,
 }
 
 /// Why a direct call stayed a call.
@@ -408,6 +412,11 @@ fn inlinable(world: &World, f: &FunctionIr) -> Result<(), &'static str> {
     };
     let refuse = |c: bool, why| if c { Err(why) } else { Ok(()) };
     refuse(source.fip, "fip")?;
+    // A `dyn` function has one body shared by every vtable (§7.1).
+    refuse(
+        world.dyn_objects.params.contains_key(&f.name),
+        "dyn parameters",
+    )?;
     // Trait-bounded generics never get here: the front end monomorphizes
     // them into ordinary `f$mono$T` functions. Any other generic callee is
     // instantiated per call site (`instance`); see `generic_body_ok`.
@@ -781,10 +790,17 @@ fn inline_into(
                     ));
                     return Err(Refusal::Size);
                 };
-                let copies = report.growth.get(callee).copied().unwrap_or(0);
+                // The copy also duplicates every body already inlined into
+                // the callee: charge those callees' caps too.
+                let nested = report.contents.get(callee);
+                let over_cap = std::iter::once((callee, cost))
+                    .chain(nested.into_iter().flatten().map(|(n, u)| (n, *u)))
+                    .any(|(n, u)| {
+                        report.growth.get(n).copied().unwrap_or(0) + u > budget.callee_growth
+                    });
                 if added + cost > budget.caller_growth
                     || report.added + cost > budget.program_growth
-                    || copies + cost > budget.callee_growth
+                    || over_cap
                     || handles_added + handles(program, target) > budget.caller_handles
                 {
                     return Err(Refusal::Growth);
@@ -816,7 +832,20 @@ fn inline_into(
             handles_added += handles(program, &target);
             report.added += cost;
             report.sites += 1;
+            let nested = report
+                .contents
+                .get(&target.name)
+                .cloned()
+                .unwrap_or_default();
+            let holds = report.contents.entry(caller.name.clone()).or_default();
+            *holds.entry(target.name.clone()).or_default() += cost;
+            for (n, u) in &nested {
+                *holds.entry(n.clone()).or_default() += u;
+            }
             *report.growth.entry(target.name.clone()).or_default() += cost;
+            for (n, u) in nested {
+                *report.growth.entry(n).or_default() += u;
+            }
             *report.callees.entry(target.name.clone()).or_default() += 1;
             if split.is_some() {
                 *report.partial.entry(target.name.clone()).or_default() += 1;
