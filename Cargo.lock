@@ -5567,7 +5567,7 @@ dependencies = [
  "vesper-pact-binding",
  "vesper-pulse",
  "vesper-resonance",
- "vesper-semver",
+ "vesper-semver-seed",
  "vesper-serde",
  "vesper-silicon",
  "vesper-simd",
@@ -6212,6 +6212,18 @@ dependencies = [
 
 [[package]]
 name = "vesper-semver"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "vesper-port-abi",
+ "vesper-port-harness",
+ "vesper-semver-seed",
+]
+
+[[package]]
+name = "vesper-semver-seed"
 version = "0.1.0"
 dependencies = [
  "semver",
