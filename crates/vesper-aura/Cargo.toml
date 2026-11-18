@@ -6,19 +6,22 @@ description = "Bounded keyed Aura view reconciliation and transactional retained
 publish = false
 build = "build.rs"
 
+# The implementation is the Vesper port: build.rs links the Loom package in
+# vesper/ and sets cfg(vesper_port). It replaced the Rust implementation once
+# it matched it in tests and beat it on every ABBA workload (#953, #979).
+# vesper-aura is outside `cargo tree -p vesper -e normal,build`, so it needs
+# no seed copy.
+
 [features]
-# Forward the implementation to the Vesper build of the Loom package in vesper/
-# (port wave P1 lane 13, #910).
-vesper-port = ["dep:vesper-port-abi", "dep:vesper-port-harness"]
 # Deliberately wrong Vesper builds, one per ported module: the port test
 # runs must fail (scripts/test-port-harness.sh asserts which tests do).
-vesper-port-divergent = ["vesper-port"]
+vesper-port-divergent = []
 
 [dependencies]
-vesper-port-abi = { path = "../vesper-port-abi", optional = true }
+vesper-port-abi = { path = "../vesper-port-abi" }
 
 [dev-dependencies]
 vesper-bench = { path = "../vesper-bench" }
 
 [build-dependencies]
-vesper-port-harness = { path = "../vesper-port-harness", optional = true }
+vesper-port-harness = { path = "../vesper-port-harness" }

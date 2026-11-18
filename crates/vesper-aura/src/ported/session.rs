@@ -149,14 +149,16 @@ impl<B: Backend> Session<B> {
         let (words, text) = tree.as_ref().map(codec::tree).unwrap_or_default();
         let plan = self.core.prepare(tree.is_some(), &words, &text);
         self.core.reserve(&plan);
-        if let Some(fault) = plan.fault() {
+        // The plan's fields and patches are read in place.
+        let view = plan.as_ref();
+        if let Some(fault) = view.fault() {
             return Err(PrepareFailure {
                 error: PrepareError::View(codec::view_error(fault)),
                 tree,
             });
         }
-        let (session, base_revision, next_revision) = plan.header();
-        let patches = codec::patches(session, &plan.ops(), tree.as_ref());
+        let (session, base_revision, next_revision) = (view.session(), view.base(), view.next());
+        let patches = codec::patches(session, view.ops().iter(), tree.as_ref());
         Ok(PreparedUpdate {
             transaction: Transaction {
                 session,

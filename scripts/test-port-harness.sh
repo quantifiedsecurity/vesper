@@ -83,10 +83,10 @@ cargo test --locked -p vesper-beacon -p vesper-beacon-seed
 cargo test --locked -p vesper-beacon-arrow --test beacon_build
 # Port wave P1 lane 14 (#911): vesper-prism against its Vesper port.
 sh crates/vesper-prism/test-port.sh
-# vesper-aura (port wave P1 lane 13, #910): both builds pass the crate's
-# tests, and one divergent edit per ported module fails that module's test.
+# vesper-aura (port wave P1 lane 13, #910; the port is its only build since
+# #979): the crate's tests pass, and one divergent edit per ported module
+# fails that module's test.
 cargo test --locked -p vesper-aura
-cargo test --locked -p vesper-aura --features vesper-port
 divergent "Aura port (view.rs)" budgets_fail_before_backend_and_accepted_tree_remains_unmountable \
     local_thread_claim_does_not_require_or_assert_os_main_thread \
     -p vesper-aura --features vesper-port-divergent --test validation_close
