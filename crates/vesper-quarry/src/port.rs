@@ -18,6 +18,10 @@
 //! * plan: `Scan [0, table, binding, nslots, slots.., npreds, preds..]`,
 //!   `Filter [1, predicate, input]`, `Join [2, kind, lhs, rhs, on]`.
 //!
+//! `prepare` passes its catalog as slices of the Vesper build's own
+//! `CTab`/`CCol` mirrors instead (export ABI v3 lends them in place; port
+//! parity lane 7, #955).
+//!
 //! `Q` handles own their Vesper allocations and are freed on drop.
 #![allow(unsafe_code)]
 
@@ -33,6 +37,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 use std::mem::size_of;
+use vesper_port_abi::Word;
 
 #[rustfmt::skip]
 #[path = "../port/binding.rs"]
@@ -88,7 +93,7 @@ const JOINS: [JoinKind; 4] = [
     JoinKind::Full,
 ];
 
-fn limit_words(l: Limits) -> Vec<u64> {
+fn limit_words(l: Limits) -> [u64; 16] {
     [
         l.sql_bytes,
         l.tokens,
@@ -107,9 +112,7 @@ fn limit_words(l: Limits) -> Vec<u64> {
         size_of::<Value>(),
         size_of::<Vec<Value>>(),
     ]
-    .iter()
-    .map(|&x| x as u64)
-    .collect()
+    .map(|x| x as u64)
 }
 
 /// An input under construction: words plus the text pool they point into.
@@ -119,6 +122,14 @@ struct Enc {
     text: Vec<u8>,
 }
 impl Enc {
+    /// An encoder with room for a typical call, so that small inputs do not
+    /// grow the buffers word by word.
+    fn sized(words: usize, text: usize) -> Self {
+        Self {
+            words: Vec::with_capacity(words),
+            text: Vec::with_capacity(text),
+        }
+    }
     fn w(&mut self, x: u64) {
         self.words.push(x);
     }
@@ -181,6 +192,41 @@ impl Enc {
                 self.w(u64::from(col.nullable));
             }
         }
+    }
+    /// The catalog as the Vesper build's own `CTab`/`CCol` storage (export
+    /// ABI v3 lends both slices in place), with the names in the text pool.
+    fn catalog_mirrors(
+        &mut self,
+        c: &HermeticCatalog,
+    ) -> (Vec<binding::repr::CTab>, Vec<binding::repr::CCol>) {
+        let mut tabs = Vec::with_capacity(c.tables.len());
+        let mut cols = Vec::with_capacity(c.tables.values().map(Vec::len).sum());
+        for (name, defs) in &c.tables {
+            let (noff, nlen) = self.range(name.as_bytes());
+            tabs.push(binding::repr::CTab {
+                noff,
+                nlen,
+                start: cols.len() as u64,
+                n: defs.len() as u64,
+            });
+            for col in defs {
+                let (noff, nlen) = self.range(col.name.as_bytes());
+                cols.push(binding::repr::CCol {
+                    noff,
+                    nlen,
+                    ty: ty_index(col.ty),
+                    nullable: Word::new(col.nullable),
+                    used: Word::new(false),
+                });
+            }
+        }
+        (tabs, cols)
+    }
+    /// Appends `b` to the text pool and returns its range.
+    fn range(&mut self, b: &[u8]) -> (u64, u64) {
+        let off = self.text.len() as u64;
+        self.text.extend_from_slice(b);
+        (off, b.len() as u64)
     }
     fn expr(&mut self, e: &TypedExpr) {
         let tag = match &e.node {
@@ -273,13 +319,18 @@ impl Dec<'_> {
     fn b(&mut self) -> bool {
         self.w() != 0
     }
-    fn raw(&mut self) -> Vec<u8> {
+    fn bytes(&mut self) -> &[u8] {
         let off = self.n();
         let len = self.n();
-        self.pool.get(off..off + len).unwrap_or_default().to_vec()
+        self.pool.get(off..off + len).unwrap_or_default()
     }
+    fn raw(&mut self) -> Vec<u8> {
+        self.bytes().to_vec()
+    }
+    /// One allocation per string: the port only returns valid UTF-8, so
+    /// the lossy conversion borrows and `into_owned` copies once.
     fn s(&mut self) -> String {
-        String::from_utf8_lossy(&self.raw()).into_owned()
+        String::from_utf8_lossy(self.bytes()).into_owned()
     }
     fn ty(&mut self) -> ScalarType {
         TYPES[self.n().min(5)]
@@ -393,16 +444,13 @@ impl Dec<'_> {
 
 /// The error of a failed call, or the handle of a successful one.
 fn checked(q: binding::Q) -> Result<binding::Q> {
-    let (err, message) = {
-        let r = q.as_ref();
-        (
-            r.err(),
-            String::from_utf8_lossy(&r.msg().to_vec()).into_owned(),
-        )
-    };
-    match err {
+    let r = q.as_ref();
+    match r.err() {
         0 => Ok(q),
-        k => Err(Error::new(KINDS[(k as usize - 1).min(9)], message)),
+        k => Err(Error::new(
+            KINDS[(k as usize - 1).min(9)],
+            String::from_utf8_lossy(&r.msg().to_vec()).into_owned(),
+        )),
     }
 }
 
@@ -461,8 +509,8 @@ pub(crate) fn prepare(
     params: &[ParamDef],
     limits: Limits,
 ) -> Result<PreparedQuery> {
-    let mut e = Enc::default();
-    e.catalog(catalog);
+    let mut e = Enc::sized(16, 64);
+    let (tabs, cols) = e.catalog_mirrors(catalog);
     e.w(params.len() as u64);
     for p in params {
         e.s(&p.name);
@@ -470,6 +518,8 @@ pub(crate) fn prepare(
         e.w(u64::from(p.nullable));
     }
     let q = checked(binding::prepare(
+        &tabs,
+        &cols,
         &e.words,
         &e.text,
         sql.as_bytes(),
@@ -524,7 +574,7 @@ pub(crate) fn prepare(
 
 /// `RelPlan::optimize` through the port.
 pub(crate) fn optimize(plan: &RelPlan) -> RelPlan {
-    let mut e = Enc::default();
+    let mut e = Enc::sized(64, 0);
     e.plan(plan);
     let q = binding::optimize(&e.words);
     let words = q.as_ref().words().to_vec();

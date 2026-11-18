@@ -1,6 +1,7 @@
 // Module paths of @vesper/quarry (see lib.ves).
 use self::{
     CCol,
+    D,
     Q
 };
 use self::util::{
@@ -8,6 +9,8 @@ use self::util::{
     cw,
     ex,
     fail_name,
+    free_d,
+    new_d,
     new_q,
     node,
     none
@@ -43,34 +46,34 @@ use self::stats::{
 
 // Collect the scans (by binding) and, for each join, its right-hand scan:
 // scans[binding] = node; joins records (rhs binding, join node).
-// Scans of plan n by binding into `aux` (pre-filled with none), and
-// (right binding, join node) pairs into `aux2`.
-pub fn collect(inout q: Q, n: u64) {
+// Scans of plan n by binding into `scans` (pre-filled with none), and
+// (right binding, join node) pairs into `joins`.
+pub fn collect(in q: Q, n: u64, inout scans: ChunkSeq[u64], inout joins: ChunkSeq[u64]) {
     let x = node(in q, n);
     if x.kind == 0 {
-        q.aux.try_set(x.c, n);
+        scans.try_set(x.c, n);
     } else if x.kind == 1 {
-        collect(inout q, x.b);
+        collect(in q, x.b, inout scans, inout joins);
     } else {
-        collect(inout q, x.b);
-        collect(inout q, x.c);
+        collect(in q, x.b, inout scans, inout joins);
+        collect(in q, x.c, inout scans, inout joins);
         let r = node(in q, x.c);
         if r.kind == 0 {
-            q.aux2.push(r.c);
-            q.aux2.push(n);
+            joins.push(r.c);
+            joins.push(n);
         }
     }
 }
 
 // The equality conjuncts `b.c = a.d` of the condition at p, as
-// (slot of b, binding of a, slot of a) triples appended to `aux4`.
-pub fn join_keys(inout q: Q, p: u64, b: u64) {
+// (slot of b, binding of a, slot of a) triples appended to `keys`.
+pub fn join_keys(in q: Q, p: u64, b: u64, inout keys: ChunkSeq[u64]) {
     let tag = ex(in q, p);
     if tag == 4 {
         let a = wrapping_add(p, 3);
-        join_keys(inout q, a, b);
+        join_keys(in q, a, b, inout keys);
         let e = ex_end(in q, a);
-        join_keys(inout q, e, b);
+        join_keys(in q, e, b, inout keys);
     } else if tag == 3 && ex(in q, wrapping_add(p, 3)) == 0 {
         let x = wrapping_add(p, 4);
         let y = ex_end(in q, x);
@@ -80,15 +83,15 @@ pub fn join_keys(inout q: Q, p: u64, b: u64) {
             if xb == b && yb != b {
                 let xs = ex(in q, wrapping_add(x, 3));
                 let ys = ex(in q, wrapping_add(y, 3));
-                q.aux4.push(xs);
-                q.aux4.push(yb);
-                q.aux4.push(ys);
+                keys.push(xs);
+                keys.push(yb);
+                keys.push(ys);
             } else if yb == b && xb != b {
                 let xs = ex(in q, wrapping_add(x, 3));
                 let ys = ex(in q, wrapping_add(y, 3));
-                q.aux4.push(ys);
-                q.aux4.push(xb);
-                q.aux4.push(xs);
+                keys.push(ys);
+                keys.push(xb);
+                keys.push(xs);
             }
         }
     }
@@ -103,6 +106,13 @@ pub fn join_keys(inout q: Q, p: u64, b: u64) {
 // outer slot, rows, cost]: kind is scan 0, index 1, index_join 2.
 pub fn access_paths_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
     let mut q = new_q();
+    let mut ds = new_d();
+    access_paths_run(inout q, inout ds, in prog, in text);
+    free_d(ds);
+    q
+}
+
+pub fn access_paths_run(inout q: Q, inout ds: D, in prog: Slice[u64], in text: Slice[u8]) {
     q.pool.extend(in text);
     q.ex.extend(in prog);
     let (root, plan_end) = decode_plan(inout q, 0);
@@ -114,39 +124,43 @@ pub fn access_paths_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
         let d = CCol {
             noff: ex(in q, p),
             nlen: ex(in q, wrapping_add(p, 1)),
-            ty: q.vals.len(),
+            ty: ds.vals.len(),
             nullable: false,
             used: false
         };
-        q.vals.push(v);
+        ds.vals.push(v);
         // `analyze` indexes `counts` like `vals`.
-        q.counts.push(0);
+        ds.counts.push(0);
         q.params.push(d);
         p = wrapping_add(p, 5);
     }
     p = load_catalog_ex(inout q, p);
-    p = load_data(inout q, p);
+    p = load_data(inout ds, inout q, p);
     let nidx = ex(in q, p);
     // rows[0] records where the index list starts in `ex`.
     q.rows.push(wrapping_add(p, 1));
-    // aux: scans by binding; aux2: joins; aux3: the rows estimate of each
-    // binding's chosen path; aux4: join keys.
+    // The scans by binding, the joins, the rows estimate of each binding's
+    // chosen path and the join keys of one join.
+    let mut scans = ChunkSeq::new[u64]();
+    let mut joins = ChunkSeq::new[u64]();
+    let mut est = ChunkSeq::new[u64]();
+    let mut keys = ChunkSeq::new[u64]();
     for i in 0..q.plan.len() {
-        q.aux.push(none());
+        scans.push(none());
     }
-    collect(inout q, root);
-    for b in 0..q.aux.len() {
-        let s = cw(in q.aux, b);
+    collect(in q, root, inout scans, inout joins);
+    for b in 0..scans.len() {
+        let s = cw(in scans, b);
         if s == none() {
             break;
         }
         let x = node(in q, s);
-        let d = find_data(in q, x.a, x.b);
+        let d = find_data(in ds, in q, x.a, x.b);
         if d == none() {
             fail_name(inout q, 8, "missing data for ", x.a, x.b);
-            return q;
+            return;
         }
-        let n = dtab(in q, d).n;
+        let n = dtab(in ds, in q, d).n;
         // Scan.
         let mut kind: u64 = 0;
         let mut ioff: u64 = 0;
@@ -164,11 +178,11 @@ pub fn access_paths_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
                 continue_none();
             } else {
                 let slot = ex(in q, wrapping_add(x.d, k));
-                let bd = bounds_of(in q, x, slot);
+                let bd = bounds_of(in ds, in q, x, slot);
                 if bd.has_lo || bd.has_hi {
-                    let st = analyze(inout q, d, k);
+                    let st = analyze(inout ds, inout q, d, k);
                     let bk = bound_kind(in q, bd);
-                    let m = index_rows(in q, bd, bk, st, n);
+                    let m = index_rows(in ds, in q, bd, bk, st, n);
                     let c = wrapping_add(wrapping_mul(1000, height(n)), wrapping_mul(1010, m));
                     let at = wrapping_add(base, wrapping_mul(i, 6));
                     let no = ex(in q, at);
@@ -190,39 +204,39 @@ pub fn access_paths_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
         // LEFT joins.
         let mut j: u64 = 0;
         loop {
-            if wrapping_add(j, 1) >= q.aux2.len() {
+            if wrapping_add(j, 1) >= joins.len() {
                 break;
             }
-            if cw(in q.aux2, j) == b {
-                let jn = node(in q, cw(in q.aux2, wrapping_add(j, 1)));
+            if cw(in joins, j) == b {
+                let jn = node(in q, cw(in joins, wrapping_add(j, 1)));
                 if jn.a == 0 || jn.a == 1 {
-                    q.aux4.truncate(0);
-                    join_keys(inout q, jn.d, b);
+                    keys.truncate(0);
+                    join_keys(in q, jn.d, b, inout keys);
                     let mut t: u64 = 0;
                     loop {
-                        if t >= q.aux4.len() {
+                        if t >= keys.len() {
                             break;
                         }
-                        let bslot = cw(in q.aux4, t);
-                        let ab = cw(in q.aux4, wrapping_add(t, 1));
-                        let aslot = cw(in q.aux4, wrapping_add(t, 2));
+                        let bslot = cw(in keys, t);
+                        let ab = cw(in keys, wrapping_add(t, 1));
+                        let aslot = cw(in keys, wrapping_add(t, 2));
                         t = wrapping_add(t, 3);
                         if !has_binding(in q, jn.b, ab) {
                             continue_none();
                         } else {
                             let k = column_of(in q, x, bslot);
-                            let an = node(in q, cw(in q.aux, ab));
-                            let ad = find_data(in q, an.a, an.b);
+                            let an = node(in q, cw(in scans, ab));
+                            let ad = find_data(in ds, in q, an.a, an.b);
                             let ak = column_of(in q, an, aslot);
                             if k != none() && ad != none() && ak != none() {
-                                let ast = analyze(inout q, ad, ak);
-                                let mut kk = cw(in q.aux3, ab);
+                                let ast = analyze(inout ds, inout q, ad, ak);
+                                let mut kk = cw(in est, ab);
                                 if kk > ast.distinct {
                                     kk = ast.distinct;
                                 }
                                 for i in 0..nidx {
                                     if index_column(in q, x, i) == k {
-                                        let st = analyze(inout q, d, k);
+                                        let st = analyze(inout ds, inout q, d, k);
                                         let probe = if st.distinct == 0 {
                                             0
                                         } else {
@@ -261,7 +275,7 @@ pub fn access_paths_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
             }
             j = wrapping_add(j, 2);
         }
-        q.aux3.push(rows);
+        est.push(rows);
         q.words.push(kind);
         q.words.push(ioff);
         q.words.push(ilen);
@@ -271,5 +285,4 @@ pub fn access_paths_q(in prog: Slice[u64], in text: Slice[u8]) -> Q {
         q.words.push(rows);
         q.words.push(cost);
     }
-    q
 }

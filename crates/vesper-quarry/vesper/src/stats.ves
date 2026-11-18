@@ -1,6 +1,7 @@
 // Module stats of @vesper/quarry (see lib.ves).
 use self::{
     Bound,
+    D,
     Node,
     Q,
     Stat,
@@ -33,8 +34,8 @@ use self::values::{
 
 // Access path selection (spec/planner-ddl.md, sections 1 and 2).
 
-pub fn stat(in q: Q, i: u64) -> Stat {
-    match q.stats.try_get(i) {
+pub fn stat(in ds: D, in q: Q, i: u64) -> Stat {
+    match ds.stats.try_get(i) {
         Option::Some(s) => s,
         Option::None => Stat {
             binding: 0,
@@ -52,15 +53,15 @@ pub fn stat(in q: Q, i: u64) -> Stat {
 // ANALYZE of column k of data table d: the exact non-null count, distinct
 // count and sorted distinct values with their counts. Cached in `stats`
 // (`binding` is the data table, `slot` the column).
-pub fn analyze(inout q: Q, d: u64, k: u64) -> Stat {
-    for i in 0..q.stats.len() {
-        let s = stat(in q, i);
+pub fn analyze(inout ds: D, inout q: Q, d: u64, k: u64) -> Stat {
+    for i in 0..ds.stats.len() {
+        let s = stat(in ds, in q, i);
         if s.binding == d && s.slot == k {
             return s;
         }
     }
-    let t = dtab(in q, d);
-    let start = q.vals.len();
+    let t = dtab(in ds, in q, d);
+    let start = ds.vals.len();
     let mut nonnull: u64 = 0;
     let mut p = t.start;
     for r in 0..t.n {
@@ -73,7 +74,7 @@ pub fn analyze(inout q: Q, d: u64, k: u64) -> Stat {
             nonnull = wrapping_add(nonnull, 1);
             // Binary search in vals[start .. end].
             let mut lo = start;
-            let mut hi = q.vals.len();
+            let mut hi = ds.vals.len();
             let mut found = false;
             loop {
                 if lo >= hi {
@@ -81,10 +82,10 @@ pub fn analyze(inout q: Q, d: u64, k: u64) -> Stat {
                 }
                 let (half, r2) = div_rem(wrapping_sub(hi, lo), 2);
                 let mid = wrapping_add(lo, half);
-                let o = compare_vals(in q, vat(in q, mid), v);
+                let o = compare_vals(in q, vat(in ds, in q, mid), v);
                 if o == 1 {
-                    let c = cw(in q.counts, mid);
-                    q.counts.try_set(mid, wrapping_add(c, 1));
+                    let c = cw(in ds.counts, mid);
+                    ds.counts.try_set(mid, wrapping_add(c, 1));
                     found = true;
                     break;
                 } else if o == 0 {
@@ -95,21 +96,21 @@ pub fn analyze(inout q: Q, d: u64, k: u64) -> Stat {
             }
             if !found {
                 // Insert at lo.
-                q.vals.push(v);
-                q.counts.push(1);
-                let mut j = wrapping_sub(q.vals.len(), 1);
+                ds.vals.push(v);
+                ds.counts.push(1);
+                let mut j = wrapping_sub(ds.vals.len(), 1);
                 loop {
                     if j <= lo {
                         break;
                     }
-                    let prev = vat(in q, wrapping_sub(j, 1));
-                    let pc = cw(in q.counts, wrapping_sub(j, 1));
-                    q.vals.try_set(j, prev);
-                    q.counts.try_set(j, pc);
+                    let prev = vat(in ds, in q, wrapping_sub(j, 1));
+                    let pc = cw(in ds.counts, wrapping_sub(j, 1));
+                    ds.vals.try_set(j, prev);
+                    ds.counts.try_set(j, pc);
                     j = wrapping_sub(j, 1);
                 }
-                q.vals.try_set(lo, v);
-                q.counts.try_set(lo, 1);
+                ds.vals.try_set(lo, v);
+                ds.counts.try_set(lo, 1);
             }
         }
     }
@@ -119,11 +120,11 @@ pub fn analyze(inout q: Q, d: u64, k: u64) -> Stat {
         ioff: 0,
         ilen: 0,
         nonnull: nonnull,
-        distinct: wrapping_sub(q.vals.len(), start),
+        distinct: wrapping_sub(ds.vals.len(), start),
         start: start,
-        n: wrapping_sub(q.vals.len(), start)
+        n: wrapping_sub(ds.vals.len(), start)
     };
-    q.stats.push(s);
+    ds.stats.push(s);
     s
 }
 
@@ -169,7 +170,7 @@ pub fn no_bound() -> Bound {
 
 // A bound operand: a literal, or a parameter (known when it is bound).
 // Returns (is an operand, value, known).
-pub fn operand(in q: Q, p: u64) -> (bool, Val, bool) {
+pub fn operand(in ds: D, in q: Q, p: u64) -> (bool, Val, bool) {
     let tag = ex(in q, p);
     if tag == 2 {
         (true, val_at(in q, in q.ex, wrapping_add(p, 3)), true)
@@ -179,7 +180,7 @@ pub fn operand(in q: Q, p: u64) -> (bool, Val, bool) {
         for i in 0..q.params.len() {
             let d = param(in q, i);
             if same(in q.pool, d.noff, d.nlen, off, len) {
-                return (true, vat(in q, d.ty), true);
+                return (true, vat(in ds, in q, d.ty), true);
             }
         }
         (true, null_val(), false)
@@ -233,7 +234,7 @@ pub fn tighten(in q: Q, b: Bound, op: u64, v: Val, known: bool) -> Bound {
 }
 
 // The sargable bounds on `slot` among the predicates of scan x.
-pub fn bounds_of(in q: Q, x: Node, slot: u64) -> Bound {
+pub fn bounds_of(in ds: D, in q: Q, x: Node, slot: u64) -> Bound {
     let mut b = no_bound();
     let mut l = x.f;
     loop {
@@ -251,12 +252,12 @@ pub fn bounds_of(in q: Q, x: Node, slot: u64) -> Bound {
             let c = ex_end(in q, a);
             if op != 1 {
                 if ex(in q, a) == 0 && ex(in q, wrapping_add(a, 3)) == slot {
-                    let (is_op, v, known) = operand(in q, c);
+                    let (is_op, v, known) = operand(in ds, in q, c);
                     if is_op {
                         b = tighten(in q, b, op, v, known);
                     }
                 } else if ex(in q, c) == 0 && ex(in q, wrapping_add(c, 3)) == slot {
-                    let (is_op, v, known) = operand(in q, a);
+                    let (is_op, v, known) = operand(in ds, in q, a);
                     // `v > c` is `c < v`.
                     let flipped = if op == 2 {
                         4
@@ -297,7 +298,7 @@ pub fn bound_kind(in q: Q, b: Bound) -> u64 {
 }
 
 // The estimated rows of an index path over column stats s.
-pub fn index_rows(in q: Q, b: Bound, kind: u64, s: Stat, n: u64) -> u64 {
+pub fn index_rows(in ds: D, in q: Q, b: Bound, kind: u64, s: Stat, n: u64) -> u64 {
     if b.null {
         return 0;
     }
@@ -316,7 +317,7 @@ pub fn index_rows(in q: Q, b: Bound, kind: u64, s: Stat, n: u64) -> u64 {
     }
     let mut m: u64 = 0;
     for i in 0..s.n {
-        let v = vat(in q, wrapping_add(s.start, i));
+        let v = vat(in ds, in q, wrapping_add(s.start, i));
         let above = if b.has_lo {
             let o = compare_vals(in q, v, b.lo);
             o == 2 || (o == 1 && b.lo_incl)
@@ -330,7 +331,7 @@ pub fn index_rows(in q: Q, b: Bound, kind: u64, s: Stat, n: u64) -> u64 {
             true
         };
         if above && below {
-            m = wrapping_add(m, cw(in q.counts, wrapping_add(s.start, i)));
+            m = wrapping_add(m, cw(in ds.counts, wrapping_add(s.start, i)));
         }
     }
     m
