@@ -407,7 +407,7 @@ fn c_postfix(value: CExpr, row: i64, loans: CEnv, depth: i64)
             c_live_loans(loans, 0, c_empty()),
             depth + 1
         );
-        let effects = c_require_row(sig.effects, row, args.env, loans, value.start, end);
+        let effects = c_require_row(sig.effects, row, args.env, value.start, end);
         c_postfix(
             c_result(sig.result, args.next, args.env, value.start, end, -1),
             row,

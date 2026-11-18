@@ -301,6 +301,14 @@ fn drive(workload: &str, rust: &str, vesper: &str) {
         analysis.decision,
         a.len()
     );
+    // `ratios` is sorted; the interval's ranks are 1-based.
+    if let Some(interval) = analysis.interval {
+        println!(
+            "{workload}: 95% median interval of Vesper/Rust: {:.3}x..{:.3}x",
+            ratios[interval.lower_rank - 1],
+            ratios[interval.upper_rank - 1]
+        );
+    }
     for arm in [&mut baseline, &mut candidate] {
         let _ = arm.child.kill();
         let _ = arm.child.wait();

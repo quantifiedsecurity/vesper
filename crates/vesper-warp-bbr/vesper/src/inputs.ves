@@ -5,30 +5,25 @@
 // `OnTransmit()` + `OnPacketSent(P)`. With `guard`, the send is refused
 // while the send guard is closed (probe packets pass `false`).
 pub fn bbrv3_record_send(inout b: Bbrv3, now_ns: u64, packet: SentPacket, guard: bool)
-    -> Result[PacketDeliveryState, BbrFault] {
-    match check_time(b.last_now_ns, now_ns) {
-        Result::Err(e) => {
-            return Result::Err(e);
-        },
-        Result::Ok(u) => (),
-    }
+    -> PacketDeliveryState eff [Fail[BbrFault]] {
+    check_time(b.last_now_ns, now_ns);
     match pn_fault(packet.pn) {
         Option::Some(e) => {
-            return Result::Err(e);
+            Fail::raise(e);
         },
         Option::None => (),
     }
     let bytes = widen_u64(packet.bytes);
     if packet.in_flight {
         if bytes == 0 {
-            return Result::Err(
+            Fail::raise(
                 BbrFault::EmptyInFlightPacket {
                     pn: packet.pn
                 }
             );
         }
         if guard && !send_allowed(b.inflight, b.cwnd) {
-            return Result::Err(
+            Fail::raise(
                 BbrFault::CwndFull {
                     bytes_in_flight: b.inflight,
                     cwnd: b.cwnd
@@ -36,7 +31,7 @@ pub fn bbrv3_record_send(inout b: Bbrv3, now_ns: u64, packet: SentPacket, guard:
             );
         }
         if add_overflows(b.inflight, bytes) {
-            return Result::Err(BbrFault::CounterOverflow);
+            Fail::raise(BbrFault::CounterOverflow);
         }
     }
     b.last_now_ns = now_ns;
@@ -52,17 +47,15 @@ pub fn bbrv3_record_send(inout b: Bbrv3, now_ns: u64, packet: SentPacket, guard:
             b.is_cwnd_limited = true;
         }
     }
-    Result::Ok(
-        PacketDeliveryState {
-            delivered: b.delivered,
-            delivered_ns: b.delivered_ns,
-            first_sent_ns: b.first_sent_ns,
-            is_app_limited: b.app_limited != 0,
-            tx_in_flight: b.inflight,
-            lost: congested(in b),
-            counted: packet.in_flight
-        }
-    )
+    PacketDeliveryState {
+        delivered: b.delivered,
+        delivered_ns: b.delivered_ns,
+        first_sent_ns: b.first_sent_ns,
+        is_app_limited: b.app_limited != 0,
+        tx_in_flight: b.inflight,
+        lost: congested(in b),
+        counted: packet.in_flight
+    }
 }
 
 // §35.5 `schedule_edt_ns`: max(now, next_edt) as this packet's departure,
@@ -104,45 +97,44 @@ pub fn ack_check(
     packet: AckedPacket,
     snapshot: PacketDeliveryState,
     previously_lost: bool
-) -> Result[Unit, BbrFault] {
+) eff [Fail[BbrFault]] {
     match pn_fault(packet.pn) {
         Option::Some(e) => {
-            return Result::Err(e);
+            Fail::raise(e);
         },
         Option::None => (),
     }
     if packet.sent_ns > now_ns {
-        return Result::Err(
+        Fail::raise(
             BbrFault::AckedBeforeSent {
                 pn: packet.pn
             }
         );
     }
     if !snapshot.counted {
-        return Result::Ok(());
+        return;
     }
     match snapshot_fault(packet.pn, snapshot, delivered, sat_add(lost, ce_bytes)) {
         Option::Some(e) => {
-            return Result::Err(e);
+            Fail::raise(e);
         },
         Option::None => (),
     }
     let bytes = widen_u64(packet.bytes);
     if add_overflows(p.newly_delivered, bytes) {
-        return Result::Err(BbrFault::CounterOverflow);
+        Fail::raise(BbrFault::CounterOverflow);
     }
     p.newly_delivered = wrapping_add(p.newly_delivered, bytes);
     if !previously_lost {
         p.released = wrapping_add(p.released, bytes);
     }
-    Result::Ok(())
 }
 
 // The checks of an ACK over its totals, after every packet passed
 // `ack_check`.
-pub fn ack_check_totals(p: AckProgress, inflight: u64, delivered: u64) -> Result[Unit, BbrFault] {
+pub fn ack_check_totals(p: AckProgress, inflight: u64, delivered: u64) eff [Fail[BbrFault]] {
     if p.released > inflight {
-        return Result::Err(
+        Fail::raise(
             BbrFault::InflightUnderflow {
                 bytes_in_flight: inflight,
                 released: p.released
@@ -150,9 +142,8 @@ pub fn ack_check_totals(p: AckProgress, inflight: u64, delivered: u64) -> Result
         );
     }
     if add_overflows(delivered, p.newly_delivered) {
-        return Result::Err(BbrFault::CounterOverflow);
+        Fail::raise(BbrFault::CounterOverflow);
     }
-    Result::Ok(())
 }
 
 // One step of an accepted ACK: `first` starts it (RTT sample, flight
@@ -264,33 +255,32 @@ fn finish_ack(inout b: Bbrv3, now_ns: u64, inout p: AckProgress) {
 
 // Loss detection declared `packet` lost: `OnEnterFastRecovery()` on the
 // first loss of an episode, then `HandleLostPacket(P)`.
-pub fn bbrv3_on_packet_lost(inout b: Bbrv3, now_ns: u64, packet: LostPacket, s: PacketDeliveryState)
-    -> Result[Unit, BbrFault] {
-    match check_time(b.last_now_ns, now_ns) {
-        Result::Err(e) => {
-            return Result::Err(e);
-        },
-        Result::Ok(u) => (),
-    }
+pub fn bbrv3_on_packet_lost(
+    inout b: Bbrv3,
+    now_ns: u64,
+    packet: LostPacket,
+    s: PacketDeliveryState
+) eff [Fail[BbrFault]] {
+    check_time(b.last_now_ns, now_ns);
     match pn_fault(packet.pn) {
         Option::Some(e) => {
-            return Result::Err(e);
+            Fail::raise(e);
         },
         Option::None => (),
     }
     if !s.counted {
         b.last_now_ns = now_ns;
-        return Result::Ok(());
+        return;
     }
     match snapshot_fault(packet.pn, s, b.delivered, congested(in b)) {
         Option::Some(e) => {
-            return Result::Err(e);
+            Fail::raise(e);
         },
         Option::None => (),
     }
     let bytes = widen_u64(packet.bytes);
     if bytes > b.inflight {
-        return Result::Err(
+        Fail::raise(
             BbrFault::InflightUnderflow {
                 bytes_in_flight: b.inflight,
                 released: bytes
@@ -298,7 +288,7 @@ pub fn bbrv3_on_packet_lost(inout b: Bbrv3, now_ns: u64, packet: LostPacket, s: 
         );
     }
     if add_overflows(b.lost, bytes) {
-        return Result::Err(BbrFault::CounterOverflow);
+        Fail::raise(BbrFault::CounterOverflow);
     }
     b.last_now_ns = now_ns;
     b.inflight = wrapping_sub(b.inflight, bytes);
@@ -310,69 +300,45 @@ pub fn bbrv3_on_packet_lost(inout b: Bbrv3, now_ns: u64, packet: LostPacket, s: 
         b.recovery_start_ns = now_ns;
     }
     handle_lost_packet(inout b, now_ns, bytes, s);
-    Result::Ok(())
 }
 
 // `count` newly reported ECN-CE marks: each counts as one SMSS of
 // congested data and as one loss event.
-pub fn bbrv3_on_ecn_ce(inout b: Bbrv3, now_ns: u64, count: u64) -> Result[Unit, BbrFault] {
-    match check_time(b.last_now_ns, now_ns) {
-        Result::Err(e) => {
-            return Result::Err(e);
-        },
-        Result::Ok(u) => (),
-    }
+pub fn bbrv3_on_ecn_ce(inout b: Bbrv3, now_ns: u64, count: u64) eff [Fail[BbrFault]] {
+    check_time(b.last_now_ns, now_ns);
     b.last_now_ns = now_ns;
     if count == 0 {
-        return Result::Ok(());
+        return;
     }
     b.ce_bytes = sat_add(b.ce_bytes, sat_mul(count, b.smss));
     note_loss(inout b);
     b.loss_events_in_round = sat_add(b.loss_events_in_round, wrapping_sub(count, 1));
     b.ce_pending = true;
     b.ce_in_loss_round = true;
-    Result::Ok(())
 }
 
 // RFC 9002 persistent congestion, handled as the draft's `OnEnterRTO()`.
-pub fn bbrv3_on_persistent_congestion(inout b: Bbrv3, now_ns: u64) -> Result[Unit, BbrFault] {
-    match check_time(b.last_now_ns, now_ns) {
-        Result::Err(e) => {
-            return Result::Err(e);
-        },
-        Result::Ok(u) => (),
-    }
+pub fn bbrv3_on_persistent_congestion(inout b: Bbrv3, now_ns: u64) eff [Fail[BbrFault]] {
+    check_time(b.last_now_ns, now_ns);
     b.last_now_ns = now_ns;
     save_cwnd(inout b);
     save_state_upon_loss(inout b);
     b.cwnd = min(sat_add(b.inflight, b.smss), 4294967295);
     b.in_recovery = true;
     b.recovery_start_ns = now_ns;
-    Result::Ok(())
 }
 
 // The application ran out of data (`MarkConnectionAppLimited()`).
-pub fn bbrv3_on_app_limited(inout b: Bbrv3, now_ns: u64) -> Result[Unit, BbrFault] {
-    match check_time(b.last_now_ns, now_ns) {
-        Result::Err(e) => {
-            return Result::Err(e);
-        },
-        Result::Ok(u) => (),
-    }
+pub fn bbrv3_on_app_limited(inout b: Bbrv3, now_ns: u64) eff [Fail[BbrFault]] {
+    check_time(b.last_now_ns, now_ns);
     b.last_now_ns = now_ns;
     mark_connection_app_limited(inout b);
-    Result::Ok(())
 }
 
 // The transport declared the last loss episode spurious
 // (`HandleSpuriousLossDetection()`); ends loss recovery.
-pub fn bbrv3_on_spurious_loss_detected(inout b: Bbrv3, now_ns: u64) -> Result[Unit, BbrFault] {
-    match check_time(b.last_now_ns, now_ns) {
-        Result::Err(e) => {
-            return Result::Err(e);
-        },
-        Result::Ok(u) => (),
-    }
+pub fn bbrv3_on_spurious_loss_detected(inout b: Bbrv3, now_ns: u64) eff [Fail[BbrFault]] {
+    check_time(b.last_now_ns, now_ns);
     b.last_now_ns = now_ns;
     restore_cwnd(inout b);
     b.is_loss_in_round = false;
@@ -402,5 +368,4 @@ pub fn bbrv3_on_spurious_loss_detected(inout b: Bbrv3, now_ns: u64) -> Result[Un
     }
     b.undo_state = Option::None;
     b.in_recovery = false;
-    Result::Ok(())
 }
