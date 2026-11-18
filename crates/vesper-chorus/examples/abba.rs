@@ -1,13 +1,13 @@
-//! ABBA benchmark of the Rust and Vesper builds of the choreography front
-//! end (port wave P3b lane 6, #1068).
+//! ABBA benchmark of the replaced Rust implementation and the Vesper
+//! library of the choreography front end (port wave P3b lane 6, #1068).
 //!
 //! - `project`: parse and project every role of a fixed set of
 //!   choreographies (the textbook examples, the Raft protocols and larger
 //!   generated ones with nested choices, loops and third parties).
 //! - `explore`: the bounded asynchronous exploration of a smaller set.
 //!
-//! The two builds are one crate compiled with and without `vesper-port`, so
-//! they cannot share a process. Each arm is a worker process (this example
+//! The Rust arm is this example built at a commit that still has the Rust
+//! implementation (scripts/bench.sh), so the arms cannot share a process. Each arm is a worker process (this example
 //! built one way or the other) that runs one batch of the workload per
 //! request on stdin; the driver times each request with `vesper-bench`'s
 //! `run_abba`, so both arms carry the same pipe round trip. Every batch

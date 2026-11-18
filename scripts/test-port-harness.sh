@@ -231,4 +231,4 @@ sh crates/vesper-loom-audit/port/test-port.sh  # port wave P3a lane 4 (#1039): v
 sh crates/vesper-bench/port/check.sh  # port P3a lane 5 (#1040): vesper-bench, both builds and one divergence check per ported module
 . crates/vesper-ebpf/port/check.sh  # port P3a lane 6 (#1041): vesper-ebpf, both builds and one divergence check per ported module
 . crates/vesper-silicon/port/check.sh  # port P3a lane 7 (#1042): vesper-silicon, both builds and one divergence check per ported module
-sh crates/vesper-chorus/port/test-port.sh  # port P3b lane 6 (#1068): vesper-chorus, both builds and one divergence check per ported module
+sh crates/vesper-chorus/port/test-port.sh  # port P3b lane 6 (#1068): vesper-chorus (the Vesper library is its only build) and one divergence check per ported module

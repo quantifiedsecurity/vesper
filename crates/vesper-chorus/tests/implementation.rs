@@ -1,17 +1,11 @@
-//! The `vesper-port` feature selects the Vesper build of the ported entry
-//! points (port wave P3b lane 6, #1068), and that build frees what it
-//! allocates.
+//! The ported entry points are the Vesper library (port wave P3b lane 6,
+//! #1068), which frees what it allocates.
 use vesper_chorus::check::{ExploreLimits, explore};
 use vesper_chorus::{IMPLEMENTATION, parse_choreography, port_live_allocations, project_all};
 
 #[test]
-fn feature_selects_the_build() {
-    let want = if cfg!(feature = "vesper-port") {
-        "vesper"
-    } else {
-        "rust"
-    };
-    assert_eq!(IMPLEMENTATION, want);
+fn the_vesper_library_is_the_build() {
+    assert_eq!(IMPLEMENTATION, "vesper");
 }
 
 #[test]

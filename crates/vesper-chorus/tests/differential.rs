@@ -1,8 +1,9 @@
 //! Differential check of the ported front end (port wave P3b lane 6,
 //! #1068): seeded random choreography sources, valid and malformed, are
 //! parsed, projected, checked for duality and explored, and the `Debug`
-//! text of every result is folded into one FNV-1a digest. Both builds must
-//! produce the digest pinned here, which the Rust build computed.
+//! text of every result is folded into one FNV-1a digest. The Vesper library
+//! must produce the digest pinned here, which the replaced Rust
+//! implementation computed (before #1068 deleted it).
 use vesper_chorus::check::{ExploreLimits, explore, explore_locals};
 use vesper_chorus::{
     Choreography, GBranch, GlobalChor, RoleId, are_dual, parse_choreography, project_all,
@@ -238,8 +239,8 @@ fn random_choreographies_match_the_rust_build() {
     assert_eq!(digest, PINNED, "digest {digest:#x}, counts {counts:?}");
 }
 
-/// Computed by the Rust build (`cargo test -p vesper-chorus --test
-/// differential`).
+/// Computed by the Rust implementation (`cargo test -p vesper-chorus --test
+/// differential` at a2adca20, the last commit that has it).
 const PINNED: u64 = 0x8e90_f36e_6924_f221;
 
 #[test]

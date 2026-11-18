@@ -1,13 +1,13 @@
 #!/bin/sh
 # The vesper-chorus port checks for Cargo (the Linux "Vesper ports" job runs
 # this from scripts/test-port-harness.sh; BuildBuddy runs the Bazel targets
-# in crates/vesper-chorus/BUILD.bazel). Every crate test must pass against
-# the Vesper build, and a build with one wrong line in a ported module (see
-# DIVERGENT in build.rs) must fail the test that guards that module while
-# an unrelated test still passes, one module at a time.
+# in crates/vesper-chorus/BUILD.bazel). Every crate test must pass (the
+# Vesper library is the only build), and a build with one wrong line in a
+# ported module (see DIVERGENT in build.rs) must fail the test that guards
+# that module while an unrelated test still passes, one module at a time.
 set -eu
 cd "$(dirname "$0")/../../.."
-cargo test --locked -p vesper-chorus --features vesper-port
+cargo test --locked -p vesper-chorus
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT HUP INT TERM
 while read -r module failing; do

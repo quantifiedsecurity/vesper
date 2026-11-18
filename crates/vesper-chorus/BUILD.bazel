@@ -1,21 +1,12 @@
-load("@rules_rs//rs/private:all_crate_deps.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
-load("@vesper_cargo//:packages.bzl", "PACKAGES")
 load("//tools/bazel:defs.bzl", "vesper_crate")
 load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_package", "vesper_port_object")
 
-# The Rust build is the default (default features). The Vesper port of the
-# choreography front end (the Loom package in vesper/, Cargo feature
-# `vesper-port`, port wave P3b lane 6, #1068) is non-default until it
-# reaches performance parity. The crate is outside the compiler's closure,
+# The Vesper library is the only build of the choreography front end
+# (parsing, well-formedness, projection, duality, exploration; port wave
+# P3b lane 6, #1068): build.rs links the object built here from the Loom
+# package in vesper/ and checks port/binding.rs against the generated
+# binding, as for vesper-aura. The crate is outside the compiler's closure,
 # so there is no seed package.
-vesper_crate(
-    # Lean resolves symlinked runfiles to the source tree and then rejects
-    # them as outside --root, so these run in a copy of regular files.
-    copy_test_cwd = ["test/lean"],
-    extra_test_data = ["//:lean"],
-)
-
 vesper_package(
     name = "port_package",
     srcs = glob(["vesper/src/**/*.ves"]),
@@ -29,50 +20,27 @@ vesper_port_object(
     target = VESPER_TARGET,
 )
 
-# The Vesper build: the same sources with the feature, forwarding to the
-# port through the committed binding (which the Cargo build checks against
-# the generated one). The object is linked into each test binary.
-_CRATE_DATA = PACKAGES["crates/vesper-chorus"].crate_data()
-
-rust_library(
-    name = "port",
-    srcs = glob(["src/**/*.rs"]) + ["port/binding.rs"],
-    compile_data = ["README.md"],
-    crate_features = ["vesper-port"],
-    crate_name = "vesper_chorus",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    deps = ["//crates/vesper-port-abi"] + all_crate_deps(
-        _CRATE_DATA,
-        normal = True,
-        platforms = _CRATE_DATA["platforms"],
-    ),
+filegroup(
+    name = "chorus_vesper_binding",
+    srcs = [":chorus_vesper"],
+    output_group = "rust_binding",
 )
 
-# The test files that do not need the TLS fixtures or Lean, against the
-# port. Every test runs against the port in Cargo, in the Linux "Vesper
-# ports" job (crates/vesper-chorus/port/test-port.sh).
-[
-    rust_test(
-        name = "port_%s_test" % test,
-        srcs = ["tests/%s.rs" % test] + glob(["tests/common/**/*.rs"]),
-        compile_data = [":chorus_vesper"],
-        crate_features = ["vesper-port"],
-        crate_name = test,
-        crate_root = "tests/%s.rs" % test,
-        edition = "2024",
-        rustc_flags = ["-Clink-arg=$(location :chorus_vesper)"],
-        deps = [":port"] + (["//crates/vesper-simpulse"] if test in ["raft_sim", "session"] else []),
-    )
-    for test in [
-        "differential",
-        "implementation",
-        "projection",
-        "raft_depth",
-        "raft_sim",
-        "session",
-    ]
-]
+vesper_crate(
+    build_script_data = [
+        ":chorus_vesper",
+        ":chorus_vesper_binding",
+    ],
+    build_script_env = {
+        # rules_rust already makes these execpaths absolute.
+        "VESPER_PORT_OBJECT": "$(execpath :chorus_vesper)",
+        "VESPER_PORT_GENERATED_BINDING": "$(execpath :chorus_vesper_binding)",
+    },
+    # Lean resolves symlinked runfiles to the source tree and then rejects
+    # them as outside --root, so these run in a copy of regular files.
+    copy_test_cwd = ["test/lean"],
+    extra_test_data = ["//:lean"],
+)
 
 # The divergent builds, one per ported module (the Cargo
 # `vesper-port-divergent` feature applies the same edits, DIVERGENT in

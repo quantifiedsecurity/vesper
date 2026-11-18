@@ -1,23 +1,21 @@
-//! Under `vesper-port`, compile the Vesper library `chorus` (the Loom package
-//! in vesper/) into a static library and check the committed binding (see
-//! docs/maintenance/porting-a-crate.md). Without it this is a no-op.
+//! Compile the Vesper library `chorus` (the Loom package in vesper/) into a
+//! static library and check the committed binding (see
+//! docs/maintenance/porting-a-crate.md). Under Bazel the object is prebuilt
+//! (VESPER_PORT_OBJECT).
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    #[cfg(feature = "vesper-port")]
-    {
-        let port = vesper_port_harness::Port::new("chorus", "vesper").binding("port/binding.rs");
-        #[cfg(feature = "vesper-port-divergent")]
-        let port = {
-            // One module at a time (`VESPER_CHORUS_DIVERGE=parse`), or all.
-            println!("cargo:rerun-if-env-changed=VESPER_CHORUS_DIVERGE");
-            let only = std::env::var("VESPER_CHORUS_DIVERGE").ok();
-            DIVERGENT
-                .iter()
-                .filter(|(module, _, _)| only.as_deref().is_none_or(|m| m == *module))
-                .fold(port, |port, (_, from, to)| port.edit(from, to))
-        };
-        port.build();
-    }
+    let port = vesper_port_harness::Port::new("chorus", "vesper").binding("port/binding.rs");
+    #[cfg(feature = "vesper-port-divergent")]
+    let port = {
+        // One module at a time (`VESPER_CHORUS_DIVERGE=parse`), or all.
+        println!("cargo:rerun-if-env-changed=VESPER_CHORUS_DIVERGE");
+        let only = std::env::var("VESPER_CHORUS_DIVERGE").ok();
+        DIVERGENT
+            .iter()
+            .filter(|(module, _, _)| only.as_deref().is_none_or(|m| m == *module))
+            .fold(port, |port, (_, from, to)| port.edit(from, to))
+    };
+    port.build();
 }
 
 /// The divergence checks, one wrong line per ported module (mirrored in

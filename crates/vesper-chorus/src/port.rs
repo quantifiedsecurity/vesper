@@ -1,4 +1,4 @@
-//! The Vesper build (feature `vesper-port`, port wave P3b lane 6, #1068):
+//! The Vesper library (port wave P3b lane 6, #1068), the only build:
 //! parsing, well-formedness, projection, duality and exploration forward to
 //! the Vesper library `chorus` (`vesper/`) through the generated binding
 //! (`port/binding.rs`). Only the representation adapters live here: the

@@ -11,15 +11,22 @@ Claim: #1068 (stays open: this is part 1 of the lane). Base: `main` at
   builder of `parse.rs`, the well-formedness checks of `chor.rs`, endpoint
   projection with full branch merging (`project.rs`), binary duality and the
   bounded asynchronous explorer (`check.rs`).
-- It is a `vesper-port` Cargo feature of the crate itself, as in
-  `crates/vesper-warp-tcp`: the crate is outside the compiler's closure, so
-  there is no seed. **Rust stays the default build and no Rust code is
-  deleted** (owner rule). No dependent switches.
-- Every crate test passes on both builds (110 tests, plus the new ones
-  below). Because Raft and the session monitors call `parse_choreography`
-  and `project` for their protocols, `raft_sim`, `raft_depth`, `session`,
-  `warp_session`, `warp_tls` and `replog_warp` also run their protocols
-  through the port.
+- **The Vesper library is the only build of these parts and their Rust
+  code is deleted** (the owner's call once the port beat Rust, as for
+  Aura). The port first landed behind a non-default `vesper-port` feature
+  and was measured against the Rust build; the last commit with the Rust
+  implementation is `a2adca20`, which `scripts/bench.sh` builds as its
+  baseline. `build.rs` always links the library, as in `crates/vesper-aura`.
+  The crate is outside the compiler's closure, so there is no seed.
+- Raft, sessions, the simulated network, durable storage, Warp and RDMA
+  stay Rust until part 2. The shared types (`Choreography`, `GlobalChor`,
+  `LocalType`, the errors) and the `LocalType`/`GlobalChor` helper methods
+  that the session monitors call stay Rust too.
+- Every crate test passed on both builds before the deletion (110 tests,
+  plus the new ones below), and passes on the Vesper library now. Because
+  Raft and the session monitors call `parse_choreography` and `project` for
+  their protocols, `raft_sim`, `raft_depth`, `session`, `warp_session`,
+  `warp_tls` and `replog_warp` run their protocols through the library.
 - Speed (ABBA, release, 12 epochs): the port takes **0.70x** the Rust
   build's time to parse and project 24 choreographies (0.82x the
   instructions), and **0.004x** to explore 6 (0.006x the instructions),
@@ -30,7 +37,7 @@ simulated network) is not in this PR; see "Remaining" below.
 
 ## API inventory
 
-| Item | Port-backed build |
+| Item | Implementation |
 | --- | --- |
 | `parse_choreography` | `parse`: lex, parse, build and check in Vesper; the wrapper rebuilds `Choreography` from the result words |
 | `Choreography::new` (well-formedness) | `check_chor` |
@@ -38,10 +45,10 @@ simulated network) is not in this PR; see "Remaining" below.
 | `are_dual` | `dual` |
 | `check::explore`, `check::explore_locals` | `explore` (projection and exploration in one call for `explore`) |
 | `LocalType::{choice, mentions, subst, unfold, alpha_eq, head_summary, render}`, `GlobalChor::{node_count, involves, free_vars_within}`, `Choreography` accessors, the error types and their `Display` | Rust: methods of the shared Rust types. Their logic is also ported (in `local.ves` and `tree.ves`), as part of the entry points above |
-| New: `IMPLEMENTATION`, `port_live_allocations` | `"vesper"`/`"rust"`; the port's leak counter (0 in the Rust build) |
+| New: `IMPLEMENTATION`, `port_live_allocations` | `"vesper"`; the library's leak counter |
 
 The types (`Choreography`, `GlobalChor`, `LocalType`, the error enums) stay
-the crate's own Rust types, shared by both builds. `src/port.rs` encodes a
+the crate's own Rust types. `src/port.rs` encodes a
 call's inputs as words plus one text buffer and decodes the result words;
 the formats are documented there and in `vesper/src/lib.ves`.
 
@@ -52,7 +59,7 @@ the formats are documented there and in `vesper/src/lib.ves`.
   symbol (`util.ves`), so string equality is one word. Byte order of
   symbols is Rust's `String` order, which `LocalType::choice` sorts by.
 - **Shared continuations.** The parser's builder gives every arm of a choice
-  the same continuation node; the Rust build clones the tree. Each node
+  the same continuation node; the Rust implementation cloned the tree. Each node
   keeps its expanded size, so `MAX_NODES` is charged exactly as in Rust.
 - **Hash-consed local types** (`local.ves`). Equal local types are equal
   ids, so `merge`'s `a == b`, the explorer's `*t == End` and its visited
@@ -62,8 +69,8 @@ the formats are documented there and in `vesper/src/lib.ves`.
   table. States are visited in the Rust order (a stack, successors in role
   and branch order), so state counts and the first error are identical.
   This, not code generation, is why exploration is two orders of magnitude
-  faster: the Rust build clones and hashes whole `LocalType` trees for
-  every state.
+  faster: the Rust implementation cloned and hashed whole `LocalType`
+  trees for every state.
 - **No recursion over untrusted shapes at the boundary.** Trees cross in
   postorder and are rebuilt with a value stack on both sides; the port's
   recursive passes are bounded by `MAX_DEPTH` (validated trees) as in Rust.
@@ -76,18 +83,20 @@ the formats are documented there and in `vesper/src/lib.ves`.
 ## Unit tests
 
 The crate has no `#[cfg(test)]` unit tests, so none needed treatment. New
-tests, run against both builds:
+tests (run against both builds before the Rust code was deleted):
 
 - `tests/differential.rs`: 3,000 seeded random choreography sources (about
   40% malformed: undeclared and unused roles, self-messages, repeated
   labels, unbound `continue`, lexical damage), parsed, projected, checked
   for duality, explored (with and without hand-swapped endpoints), with the
   `Debug` and `Display` text of every result folded into one digest pinned
-  from the Rust build. It found one bug during the port (a message text).
+  from the Rust implementation. It found one bug during the port (a message text).
   `CHORUS_DIFF_DUMP` and `CHORUS_DIFF_SHOW` locate a diverging seed. Also
   hand-built trees through `Choreography::new`.
-- `tests/implementation.rs`: the feature selects the build, and repeated
-  parse/project/explore calls leave no live allocation in the port.
+- `tests/implementation.rs`: repeated parse/project/explore calls leave no
+  live allocation in the library, and a 20,000-arm choice with descending
+  labels projects in O(n log n) (a review found the first version's
+  insertion sort quadratic).
 
 ## Divergence checks
 
@@ -108,8 +117,8 @@ alone and asserts that its guarding test fails while
 
 ## ABBA
 
-`examples/abba.rs`, driven by `scripts/bench.sh` (release, both builds as
-worker processes, `vesper-bench`'s `run_abba`, 12 measured epochs of
+`examples/abba.rs`, driven by `scripts/bench.sh` (release; the Rust arm is
+built from `a2adca20` in a git worktree; both arms are worker processes, `vesper-bench`'s `run_abba`, 12 measured epochs of
 A/B/B/A, digests compared on every batch). Cloud host, 4 vCPUs, Linux
 x86_64. Instruction counts: `valgrind --tool=callgrind` on `abba once`
 (2.5M startup instructions in both, included).
@@ -146,7 +155,7 @@ word runs (`intern_state`).
 
 ## Root patch and shared files
 
-- `Cargo.lock`: `vesper-port-abi`, `vesper-port-harness` (optional) and
+- `Cargo.lock`: `vesper-port-abi`, `vesper-port-harness` (build) and
   `vesper-bench` (dev) for `vesper-chorus`. No root `Cargo.toml` change.
 - One line in the `fixtures()` skip predicate of
   `tests/fixtures/self_host/driver.rs` (the package uses `use`, #880).
@@ -154,11 +163,12 @@ word runs (`intern_state`).
 
 ## Checks run
 
-- `cargo test -p vesper-chorus` and `cargo test -p vesper-chorus --features
-  vesper-port`: all pass (Linux x86_64).
+- Before the deletion: `cargo test -p vesper-chorus` with and without
+  `--features vesper-port`, all pass (Linux x86_64). After: `cargo test -p
+  vesper-chorus` (via `port/test-port.sh`), all pass.
 - `port/test-port.sh` divergence loop: all six modules detected.
 - `cargo +1.100.0 clippy -p vesper-chorus --all-targets -- -D warnings`,
-  with and without `--features vesper-port`; `cargo fmt --check`;
+  with and without `--features vesper-port-divergent`; `cargo fmt --check`;
   `vesper fmt --check` and `vesper check` on the package.
 - Bazel targets are run by CI (BuildBuddy), not locally.
 
@@ -176,3 +186,5 @@ word runs (`intern_state`).
 - **Sessions** over `Box[dyn Transport]` and `simnet.rs` over
   `Box[dyn SimRole]`: after lanes 1 and 2 (#1063, #1064).
 - `durable.rs`, `warpnet.rs` and `rdma.rs` stay Rust (plan).
+- Raft and sessions stay Rust until they are ported, then follow the same
+  rule (the owner's call on deletion).
