@@ -5707,7 +5707,7 @@ dependencies = [
 name = "vesper-chorus"
 version = "0.1.0"
 dependencies = [
- "vesper-simpulse-seed",
+ "vesper-simpulse",
  "vesper-warp",
  "vesper-warp-crypto",
  "vesper-warp-shard",
@@ -5829,7 +5829,7 @@ dependencies = [
  "tokio",
  "vesper-loom-cas",
  "vesper-quarry",
- "vesper-simpulse-seed",
+ "vesper-simpulse",
  "zstd 0.13.4",
 ]
 
