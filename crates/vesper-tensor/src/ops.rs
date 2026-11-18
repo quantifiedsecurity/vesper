@@ -5,11 +5,15 @@
 //! as the llama2.c reference (`run.c`) so results are reproducible; there is no
 //! claim of cross-ISA bit equality for `exp`, `powf`, `sin` and `cos`, which
 //! come from the platform math library.
+// The port-backed build (src/port.rs) replaces some Rust bodies, leaving
+// their helpers unused there.
+#![cfg_attr(vesper_port, allow(dead_code, unused_imports))]
 use crate::quant::Matrix;
 use crate::simd::Kernel;
 use crate::Error;
 
 /// `out[i] = weight[i] * (x[i] / sqrt(mean(x^2) + epsilon))`.
+#[cfg(not(vesper_port))]
 pub fn rms_norm(out: &mut [f32], x: &[f32], weight: &[f32], epsilon: f32) -> Result<(), Error> {
     if x.is_empty() || out.len() != x.len() || weight.len() != x.len() {
         return Err(Error::Shape("rms_norm lengths"));
@@ -28,6 +32,21 @@ pub fn rms_norm(out: &mut [f32], x: &[f32], weight: &[f32], epsilon: f32) -> Res
         *o = w * (inv * v);
     }
     Ok(())
+}
+#[cfg(vesper_port)]
+pub fn rms_norm(out: &mut [f32], x: &[f32], weight: &[f32], epsilon: f32) -> Result<(), Error> {
+    crate::port::check(
+        crate::port::binding::rms_norm(
+            crate::port::bits_mut(out),
+            crate::port::bits(x),
+            crate::port::bits(weight),
+            epsilon.to_bits(),
+        ),
+        |fault| match fault {
+            crate::port::Fault::Shape => Error::Shape("rms_norm lengths"),
+            _ => Error::InvalidEpsilon,
+        },
+    )
 }
 
 /// Rotary position embedding on interleaved pairs `(2i, 2i + 1)` of each head,
@@ -84,11 +103,17 @@ pub(crate) fn rope_rotation(i: usize, head_dim: usize, position: usize, base: f3
 }
 
 /// `silu(v) = v * sigmoid(v)`.
+#[cfg(not(vesper_port))]
 pub fn silu(v: f32) -> f32 {
     v * (1.0 / (1.0 + (-v).exp()))
 }
+#[cfg(vesper_port)]
+pub fn silu(v: f32) -> f32 {
+    f32::from_bits(crate::port::binding::silu(v.to_bits()))
+}
 
 /// Unfused SwiGLU gate: `gate[i] = silu(gate[i]) * up[i]`.
+#[cfg(not(vesper_port))]
 pub fn swiglu(gate: &mut [f32], up: &[f32]) -> Result<(), Error> {
     if gate.len() != up.len() || gate.is_empty() {
         return Err(Error::Shape("swiglu lengths"));
@@ -97,6 +122,13 @@ pub fn swiglu(gate: &mut [f32], up: &[f32]) -> Result<(), Error> {
         *g = silu(*g) * u;
     }
     Ok(())
+}
+#[cfg(vesper_port)]
+pub fn swiglu(gate: &mut [f32], up: &[f32]) -> Result<(), Error> {
+    crate::port::check(
+        crate::port::binding::swiglu(crate::port::bits_mut(gate), crate::port::bits(up)),
+        |_| Error::Shape("swiglu lengths"),
+    )
 }
 
 /// Hand-fused SwiGLU projection: `out[i] = silu(w1[i]·x) * (w3[i]·x)` row by
@@ -130,6 +162,7 @@ pub fn swiglu_matvec_with(
 }
 
 /// In-place numerically stable softmax (max subtraction, ascending sums).
+#[cfg(not(vesper_port))]
 pub fn softmax(x: &mut [f32]) -> Result<(), Error> {
     if x.is_empty() {
         return Err(Error::Shape("softmax of empty vector"));
@@ -152,8 +185,19 @@ pub fn softmax(x: &mut [f32]) -> Result<(), Error> {
     }
     Ok(())
 }
+#[cfg(vesper_port)]
+pub fn softmax(x: &mut [f32]) -> Result<(), Error> {
+    crate::port::check(
+        crate::port::binding::softmax(crate::port::bits_mut(x)),
+        |fault| match fault {
+            crate::port::Fault::Shape => Error::Shape("softmax of empty vector"),
+            _ => Error::NonFinite,
+        },
+    )
+}
 
 /// Index of the largest value; the first one wins ties. Non-finite inputs fail.
+#[cfg(not(vesper_port))]
 pub fn argmax(x: &[f32]) -> Result<usize, Error> {
     let mut best = (0usize, f32::NEG_INFINITY);
     if x.is_empty() {
@@ -169,8 +213,20 @@ pub fn argmax(x: &[f32]) -> Result<usize, Error> {
     }
     Ok(best.0)
 }
+#[cfg(vesper_port)]
+pub fn argmax(x: &[f32]) -> Result<usize, Error> {
+    crate::port::check(
+        crate::port::binding::argmax(crate::port::bits(x)),
+        |fault| match fault {
+            crate::port::Fault::Shape => Error::Shape("argmax of empty vector"),
+            _ => Error::NonFinite,
+        },
+    )
+    .map(|i| i as usize)
+}
 
 /// `acc[i] += x[i]`.
+#[cfg(not(vesper_port))]
 pub fn add_assign(acc: &mut [f32], x: &[f32]) -> Result<(), Error> {
     if acc.len() != x.len() {
         return Err(Error::Shape("residual lengths"));
@@ -179,4 +235,11 @@ pub fn add_assign(acc: &mut [f32], x: &[f32]) -> Result<(), Error> {
         *a += x;
     }
     Ok(())
+}
+#[cfg(vesper_port)]
+pub fn add_assign(acc: &mut [f32], x: &[f32]) -> Result<(), Error> {
+    crate::port::check(
+        crate::port::binding::add_assign(crate::port::bits_mut(acc), crate::port::bits(x)),
+        |_| Error::Shape("residual lengths"),
+    )
 }

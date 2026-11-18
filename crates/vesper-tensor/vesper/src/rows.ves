@@ -1,0 +1,370 @@
+// Module rows of @vesper/tensor (see lib.ves): GGML Q8_0 / Q4_0 and OCP
+// MXFP4 blocks (src/quant.rs, src/formats.rs), FP8 matrices, and the row
+// decoder behind `Matrix::row_chunks`.
+use self::{
+    Fault
+};
+use self::num::{
+    decode_bf16,
+    decode_fp16,
+    encode_fp16,
+    finite_bits,
+    half_at,
+    is_finite,
+    u64_zero
+};
+use self::ocp::{
+    e8m0_half,
+    floor_log2,
+    fp8_decode,
+    fp8_encode,
+    max_finite
+};
+use self::qk::{
+    check_block,
+    dequantize_block
+};
+
+fn f(in s: Slice[u32], i: u64) -> f32 eff [Fail[RuntimeError]] {
+    from_bits_f32(s[i])
+}
+
+pub fn dequantize_q8_0(in block: Slice[u8], inout out: Slice[u32], at: u64) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    let d = half_at(in block, 0);
+    for i in u64_zero()..32 {
+        let q = wrapping_i8(block[2 + i]);
+        out.set(at + i, to_bits_f32(d * widen_f32(q)));
+    }
+}
+
+pub fn dequantize_q4_0(in block: Slice[u8], inout out: Slice[u32], at: u64) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    let d = half_at(in block, 0);
+    for i in u64_zero()..16 {
+        let packed = block[2 + i];
+        let lo = widen_i16(packed & 15) - 8;
+        let hi = widen_i16(packed >> 4) - 8;
+        out.set(at + i, to_bits_f32(d * widen_f32(lo)));
+        out.set(at + 16 + i, to_bits_f32(d * widen_f32(hi)));
+    }
+}
+
+// GGML `kvalues_mxfp4`: E2M1 code values, doubled.
+pub fn e2m1_doubled(code: u8) -> i8 {
+    if code == 0 {
+        0
+    } else if code == 1 {
+        1
+    } else if code == 2 {
+        2
+    } else if code == 3 {
+        3
+    } else if code == 4 {
+        4
+    } else if code == 5 {
+        6
+    } else if code == 6 {
+        8
+    } else if code == 7 {
+        12
+    } else if code == 8 {
+        0
+    } else if code == 9 {
+        -1
+    } else if code == 10 {
+        -2
+    } else if code == 11 {
+        -3
+    } else if code == 12 {
+        -4
+    } else if code == 13 {
+        -6
+    } else if code == 14 {
+        -8
+    } else {
+        -12
+    }
+}
+
+pub fn dequantize_mxfp4(in block: Slice[u8], inout out: Slice[u32], at: u64) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    let d = e8m0_half(block[0]);
+    for j in u64_zero()..16 {
+        let b = block[1 + j];
+        out.set(at + j, to_bits_f32(d * widen_f32(e2m1_doubled(b & 15))));
+        out.set(at + j + 16, to_bits_f32(d * widen_f32(e2m1_doubled(b >> 4))));
+    }
+}
+
+// Decodes the `out.len()` elements of one row piece `raw` in format `format`
+// (WeightFormat order: F32 0, F16 1, Bf16 2, Q8_0 3, Q4_0 4, Q4K 5,
+// Mxfp4 6, F8E4M3 7, F8E5M2 8). `scale` is the FP8 matrix scale.
+pub fn decode_piece(format: u8, scale: f32, in raw: Slice[u8], inout out: Slice[u32]) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    let n = out.len();
+    if format == 0 {
+        for i in 0..n {
+            out.set(i, raw.read_u32_le(4 * i));
+        }
+    } else if format == 1 {
+        for i in 0..n {
+            out.set(i, to_bits_f32(decode_fp16(raw.read_u16_le(2 * i))));
+        }
+    } else if format == 2 {
+        for i in 0..n {
+            out.set(i, to_bits_f32(decode_bf16(raw.read_u16_le(2 * i))));
+        }
+    } else if format == 3 {
+        for b in u64_zero()..n / 32 {
+            dequantize_q8_0(in raw[34 * b..34 * b + 34], inout out, 32 * b);
+        }
+    } else if format == 4 {
+        for b in u64_zero()..n / 32 {
+            dequantize_q4_0(in raw[18 * b..18 * b + 18], inout out, 32 * b);
+        }
+    } else if format == 5 {
+        for b in u64_zero()..n / 256 {
+            dequantize_block(in raw[144 * b..144 * b + 144], inout out, 256 * b);
+        }
+    } else if format == 6 {
+        for b in u64_zero()..n / 32 {
+            dequantize_mxfp4(in raw[17 * b..17 * b + 17], inout out, 32 * b);
+        }
+    } else {
+        let e5m2 = format == 8;
+        for i in 0..n {
+            out.set(i, to_bits_f32(fp8_decode(e5m2, raw[i]) * scale));
+        }
+    }
+}
+
+// `check_rows`: whole blocks of `block` elements and finite values.
+pub fn check_rows(in data: Slice[u32], cols: u64, block: u64) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError],
+    Fail[Fault]
+] {
+    if cols == 0 || cols % block != 0 || data.len() % cols != 0 {
+        Fail::raise(Fault::Shape);
+    }
+    for i in 0..data.len() {
+        if data[i] & 2139095040 == 2139095040 {
+            Fail::raise(Fault::NonFinite);
+        }
+    }
+}
+
+fn push_half(inout out: ChunkSeq[u8], bits: u16) {
+    out.push(wrapping_u8(bits));
+    out.push(wrapping_u8(bits >> 8));
+}
+
+// GGML reference Q8_0.
+pub fn quantize_q8_0(in data: Slice[u32], cols: u64)
+    -> ChunkSeq[u8] eff [Fail[ArithOverflow], Fail[RuntimeError], Fail[Fault]] {
+    check_rows(in data, cols, 32);
+    let blocks = data.len() / 32;
+    let mut out = ChunkSeq::with_capacity[u8](blocks * 34);
+    for b in 0..blocks {
+        let mut amax: f32 = 0.0;
+        for i in u64_zero()..32 {
+            amax = max(amax, abs(f(in data, 32 * b + i)));
+        }
+        let d = amax / 127.0;
+        let id: f32 = if d != 0.0 {
+            1.0 / d
+        } else {
+            0.0
+        };
+        push_half(inout out, encode_fp16(d));
+        for i in u64_zero()..32 {
+            out.push(wrapping_u8(saturating_i8(round(f(in data, 32 * b + i) * id))));
+        }
+    }
+    out
+}
+
+fn q4(v: f32, id: f32) -> u8 eff [Fail[ArithOverflow]] {
+    let q = saturating_i8(v * id + 8.5);
+    if q < 15 {
+        wrapping_u8(q)
+    } else {
+        15
+    }
+}
+
+// GGML reference Q4_0.
+pub fn quantize_q4_0(in data: Slice[u32], cols: u64)
+    -> ChunkSeq[u8] eff [Fail[ArithOverflow], Fail[RuntimeError], Fail[Fault]] {
+    check_rows(in data, cols, 32);
+    let blocks = data.len() / 32;
+    let mut out = ChunkSeq::with_capacity[u8](blocks * 18);
+    for b in 0..blocks {
+        let mut amax: f32 = 0.0;
+        let mut mx: f32 = 0.0;
+        for i in u64_zero()..32 {
+            let v = f(in data, 32 * b + i);
+            if amax < abs(v) {
+                amax = abs(v);
+                mx = v;
+            }
+        }
+        let d = mx / -8.0;
+        let id: f32 = if d != 0.0 {
+            1.0 / d
+        } else {
+            0.0
+        };
+        push_half(inout out, encode_fp16(d));
+        for j in u64_zero()..16 {
+            let lo = q4(f(in data, 32 * b + j), id);
+            let hi = q4(f(in data, 32 * b + j + 16), id);
+            out.push(lo | (hi << 4));
+        }
+    }
+    out
+}
+
+fn mxfp4_code(d: f32, x: f32) -> u8 eff [Fail[ArithOverflow]] {
+    let mut best: u8 = 0;
+    let mut best_err = from_bits_f32(2139095040);
+    for i in u64_zero()..16 {
+        let k = wrapping_u8(i);
+        let e = abs(d * widen_f32(e2m1_doubled(k)) - x);
+        if e < best_err {
+            best = k;
+            best_err = e;
+        }
+    }
+    best
+}
+
+// GGML / gguf-py MXFP4 quantization with an exact exponent.
+pub fn quantize_mxfp4(in data: Slice[u32], cols: u64)
+    -> ChunkSeq[u8] eff [Fail[ArithOverflow], Fail[RuntimeError], Fail[Fault]] {
+    check_rows(in data, cols, 32);
+    let blocks = data.len() / 32;
+    let mut out = ChunkSeq::with_capacity[u8](blocks * 17);
+    for b in 0..blocks {
+        let mut amax: f32 = 0.0;
+        for i in u64_zero()..32 {
+            amax = max(amax, abs(f(in data, 32 * b + i)));
+        }
+        let e: u8 = if amax > 0.0 {
+            let raw = floor_log2(amax) - 2 + 127;
+            if raw < 0 {
+                0
+            } else if raw > 254 {
+                254
+            } else {
+                wrapping_u8(raw)
+            }
+        } else {
+            0
+        };
+        let d = e8m0_half(e);
+        out.push(e);
+        for j in u64_zero()..16 {
+            let lo = mxfp4_code(d, f(in data, 32 * b + j));
+            let hi = mxfp4_code(d, f(in data, 32 * b + j + 16));
+            out.push(lo | (hi << 4));
+        }
+    }
+    out
+}
+
+// The per-tensor FP8 scale `amax / max_finite` (1 for all zeros), as bits.
+pub fn fp8_scale(in data: Slice[u32], e5m2: bool) -> f32 eff [Fail[RuntimeError], Fail[Fault]] {
+    let mut amax: f32 = 0.0;
+    for i in 0..data.len() {
+        let v = f(in data, i);
+        if !is_finite(v) {
+            Fail::raise(Fault::NonFinite);
+        }
+        amax = max(amax, abs(v));
+    }
+    let scale: f32 = if amax > 0.0 {
+        amax / max_finite(e5m2)
+    } else {
+        1.0
+    };
+    if !(is_finite(scale) && scale > 0.0) {
+        Fail::raise(Fault::NonFinite);
+    }
+    scale
+}
+
+pub fn fp8_codes(in data: Slice[u32], e5m2: bool, scale: f32)
+    -> ChunkSeq[u8] eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let mut out = ChunkSeq::with_capacity[u8](data.len());
+    for i in 0..data.len() {
+        out.push(fp8_encode(e5m2, f(in data, i) / scale));
+    }
+    out
+}
+
+// `Matrix::from_bytes`: whether every element or block scale of a payload
+// of whole blocks is finite (format codes as in `decode_piece`).
+pub fn finite_payload(format: u8, in raw: Slice[u8])
+    -> bool eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let n = raw.len();
+    if format == 0 {
+        for i in u64_zero()..n / 4 {
+            if !finite_bits(raw.read_u32_le(4 * i)) {
+                return false;
+            }
+        }
+    } else if format == 1 || format == 2 {
+        for i in u64_zero()..n / 2 {
+            let h = raw.read_u16_le(2 * i);
+            let v = if format == 1 {
+                decode_fp16(h)
+            } else {
+                decode_bf16(h)
+            };
+            if !is_finite(v) {
+                return false;
+            }
+        }
+    } else if format == 3 || format == 4 {
+        let width: u64 = if format == 3 {
+            34
+        } else {
+            18
+        };
+        for b in u64_zero()..n / width {
+            if !is_finite(half_at(in raw, width * b)) {
+                return false;
+            }
+        }
+    } else if format == 5 {
+        for b in u64_zero()..n / 144 {
+            if !check_block(in raw[144 * b..144 * b + 144]) {
+                return false;
+            }
+        }
+    } else if format == 6 {
+        for b in u64_zero()..n / 17 {
+            if raw[17 * b] == 255 {
+                return false;
+            }
+        }
+    } else {
+        let e5m2 = format == 8;
+        for i in 0..n {
+            if !is_finite(fp8_decode(e5m2, raw[i])) {
+                return false;
+            }
+        }
+    }
+    true
+}

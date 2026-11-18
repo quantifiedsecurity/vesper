@@ -135,7 +135,14 @@ fn simd_batched_and_sampled_steady_states_allocate_nothing() {
 
     // Zero-copy load: mapping and parsing allocate metadata, the vocabulary
     // and the copied norm vectors, not the matrices.
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/stories260K-q8_0.gguf");
+    // The seed package (seed/) runs this file too; the fixture is the crate's.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = if dir.ends_with("seed") {
+        dir.join("..")
+    } else {
+        dir
+    };
+    let path = dir.join("fixtures/stories260K-q8_0.gguf");
     let before = BYTES.load(Ordering::Relaxed);
     let g = Gguf::open(&path).unwrap();
     let model = Model::from_gguf(&g).unwrap();
