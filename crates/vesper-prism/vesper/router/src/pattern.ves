@@ -30,9 +30,16 @@ fn find(in s: Slice[u8], lo: u64, hi: u64, b: u8) -> u64 {
     hi
 }
 
+fn same_bytes(in a: Slice[u8], in b: Slice[u8]) -> bool {
+    a.eq(in b)
+}
+
 pub fn same(in a: Slice[u8], alo: u64, ahi: u64, in b: Slice[u8], blo: u64, bhi: u64) -> bool {
     if wrapping_sub(ahi, alo) != wrapping_sub(bhi, blo) {
         return false;
+    }
+    if alo <= ahi && ahi <= a.len() && blo <= bhi && bhi <= b.len() {
+        return same_bytes(in a[alo..ahi], in b[blo..bhi]);
     }
     for i in 0..wrapping_sub(ahi, alo) {
         if byte(in a, wrapping_add(alo, i)) != byte(in b, wrapping_add(blo, i)) {
