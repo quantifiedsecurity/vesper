@@ -320,6 +320,33 @@ impl<M: Module> Codegen<'_, '_, M> {
         })
     }
 
+    /// Leaves the vector loop of a scan: `more` continues at `body(k)`.
+    /// Otherwise, when at least one whole step fits in `len` and bytes are
+    /// left, the last step runs once more on the final 16 bytes
+    /// (`body(len - 16)`), which overlap bytes the loop has already seen; a
+    /// search or compare may see them twice, and the step after it ends at
+    /// `len`. Shorter inputs finish in `scalar(k)`.
+    fn vector_head_exit(
+        &mut self,
+        more: ir::Value,
+        k: ir::Value,
+        len: ir::Value,
+        body: ir::Block,
+        scalar: ir::Block,
+    ) {
+        let tail = self.b.create_block();
+        self.branch(more, body, &[k.into()], tail, &[]);
+        self.b.switch_to_block(tail);
+        let whole = self
+            .b
+            .ins()
+            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, len, LANES);
+        let left = self.b.ins().icmp(IntCC::UnsignedLessThan, k, len);
+        let last = self.b.ins().band(whole, left);
+        let from = self.b.ins().iadd_imm(len, -LANES);
+        self.branch(last, body, &[from.into()], scalar, &[k.into()]);
+    }
+
     /// `len` rounded down to a whole number of vector steps.
     fn vector_end(&mut self, len: ir::Value) -> ir::Value {
         self.b.ins().band_imm(len, -LANES)
@@ -502,14 +529,16 @@ impl<M: Module> Codegen<'_, '_, M> {
             let head = self.b.create_block();
             let body = self.b.create_block();
             self.b.append_block_param(head, types::I64);
+            self.b.append_block_param(body, types::I64);
             self.jump(head, &[zero.into()]);
 
             self.b.switch_to_block(head);
             let k = self.b.block_params(head)[0];
             let more = self.b.ins().icmp(IntCC::UnsignedLessThan, k, end);
-            self.branch(more, body, &[], scalar, &[k.into()]);
+            self.vector_head_exit(more, k, len, body, scalar);
 
             self.b.switch_to_block(body);
+            let k = self.b.block_params(body)[0];
             let a = self.b.ins().iadd(p, k);
             let mut a = self.b.ins().load(types::I8X16, little(), a, 0);
             let b = self.b.ins().iadd(q, k);
@@ -575,14 +604,16 @@ impl<M: Module> Codegen<'_, '_, M> {
             let next = self.b.create_block();
             let hit = self.b.create_block();
             self.b.append_block_param(head, types::I64);
+            self.b.append_block_param(body, types::I64);
             self.jump(head, &[zero.into()]);
 
             self.b.switch_to_block(head);
             let k = self.b.block_params(head)[0];
             let more = self.b.ins().icmp(IntCC::UnsignedLessThan, k, end);
-            self.branch(more, body, &[], scalar, &[k.into()]);
+            self.vector_head_exit(more, k, len, body, scalar);
 
             self.b.switch_to_block(body);
+            let k = self.b.block_params(body)[0];
             let at = self.b.ins().iadd(p, k);
             let v = self.b.ins().load(types::I8X16, little(), at, 0);
             let found = self.needle_vector(splat, v);
@@ -755,14 +786,16 @@ impl<M: Module> Codegen<'_, '_, M> {
             let head = self.b.create_block();
             let body = self.b.create_block();
             self.b.append_block_param(head, types::I64);
+            self.b.append_block_param(body, types::I64);
             self.jump(head, &[zero.into()]);
 
             self.b.switch_to_block(head);
             let k = self.b.block_params(head)[0];
             let more = self.b.ins().icmp(IntCC::UnsignedLessThan, k, end);
-            self.branch(more, body, &[], scalar, &[k.into()]);
+            self.vector_head_exit(more, k, n, body, scalar);
 
             self.b.switch_to_block(body);
+            let k = self.b.block_params(body)[0];
             let from = self.b.ins().iadd(src, k);
             let v = self.b.ins().load(types::I8X16, little(), from, 0);
             let v = self.lower_vector(v);
