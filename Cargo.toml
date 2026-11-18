@@ -40,6 +40,7 @@ members = [
     "crates/vesper-beacon/seed",
     "crates/vesper-beacon-arrow",
     "crates/vesper-serde",
+    "crates/vesper-serde/seed",
     "crates/vesper-quarry",
     "crates/vesper-tensor",
     "crates/vesper-tensor/seed",
@@ -127,6 +128,7 @@ default-members = [
     "crates/vesper-beacon/seed",
     "crates/vesper-beacon-arrow",
     "crates/vesper-serde",
+    "crates/vesper-serde/seed",
     "crates/vesper-quarry",
     "crates/vesper-tensor",
     "crates/vesper-tensor/seed",
@@ -236,7 +238,7 @@ vesper-doc = { path = "crates/vesper-doc" }
 # The compiler links the frozen Rust seed copy, never the port-backed package
 # (seed-copy rule, docs/maintenance/porting-a-crate.md).
 vesper-beacon = { path = "crates/vesper-beacon/seed", package = "vesper-beacon-seed" }
-vesper-serde = { path = "crates/vesper-serde" }
+vesper-serde = { path = "crates/vesper-serde/seed", package = "vesper-serde-seed" }
 vesper-pulse = { path = "crates/vesper-pulse" }
 vesper-fiber-abi = { path = "crates/vesper-fiber-abi" }
 vesper-semver = { path = "crates/vesper-semver/seed", package = "vesper-semver-seed" }
