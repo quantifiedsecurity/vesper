@@ -84,6 +84,7 @@ DIVERGENT_TESTS = {
 rust_library(
     name = "port_unlinked",
     srcs = glob(["src/**/*.rs"]) + ["port/binding.rs"],
+    compile_data = ["README.md"],
     crate_name = "vesper_grammar",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -117,7 +118,7 @@ rust_test(
 )
 
 # The seed package (seed/) builds these same Rust sources without the port.
-exports_files(glob([
+exports_files(["README.md"] + glob([
     "src/**/*.rs",
     "tests/**/*.rs",
     "tests/fixtures/**",
