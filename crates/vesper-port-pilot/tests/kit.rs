@@ -68,6 +68,13 @@ fn strings() {
     note.clear();
     assert_eq!(note_text(&note), "");
     assert_eq!(note.edits(), 3);
+    // A by-value string kept by the returned handle outlives the caller's.
+    let text = String::from("kept past the call");
+    let mut kept = note_adopt(text);
+    assert_eq!(note_text(&kept), "kept past the call");
+    kept.append("!");
+    assert_eq!(note_text(&kept), "kept past the call!");
+    assert_eq!(note_text(&note_adopt(String::new())), "");
     let note = std::thread::spawn(move || {
         let mut note = note;
         note.append("moved");

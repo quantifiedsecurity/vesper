@@ -44,8 +44,9 @@
 //!   frees it with `vesper_<lib>_seq_free`), as an `in` parameter (a header
 //!   the caller lends), or as an `inout` parameter (a pointer to the handle
 //!   word of a sequence made with `vesper_<lib>_seq_new`). A by-value
-//!   sequence parameter is refused: native code does not free a dropped
-//!   sequence yet.
+//!   (`sink`) parameter is a sequence the caller makes with
+//!   `vesper_<lib>_seq_new` and gives away: the callee owns it and frees it
+//!   when it drops it.
 //! * `in`/`inout Slice[T]` of a copy element type is the view
 //!   `{header, start, len}`, passed as a pointer to its three words.
 //! * A non-copy struct or enum (affine, linear, or holding sequences or
@@ -250,8 +251,8 @@ pub struct TypeDecl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drop_symbol: Option<String>,
     /// v2: the value owns a sequence, directly or through its fields, so a
-    /// consuming call is refused (native code does not free a dropped
-    /// sequence yet).
+    /// consuming call is refused (native code does not free the sequences
+    /// inside a dropped handle yet).
     #[serde(default, skip_serializing_if = "is_false")]
     pub owns_sequence: bool,
     /// v3: how a copy type is held on the Rust side.
@@ -478,7 +479,7 @@ pub fn plan_with(
                 errors.push(ExportError::Type {
                     function: f.name.clone(),
                     ty: name.clone(),
-                    reason: "is a handle that owns a sequence, taken by value; native code does not free a dropped sequence yet, so take it `inout`".into(),
+                    reason: "is a handle that owns a sequence, taken by value; native code does not free the sequences inside a dropped handle yet, so take it `inout`".into(),
                 });
             }
         }
@@ -666,15 +667,13 @@ impl Planner<'_> {
             Position::Error => Err(refuse("is not a copy type; error types must be copy")),
             Position::Param(pass) => match (ty, pass) {
                 (AbiType::Slice { .. }, _) => Ok(()),
-                (AbiType::Seq { .. }, Pass::In | Pass::Inout) => Ok(()),
-                (AbiType::Seq { .. }, Pass::Sink) => Err(refuse(
-                    "is a sequence taken by value; native code does not free a dropped sequence yet, so take it `in` or `inout`",
-                )),
+                // A by-value sequence is the callee's to free (#932).
+                (AbiType::Seq { .. }, _) => Ok(()),
                 (AbiType::Named { name, .. }, _) if self.handle(name) => Ok(()),
                 (AbiType::Str { .. }, Pass::In) => Ok(()),
-                (AbiType::Str { owned: true }, Pass::Inout) => Ok(()),
+                (AbiType::Str { owned: true }, Pass::Inout | Pass::Sink) => Ok(()),
                 (AbiType::Str { .. }, _) => Err(refuse(
-                    "is a string taken by value; native code does not free a dropped string yet, so take it `in` (or `inout String`)",
+                    "is a `Str` view, which crosses only as an `in` parameter",
                 )),
                 _ => Err(refuse(
                     "owns memory; only sequences, slices, strings and handle types cross as parameters",

@@ -194,6 +194,11 @@ impl Note {
     }
 }
 
+/// A [`Note`] that keeps `text` (moved, not copied).
+pub fn note_adopt(text: String) -> Note {
+    Note { text, edits: 0 }
+}
+
 /// The text of a [`Note`].
 pub fn note_text(note: &Note) -> &str {
     &note.text

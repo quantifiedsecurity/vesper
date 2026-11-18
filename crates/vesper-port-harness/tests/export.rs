@@ -131,16 +131,9 @@ fn unexportable_functions_are_refused_with_the_reason() {
             "effect Tick { fn tick() -> i64; }\npub fn f() -> i64 eff [Tick] { Tick::tick() }",
             "effect Tick is not exportable",
         ),
-        // Export ABI v2 (#898) exports `inout` scalars and handle types;
-        // what it still refuses is listed in tests/native_export_v2.rs.
-        (
-            "pub fn f(sink xs: ChunkSeq[u64]) -> u64 { 0 }",
-            "is a sequence taken by value",
-        ),
-        (
-            "pub fn s(sink s: String) -> u64 { 0 }",
-            "type String is a string taken by value",
-        ),
+        // Export ABI v2 (#898) exports `inout` scalars and handle types, and
+        // by-value sequences and strings (#932); what it still refuses is
+        // listed in tests/native_export_v2.rs.
         (
             "struct S { xs: ChunkSeq[u64] }\npub fn f(sink s: S) -> u64 { 0 }",
             "a handle that owns a sequence, taken by value",

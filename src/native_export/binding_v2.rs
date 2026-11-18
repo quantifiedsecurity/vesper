@@ -119,6 +119,7 @@ impl Gen<'_> {
             };
         }
         match &p.ty {
+            AbiType::Seq { elem } if p.pass() == "sink" => format!("Vec<{}>", self.copy_type(elem)),
             AbiType::Slice { elem } if p.in_place => {
                 let m = self.mirror(elem).expect("an in-place slice holds mirrors");
                 if inout {
@@ -130,6 +131,7 @@ impl Gen<'_> {
             AbiType::Slice { elem } | AbiType::Seq { elem } if !inout => {
                 format!("&[{}]", self.copy_type(elem))
             }
+            AbiType::Str { .. } if p.pass() == "sink" => "String".into(),
             AbiType::Slice { elem } => format!("&mut [{}]", self.copy_type(elem)),
             AbiType::Seq { elem } => format!("&mut Vec<{}>", self.copy_type(elem)),
             AbiType::Str { .. } if !inout => "&str".into(),
@@ -496,8 +498,13 @@ impl Gen<'_> {
                     args.push(view.clone());
                 }
                 AbiType::Str { .. } => {
+                    // A by-value string is copied into a buffer of this
+                    // library: the callee owns it and may keep it past the
+                    // call (in a returned handle, say).
                     let helper = if inout {
                         "with_string_mut(RUNTIME, "
+                    } else if p.pass() == "sink" {
+                        "with_string_owned(RUNTIME, &"
                     } else {
                         "with_str("
                     };
@@ -513,6 +520,14 @@ impl Gen<'_> {
                         ")".into(),
                     ));
                     args.push(seq.clone());
+                }
+                AbiType::Seq { .. } if p.pass() == "sink" => {
+                    // A by-value sequence is given to the callee, which frees it.
+                    let _ = writeln!(
+                        out,
+                        "    // SAFETY: RUNTIME is this library's runtime.\n    let {seq} = unsafe {{ vesper_port_abi::seq_from(RUNTIME, &{n}) }};"
+                    );
+                    args.push(format!("{seq} as i64"));
                 }
                 AbiType::Seq { .. } => {
                     wraps.push((

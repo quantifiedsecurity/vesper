@@ -40,6 +40,9 @@ fn handles_and_sequences_return_every_allocation() {
         note.clear();
         note.append("again");
         drop(note);
+        let mut kept = note_adopt(String::from("kept"));
+        kept.append("!");
+        drop(kept);
     }
     drop(slab);
     assert_eq!(
