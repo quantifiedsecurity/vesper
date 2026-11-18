@@ -1,6 +1,7 @@
 //! ABBA benchmarks of the Vesper port against the Rust build (port wave P1
 //! lane 8, #905), with `vesper-bench`: dequantization (Q4_K and Q8_0 rows),
-//! a Q8_0 matrix-vector product, Q4_K quantization and top-p sampling. Both
+//! a Q8_0 matrix-vector product, Q4_K quantization, top-p sampling and BPE
+//! prompt encoding. Both
 //! builds are in one process: `vesper_tensor` is the port-backed package and
 //! `seed` the Rust seed copy (a dev-dependency). The benchmarks are ignored
 //! by default; run them with
@@ -213,5 +214,49 @@ fn abba_sample_top_p() {
         "sample temperature 0.8 top-p 0.9, vocab 32000",
         || u64::from(r.sample(&logits).unwrap()),
         || u64::from(v.sample(&logits).unwrap()),
+    );
+}
+
+/// A deterministic ASCII prompt of about `n` bytes: words of 2 to 9 letters.
+fn prompt(n: usize) -> Vec<u8> {
+    let mut x = 7u64;
+    let mut out = Vec::with_capacity(n + 10);
+    while out.len() < n {
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let len = 2 + (x >> 60) as usize % 8;
+        for k in 0..len {
+            out.push(b'a' + ((x >> (8 * k as u32 % 56)) % 26) as u8);
+        }
+        out.push(b' ');
+    }
+    out
+}
+
+const TOK512: &[u8] = include_bytes!("../models/tok512.bin");
+
+#[test]
+fn both_builds_encode_the_same_prompt() {
+    let r = seed::llama::Tokenizer::from_llama2c(TOK512, 512).unwrap();
+    let v = vesper_tensor::llama::Tokenizer::from_llama2c(TOK512, 512).unwrap();
+    let text = prompt(4096);
+    assert_eq!(
+        r.encoder().encode(&text, true, true).unwrap(),
+        v.encoder().encode(&text, true, true).unwrap()
+    );
+}
+
+#[test]
+#[ignore = "benchmark; run in release with --ignored --nocapture"]
+fn abba_bpe_encode() {
+    let r = seed::llama::Tokenizer::from_llama2c(TOK512, 512).unwrap();
+    let v = vesper_tensor::llama::Tokenizer::from_llama2c(TOK512, 512).unwrap();
+    let (re, ve) = (r.encoder(), v.encoder());
+    let text = prompt(16 * 1024);
+    abba(
+        "BPE encode 16 KiB prompt (tok512)",
+        || re.encode(&text, true, false).unwrap().len() as u64,
+        || ve.encode(&text, true, false).unwrap().len() as u64,
     );
 }

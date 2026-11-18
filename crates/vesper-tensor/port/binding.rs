@@ -10,6 +10,8 @@ pub enum Fault {
     Shape,
     NonFinite,
     Limit,
+    NoSpacePiece,
+    NoBytePiece,
 }
 
 impl Abi for Fault {
@@ -25,6 +27,12 @@ impl Abi for Fault {
             Fault::Limit => {
                 out[0] = 2;
             }
+            Fault::NoSpacePiece => {
+                out[0] = 3;
+            }
+            Fault::NoBytePiece => {
+                out[0] = 4;
+            }
         }
     }
     fn get(words: &[u64]) -> Self {
@@ -32,6 +40,8 @@ impl Abi for Fault {
             0 => Fault::Shape,
             1 => Fault::NonFinite,
             2 => Fault::Limit,
+            3 => Fault::NoSpacePiece,
+            4 => Fault::NoBytePiece,
             tag => panic!("invalid Fault tag {tag} from Vesper"),
         }
     }
@@ -68,6 +78,7 @@ unsafe extern "C" {
     fn vesper_tensor_e8m0_half(e: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_encode_bf16(value: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_encode_fp16(value: i64, fail: *mut u64) -> i64;
+    fn vesper_tensor_encode_prompt(text: *mut u64, bytes: *mut u64, offsets: *mut u64, scores: *mut u64, table: *mut u64, bos: i64, eos: i64, out: *mut u64, work: *mut u64, key: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_finite_payload(format: i64, raw: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_fp8_codes(data: *mut u64, e5m2: i64, scale: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_fp8_decode(e5m2: i64, code: i64, fail: *mut u64) -> i64;
@@ -90,6 +101,8 @@ unsafe extern "C" {
     fn vesper_tensor_silu(v: i64) -> i64;
     fn vesper_tensor_softmax(x: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_swiglu(gate: *mut u64, up: *mut u64, fail: *mut u64) -> i64;
+    fn vesper_tensor_vocab_lookup(bytes: *mut u64, offsets: *mut u64, table: *mut u64, piece: *mut u64, fail: *mut u64) -> i64;
+    fn vesper_tensor_vocab_table(bytes: *mut u64, offsets: *mut u64, table: *mut u64, fail: *mut u64) -> i64;
 }
 
 /// The sequence runtime of the Vesper library `tensor`.
@@ -361,6 +374,30 @@ pub fn encode_fp16(value: u32) -> Result<u16, vesper_port_abi::ArithOverflow> {
         0 => Ok(raw as u16),
         1 => Err(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..])),
         status => panic!("invalid failure status {status} from vesper_tensor_encode_fp16"),
+    }
+}
+
+/// The errors `encode_prompt` can raise, in status order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EncodePromptError {
+    ArithOverflow(vesper_port_abi::ArithOverflow),
+    RuntimeError(vesper_port_abi::RuntimeError),
+    Fault(Fault),
+}
+
+/// Calls `encode_prompt` of the Vesper library `tensor` (`vesper_tensor_encode_prompt`).
+pub fn encode_prompt(text: &[u8], bytes: &[u8], offsets: &[u64], scores: &[u32], table: &[u32], bos: u32, eos: u32, out: &mut [u32], work: &mut [u64], key: &mut [u8]) -> Result<u64, EncodePromptError> {
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_encode_prompt` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(text, |view_text| vesper_port_abi::with_slice(bytes, |view_bytes| vesper_port_abi::with_slice(offsets, |view_offsets| vesper_port_abi::with_slice(scores, |view_scores| vesper_port_abi::with_slice(table, |view_table| vesper_port_abi::with_slice_mut(out, |view_out| vesper_port_abi::with_slice_mut(work, |view_work| vesper_port_abi::with_slice_mut(key, |view_key| unsafe { vesper_tensor_encode_prompt(view_text, view_bytes, view_offsets, view_scores, view_table, bos as i64, eos as i64, view_out, view_work, view_key, fail.as_mut_ptr()) }))))))));
+    match fail[0] {
+        0 => Ok(raw as u64),
+        1 => Err(EncodePromptError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
+        2 => Err(EncodePromptError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
+        3 => Err(EncodePromptError::Fault(<Fault as Abi>::get(&fail[1..]))),
+        status => panic!("invalid failure status {status} from vesper_tensor_encode_prompt"),
     }
 }
 
@@ -815,5 +852,49 @@ pub fn swiglu(gate: &mut [u32], up: &[u32]) -> Result<(), SwigluError> {
         1 => Err(SwigluError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
         2 => Err(SwigluError::Fault(<Fault as Abi>::get(&fail[1..]))),
         status => panic!("invalid failure status {status} from vesper_tensor_swiglu"),
+    }
+}
+
+/// The errors `vocab_lookup` can raise, in status order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VocabLookupError {
+    ArithOverflow(vesper_port_abi::ArithOverflow),
+    RuntimeError(vesper_port_abi::RuntimeError),
+}
+
+/// Calls `vocab_lookup` of the Vesper library `tensor` (`vesper_tensor_vocab_lookup`).
+pub fn vocab_lookup(bytes: &[u8], offsets: &[u64], table: &[u32], piece: &[u8]) -> Result<u32, VocabLookupError> {
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_vocab_lookup` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(bytes, |view_bytes| vesper_port_abi::with_slice(offsets, |view_offsets| vesper_port_abi::with_slice(table, |view_table| vesper_port_abi::with_slice(piece, |view_piece| unsafe { vesper_tensor_vocab_lookup(view_bytes, view_offsets, view_table, view_piece, fail.as_mut_ptr()) }))));
+    match fail[0] {
+        0 => Ok(raw as u32),
+        1 => Err(VocabLookupError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
+        2 => Err(VocabLookupError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
+        status => panic!("invalid failure status {status} from vesper_tensor_vocab_lookup"),
+    }
+}
+
+/// The errors `vocab_table` can raise, in status order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VocabTableError {
+    ArithOverflow(vesper_port_abi::ArithOverflow),
+    RuntimeError(vesper_port_abi::RuntimeError),
+}
+
+/// Calls `vocab_table` of the Vesper library `tensor` (`vesper_tensor_vocab_table`).
+pub fn vocab_table(bytes: &[u8], offsets: &[u64], table: &mut [u32]) -> Result<(), VocabTableError> {
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_vocab_table` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(bytes, |view_bytes| vesper_port_abi::with_slice(offsets, |view_offsets| vesper_port_abi::with_slice_mut(table, |view_table| unsafe { vesper_tensor_vocab_table(view_bytes, view_offsets, view_table, fail.as_mut_ptr()) })));
+    match fail[0] {
+        0 => Ok({ let _ = raw; }),
+        1 => Err(VocabTableError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
+        2 => Err(VocabTableError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
+        status => panic!("invalid failure status {status} from vesper_tensor_vocab_table"),
     }
 }

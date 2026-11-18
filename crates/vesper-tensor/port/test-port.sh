@@ -29,6 +29,7 @@ expect() {
 }
 expect reference_fixtures gpt2_case_file_is_well_formed \
     q4_k_bytes_equal_llama_cpp fp8_channel_block_and_mxfp8_codes_equal_ml_dtypes q8_0_and_q4_0_weights_equal_gguf_py
-expect tokenizer_sampling rng_matches_run_c_xorshift sampling_follows_the_distribution_and_the_nucleus
+expect tokenizer_sampling rng_matches_run_c_xorshift \
+    sampling_follows_the_distribution_and_the_nucleus encoder_matches_run_c_and_round_trips
 expect inference_ops rope_matches_f64_rotation_and_rejects_odd_widths silu_swiglu_softmax_argmax
 echo "divergent vesper-tensor port detected (one failing test per ported module)"

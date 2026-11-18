@@ -43,6 +43,10 @@ const DIVERGENT: &[(&str, &str)] = &[
         "            last = i;\n            break;",
         "            last = if i > 0 { i - 1 } else { 0 };\n            break;",
     ),
+    // tokenizer.rs (vesper/src/tokens.ves): byte-fallback pieces are looked
+    // up as lowercase `<0xab>`; tokenizer_sampling
+    // encoder_matches_run_c_and_round_trips fails.
+    ("        55 + d\n", "        87 + d\n"),
     // ops.rs (vesper/src/lib.ves): softmax divides by twice the sum;
     // inference_ops silu_swiglu_softmax_argmax fails.
     (
