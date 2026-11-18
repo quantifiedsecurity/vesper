@@ -878,3 +878,24 @@ fn shared_and_deep_value_trees_fail_on_their_limits_without_expanding() {
     let err = encoded_size(&Value::Array(deep), EncodeLimits::default()).unwrap_err();
     assert_eq!(err.kind, ErrorKind::DepthLimit);
 }
+
+#[test]
+fn raw_text_past_the_work_limit_fails_before_it_is_read() {
+    let text = format!("[{}]", vec!["\"abcdefgh\""; 10_000].join(","));
+    let raw = parse(text.as_bytes());
+    let value = Value::Raw(raw.root());
+    let limits = EncodeLimits {
+        max_work: text.len() - 1,
+        ..EncodeLimits::default()
+    };
+    assert_eq!(
+        encoded_size(&value, limits).unwrap_err().kind,
+        ErrorKind::WorkLimit
+    );
+    let mut out = vec![0xab; 64];
+    assert_eq!(
+        encode_into(&value, &mut out, limits).unwrap_err().kind,
+        ErrorKind::WorkLimit
+    );
+    assert_eq!(out, [0xab; 64]);
+}

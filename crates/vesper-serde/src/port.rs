@@ -467,6 +467,13 @@ impl Flat<'_> {
                 let raw = node.raw();
                 self.words
                     .extend([8, self.pool.len() as u64, raw.len() as u64]);
+                if self.work.saturating_add(raw.len()) > self.limits.max_work {
+                    // The preflight charges the raw length first and fails
+                    // with WorkLimit before it reads the text or its stats.
+                    self.words.push(0);
+                    self.stopped = true;
+                    return;
+                }
                 self.pool.extend_from_slice(raw.as_bytes());
                 self.work = self.work.saturating_add(raw.len());
                 let at = self.words.len();
@@ -679,10 +686,20 @@ pub(crate) fn vspa_resolve_slice(
 }
 
 /// Nodes as five words each (value, label offset and length, children
-/// offset and count) into one label pool and one child pool.
-fn nodes_flat(nodes: &[TreeNode<'_>]) -> (Vec<u64>, Vec<u8>, Vec<u32>) {
+/// offset and count) into one label pool and one child pool, built under the
+/// limits. The port's preflight (`archive_size`) fails on the node count
+/// first, so at most `max_nodes + 1` nodes are flattened (the count still
+/// fails); then, node by node, on the children count, the edge total and
+/// the label length before it reads that node's label or children. Once a
+/// node passes one of those limits its bytes and every later node's are not
+/// copied, only their five words, so the pools never hold more than the
+/// limits admit.
+fn nodes_flat(nodes: &[TreeNode<'_>], limits: &ArchiveLimits) -> (Vec<u64>, Vec<u8>, Vec<u32>) {
+    let nodes = &nodes[..nodes.len().min(limits.max_nodes.saturating_add(1))];
     let mut words = Vec::with_capacity(nodes.len() * 5);
     let (mut labels, mut children) = (Vec::new(), Vec::new());
+    let mut stopped = false;
+    let mut edges = 0usize;
     for n in nodes {
         words.extend([
             u64::from(n.value),
@@ -691,6 +708,18 @@ fn nodes_flat(nodes: &[TreeNode<'_>]) -> (Vec<u64>, Vec<u8>, Vec<u32>) {
             children.len() as u64,
             n.children.len() as u64,
         ]);
+        if stopped {
+            continue;
+        }
+        edges = edges.saturating_add(n.children.len());
+        if n.children.len() > limits.max_children_per_node
+            || edges > limits.max_edges
+            || n.label.len() > limits.max_label_bytes
+            || labels.len().saturating_add(n.label.len()) > limits.max_total_label_bytes
+        {
+            stopped = true;
+            continue;
+        }
         labels.extend_from_slice(n.label.as_bytes());
         children.extend_from_slice(n.children);
     }
@@ -698,7 +727,7 @@ fn nodes_flat(nodes: &[TreeNode<'_>]) -> (Vec<u64>, Vec<u8>, Vec<u32>) {
 }
 
 pub(crate) fn vspa_size(nodes: &[TreeNode<'_>], limits: ArchiveLimits) -> BinResult<usize> {
-    let (words, labels, children) = nodes_flat(nodes);
+    let (words, labels, children) = nodes_flat(nodes, &limits);
     Ok(vp::vspa_size(&words, &labels, &children, &archive_limits(&limits))? as usize)
 }
 
@@ -707,7 +736,7 @@ pub(crate) fn vspa_encode(
     output: &mut [u8],
     limits: ArchiveLimits,
 ) -> BinResult<usize> {
-    let (words, labels, children) = nodes_flat(nodes);
+    let (words, labels, children) = nodes_flat(nodes, &limits);
     Ok(vp::vspa_encode(&words, &labels, &children, output, &archive_limits(&limits))? as usize)
 }
 
