@@ -1,9 +1,13 @@
+#[cfg(not(feature = "vesper-port"))]
 use crate::parse::Cmp;
+#[cfg(not(feature = "vesper-port"))]
 use crate::plan::ExprNode;
 use crate::{
-    add, bound, identifier, Error, ErrorKind, HermeticCatalog, JoinKind, Limits, PreparedQuery,
-    RelPlan, Result, TypedExpr, Value,
+    add, Error, ErrorKind, HermeticCatalog, Limits, PreparedQuery, RelPlan, Result, Value,
 };
+#[cfg(not(feature = "vesper-port"))]
+use crate::{bound, identifier, JoinKind, TypedExpr};
+#[cfg(not(feature = "vesper-port"))]
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::mem::size_of;
@@ -27,6 +31,17 @@ impl DataSet {
     /// Borrows incoming rows so every validation failure preserves the caller's data.
     /// Clones into the dataset only after the complete preflight succeeds.
     pub fn set_rows(&mut self, table: &str, rows: &[Vec<Value>], limits: Limits) -> Result<()> {
+        #[cfg(feature = "vesper-port")]
+        {
+            let table = crate::port::set_rows(self, table, rows, limits)?;
+            self.tables.insert(table, rows.to_vec());
+            Ok(())
+        }
+        #[cfg(not(feature = "vesper-port"))]
+        self.set_rows_rust(table, rows, limits)
+    }
+    #[cfg(not(feature = "vesper-port"))]
+    fn set_rows_rust(&mut self, table: &str, rows: &[Vec<Value>], limits: Limits) -> Result<()> {
         limits.validate()?;
         let table = identifier(table)?;
         bound(rows.len(), limits.input_rows, "input row limit")?;
@@ -96,12 +111,14 @@ pub struct QueryResult {
     pub rows: Vec<Vec<Value>>,
     pub work: usize,
 }
+#[cfg(not(feature = "vesper-port"))]
 struct Budget {
     limits: Limits,
     work: usize,
     rows: usize,
     bytes: usize,
 }
+#[cfg(not(feature = "vesper-port"))]
 impl Budget {
     fn tick(&mut self, n: usize) -> Result<()> {
         self.work = add(self.work, n)?;
@@ -139,6 +156,18 @@ impl PreparedQuery {
                 "prepared query or data schema snapshot differs in revision/content",
             ));
         }
+        #[cfg(feature = "vesper-port")]
+        return crate::port::execute(self, catalog, data, params);
+        #[cfg(not(feature = "vesper-port"))]
+        self.execute_rust(catalog, data, params)
+    }
+    #[cfg(not(feature = "vesper-port"))]
+    fn execute_rust(
+        &self,
+        catalog: &HermeticCatalog,
+        data: &DataSet,
+        params: &BTreeMap<String, Value>,
+    ) -> Result<QueryResult> {
         if params.len() != self.params.len() {
             return Err(Error::new(
                 ErrorKind::Data,
@@ -227,6 +256,7 @@ pub(crate) fn check_inputs(plan: &RelPlan, data: &DataSet) -> Result<()> {
         }
     }
 }
+#[cfg(not(feature = "vesper-port"))]
 fn run(
     plan: &RelPlan,
     data: &DataSet,
@@ -309,6 +339,7 @@ fn run(
         }
     }
 }
+#[cfg(not(feature = "vesper-port"))]
 fn truth(v: Value) -> Result<Option<bool>> {
     match v {
         Value::Null => Ok(None),
@@ -316,9 +347,11 @@ fn truth(v: Value) -> Result<Option<bool>> {
         _ => Err(Error::new(ErrorKind::Type, "non-boolean checked predicate")),
     }
 }
+#[cfg(not(feature = "vesper-port"))]
 fn boolean(v: Option<bool>) -> Value {
     v.map_or(Value::Null, Value::Bool)
 }
+#[cfg(not(feature = "vesper-port"))]
 fn eval(
     expr: &TypedExpr,
     row: &[Value],

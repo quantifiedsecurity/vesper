@@ -1,0 +1,538 @@
+// Module plan of @vesper/quarry (see lib.ves).
+use self::{
+    Bind,
+    Link,
+    Node,
+    Q,
+    Sel
+};
+use self::util::{
+    bcol,
+    bound,
+    ctab,
+    cw,
+    ex,
+    fail,
+    link,
+    load_catalog,
+    load_limits,
+    new_q,
+    node,
+    none,
+    param,
+    put,
+    put_range,
+    raw,
+    same
+};
+use self::lex::{
+    lex
+};
+use self::parse::{
+    parse_select
+};
+use self::check::{
+    bool_word,
+    check_expr,
+    check_table,
+    emit_column,
+    ex_end,
+    ex_ty,
+    load_params,
+    set_nullable
+};
+
+// Plan streams. A plan is written in prefix order as
+//   Scan:   [0, table off, table len, binding, nslots, slots..,
+//            npredicates, predicates..]
+//   Filter: [1, predicate, input]
+//   Join:   [2, JoinKind, lhs, rhs, condition]
+
+pub fn copy_expr(inout q: Q, p: u64) {
+    let end = ex_end(in q, p);
+    for i in p..end {
+        let w = ex(in q, i);
+        q.words.push(w);
+    }
+}
+
+pub fn emit_plan(inout q: Q, n: u64) {
+    let x = node(in q, n);
+    if x.kind == 0 {
+        q.words.push(0);
+        q.words.push(x.a);
+        q.words.push(x.b);
+        q.words.push(x.c);
+        q.words.push(x.e);
+        for k in 0..x.e {
+            let w = ex(in q, wrapping_add(x.d, k));
+            q.words.push(w);
+        }
+        let at = q.words.len();
+        q.words.push(0);
+        let mut count: u64 = 0;
+        let mut l = x.f;
+        loop {
+            if l == none() {
+                break;
+            }
+            let k = link(in q, l);
+            copy_expr(inout q, k.expr);
+            count = wrapping_add(count, 1);
+            l = k.next;
+        }
+        q.words.try_set(at, count);
+    } else if x.kind == 1 {
+        q.words.push(1);
+        copy_expr(inout q, x.a);
+        emit_plan(inout q, x.b);
+    } else {
+        q.words.push(2);
+        q.words.push(x.a);
+        emit_plan(inout q, x.b);
+        emit_plan(inout q, x.c);
+        copy_expr(inout q, x.d);
+    }
+}
+
+// Decode a plan stream already copied into `ex` at p into plan nodes;
+// returns (node, end).
+pub fn decode_plan(inout q: Q, p: u64) -> (u64, u64) {
+    let kind = ex(in q, p);
+    if kind == 0 {
+        let nslots = ex(in q, wrapping_add(p, 4));
+        let slots_at = wrapping_add(p, 5);
+        let preds_at = wrapping_add(slots_at, nslots);
+        let npreds = ex(in q, preds_at);
+        let mut first = none();
+        let mut last = none();
+        let mut e = wrapping_add(preds_at, 1);
+        for k in 0..npreds {
+            q
+                .links
+                .push(
+                Link {
+                    expr: e,
+                    next: none()
+                }
+            );
+            let l = wrapping_sub(q.links.len(), 1);
+            if last == none() {
+                first = l;
+            } else {
+                let mut prev = link(in q, last);
+                prev.next = l;
+                q.links.try_set(last, prev);
+            }
+            last = l;
+            e = ex_end(in q, e);
+        }
+        let ta = ex(in q, wrapping_add(p, 1));
+        let tb = ex(in q, wrapping_add(p, 2));
+        let tc = ex(in q, wrapping_add(p, 3));
+        q
+            .plan
+            .push(
+            Node {
+                kind: 0,
+                a: ta,
+                b: tb,
+                c: tc,
+                d: slots_at,
+                e: nslots,
+                f: first,
+                g: last
+            }
+        );
+        (wrapping_sub(q.plan.len(), 1), e)
+    } else if kind == 1 {
+        let pred = wrapping_add(p, 1);
+        let at = ex_end(in q, pred);
+        let (input, end) = decode_plan(inout q, at);
+        q
+            .plan
+            .push(
+            Node {
+                kind: 1,
+                a: pred,
+                b: input,
+                c: 0,
+                d: 0,
+                e: 0,
+                f: none(),
+                g: none()
+            }
+        );
+        (wrapping_sub(q.plan.len(), 1), end)
+    } else {
+        let (lhs, l_end) = decode_plan(inout q, wrapping_add(p, 2));
+        let (rhs, r_end) = decode_plan(inout q, l_end);
+        let jk = ex(in q, wrapping_add(p, 1));
+        q
+            .plan
+            .push(
+            Node {
+                kind: 2,
+                a: jk,
+                b: lhs,
+                c: rhs,
+                d: r_end,
+                e: 0,
+                f: none(),
+                g: none()
+            }
+        );
+        (wrapping_sub(q.plan.len(), 1), ex_end(in q, r_end))
+    }
+}
+
+// Whether the plan below n has a scan of binding b.
+pub fn has_binding(in q: Q, n: u64, b: u64) -> bool {
+    let x = node(in q, n);
+    if x.kind == 0 {
+        x.c == b
+    } else if x.kind == 1 {
+        has_binding(in q, x.b, b)
+    } else {
+        has_binding(in q, x.b, b) || has_binding(in q, x.c, b)
+    }
+}
+
+// Whether every column binding of the expression at p is scanned below n.
+pub fn deps_within(in q: Q, p: u64, n: u64) -> bool {
+    let tag = ex(in q, p);
+    if tag == 0 {
+        has_binding(in q, n, ex(in q, wrapping_add(p, 4)))
+    } else if tag == 1 || tag == 2 {
+        true
+    } else if tag == 3 {
+        let a = wrapping_add(p, 4);
+        deps_within(in q, a, n) && deps_within(in q, ex_end(in q, a), n)
+    } else if tag == 4 || tag == 5 {
+        let a = wrapping_add(p, 3);
+        deps_within(in q, a, n) && deps_within(in q, ex_end(in q, a), n)
+    } else if tag == 6 {
+        deps_within(in q, wrapping_add(p, 3), n)
+    } else {
+        deps_within(in q, wrapping_add(p, 4), n)
+    }
+}
+
+pub fn new_filter(inout q: Q, pred: u64, input: u64) -> u64 {
+    q
+        .plan
+        .push(
+        Node {
+            kind: 1,
+            a: pred,
+            b: input,
+            c: 0,
+            d: 0,
+            e: 0,
+            f: none(),
+            g: none()
+        }
+    );
+    wrapping_sub(q.plan.len(), 1)
+}
+
+// `place`: push the predicate at p as far down the plan n as is valid.
+pub fn place(inout q: Q, p: u64, n: u64) -> u64 {
+    if ex(in q, p) == 4 {
+        let a = wrapping_add(p, 3);
+        let b = ex_end(in q, a);
+        let inner = place(inout q, a, n);
+        return place(inout q, b, inner);
+    }
+    let mut x = node(in q, n);
+    if x.kind == 0 {
+        q
+            .links
+            .push(
+            Link {
+                expr: p,
+                next: none()
+            }
+        );
+        let l = wrapping_sub(q.links.len(), 1);
+        if x.g == none() {
+            x.f = l;
+        } else {
+            let mut prev = link(in q, x.g);
+            prev.next = l;
+            q.links.try_set(x.g, prev);
+        }
+        x.g = l;
+        q.plan.try_set(n, x);
+        n
+    } else if x.kind == 2 {
+        // A WHERE predicate can cross only a preserved side of an outer
+        // join. Even IS NULL on the nullable side must remain above it.
+        if (x.a == 0 || x.a == 1) && deps_within(in q, p, x.b) {
+            x.b = place(inout q, p, x.b);
+            q.plan.try_set(n, x);
+            n
+        } else if (x.a == 0 || x.a == 2) && deps_within(in q, p, x.c) {
+            x.c = place(inout q, p, x.c);
+            q.plan.try_set(n, x);
+            n
+        } else {
+            new_filter(inout q, p, n)
+        }
+    } else {
+        x.b = place(inout q, p, x.b);
+        q.plan.try_set(n, x);
+        n
+    }
+}
+
+// `RelPlan::optimize`.
+pub fn optimize_node(inout q: Q, n: u64) -> u64 {
+    let mut x = node(in q, n);
+    if x.kind == 1 {
+        let input = optimize_node(inout q, x.b);
+        // Conjunction splitting is valid under SQL three-valued WHERE
+        // semantics.
+        place(inout q, x.a, input)
+    } else if x.kind == 2 {
+        x.b = optimize_node(inout q, x.b);
+        x.c = optimize_node(inout q, x.c);
+        q.plan.try_set(n, x);
+        n
+    } else {
+        n
+    }
+}
+
+// `PreparedQuery::optimized` on a plan stream. Text ranges pass through.
+pub fn optimize_q(in plan: Slice[u64]) -> Q {
+    let mut q = new_q();
+    q.ex.extend(in plan);
+    let (root, end) = decode_plan(inout q, 0);
+    let top = optimize_node(inout q, root);
+    emit_plan(inout q, top);
+    q
+}
+
+// `HermeticCatalog::prepare`. meta holds the catalog encoding followed by
+// the parameter encoding; text their names. On success words holds
+//   plan, ncols, (alias off, alias len, column off, column len, binding,
+//   slot, ty, nullable)*, nproj, projection expressions..,
+//   nout, (name off, name len, ty, nullable)*, nparams,
+//   (name off, name len, ty, nullable)*
+// with ranges into pool.
+pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in limits: Slice[u64])
+    -> Q {
+    let mut q = new_q();
+    q.pool.extend(in text);
+    if !load_limits(inout q, limits) {
+        return q;
+    }
+    let after = load_catalog(inout q, meta, 0);
+    let bn = q.tabs.len();
+    if !bound(inout q, bn, 4, "catalog table limit") {
+        return q;
+    }
+    for t in 0..q.tabs.len() {
+        let bn = ctab(in q, t).n;
+        if !bound(inout q, bn, 5, "catalog column limit") {
+            return q;
+        }
+    }
+    lex(inout q, sql);
+    parse_select(inout q);
+    load_params(inout q, meta, after);
+    if q.err != 0 {
+        return q;
+    }
+    // FROM and joins.
+    let from = match q.binds.try_get(0) {
+        Option::Some(b) => b,
+        Option::None => Bind {
+            kind: 0,
+            noff: 0,
+            nlen: 0,
+            aoff: 0,
+            alen: 0,
+            on: 0
+        },
+    };
+    let mut plan = check_table(inout q, from);
+    for j in 1..q.binds.len() {
+        if q.err != 0 {
+            return q;
+        }
+        let b = match q.binds.try_get(j) {
+            Option::Some(b) => b,
+            Option::None => from,
+        };
+        let left_end = q.bcols.len();
+        let rhs = check_table(inout q, b);
+        let on = check_expr(inout q, b.on, 4);
+        if q.err != 0 {
+            return q;
+        }
+        let right_end = q.bcols.len();
+        if b.kind == 2 || b.kind == 3 {
+            set_nullable(inout q, 0, left_end);
+        }
+        if b.kind == 1 || b.kind == 3 {
+            set_nullable(inout q, left_end, right_end);
+        }
+        q
+            .plan
+            .push(
+            Node {
+                kind: 2,
+                a: b.kind,
+                b: plan,
+                c: rhs,
+                d: on,
+                e: 0,
+                f: none(),
+                g: none()
+            }
+        );
+        plan = wrapping_sub(q.plan.len(), 1);
+    }
+    if q.err != 0 {
+        return q;
+    }
+    if q.filter != none() {
+        let f = q.filter;
+        let pred = check_expr(inout q, f, 4);
+        if q.err != 0 {
+            return q;
+        }
+        plan = new_filter(inout q, pred, plan);
+    }
+    // Projection: expressions in `ex`, output names as ranges in `rows`
+    // (scratch), as (off, len) pairs.
+    q.aux.truncate(0);
+    for s in 0..q.sels.len() {
+        let sel = match q.sels.try_get(s) {
+            Option::Some(x) => x,
+            Option::None => Sel {
+                expr: 0,
+                aoff: 0,
+                alen: 0
+            },
+        };
+        let mut count: u64 = 1;
+        if sel.expr == none() {
+            count = q.bcols.len();
+        } else if sel.aoff == none() {
+            let r = raw(in q, sel.expr);
+            if r.kind != 0 {
+                fail(inout q, 1, "non-column projection requires AS name");
+                return q;
+            }
+        }
+        for k in 0..count {
+            let mut noff: u64 = 0;
+            let mut nlen: u64 = 0;
+            if sel.expr == none() {
+                let c = bcol(in q, k);
+                noff = c.coff;
+                nlen = c.clen;
+            } else if sel.aoff == none() {
+                let r = raw(in q, sel.expr);
+                noff = r.c;
+                nlen = r.d;
+            } else {
+                noff = sel.aoff;
+                nlen = sel.alen;
+            }
+            let bn = wrapping_add(q.aux.len(), 1);
+            if !bound(inout q, bn, 2, "expanded projection limit") {
+                return q;
+            }
+            let mut i: u64 = 0;
+            loop {
+                if wrapping_add(i, 1) >= q.rows.len() {
+                    break;
+                }
+                if same(
+                    in q.pool,
+                    cw(in q.rows, i),
+                    cw(in q.rows, wrapping_add(i, 1)),
+                    noff,
+                    nlen
+                ) {
+                    if q.err == 0 {
+                        q.err = 3;
+                        put(inout q.msg, "output name ");
+                        put_range(inout q.msg, in q.pool, noff, nlen);
+                        put(inout q.msg, "; use AS");
+                    }
+                    return q;
+                }
+                i = wrapping_add(i, 2);
+            }
+            q.rows.push(noff);
+            q.rows.push(nlen);
+            let p = if sel.expr == none() {
+                let c = bcol(in q, k);
+                emit_column(inout q, c)
+            } else {
+                check_expr(inout q, sel.expr, 0)
+            };
+            if q.err != 0 {
+                return q;
+            }
+            if ex_ty(in q, p) == 0 {
+                fail(inout q, 5, "NULL projection has no inferable type");
+                return q;
+            }
+            q.aux.push(p);
+        }
+    }
+    let mut used: u64 = 0;
+    for i in 0..q.params.len() {
+        if param(in q, i).used {
+            used = wrapping_add(used, 1);
+        }
+    }
+    if used != q.params.len() {
+        fail(inout q, 2, "unused parameter declaration");
+        return q;
+    }
+    // Output.
+    emit_plan(inout q, plan);
+    q.words.push(q.bcols.len());
+    for i in 0..q.bcols.len() {
+        let c = bcol(in q, i);
+        q.words.push(c.aoff);
+        q.words.push(c.alen);
+        q.words.push(c.coff);
+        q.words.push(c.clen);
+        q.words.push(c.binding);
+        q.words.push(c.slot);
+        q.words.push(c.ty);
+        q.words.push(bool_word(c.nullable));
+    }
+    q.words.push(q.aux.len());
+    for i in 0..q.aux.len() {
+        let e = cw(in q.aux, i);
+        copy_expr(inout q, e);
+    }
+    q.words.push(q.aux.len());
+    for i in 0..q.aux.len() {
+        let p = cw(in q.aux, i);
+        q.words.push(cw(in q.rows, wrapping_mul(i, 2)));
+        q.words.push(cw(in q.rows, wrapping_add(wrapping_mul(i, 2), 1)));
+        let w = wrapping_sub(ex_ty(in q, p), 1);
+        q.words.push(w);
+        let w2 = ex(in q, wrapping_add(p, 2));
+        q.words.push(w2);
+    }
+    q.words.push(q.params.len());
+    for i in 0..q.params.len() {
+        let d = param(in q, i);
+        q.words.push(d.noff);
+        q.words.push(d.nlen);
+        q.words.push(d.ty);
+        q.words.push(bool_word(d.nullable));
+    }
+    q
+}

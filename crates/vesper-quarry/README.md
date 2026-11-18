@@ -1,5 +1,7 @@
 # Quarry host SQL, page core and durable store
 
+> **Frozen for the Vesper port** (port wave P1 lane 7, [#904](https://github.com/robot-head/vesper/issues/904)): the Rust SQL front end, optimizer, row executor and catalog take bug fixes only. `--features vesper-port` runs them from the Loom package in `vesper/`.
+
 `vesper-quarry` is a bounded host library implementing the catalog, query
 checking, relational optimization, reference row execution, vectorized
 execution (single-table plans and hash/nested-loop joins, with AoSoA tile

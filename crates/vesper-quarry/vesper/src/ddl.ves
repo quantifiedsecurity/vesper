@@ -1,0 +1,246 @@
+// Module ddl of @vesper/quarry (see lib.ves).
+use self::{
+    CTab,
+    Q
+};
+use self::util::{
+    bound,
+    ctab,
+    cw,
+    fail,
+    fail_name,
+    find_table,
+    is_lit,
+    load_catalog,
+    load_limits,
+    new_q,
+    none,
+    same,
+    syntax
+};
+use self::lex::{
+    lex
+};
+use self::parse::{
+    at_end,
+    expect_sym,
+    expect_word,
+    ident,
+    sym,
+    take,
+    word
+};
+
+// DDL (src/parse.rs `ddl` and `HermeticCatalog::apply_ddl_changes`).
+
+pub fn scalar_type(inout q: Q) -> u64 {
+    let t = take(inout q);
+    if q.err != 0 {
+        return 0;
+    }
+    if t.kind != 1 {
+        syntax(inout q, "expected scalar type");
+        return 0;
+    }
+    let p = t.a;
+    let n = t.b;
+    if is_lit(in q.pool, p, n, "u64") {
+        0
+    } else if is_lit(in q.pool, p, n, "i64") || is_lit(in q.pool, p, n, "bigint") {
+        1
+    } else if is_lit(in q.pool, p, n, "f64") || is_lit(in q.pool, p, n, "double") {
+        2
+    } else if is_lit(in q.pool, p, n, "bool") || is_lit(in q.pool, p, n, "boolean") {
+        3
+    } else if is_lit(in q.pool, p, n, "text") {
+        4
+    } else if is_lit(in q.pool, p, n, "bytes") || is_lit(in q.pool, p, n, "blob") {
+        5
+    } else {
+        syntax(inout q, "unsupported scalar type");
+        0
+    }
+}
+
+// Parses every statement into `words` as
+// [0, name off, name len, ncols, (off, len, ty, nullable)*] or
+// [1, name off, name len], and returns the statement count.
+pub fn parse_ddl(inout q: Q) -> u64 {
+    let mut count: u64 = 0;
+    loop {
+        if q.err != 0 || at_end(in q) {
+            break;
+        }
+        let bn = wrapping_add(count, 1);
+        if !bound(inout q, bn, 2, "DDL statement limit") {
+            return count;
+        }
+        if word(inout q, 19) {
+            expect_word(inout q, 21, "table");
+            let name = ident(inout q);
+            expect_sym(inout q, 40);
+            if q.err != 0 {
+                return count;
+            }
+            q.words.push(0);
+            q.words.push(name.off);
+            q.words.push(name.len);
+            let at = q.words.len();
+            q.words.push(0);
+            let mut ncols: u64 = 0;
+            loop {
+                let col = ident(inout q);
+                if q.err != 0 {
+                    return count;
+                }
+                // Duplicate column names.
+                for k in 0..ncols {
+                    let p = wrapping_add(wrapping_add(at, 1), wrapping_mul(k, 4));
+                    if same(
+                        in q.pool,
+                        cw(in q.words, p),
+                        cw(in q.words, wrapping_add(p, 1)),
+                        col.off,
+                        col.len
+                    ) {
+                        fail_name(inout q, 3, "column ", col.off, col.len);
+                        return count;
+                    }
+                }
+                let ty = scalar_type(inout q);
+                if q.err != 0 {
+                    return count;
+                }
+                let nullable = if word(inout q, 14) {
+                    expect_word(inout q, 16, "null");
+                    false
+                } else {
+                    word(inout q, 16);
+                    true
+                };
+                if q.err != 0 {
+                    return count;
+                }
+                let bn = wrapping_add(ncols, 1);
+                if !bound(inout q, bn, 5, "column limit") {
+                    return count;
+                }
+                q.words.push(col.off);
+                q.words.push(col.len);
+                q.words.push(ty);
+                q
+                    .words
+                    .push(
+                    if nullable {
+                        1
+                    } else {
+                        0
+                    }
+                );
+                ncols = wrapping_add(ncols, 1);
+                if !sym(inout q, 44) {
+                    break;
+                }
+            }
+            q.words.try_set(at, ncols);
+            expect_sym(inout q, 41);
+        } else if word(inout q, 20) {
+            expect_word(inout q, 21, "table");
+            let name = ident(inout q);
+            if q.err != 0 {
+                return count;
+            }
+            q.words.push(1);
+            q.words.push(name.off);
+            q.words.push(name.len);
+        } else {
+            syntax(inout q, "only CREATE TABLE and DROP TABLE are supported");
+            return count;
+        }
+        count = wrapping_add(count, 1);
+        if !sym(inout q, 59) && q.err == 0 && !at_end(in q) {
+            syntax(inout q, "expected statement separator");
+        }
+    }
+    count
+}
+
+// `HermeticCatalog::apply_ddl_changes`. meta is the catalog encoding; text
+// its names. On success, words holds [nchanges, changes...] in the parse
+// encoding, with pool ranges; the new revision is revision + nchanges.
+pub fn ddl_apply_q(
+    in meta: Slice[u64],
+    in text: Slice[u8],
+    revision: u64,
+    in sql: Slice[u8],
+    in limits: Slice[u64]
+) -> Q {
+    let mut q = new_q();
+    q.pool.extend(in text);
+    if !load_limits(inout q, limits) {
+        return q;
+    }
+    load_catalog(inout q, meta, 0);
+    lex(inout q, sql);
+    if q.err != 0 {
+        return q;
+    }
+    q.words.push(0);
+    let count = parse_ddl(inout q);
+    if q.err != 0 {
+        return q;
+    }
+    q.words.try_set(0, count);
+    // Replay against the live table set: tabs entries with nlen = none are
+    // dropped.
+    let mut live = q.tabs.len();
+    let mut rev = revision;
+    let mut p: u64 = 1;
+    for s in 0..count {
+        let kind = cw(in q.words, p);
+        let noff = cw(in q.words, wrapping_add(p, 1));
+        let nlen = cw(in q.words, wrapping_add(p, 2));
+        let found = find_table(in q, noff, nlen);
+        if kind == 0 {
+            if found != none() {
+                fail_name(inout q, 3, "table ", noff, nlen);
+                return q;
+            }
+            let bn = wrapping_add(live, 1);
+            if !bound(inout q, bn, 4, "catalog table limit") {
+                return q;
+            }
+            q
+                .tabs
+                .push(
+                CTab {
+                    noff: noff,
+                    nlen: nlen,
+                    start: 0,
+                    n: 0
+                }
+            );
+            live = wrapping_add(live, 1);
+            p = wrapping_add(
+                wrapping_add(p, 4),
+                wrapping_mul(cw(in q.words, wrapping_add(p, 3)), 4)
+            );
+        } else {
+            if found == none() {
+                fail_name(inout q, 2, "table ", noff, nlen);
+                return q;
+            }
+            let mut t = ctab(in q, found);
+            t.nlen = none();
+            q.tabs.try_set(found, t);
+            live = wrapping_sub(live, 1);
+            p = wrapping_add(p, 3);
+        }
+        if rev == none() {
+            fail(inout q, 9, "catalog revision overflow");
+            return q;
+        }
+        rev = wrapping_add(rev, 1);
+    }
+    q
+}

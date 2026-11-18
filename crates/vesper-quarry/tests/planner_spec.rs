@@ -352,3 +352,310 @@ fn golden_results_equal_filtered_index_lookups() {
     );
     s.commit(t).unwrap();
 }
+
+/// A literal of `front_end.txt`: `5`, `5u`, `1.5`, `true`, `null`, `'text'`
+/// or `x'0aff'`.
+fn literal(s: &str) -> Value {
+    let s = s.trim();
+    if s == "null" {
+        Value::Null
+    } else if s == "true" || s == "false" {
+        Value::Bool(s == "true")
+    } else if let Some(hex) = s.strip_prefix("x'") {
+        let hex = hex.strip_suffix('\'').expect("closing quote");
+        Value::Bytes(
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect(),
+        )
+    } else if let Some(t) = s.strip_prefix('\'') {
+        Value::Text(
+            t.strip_suffix('\'')
+                .expect("closing quote")
+                .replace("''", "'"),
+        )
+    } else if let Some(u) = s.strip_suffix('u') {
+        Value::U64(u.parse().unwrap())
+    } else if s.contains(['.', 'e']) {
+        Value::F64(s.parse().unwrap())
+    } else {
+        Value::I64(s.parse().unwrap())
+    }
+}
+
+/// `field=N, ..` applied to the default limits.
+fn limits_line(s: &str) -> Limits {
+    let mut l = Limits::default();
+    for part in s.split(',').map(str::trim) {
+        let (k, v) = part.split_once('=').expect("field=N");
+        let v: usize = v.parse().unwrap();
+        match k {
+            "sql_bytes" => l.sql_bytes = v,
+            "tokens" => l.tokens = v,
+            "nodes" => l.nodes = v,
+            "nesting" => l.nesting = v,
+            "tables" => l.tables = v,
+            "columns_per_table" => l.columns_per_table = v,
+            "relations" => l.relations = v,
+            "input_rows" => l.input_rows = v,
+            "input_bytes" => l.input_bytes = v,
+            "work" => l.work = v,
+            "intermediate_rows" => l.intermediate_rows = v,
+            "intermediate_bytes" => l.intermediate_bytes = v,
+            "output_rows" => l.output_rows = v,
+            "output_bytes" => l.output_bytes = v,
+            other => panic!("unknown limit {other}"),
+        }
+    }
+    l
+}
+
+fn outcome<T>(r: &vesper_quarry::Result<T>, ok: impl FnOnce(&T) -> String) -> String {
+    match r {
+        Ok(v) => ok(v),
+        Err(e) => format!("error {:?}: {}\n", e.kind, e.message),
+    }
+}
+
+/// Runs `front_end.txt` and renders every step's outcome.
+fn front_end_transcript(text: &str) -> String {
+    use vesper_quarry::{DataSet, HermeticCatalog};
+    let mut catalog = HermeticCatalog::default();
+    let mut data: Option<DataSet> = None;
+    let mut limits = Limits::default();
+    let mut params: Vec<(ParamDef, Value, bool, bool)> = Vec::new();
+    let mut out = String::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (step, arg) = line.split_once(": ").expect("step: argument");
+        match step {
+            "limits" => {
+                limits = limits_line(arg);
+                continue;
+            }
+            "params" => {
+                for p in arg.split(", ") {
+                    let (decl, value) = p.split_once('=').expect("name:TYPE=value");
+                    let (name, ty) = decl.split_once(':').expect("name:TYPE");
+                    let (declared, bound) = (!name.starts_with('+'), !name.ends_with('?'));
+                    let name = name.trim_start_matches('+').trim_end_matches('?');
+                    let ty = match ty {
+                        "F64" => ScalarType::F64,
+                        other => scalar(other),
+                    };
+                    let def = ParamDef {
+                        name: name.to_string(),
+                        ty,
+                        nullable: true,
+                    };
+                    params.push((def, literal(value), declared, bound));
+                }
+                continue;
+            }
+            _ => {}
+        }
+        out.push_str(&format!("> {line}\n"));
+        match step {
+            "ddl" => {
+                let r = catalog.apply_ddl(arg, limits);
+                out.push_str(&outcome(&r, |_| {
+                    format!(
+                        "ok revision {} tables {:?}\n",
+                        catalog.revision(),
+                        catalog.tables()
+                    )
+                }));
+            }
+            "rows" => {
+                let (table, rows) = arg.split_once(' ').expect("TABLE ROWS");
+                let rows: Vec<Vec<Value>> = rows
+                    .split(';')
+                    .map(|r| r.split(", ").map(literal).collect())
+                    .collect();
+                let d = data.get_or_insert_with(|| DataSet::new(&catalog));
+                let r = d.set_rows(table, &rows, limits);
+                out.push_str(&outcome(&r, |_| format!("ok {:?}\n", d.tables())));
+            }
+            "query" => {
+                let defs: Vec<ParamDef> =
+                    params.iter().filter(|p| p.2).map(|p| p.0.clone()).collect();
+                let binds: BTreeMap<String, Value> = params
+                    .iter()
+                    .filter(|p| p.3)
+                    .map(|p| (p.0.name.to_ascii_lowercase(), p.1.clone()))
+                    .collect();
+                let prepared = catalog.prepare(arg, &defs, limits);
+                out.push_str(&outcome(&prepared, |q| {
+                    let o = q.optimized();
+                    format!(
+                        "plan {:?}\noptimized {:?}\ncolumns {:?}\noutput {:?}\nparameters {:?}\n",
+                        q.plan(),
+                        o.plan(),
+                        q.columns(),
+                        q.output(),
+                        q.parameters()
+                    )
+                }));
+                if let Ok(q) = prepared {
+                    let empty = DataSet::new(&catalog);
+                    let d = data.as_ref().unwrap_or(&empty);
+                    for (name, q) in [("plain", q.clone()), ("optimized", q.optimized())] {
+                        let r = q.execute(&catalog, d, &binds);
+                        out.push_str(&format!("{name} "));
+                        out.push_str(&outcome(&r, |r| {
+                            let rows: Vec<String> = r
+                                .rows
+                                .iter()
+                                .map(|row| {
+                                    row.iter().map(render_value).collect::<Vec<_>>().join(" | ")
+                                })
+                                .collect();
+                            format!("work {} rows [{}]\n", r.work, rows.join("; "))
+                        }));
+                    }
+                }
+                params.clear();
+            }
+            other => panic!("unknown step {other}"),
+        }
+        limits = Limits::default();
+    }
+    out
+}
+
+#[test]
+fn front_end_transcript_matches_golden() {
+    // Plans, types, results, work counters and every error message are part
+    // of the API, so the Rust build and the Vesper port must render this
+    // transcript identically (VESPER_BLESS=1 rewrites it from the Rust build).
+    let dir = fixtures();
+    let text = std::fs::read_to_string(dir.join("front_end.txt")).unwrap();
+    let rendered = front_end_transcript(&text);
+    let golden_path = dir.join("front_end.golden");
+    if std::env::var_os("VESPER_BLESS").is_some() && cfg!(not(feature = "vesper-port")) {
+        std::fs::write(&golden_path, &rendered).unwrap();
+    }
+    let golden = std::fs::read_to_string(&golden_path).unwrap();
+    let mismatch = rendered
+        .lines()
+        .zip(golden.lines())
+        .position(|(a, b)| a != b);
+    assert!(
+        rendered == golden,
+        "front_end.golden differs at line {:?}:\n{}",
+        mismatch.map(|i| i + 1),
+        mismatch
+            .map(|i| format!(
+                "got:  {}\nwant: {}",
+                rendered.lines().nth(i).unwrap_or(""),
+                golden.lines().nth(i).unwrap_or("")
+            ))
+            .unwrap_or_default()
+    );
+}
+
+#[test]
+fn planner_chooses_the_golden_access_paths() {
+    // The cost model of spec/planner-ddl.md section 2 must choose each
+    // case's `plan:` line. Only the Vesper port implements it.
+    let dir = fixtures();
+    let cases = parse_cases(&std::fs::read_to_string(dir.join("cases.txt")).unwrap());
+    let s = build_store();
+    let indexes = s.indexes();
+    let t = s.begin().unwrap();
+    let data = s.dataset(&t, &["c", "o", "p"], Limits::default()).unwrap();
+    let mut wrong = Vec::new();
+    for case in &cases {
+        let defs: Vec<ParamDef> = case.params.iter().map(|(d, _)| d.clone()).collect();
+        let binds: BTreeMap<String, Value> = case
+            .params
+            .iter()
+            .map(|(d, v)| (d.name.clone(), v.clone()))
+            .collect();
+        let q = s
+            .catalog()
+            .prepare(&case.sql, &defs, Limits::default())
+            .unwrap();
+        match q.optimized().access_plan(&data, &indexes, &binds) {
+            Ok(plan) => {
+                if plan.to_string() != case.plan {
+                    wrong.push(format!(
+                        "{}: chose {plan} ({:?}), want {}",
+                        case.name,
+                        plan.bindings
+                            .iter()
+                            .map(|b| (b.rows, b.cost))
+                            .collect::<Vec<_>>(),
+                        case.plan
+                    ));
+                }
+            }
+            Err(e) => {
+                // Only the Rust build lacks the access planner.
+                let port = cfg!(feature = "vesper-port");
+                assert!(!port, "{}: {e}", case.name);
+                assert_eq!(e.kind, ErrorKind::Unsupported);
+            }
+        }
+    }
+    s.commit(t).unwrap();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// A bound parameter's value must not shift the per-value counts of the
+/// statistics: with `t.a` always 1, `a = :p` (p = 1) selects every row, so
+/// a scan beats the index.
+#[test]
+fn bound_parameters_keep_statistics_aligned() {
+    let mut c = vesper_quarry::HermeticCatalog::default();
+    c.apply_ddl("CREATE TABLE t (a I64 NOT NULL)", Limits::default())
+        .unwrap();
+    let mut d = vesper_quarry::DataSet::new(&c);
+    let rows: Vec<Vec<Value>> = (0..100).map(|_| vec![Value::I64(1)]).collect();
+    d.set_rows("t", &rows, Limits::default()).unwrap();
+    let param = ParamDef {
+        name: "p".into(),
+        ty: ScalarType::I64,
+        nullable: false,
+    };
+    let q = c
+        .prepare("SELECT a FROM t WHERE a = :p", &[param], Limits::default())
+        .unwrap()
+        .optimized();
+    let indexes = BTreeMap::from([("t_a".to_string(), ("t".to_string(), "a".to_string()))]);
+    let params = BTreeMap::from([("p".to_string(), Value::I64(1))]);
+    match q.access_plan(&d, &indexes, &params) {
+        Ok(plan) => {
+            assert_eq!(plan.to_string(), "t=scan");
+            assert_eq!(plan.bindings[0].rows, 100);
+        }
+        Err(e) => {
+            let port = cfg!(feature = "vesper-port");
+            assert!(!port, "{e}");
+            assert_eq!(e.kind, ErrorKind::Unsupported);
+        }
+    }
+}
+
+/// Access planning, like execution, refuses data from another schema
+/// snapshot.
+#[test]
+fn access_plan_rejects_a_stale_data_snapshot() {
+    let mut c = vesper_quarry::HermeticCatalog::default();
+    c.apply_ddl("CREATE TABLE t (a I64, b I64)", Limits::default())
+        .unwrap();
+    let q = c
+        .prepare("SELECT a FROM t WHERE a = 1", &[], Limits::default())
+        .unwrap();
+    let mut c2 = vesper_quarry::HermeticCatalog::default();
+    c2.apply_ddl("CREATE TABLE t (b I64, a I64)", Limits::default())
+        .unwrap();
+    let d = vesper_quarry::DataSet::new(&c2);
+    let e = q
+        .access_plan(&d, &BTreeMap::new(), &BTreeMap::new())
+        .unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Stale);
+}

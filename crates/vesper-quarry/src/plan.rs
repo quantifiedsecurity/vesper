@@ -1,9 +1,22 @@
-use crate::parse::{Cmp, Expr, Select, Table};
-use crate::{
-    add, bound, identifier, ColumnDef, Error, ErrorKind, HermeticCatalog, Limits, ParamDef, Result,
-    ScalarType, Value,
-};
+#[cfg(not(feature = "vesper-port"))]
+use crate::parse::{Expr, Select, Table};
+#[cfg(not(feature = "vesper-port"))]
+use crate::Result;
+#[cfg(not(feature = "vesper-port"))]
+use crate::{add, bound, identifier, Error, ErrorKind};
+use crate::{ColumnDef, HermeticCatalog, Limits, ParamDef, ScalarType, Value};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// A comparison operator of a checked predicate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cmp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JoinKind {
@@ -26,8 +39,8 @@ pub struct BoundColumn {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypedExpr {
     pub(crate) node: ExprNode,
-    ty: Option<ScalarType>,
-    nullable: bool,
+    pub(crate) ty: Option<ScalarType>,
+    pub(crate) nullable: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ExprNode {
@@ -110,6 +123,7 @@ impl RelPlan {
             }
         }
     }
+    #[cfg(not(feature = "vesper-port"))]
     fn optimize(self) -> Self {
         match self {
             Self::Filter { predicate, input } => {
@@ -131,6 +145,7 @@ impl RelPlan {
         }
     }
 }
+#[cfg(not(feature = "vesper-port"))]
 fn place(predicate: TypedExpr, input: RelPlan) -> RelPlan {
     if let ExprNode::And(a, b) = predicate.node {
         return place(*b, place(*a, input));
@@ -215,10 +230,18 @@ impl PreparedQuery {
     }
     pub fn optimized(&self) -> Self {
         let mut p = self.clone();
-        p.plan = p.plan.optimize();
+        #[cfg(not(feature = "vesper-port"))]
+        {
+            p.plan = p.plan.optimize();
+        }
+        #[cfg(feature = "vesper-port")]
+        {
+            p.plan = crate::port::optimize(&p.plan);
+        }
         p
     }
 }
+#[cfg(not(feature = "vesper-port"))]
 struct Checker {
     columns: Vec<BoundColumn>,
     aliases: BTreeSet<String>,
@@ -226,6 +249,7 @@ struct Checker {
     used_params: BTreeSet<String>,
     bindings: usize,
 }
+#[cfg(not(feature = "vesper-port"))]
 impl Checker {
     fn table(&mut self, t: Table, catalog: &HermeticCatalog) -> Result<RelPlan> {
         if !self.aliases.insert(t.alias.clone()) {
@@ -385,6 +409,7 @@ impl Checker {
         })
     }
 }
+#[cfg(not(feature = "vesper-port"))]
 pub(crate) fn prepare(
     catalog: &HermeticCatalog,
     raw: Select,
@@ -505,4 +530,110 @@ pub(crate) fn prepare(
         output,
         params: c.params,
     })
+}
+
+/// How an index path bounds its column (spec/planner-ddl.md, section 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexBound {
+    Eq,
+    Range,
+    Lower,
+    Upper,
+}
+
+/// The access path the planner chose for one FROM binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccessPath {
+    /// Every row the snapshot sees.
+    Scan,
+    /// A secondary index with sargable bounds.
+    Index { index: String, bound: IndexBound },
+    /// Index nested-loop join: probe `index` with the distinct non-null
+    /// values of `outer.column`.
+    IndexJoin {
+        index: String,
+        outer: String,
+        column: String,
+    },
+}
+
+/// One FROM binding's chosen path, with the cost model's row estimate and
+/// cost (integer milli-units).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BindingPath {
+    pub alias: String,
+    pub path: AccessPath,
+    pub rows: u64,
+    pub cost: u64,
+}
+
+/// The access paths of a query, in FROM order. `Display` renders the
+/// notation of `tests/fixtures/planner/cases.txt`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccessPlan {
+    pub bindings: Vec<BindingPath>,
+}
+
+impl std::fmt::Display for AccessPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, b) in self.bindings.iter().enumerate() {
+            if i > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{}=", b.alias)?;
+            match &b.path {
+                AccessPath::Scan => f.write_str("scan")?,
+                AccessPath::Index { index, bound } => {
+                    let bound = match bound {
+                        IndexBound::Eq => "eq",
+                        IndexBound::Range => "range",
+                        IndexBound::Lower => "lower",
+                        IndexBound::Upper => "upper",
+                    };
+                    write!(f, "index({index},{bound})")?;
+                }
+                AccessPath::IndexJoin {
+                    index,
+                    outer,
+                    column,
+                } => write!(f, "index_join({index},{outer}.{column})")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+impl PreparedQuery {
+    /// Chooses an access path for every FROM binding of the optimized plan
+    /// with the cost model of `spec/planner-ddl.md`. `data` holds every
+    /// table the query reads (its exact statistics are ANALYZE's), `indexes`
+    /// maps index names to `(table, column)` as `Store::indexes` returns
+    /// them, and `params` are the parameter values known at planning (a
+    /// parameter without a value is estimated).
+    ///
+    /// Only the Vesper port implements access selection; the Rust build
+    /// returns `Unsupported`.
+    pub fn access_plan(
+        &self,
+        data: &crate::DataSet,
+        indexes: &BTreeMap<String, (String, String)>,
+        params: &BTreeMap<String, Value>,
+    ) -> crate::Result<AccessPlan> {
+        if data.catalog != self.catalog {
+            return Err(crate::Error::new(
+                crate::ErrorKind::Stale,
+                "prepared query or data schema snapshot differs in revision/content",
+            ));
+        }
+        #[cfg(feature = "vesper-port")]
+        return crate::port::access_plan(self, data, indexes, params);
+        #[cfg(not(feature = "vesper-port"))]
+        {
+            let _ = (data, indexes, params);
+            Err(Error::new(
+                ErrorKind::Unsupported,
+                "access path selection is implemented by the Vesper port (vesper-port)",
+            ))
+        }
+    }
 }

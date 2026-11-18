@@ -1,0 +1,511 @@
+// Module parse of @vesper/quarry (see lib.ves).
+use self::{
+    Bind,
+    Q,
+    Raw,
+    Rng,
+    Sel,
+    Tok
+};
+use self::util::{
+    bound,
+    is_lit,
+    none,
+    put,
+    put_u64,
+    syntax,
+    tok
+};
+
+// Parser (src/parse.rs `Parser`).
+
+pub fn at_end(in q: Q) -> bool {
+    q.pos >= q.toks.len()
+}
+
+pub fn peek_is_word(in q: Q, kw: u64) -> bool {
+    let t = tok(in q, q.pos);
+    t.kind == 1 && t.kw == kw
+}
+
+pub fn peek_is_sym(in q: Q, c: u64) -> bool {
+    let t = tok(in q, q.pos);
+    t.kind == 5 && t.a == c
+}
+
+pub fn word(inout q: Q, kw: u64) -> bool {
+    if q.err == 0 && peek_is_word(in q, kw) {
+        q.pos = wrapping_add(q.pos, 1);
+        true
+    } else {
+        false
+    }
+}
+
+pub fn sym(inout q: Q, c: u64) -> bool {
+    if q.err == 0 && peek_is_sym(in q, c) {
+        q.pos = wrapping_add(q.pos, 1);
+        true
+    } else {
+        false
+    }
+}
+
+pub fn expect_word(inout q: Q, kw: u64, in s: Str) {
+    if !word(inout q, kw) && q.err == 0 {
+        q.err = 1;
+        put(inout q.msg, "expected ");
+        put(inout q.msg, s);
+        put(inout q.msg, " near token ");
+        put_u64(inout q.msg, q.pos);
+    }
+}
+
+pub fn expect_sym(inout q: Q, c: u64) {
+    if !sym(inout q, c) && q.err == 0 {
+        q.err = 1;
+        put(inout q.msg, "expected ");
+        q.msg.push(wrapping_u8(c));
+        put(inout q.msg, " near token ");
+        put_u64(inout q.msg, q.pos);
+    }
+}
+
+// `take`: the next token, or the "unexpected end" error (kind 0).
+pub fn take(inout q: Q) -> Tok {
+    if q.err != 0 {
+        return tok(in q, none());
+    }
+    if at_end(in q) {
+        syntax(inout q, "unexpected end");
+        return tok(in q, none());
+    }
+    let t = tok(in q, q.pos);
+    q.pos = wrapping_add(q.pos, 1);
+    t
+}
+
+// The reserved keyword id of a lowercase word (`Tok::kw`), or 0.
+pub fn keyword(in p: ChunkSeq[u8], off: u64, len: u64) -> u64 {
+    let c = match p.try_get(off) {
+        Option::Some(c) => c,
+        Option::None => 0,
+    };
+    if len == 2 {
+        if c == 111 && is_lit(in p, off, len, "on") {
+            return 10;
+        }
+        if c == 97 && is_lit(in p, off, len, "as") {
+            return 11;
+        }
+        if c == 111 && is_lit(in p, off, len, "or") {
+            return 13;
+        }
+        if c == 105 && is_lit(in p, off, len, "is") {
+            return 15;
+        }
+        if c == 98 && is_lit(in p, off, len, "by") {
+            return 23;
+        }
+    } else if len == 3 {
+        if c == 97 && is_lit(in p, off, len, "and") {
+            return 12;
+        }
+        if c == 110 && is_lit(in p, off, len, "not") {
+            return 14;
+        }
+    } else if len == 4 {
+        if c == 102 && is_lit(in p, off, len, "from") {
+            return 2;
+        }
+        if c == 106 && is_lit(in p, off, len, "join") {
+            return 4;
+        }
+        if c == 108 && is_lit(in p, off, len, "left") {
+            return 6;
+        }
+        if c == 102 && is_lit(in p, off, len, "full") {
+            return 8;
+        }
+        if c == 110 && is_lit(in p, off, len, "null") {
+            return 16;
+        }
+        if c == 116 && is_lit(in p, off, len, "true") {
+            return 17;
+        }
+        if c == 100 && is_lit(in p, off, len, "drop") {
+            return 20;
+        }
+    } else if len == 5 {
+        if c == 119 && is_lit(in p, off, len, "where") {
+            return 3;
+        }
+        if c == 105 && is_lit(in p, off, len, "inner") {
+            return 5;
+        }
+        if c == 114 && is_lit(in p, off, len, "right") {
+            return 7;
+        }
+        if c == 111 && is_lit(in p, off, len, "outer") {
+            return 9;
+        }
+        if c == 102 && is_lit(in p, off, len, "false") {
+            return 18;
+        }
+        if c == 116 && is_lit(in p, off, len, "table") {
+            return 21;
+        }
+        if c == 111 && is_lit(in p, off, len, "order") {
+            return 22;
+        }
+        if c == 103 && is_lit(in p, off, len, "group") {
+            return 24;
+        }
+        if c == 108 && is_lit(in p, off, len, "limit") {
+            return 25;
+        }
+        if c == 117 && is_lit(in p, off, len, "union") {
+            return 26;
+        }
+        if c == 99 && is_lit(in p, off, len, "cross") {
+            return 30;
+        }
+        if c == 117 && is_lit(in p, off, len, "using") {
+            return 31;
+        }
+    } else if len == 6 {
+        if c == 115 && is_lit(in p, off, len, "select") {
+            return 1;
+        }
+        if c == 99 && is_lit(in p, off, len, "create") {
+            return 19;
+        }
+        if c == 104 && is_lit(in p, off, len, "having") {
+            return 28;
+        }
+        if c == 111 && is_lit(in p, off, len, "offset") {
+            return 29;
+        }
+    } else if len == 8 {
+        if c == 100 && is_lit(in p, off, len, "distinct") {
+            return 27;
+        }
+    }
+    0
+}
+
+// A non-keyword identifier, as a pool range.
+pub fn ident(inout q: Q) -> Rng {
+    let t = take(inout q);
+    if q.err != 0 {
+        return Rng {
+            off: 0,
+            len: 0
+        };
+    }
+    if t.kind == 1 && t.kw == 0 {
+        Rng {
+            off: t.a,
+            len: t.b
+        }
+    } else {
+        syntax(inout q, "expected non-keyword identifier");
+        Rng {
+            off: 0,
+            len: 0
+        }
+    }
+}
+
+// Count one expression node and store it.
+pub fn push_raw(inout q: Q, r: Raw) -> u64 {
+    if q.err != 0 {
+        return none();
+    }
+    q.nodes = wrapping_add(q.nodes, 1);
+    let bn = q.nodes;
+    if !bound(inout q, bn, 2, "expression node limit") {
+        return none();
+    }
+    q.raw.push(r);
+    wrapping_sub(q.raw.len(), 1)
+}
+
+pub fn raw2(kind: u64, a: u64, b: u64, c: u64) -> Raw {
+    Raw {
+        kind: kind,
+        a: a,
+        b: b,
+        c: c,
+        d: 0
+    }
+}
+
+pub fn parse_expr(inout q: Q, depth: u64) -> u64 {
+    let bn = depth;
+    if !bound(inout q, bn, 3, "expression nesting limit") {
+        return none();
+    }
+    let mut lhs = parse_and(inout q, depth);
+    loop {
+        if q.err != 0 || !word(inout q, 13) {
+            break;
+        }
+        let rhs = parse_and(inout q, depth);
+        if q.err != 0 {
+            break;
+        }
+        lhs = push_raw(inout q, raw2(5, 0, lhs, rhs));
+    }
+    lhs
+}
+
+pub fn parse_and(inout q: Q, depth: u64) -> u64 {
+    let mut lhs = parse_not(inout q, depth);
+    loop {
+        if q.err != 0 || !word(inout q, 12) {
+            break;
+        }
+        let rhs = parse_not(inout q, depth);
+        if q.err != 0 {
+            break;
+        }
+        lhs = push_raw(inout q, raw2(4, 0, lhs, rhs));
+    }
+    lhs
+}
+
+pub fn parse_not(inout q: Q, depth: u64) -> u64 {
+    let bn = depth;
+    if !bound(inout q, bn, 3, "expression nesting limit") {
+        return none();
+    }
+    if word(inout q, 14) {
+        let x = parse_not(inout q, wrapping_add(depth, 1));
+        return push_raw(inout q, raw2(6, 0, x, 0));
+    }
+    let lhs = parse_atom(inout q, depth);
+    if q.err != 0 {
+        return none();
+    }
+    let t = tok(in q, q.pos);
+    if t.kind == 6 {
+        q.pos = wrapping_add(q.pos, 1);
+        let rhs = parse_atom(inout q, depth);
+        push_raw(inout q, raw2(3, t.a, lhs, rhs))
+    } else if word(inout q, 15) {
+        let negated = word(inout q, 14);
+        expect_word(inout q, 16, "null");
+        push_raw(
+            inout q,
+            raw2(
+                7,
+                if negated {
+                    1
+                } else {
+                    0
+                },
+                lhs,
+                0
+            )
+        )
+    } else {
+        lhs
+    }
+}
+
+pub fn parse_atom(inout q: Q, depth: u64) -> u64 {
+    if sym(inout q, 40) {
+        let x = parse_expr(inout q, wrapping_add(depth, 1));
+        expect_sym(inout q, 41);
+        return x;
+    }
+    let t = take(inout q);
+    if q.err != 0 {
+        return none();
+    }
+    let r = if t.kind == 2 {
+        raw2(1, t.a, t.b, 0)
+    } else if t.kind == 3 {
+        Raw {
+            kind: 2,
+            a: 2,
+            b: t.a,
+            c: 0,
+            d: 0
+        }
+    } else if t.kind == 4 {
+        Raw {
+            kind: 2,
+            a: 5,
+            b: t.a,
+            c: t.b,
+            d: 0
+        }
+    } else if t.kind == 1 && t.kw == 16 {
+        Raw {
+            kind: 2,
+            a: 0,
+            b: 0,
+            c: 0,
+            d: 0
+        }
+    } else if t.kind == 1 && (t.kw == 17 || t.kw == 18) {
+        Raw {
+            kind: 2,
+            a: 4,
+            b: if t.kw == 17 {
+                1
+            } else {
+                0
+            },
+            c: 0,
+            d: 0
+        }
+    } else if t.kind == 1 && t.kw == 0 {
+        if sym(inout q, 46) {
+            let name = ident(inout q);
+            Raw {
+                kind: 0,
+                a: t.a,
+                b: t.b,
+                c: name.off,
+                d: name.len
+            }
+        } else {
+            Raw {
+                kind: 0,
+                a: none(),
+                b: 0,
+                c: t.a,
+                d: t.b
+            }
+        }
+    } else {
+        syntax(inout q, "expected scalar expression");
+        return none();
+    };
+    push_raw(inout q, r)
+}
+
+pub fn parse_table(inout q: Q, kind: u64) -> Bind {
+    let name = ident(inout q);
+    let t = tok(in q, q.pos);
+    let plain = q.err == 0 && t.kind == 1 && t.kw == 0;
+    let alias = if word(inout q, 11) || plain {
+        ident(inout q)
+    } else {
+        name
+    };
+    Bind {
+        kind: kind,
+        noff: name.off,
+        nlen: name.len,
+        aoff: alias.off,
+        alen: alias.len,
+        on: none()
+    }
+}
+
+pub fn finish(inout q: Q) {
+    sym(inout q, 59);
+    if q.err == 0 && !at_end(in q) {
+        syntax(inout q, "unsupported or trailing syntax");
+    }
+}
+
+// SELECT: fills sels, binds (the FROM binding first) and filter.
+pub fn parse_select(inout q: Q) {
+    expect_word(inout q, 1, "select");
+    loop {
+        if q.err != 0 {
+            return;
+        }
+        let star = sym(inout q, 42);
+        let expr = if star {
+            none()
+        } else {
+            parse_expr(inout q, 0)
+        };
+        let mut aoff = none();
+        let mut alen: u64 = 0;
+        if word(inout q, 11) {
+            let a = ident(inout q);
+            aoff = a.off;
+            alen = a.len;
+        }
+        if q.err != 0 {
+            return;
+        }
+        if star && aoff != none() {
+            syntax(inout q, "star cannot be aliased");
+            return;
+        }
+        q
+            .sels
+            .push(
+            Sel {
+                expr: expr,
+                aoff: aoff,
+                alen: alen
+            }
+        );
+        let bn = q.sels.len();
+        if !bound(inout q, bn, 2, "projection limit") {
+            return;
+        }
+        if !sym(inout q, 44) {
+            break;
+        }
+    }
+    expect_word(inout q, 2, "from");
+    let from = parse_table(inout q, 0);
+    if q.err != 0 {
+        return;
+    }
+    q.binds.push(from);
+    let bn: u64 = 1;
+    if !bound(inout q, bn, 6, "relation limit") {
+        return;
+    }
+    loop {
+        if q.err != 0 || at_end(in q) || peek_is_sym(in q, 59) || peek_is_word(in q, 3) {
+            break;
+        }
+        let kind: u64 = if word(inout q, 5) {
+            0
+        } else if word(inout q, 6) {
+            word(inout q, 9);
+            1
+        } else if word(inout q, 7) {
+            word(inout q, 9);
+            2
+        } else if word(inout q, 8) {
+            word(inout q, 9);
+            3
+        } else {
+            0
+        };
+        expect_word(inout q, 4, "join");
+        if q.err != 0 {
+            return;
+        }
+        // binds holds the FROM binding too, so its length is joins + 1.
+        let bn = wrapping_add(q.binds.len(), 1);
+        if !bound(inout q, bn, 6, "relation limit") {
+            return;
+        }
+        let mut rhs = parse_table(inout q, kind);
+        expect_word(inout q, 10, "on");
+        let on = parse_expr(inout q, 0);
+        if q.err != 0 {
+            return;
+        }
+        rhs.on = on;
+        q.binds.push(rhs);
+    }
+    if word(inout q, 3) {
+        q.filter = parse_expr(inout q, 0);
+    }
+    finish(inout q);
+}

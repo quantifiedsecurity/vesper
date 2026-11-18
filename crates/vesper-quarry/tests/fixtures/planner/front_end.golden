@@ -1,0 +1,346 @@
+> ddl: CREATE TABLE t (id I64 NOT NULL, u U64, f F64, b BOOL, s TEXT, x BYTES)
+ok revision 1 tables {"t": [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "u", ty: U64, nullable: true }, ColumnDef { name: "f", ty: F64, nullable: true }, ColumnDef { name: "b", ty: Bool, nullable: true }, ColumnDef { name: "s", ty: Text, nullable: true }, ColumnDef { name: "x", ty: Bytes, nullable: true }]}
+> ddl: create table T2 (Id bigint not null, label text null, w double); CREATE TABLE gone (a I64)
+ok revision 3 tables {"gone": [ColumnDef { name: "a", ty: I64, nullable: true }], "t": [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "u", ty: U64, nullable: true }, ColumnDef { name: "f", ty: F64, nullable: true }, ColumnDef { name: "b", ty: Bool, nullable: true }, ColumnDef { name: "s", ty: Text, nullable: true }, ColumnDef { name: "x", ty: Bytes, nullable: true }], "t2": [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "label", ty: Text, nullable: true }, ColumnDef { name: "w", ty: F64, nullable: true }]}
+> ddl: DROP TABLE gone; CREATE TABLE m (a I64)
+ok revision 5 tables {"m": [ColumnDef { name: "a", ty: I64, nullable: true }], "t": [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "u", ty: U64, nullable: true }, ColumnDef { name: "f", ty: F64, nullable: true }, ColumnDef { name: "b", ty: Bool, nullable: true }, ColumnDef { name: "s", ty: Text, nullable: true }, ColumnDef { name: "x", ty: Bytes, nullable: true }], "t2": [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "label", ty: Text, nullable: true }, ColumnDef { name: "w", ty: F64, nullable: true }]}
+> ddl: DROP TABLE gone
+error Unknown: table gone
+> ddl: CREATE TABLE t (id I64)
+error Duplicate: table t
+> ddl: CREATE TABLE z (a I64, A TEXT)
+error Duplicate: column a
+> ddl: CREATE TABLE z (a NUMBER)
+error Syntax: unsupported scalar type near token 6
+> ddl: CREATE TABLE z (a 5)
+error Syntax: expected scalar type near token 6
+> ddl: CREATE TABLE z (a I64 NOT 5)
+error Syntax: expected null near token 7
+> ddl: CREATE TABLE z a I64
+error Syntax: expected ( near token 3
+> ddl: CREATE TABLE z (a I64) CREATE TABLE y (b I64)
+error Syntax: expected statement separator near token 7
+> ddl: ALTER TABLE t
+error Syntax: only CREATE TABLE and DROP TABLE are supported near token 0
+> ddl: CREATE TABLE select (a I64)
+error Syntax: expected non-keyword identifier near token 3
+> ddl: CREATE TABLE
+error Syntax: unexpected end near token 2
+> ddl: CREATE TABLE z (a I64); CREATE TABLE z (b I64)
+error Duplicate: table z
+> ddl: CREATE TABLE z (a I64)
+error Limit: catalog table limit
+> ddl: CREATE TABLE z (a I64, b I64)
+error Limit: column limit
+> ddl: CREATE TABLE z (a I64)
+error Limit: limit exceeds hard ceiling
+> ddl: CREATE TABLE z (a I64)
+error Limit: SQL byte limit
+> ddl: CREATE TABLE z (a I64)
+error Limit: SQL token limit
+> ddl: CREATE TABLE z (a I64); CREATE TABLE y (b I64)
+error Limit: DDL statement limit
+> rows: t 1, 7u, 1.5, true, 'one', x'01'; 2, null, -0.0, false, 'two', x''; 3, 9u, 2.25, null, 'O''Neil', null; -4, 0u, 1e300, true, null, x'ff00'
+ok {"t": [[I64(1), U64(7), F64(1.5), Bool(true), Text("one"), Bytes([1])], [I64(2), Null, F64(-0.0), Bool(false), Text("two"), Bytes([])], [I64(3), U64(9), F64(2.25), Null, Text("O'Neil"), Null], [I64(-4), U64(0), F64(1e300), Bool(true), Null, Bytes([255, 0])]]}
+> rows: T2 1, 'a', 1.0; 2, null, null; 3, 'c', -2.5; 5, 'e', 0.0
+ok {"t": [[I64(1), U64(7), F64(1.5), Bool(true), Text("one"), Bytes([1])], [I64(2), Null, F64(-0.0), Bool(false), Text("two"), Bytes([])], [I64(3), U64(9), F64(2.25), Null, Text("O'Neil"), Null], [I64(-4), U64(0), F64(1e300), Bool(true), Null, Bytes([255, 0])]], "t2": [[I64(1), Text("a"), F64(1.0)], [I64(2), Null, Null], [I64(3), Text("c"), F64(-2.5)], [I64(5), Text("e"), F64(0.0)]]}
+> rows: t 1, 2u
+error Data: row width for t
+> rows: nope 1
+error Unknown: data table nope
+> rows: t 1, 7u, 1.5, true, 'one', 5
+error Data: invalid value for t.x
+> rows: t null, 7u, 1.5, true, 'one', x'01'
+error Data: invalid value for t.id
+> rows: 9t 1
+error Syntax: expected ASCII identifier of at most 128 bytes
+> rows: t2 1, 'a', 1.0; 2, null, null; 3, 'c', -2.5; 5, 'e', 0.0
+error Limit: input row limit
+> rows: t2 1, 'a', 1.0
+error Limit: input byte limit
+> query: SELECT * FROM t
+plan Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "u", ty: U64, nullable: true }, ColumnDef { name: "f", ty: F64, nullable: true }, ColumnDef { name: "b", ty: Bool, nullable: true }, ColumnDef { name: "s", ty: Text, nullable: true }, ColumnDef { name: "x", ty: Bytes, nullable: true }]
+parameters {}
+plain work 410 rows [1 | 7u | 1.5 | true | 'one' | x'01'; 2 | NULL | -0.0 | false | 'two' | x''; 3 | 9u | 2.25 | NULL | 'O''Neil' | NULL; -4 | 0u | 1e300 | true | NULL | x'ff00']
+optimized work 410 rows [1 | 7u | 1.5 | true | 'one' | x'01'; 2 | NULL | -0.0 | false | 'two' | x''; 3 | 9u | 2.25 | NULL | 'O''Neil' | NULL; -4 | 0u | 1e300 | true | NULL | x'ff00']
+> query: SELECT id, s FROM t WHERE u > 5u AND f < 2.0e0
+error Syntax: unsupported or trailing syntax near token 10
+> query: SELECT id FROM t WHERE f >= 1.5
+error Syntax: unsupported or trailing syntax near token 8
+> query: SELECT id, s AS name FROM t WHERE s >= 'one' OR s IS NULL
+plan Filter { predicate: TypedExpr { node: Or(TypedExpr { node: Compare(Ge, TypedExpr { node: Column { slot: 4, binding: 0 }, ty: Some(Text), nullable: true }, TypedExpr { node: Literal(Text("one")), ty: Some(Text), nullable: false }), ty: Some(Bool), nullable: true }, TypedExpr { node: IsNull(TypedExpr { node: Column { slot: 4, binding: 0 }, ty: Some(Text), nullable: true }, false), ty: Some(Bool), nullable: false }), ty: Some(Bool), nullable: true }, input: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] } }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [TypedExpr { node: Or(TypedExpr { node: Compare(Ge, TypedExpr { node: Column { slot: 4, binding: 0 }, ty: Some(Text), nullable: true }, TypedExpr { node: Literal(Text("one")), ty: Some(Text), nullable: false }), ty: Some(Bool), nullable: true }, TypedExpr { node: IsNull(TypedExpr { node: Column { slot: 4, binding: 0 }, ty: Some(Text), nullable: true }, false), ty: Some(Bool), nullable: false }), ty: Some(Bool), nullable: true }] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "name", ty: Text, nullable: true }]
+parameters {}
+plain work 347 rows [1 | 'one'; 2 | 'two'; -4 | NULL]
+optimized work 347 rows [1 | 'one'; 2 | 'two'; -4 | NULL]
+> query: SELECT t.id, t2.label FROM t JOIN t2 ON t2.id = t.id
+plan Join { kind: Inner, lhs: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }, rhs: Scan { table: "t2", binding: 1, columns: [6, 7, 8], predicates: [] }, on: TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 6, binding: 1 }, ty: Some(I64), nullable: false }, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false } }
+optimized Join { kind: Inner, lhs: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }, rhs: Scan { table: "t2", binding: 1, columns: [6, 7, 8], predicates: [] }, on: TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 6, binding: 1 }, ty: Some(I64), nullable: false }, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false } }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }, BoundColumn { alias: "t2", column: "id", binding: 1, slot: 6, ty: I64, nullable: false }, BoundColumn { alias: "t2", column: "label", binding: 1, slot: 7, ty: Text, nullable: true }, BoundColumn { alias: "t2", column: "w", binding: 1, slot: 8, ty: F64, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "label", ty: Text, nullable: true }]
+parameters {}
+plain work 2222 rows [1 | 'a'; 2 | NULL; 3 | 'c']
+optimized work 2222 rows [1 | 'a'; 2 | NULL; 3 | 'c']
+> query: SELECT a.id, b.id AS bid FROM t a LEFT JOIN t2 b ON b.id = a.id WHERE b.label IS NULL
+plan Filter { predicate: TypedExpr { node: IsNull(TypedExpr { node: Column { slot: 7, binding: 1 }, ty: Some(Text), nullable: true }, false), ty: Some(Bool), nullable: false }, input: Join { kind: Left, lhs: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }, rhs: Scan { table: "t2", binding: 1, columns: [6, 7, 8], predicates: [] }, on: TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 6, binding: 1 }, ty: Some(I64), nullable: false }, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false } } }
+optimized Filter { predicate: TypedExpr { node: IsNull(TypedExpr { node: Column { slot: 7, binding: 1 }, ty: Some(Text), nullable: true }, false), ty: Some(Bool), nullable: false }, input: Join { kind: Left, lhs: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }, rhs: Scan { table: "t2", binding: 1, columns: [6, 7, 8], predicates: [] }, on: TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 6, binding: 1 }, ty: Some(I64), nullable: false }, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false } } }
+columns [BoundColumn { alias: "a", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "a", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "a", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "a", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "a", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "a", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }, BoundColumn { alias: "b", column: "id", binding: 1, slot: 6, ty: I64, nullable: true }, BoundColumn { alias: "b", column: "label", binding: 1, slot: 7, ty: Text, nullable: true }, BoundColumn { alias: "b", column: "w", binding: 1, slot: 8, ty: F64, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "bid", ty: I64, nullable: true }]
+parameters {}
+plain work 2319 rows [2 | 2; -4 | NULL]
+optimized work 2319 rows [2 | 2; -4 | NULL]
+> query: SELECT a.id, b.id AS bid FROM t a RIGHT OUTER JOIN t2 b ON b.id = a.id WHERE a.u <> 9u
+error Syntax: unsupported or trailing syntax near token 32
+> query: SELECT a.id, b.id AS bid FROM t a FULL JOIN t2 b ON b.id = a.id AND b.w > -3
+error Type: comparison operands must have identical types
+> query: SELECT a.id, b.id AS bid FROM t a INNER JOIN t b ON a.id < b.id WHERE NOT (a.b = b.b) AND a.x <= b.x
+plan Filter { predicate: TypedExpr { node: And(TypedExpr { node: Not(TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 3, binding: 0 }, ty: Some(Bool), nullable: true }, TypedExpr { node: Column { slot: 9, binding: 1 }, ty: Some(Bool), nullable: true }), ty: Some(Bool), nullable: true }), ty: Some(Bool), nullable: true }, TypedExpr { node: Compare(Le, TypedExpr { node: Column { slot: 5, binding: 0 }, ty: Some(Bytes), nullable: true }, TypedExpr { node: Column { slot: 11, binding: 1 }, ty: Some(Bytes), nullable: true }), ty: Some(Bool), nullable: true }), ty: Some(Bool), nullable: true }, input: Join { kind: Inner, lhs: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }, rhs: Scan { table: "t", binding: 1, columns: [6, 7, 8, 9, 10, 11], predicates: [] }, on: TypedExpr { node: Compare(Lt, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Column { slot: 6, binding: 1 }, ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false } } }
+optimized Filter { predicate: TypedExpr { node: Not(TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 3, binding: 0 }, ty: Some(Bool), nullable: true }, TypedExpr { node: Column { slot: 9, binding: 1 }, ty: Some(Bool), nullable: true }), ty: Some(Bool), nullable: true }), ty: Some(Bool), nullable: true }, input: Filter { predicate: TypedExpr { node: Compare(Le, TypedExpr { node: Column { slot: 5, binding: 0 }, ty: Some(Bytes), nullable: true }, TypedExpr { node: Column { slot: 11, binding: 1 }, ty: Some(Bytes), nullable: true }), ty: Some(Bool), nullable: true }, input: Join { kind: Inner, lhs: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }, rhs: Scan { table: "t", binding: 1, columns: [6, 7, 8, 9, 10, 11], predicates: [] }, on: TypedExpr { node: Compare(Lt, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Column { slot: 6, binding: 1 }, ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false } } } }
+columns [BoundColumn { alias: "a", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "a", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "a", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "a", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "a", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "a", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }, BoundColumn { alias: "b", column: "id", binding: 1, slot: 6, ty: I64, nullable: false }, BoundColumn { alias: "b", column: "u", binding: 1, slot: 7, ty: U64, nullable: true }, BoundColumn { alias: "b", column: "f", binding: 1, slot: 8, ty: F64, nullable: true }, BoundColumn { alias: "b", column: "b", binding: 1, slot: 9, ty: Bool, nullable: true }, BoundColumn { alias: "b", column: "s", binding: 1, slot: 10, ty: Text, nullable: true }, BoundColumn { alias: "b", column: "x", binding: 1, slot: 11, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "bid", ty: I64, nullable: false }]
+parameters {}
+plain work 2995 rows []
+optimized work 2869 rows []
+> query: SELECT id, b IS NOT NULL AS known, NOT b AS nb, (b OR NULL) AS o FROM t WHERE TRUE;
+plan Filter { predicate: TypedExpr { node: Literal(Bool(true)), ty: Some(Bool), nullable: false }, input: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] } }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [TypedExpr { node: Literal(Bool(true)), ty: Some(Bool), nullable: false }] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "known", ty: Bool, nullable: false }, ColumnDef { name: "nb", ty: Bool, nullable: true }, ColumnDef { name: "o", ty: Bool, nullable: true }]
+parameters {}
+plain work 455 rows [1 | true | false | true; 2 | true | true | NULL; 3 | false | NULL | NULL; -4 | true | false | true]
+optimized work 455 rows [1 | true | false | true; 2 | true | true | NULL; 3 | false | NULL | NULL; -4 | true | false | true]
+> query: SELECT id FROM t WHERE (((id = 1)))
+plan Filter { predicate: TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(1)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }, input: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] } }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(1)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain work 312 rows [1]
+optimized work 312 rows [1]
+> query: SELECT id FROM t WHERE x = x'01'
+error Syntax: unsupported or trailing syntax near token 8
+> query: SELECT id FROM t WHERE id >= :k AND s = :S
+plan Filter { predicate: TypedExpr { node: And(TypedExpr { node: Compare(Ge, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Param("k"), ty: Some(I64), nullable: true }), ty: Some(Bool), nullable: true }, TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 4, binding: 0 }, ty: Some(Text), nullable: true }, TypedExpr { node: Param("s"), ty: Some(Text), nullable: true }), ty: Some(Bool), nullable: true }), ty: Some(Bool), nullable: true }, input: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] } }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [TypedExpr { node: Compare(Ge, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Param("k"), ty: Some(I64), nullable: true }), ty: Some(Bool), nullable: true }, TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 4, binding: 0 }, ty: Some(Text), nullable: true }, TypedExpr { node: Param("s"), ty: Some(Text), nullable: true }), ty: Some(Bool), nullable: true }] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {"k": ParamDef { name: "k", ty: I64, nullable: true }, "s": ParamDef { name: "s", ty: Text, nullable: true }}
+plain work 360 rows [2]
+optimized work 333 rows [2]
+> query: SELECT id, :k AS kk FROM t WHERE id = :k OR id > 0
+plan Filter { predicate: TypedExpr { node: Or(TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Param("k"), ty: Some(I64), nullable: true }), ty: Some(Bool), nullable: true }, TypedExpr { node: Compare(Gt, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(0)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }), ty: Some(Bool), nullable: true }, input: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] } }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [TypedExpr { node: Or(TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Param("k"), ty: Some(I64), nullable: true }), ty: Some(Bool), nullable: true }, TypedExpr { node: Compare(Gt, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(0)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }), ty: Some(Bool), nullable: true }] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "kk", ty: I64, nullable: true }]
+parameters {"k": ParamDef { name: "k", ty: I64, nullable: true }}
+plain work 437 rows [1 | NULL; 2 | NULL; 3 | NULL]
+optimized work 437 rows [1 | NULL; 2 | NULL; 3 | NULL]
+> query: SELECT id FROM t WHERE u = :k
+plan Filter { predicate: TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 1, binding: 0 }, ty: Some(U64), nullable: true }, TypedExpr { node: Param("k"), ty: Some(U64), nullable: true }), ty: Some(Bool), nullable: true }, input: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] } }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 1, binding: 0 }, ty: Some(U64), nullable: true }, TypedExpr { node: Param("k"), ty: Some(U64), nullable: true }), ty: Some(Bool), nullable: true }] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {"k": ParamDef { name: "k", ty: U64, nullable: true }}
+plain error Type: parameter :k
+optimized error Type: parameter :k
+> query: SELECT id FROM t
+error Unknown: unused parameter declaration
+> query: SELECT id FROM t WHERE id = :k
+error Duplicate: parameter k
+> query: SELECT id FROM t WHERE id = :k
+error Syntax: expected ASCII identifier of at most 128 bytes
+> query: SELECT id FROM t WHERE id = :missing
+error Unknown: parameter :missing
+> query: SELECT a FROM m
+plan Scan { table: "m", binding: 0, columns: [0], predicates: [] }
+optimized Scan { table: "m", binding: 0, columns: [0], predicates: [] }
+columns [BoundColumn { alias: "m", column: "a", binding: 0, slot: 0, ty: I64, nullable: true }]
+output [ColumnDef { name: "a", ty: I64, nullable: true }]
+parameters {}
+plain error Data: missing data for m
+optimized error Data: missing data for m
+> query: SELECT id FROM t
+plan Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain error Data: parameter set differs from declarations
+optimized error Data: parameter set differs from declarations
+> query: SELECT id FROM t WHERE id = :k
+plan Filter { predicate: TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Param("k"), ty: Some(I64), nullable: true }), ty: Some(Bool), nullable: true }, input: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] } }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Param("k"), ty: Some(I64), nullable: true }), ty: Some(Bool), nullable: true }] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {"k": ParamDef { name: "k", ty: I64, nullable: true }}
+plain error Data: missing parameter :k
+optimized error Data: missing parameter :k
+> query: SELECT id FROM t WHERE id = 'x'
+error Type: comparison operands must have identical types
+> query: SELECT id FROM t WHERE id AND b
+error Type: expected boolean expression
+> query: SELECT id FROM t WHERE NOT id
+error Type: expected boolean expression
+> query: SELECT id FROM t WHERE (id = 1) = 5
+error Type: comparison operands must have identical types
+> query: SELECT NULL AS n FROM t
+error Type: NULL projection has no inferable type
+> query: SELECT id = 1 FROM t
+error Syntax: non-column projection requires AS name
+> query: SELECT * AS x FROM t
+error Syntax: star cannot be aliased near token 4
+> query: SELECT id, id FROM t
+error Duplicate: output name id; use AS
+> query: SELECT a.id FROM t a JOIN t a ON a.id = a.id
+error Duplicate: table alias a
+> query: SELECT id FROM t a JOIN t2 b ON b.id = a.id
+error Ambiguous: column id
+> query: SELECT q.id FROM t
+error Unknown: column q.id
+> query: SELECT nope FROM t
+error Unknown: column nope
+> query: SELECT id FROM nope
+error Unknown: table nope
+> query: SELECT id FROM t ORDER BY id
+error Syntax: expected join near token 4
+> query: SELECT id FROM t WHERE id = 99999999999999999999
+error Syntax: invalid or overflowing i64 literal
+> query: SELECT id FROM t WHERE id = -9223372036854775808
+plan Filter { predicate: TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(-9223372036854775808)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }, input: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] } }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(-9223372036854775808)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain work 303 rows []
+optimized work 303 rows []
+> query: SELECT id FROM t WHERE id = 9223372036854775808
+error Syntax: invalid or overflowing i64 literal
+> query: SELECT id FROM t WHERE id = -
+error Syntax: invalid or overflowing i64 literal
+> query: SELECT id FROM t WHERE s = 'open
+error Syntax: unterminated string
+> query: SELECT id FROM t WHERE id ! 1
+error Syntax: unsupported operator
+> query: SELECT id FROM t WHERE id != 1 AND id <> 2 AND id <= 3 AND id >= -5 AND id < 4 AND id > -9
+plan Filter { predicate: TypedExpr { node: And(TypedExpr { node: And(TypedExpr { node: And(TypedExpr { node: And(TypedExpr { node: And(TypedExpr { node: Compare(Ne, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(1)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }, TypedExpr { node: Compare(Ne, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(2)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }), ty: Some(Bool), nullable: false }, TypedExpr { node: Compare(Le, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(3)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }), ty: Some(Bool), nullable: false }, TypedExpr { node: Compare(Ge, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(-5)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }), ty: Some(Bool), nullable: false }, TypedExpr { node: Compare(Lt, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(4)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }), ty: Some(Bool), nullable: false }, TypedExpr { node: Compare(Gt, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(-9)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }), ty: Some(Bool), nullable: false }, input: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] } }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [TypedExpr { node: Compare(Ne, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(1)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }, TypedExpr { node: Compare(Ne, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(2)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }, TypedExpr { node: Compare(Le, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(3)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }, TypedExpr { node: Compare(Ge, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(-5)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }, TypedExpr { node: Compare(Lt, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(4)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }, TypedExpr { node: Compare(Gt, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(-9)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain work 721 rows [3; -4]
+optimized work 530 rows [3; -4]
+> query: SELECT id FROM t WHERE id @ 1
+error Syntax: unsupported token at byte 26
+> query: SELECT id FROM t WHERE
+error Syntax: unexpected end near token 5
+> query: SELECT id FROM
+error Syntax: unexpected end near token 3
+> query: SELECT FROM t
+error Syntax: expected scalar expression near token 2
+> query: SELECT id FROM t WHERE id IS 5
+error Syntax: expected null near token 7
+> query: SELECT id FROM t JOIN t2
+error Syntax: expected on near token 6
+> query: SELECT id FROM t, t2
+error Syntax: expected join near token 4
+> query: SELECT t.select FROM t
+error Syntax: expected non-keyword identifier near token 4
+> query: SELECT id FROM t WHERE id = 1;;
+error Syntax: unsupported or trailing syntax near token 9
+> query: SELECT id FROM t WHERE :
+error Syntax: expected ASCII identifier of at most 128 bytes
+> query: SELECT id FROM t WHERE ((id = 1))
+plan Filter { predicate: TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(1)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }, input: Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] } }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [TypedExpr { node: Compare(Eq, TypedExpr { node: Column { slot: 0, binding: 0 }, ty: Some(I64), nullable: false }, TypedExpr { node: Literal(I64(1)), ty: Some(I64), nullable: false }), ty: Some(Bool), nullable: false }] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain work 312 rows [1]
+optimized work 312 rows [1]
+> query: SELECT id FROM t WHERE NOT NOT NOT b
+error Limit: expression nesting limit
+> query: SELECT id FROM t WHERE id = 1 AND id = 2
+error Limit: expression node limit
+> query: SELECT id, s, u FROM t
+error Limit: expression node limit
+> query: SELECT * FROM t
+error Limit: expanded projection limit
+> query: SELECT t.id FROM t JOIN t2 ON t2.id = t.id
+error Limit: relation limit
+> query: SELECT id FROM t
+error Limit: catalog table limit
+> query: SELECT id FROM t
+error Limit: catalog column limit
+> query: SELECT id FROM t
+plan Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain error Limit: execution work limit
+optimized error Limit: execution work limit
+> query: SELECT id FROM t
+error Limit: limit exceeds hard ceiling
+> query: SELECT id FROM t
+plan Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain error Limit: cumulative intermediate row limit
+optimized error Limit: cumulative intermediate row limit
+> query: SELECT id FROM t
+plan Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain error Limit: cumulative intermediate byte limit
+optimized error Limit: cumulative intermediate byte limit
+> query: SELECT id FROM t
+plan Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain error Limit: output row limit
+optimized error Limit: output row limit
+> query: SELECT s FROM t
+plan Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "s", ty: Text, nullable: true }]
+parameters {}
+plain error Limit: output byte limit
+optimized error Limit: output byte limit
+> query: SELECT id FROM t
+plan Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain error Limit: input row limit
+optimized error Limit: input row limit
+> query: SELECT id FROM t
+plan Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain error Limit: input byte limit
+optimized error Limit: input byte limit
+> ddl: DROP TABLE t2
+ok revision 6 tables {"m": [ColumnDef { name: "a", ty: I64, nullable: true }], "t": [ColumnDef { name: "id", ty: I64, nullable: false }, ColumnDef { name: "u", ty: U64, nullable: true }, ColumnDef { name: "f", ty: F64, nullable: true }, ColumnDef { name: "b", ty: Bool, nullable: true }, ColumnDef { name: "s", ty: Text, nullable: true }, ColumnDef { name: "x", ty: Bytes, nullable: true }]}
+> query: SELECT id FROM t
+plan Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+optimized Scan { table: "t", binding: 0, columns: [0, 1, 2, 3, 4, 5], predicates: [] }
+columns [BoundColumn { alias: "t", column: "id", binding: 0, slot: 0, ty: I64, nullable: false }, BoundColumn { alias: "t", column: "u", binding: 0, slot: 1, ty: U64, nullable: true }, BoundColumn { alias: "t", column: "f", binding: 0, slot: 2, ty: F64, nullable: true }, BoundColumn { alias: "t", column: "b", binding: 0, slot: 3, ty: Bool, nullable: true }, BoundColumn { alias: "t", column: "s", binding: 0, slot: 4, ty: Text, nullable: true }, BoundColumn { alias: "t", column: "x", binding: 0, slot: 5, ty: Bytes, nullable: true }]
+output [ColumnDef { name: "id", ty: I64, nullable: false }]
+parameters {}
+plain error Stale: prepared query or data schema snapshot differs in revision/content
+optimized error Stale: prepared query or data schema snapshot differs in revision/content

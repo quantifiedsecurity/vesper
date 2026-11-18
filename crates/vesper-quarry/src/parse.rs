@@ -1,3 +1,6 @@
+//! The Rust SQL lexer and parser (the default build; the `vesper-port`
+//! build uses vesper/src/lib.ves instead).
+pub(crate) use crate::plan::Cmp;
 use crate::{
     add, bound, identifier, ColumnDef, Error, ErrorKind, JoinKind, Limits, Result, ScalarType,
     Value,
@@ -12,15 +15,6 @@ enum Token {
     Text(String),
     Sym(char),
     Op(Cmp),
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Cmp {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
 }
 #[derive(Clone, Debug)]
 pub(crate) enum Expr {

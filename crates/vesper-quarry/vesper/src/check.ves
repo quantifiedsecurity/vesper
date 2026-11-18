@@ -1,0 +1,359 @@
+// Module check of @vesper/quarry (see lib.ves).
+use self::{
+    BCol,
+    Bind,
+    CCol,
+    Node,
+    Q,
+    Rng
+};
+use self::util::{
+    bcol,
+    bound,
+    ccol,
+    ctab,
+    ex,
+    fail,
+    fail_name,
+    find_table,
+    identifier,
+    none,
+    order,
+    param,
+    put,
+    put_range,
+    raw,
+    same,
+    sw
+};
+
+// Checker (src/plan.rs `Checker` and `prepare`). Typed expressions are
+// written to `ex` in prefix order as [tag, type word, nullable, payload..]:
+//   Column 0: slot, binding
+//   Param 1: name off, name len
+//   Literal 2: value tag, a, b
+//   Compare 3: Cmp, lhs, rhs
+//   And 4, Or 5: lhs, rhs
+//   Not 6: operand
+//   IsNull 7: negated, operand
+
+pub fn ex_set(inout q: Q, i: u64, v: u64) {
+    q.ex.try_set(i, v);
+}
+
+pub fn ex_ty(in q: Q, p: u64) -> u64 {
+    ex(in q, wrapping_add(p, 1))
+}
+
+pub fn ex_nullable(in q: Q, p: u64) -> bool {
+    ex(in q, wrapping_add(p, 2)) != 0
+}
+
+// The end of the expression at p.
+pub fn ex_end(in q: Q, p: u64) -> u64 {
+    let tag = ex(in q, p);
+    if tag == 0 || tag == 1 {
+        wrapping_add(p, 5)
+    } else if tag == 2 {
+        wrapping_add(p, 6)
+    } else if tag == 3 {
+        ex_end(in q, ex_end(in q, wrapping_add(p, 4)))
+    } else if tag == 4 || tag == 5 {
+        ex_end(in q, ex_end(in q, wrapping_add(p, 3)))
+    } else if tag == 6 {
+        ex_end(in q, wrapping_add(p, 3))
+    } else {
+        ex_end(in q, wrapping_add(p, 4))
+    }
+}
+
+pub fn header(inout q: Q, tag: u64) -> u64 {
+    let p = q.ex.len();
+    q.ex.push(tag);
+    q.ex.push(0);
+    q.ex.push(0);
+    p
+}
+
+pub fn bool_word(b: bool) -> u64 {
+    if b {
+        1
+    } else {
+        0
+    }
+}
+
+// `Checker::column`: the bound column for an optional qualifier and a name.
+pub fn find_column(inout q: Q, qoff: u64, qlen: u64, noff: u64, nlen: u64) -> u64 {
+    let mut found = none();
+    for i in 0..q.bcols.len() {
+        let c = bcol(in q, i);
+        if same(in q.pool, c.coff, c.clen, noff, nlen)
+            && (qoff == none() || same(in q.pool, qoff, qlen, c.aoff, c.alen)) {
+            if found != none() {
+                fail_name(inout q, 4, "column ", noff, nlen);
+                return none();
+            }
+            found = i;
+        }
+    }
+    if found == none() && q.err == 0 {
+        q.err = 2;
+        put(inout q.msg, "column ");
+        if qoff != none() {
+            put_range(inout q.msg, in q.pool, qoff, qlen);
+            q.msg.push(46);
+        }
+        put_range(inout q.msg, in q.pool, noff, nlen);
+    }
+    found
+}
+
+pub fn emit_column(inout q: Q, c: BCol) -> u64 {
+    let p = header(inout q, 0);
+    q.ex.push(c.slot);
+    q.ex.push(c.binding);
+    ex_set(inout q, wrapping_add(p, 1), wrapping_add(c.ty, 1));
+    ex_set(inout q, wrapping_add(p, 2), bool_word(c.nullable));
+    p
+}
+
+// `Checker::expr`: check raw node r with an optional expected type word
+// (0 = none) and return its position in `ex`.
+pub fn check_expr(inout q: Q, r: u64, expected: u64) -> u64 {
+    if q.err != 0 {
+        return 0;
+    }
+    let e = raw(in q, r);
+    let mut p: u64 = 0;
+    if e.kind == 0 {
+        let i = find_column(inout q, e.a, e.b, e.c, e.d);
+        if q.err != 0 {
+            return 0;
+        }
+        let c = bcol(in q, i);
+        p = emit_column(inout q, c);
+    } else if e.kind == 1 {
+        let mut found = none();
+        for i in 0..q.params.len() {
+            let d = param(in q, i);
+            if same(in q.pool, d.noff, d.nlen, e.a, e.b) {
+                found = i;
+            }
+        }
+        if found == none() {
+            fail_name(inout q, 2, "parameter :", e.a, e.b);
+            return 0;
+        }
+        let mut d = param(in q, found);
+        d.used = true;
+        q.params.try_set(found, d);
+        p = header(inout q, 1);
+        q.ex.push(e.a);
+        q.ex.push(e.b);
+        ex_set(inout q, wrapping_add(p, 1), wrapping_add(d.ty, 1));
+        ex_set(inout q, wrapping_add(p, 2), bool_word(d.nullable));
+    } else if e.kind == 2 {
+        p = header(inout q, 2);
+        q.ex.push(e.a);
+        q.ex.push(e.b);
+        q.ex.push(e.c);
+        // The value tag is the type word (0 for NULL).
+        ex_set(inout q, wrapping_add(p, 1), e.a);
+        ex_set(inout q, wrapping_add(p, 2), bool_word(e.a == 0));
+    } else if e.kind == 3 {
+        p = header(inout q, 3);
+        q.ex.push(e.a);
+        let a = check_expr(inout q, e.b, 0);
+        let b = check_expr(inout q, e.c, 0);
+        if q.err != 0 {
+            return 0;
+        }
+        let at = ex_ty(in q, a);
+        let bt = ex_ty(in q, b);
+        let ty = if at != 0 {
+            at
+        } else if bt != 0 {
+            bt
+        } else {
+            4
+        };
+        if (at != 0 && at != ty) || (bt != 0 && bt != ty) {
+            fail(inout q, 5, "comparison operands must have identical types");
+            return 0;
+        }
+        ex_set(inout q, wrapping_add(a, 1), ty);
+        ex_set(inout q, wrapping_add(b, 1), ty);
+        ex_set(inout q, wrapping_add(p, 1), 4);
+        let nb = bool_word(ex_nullable(in q, a) || ex_nullable(in q, b));
+        ex_set(inout q, wrapping_add(p, 2), nb);
+    } else if e.kind == 4 || e.kind == 5 {
+        if expected != 0 && expected != 4 {
+            fail(inout q, 5, "boolean type mismatch");
+            return 0;
+        }
+        p = header(inout q, e.kind);
+        let a = check_expr(inout q, e.b, 4);
+        let b = check_expr(inout q, e.c, 4);
+        if q.err != 0 {
+            return 0;
+        }
+        ex_set(inout q, wrapping_add(p, 1), 4);
+        let nb = bool_word(ex_nullable(in q, a) || ex_nullable(in q, b));
+        ex_set(inout q, wrapping_add(p, 2), nb);
+        return p;
+    } else if e.kind == 6 {
+        p = header(inout q, 6);
+        let x = check_expr(inout q, e.b, 4);
+        if q.err != 0 {
+            return 0;
+        }
+        ex_set(inout q, wrapping_add(p, 1), 4);
+        let nb = bool_word(ex_nullable(in q, x));
+        ex_set(inout q, wrapping_add(p, 2), nb);
+    } else {
+        p = header(inout q, 7);
+        q.ex.push(e.a);
+        check_expr(inout q, e.b, 0);
+        if q.err != 0 {
+            return 0;
+        }
+        ex_set(inout q, wrapping_add(p, 1), 4);
+        ex_set(inout q, wrapping_add(p, 2), 0);
+    }
+    if expected != 0 {
+        let actual = ex_ty(in q, p);
+        if actual != 0 && actual != expected {
+            fail(inout q, 5, "expected boolean expression");
+            return 0;
+        }
+        ex_set(inout q, wrapping_add(p, 1), expected);
+    }
+    p
+}
+
+// `Checker::table`: bind a FROM/JOIN table and return its Scan node.
+pub fn check_table(inout q: Q, b: Bind) -> u64 {
+    for i in 0..q.aliases.len() {
+        let a = match q.aliases.try_get(i) {
+            Option::Some(a) => a,
+            Option::None => Rng {
+                off: 0,
+                len: 0
+            },
+        };
+        if same(in q.pool, a.off, a.len, b.aoff, b.alen) {
+            fail_name(inout q, 3, "table alias ", b.aoff, b.alen);
+            return 0;
+        }
+    }
+    q
+        .aliases
+        .push(
+        Rng {
+            off: b.aoff,
+            len: b.alen
+        }
+    );
+    let t = find_table(in q, b.noff, b.nlen);
+    if t == none() {
+        fail_name(inout q, 2, "table ", b.noff, b.nlen);
+        return 0;
+    }
+    let tab = ctab(in q, t);
+    let binding = q.nbindings;
+    q.nbindings = wrapping_add(binding, 1);
+    let slots_at = q.ex.len();
+    for k in 0..tab.n {
+        let c = ccol(in q, wrapping_add(tab.start, k));
+        let slot = q.bcols.len();
+        q.ex.push(slot);
+        q
+            .bcols
+            .push(
+            BCol {
+                aoff: b.aoff,
+                alen: b.alen,
+                coff: c.noff,
+                clen: c.nlen,
+                binding: binding,
+                slot: slot,
+                ty: c.ty,
+                nullable: c.nullable
+            }
+        );
+    }
+    q
+        .plan
+        .push(
+        Node {
+            kind: 0,
+            a: b.noff,
+            b: b.nlen,
+            c: binding,
+            d: slots_at,
+            e: tab.n,
+            f: none(),
+            g: none()
+        }
+    );
+    wrapping_sub(q.plan.len(), 1)
+}
+
+pub fn set_nullable(inout q: Q, from: u64, to: u64) {
+    for i in from..to {
+        let mut c = bcol(in q, i);
+        c.nullable = true;
+        q.bcols.try_set(i, c);
+    }
+}
+
+// Params input: [nparams, (off, len, ty, nullable)*]. Normalizes names,
+// rejects duplicates and keeps them sorted by name (the BTreeMap order).
+pub fn load_params(inout q: Q, in meta: Slice[u64], at: u64) {
+    let n = sw(in meta, at);
+    let bn = n;
+    if !bound(inout q, bn, 2, "parameter count limit") {
+        return;
+    }
+    let mut p = wrapping_add(at, 1);
+    for k in 0..n {
+        let off = identifier(inout q, sw(in meta, p), sw(in meta, wrapping_add(p, 1)));
+        if q.err != 0 {
+            return;
+        }
+        let len = sw(in meta, wrapping_add(p, 1));
+        let d = CCol {
+            noff: off,
+            nlen: len,
+            ty: sw(in meta, wrapping_add(p, 2)),
+            nullable: sw(in meta, wrapping_add(p, 3)) != 0,
+            used: false
+        };
+        p = wrapping_add(p, 4);
+        // Insertion into the sorted list.
+        let mut at_i = q.params.len();
+        for i in 0..q.params.len() {
+            let e = param(in q, i);
+            let o = order(in q.pool, off, len, e.noff, e.nlen);
+            if o == 1 {
+                fail_name(inout q, 3, "parameter ", off, len);
+                return;
+            }
+            if o == 0 && at_i == q.params.len() {
+                at_i = i;
+            }
+        }
+        q.params.push(d);
+        let mut j = wrapping_sub(q.params.len(), 1);
+        loop {
+            if j <= at_i {
+                break;
+            }
+            let prev = param(in q, wrapping_sub(j, 1));
+            q.params.try_set(j, prev);
+            j = wrapping_sub(j, 1);
+        }
+        q.params.try_set(at_i, d);
+    }
+}
