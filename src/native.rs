@@ -1334,6 +1334,7 @@ fn define_instances_observed_with_trace<M: Module>(
                 handlers: vec![],
                 exits: vec![],
                 inline_depth: 0,
+                sink_blocks: vec![],
                 fail_record: fail_record.map(|record| {
                     (
                         record,
@@ -2159,6 +2160,11 @@ struct Codegen<'a, 'b, M: Module> {
     /// ([`crate::ir::Op::Exit`]) by lowered function or closure name.
     exits: Vec<ExitTarget>,
     inline_depth: usize,
+    /// Blocks of boxed objects lent `sink` to a callee inlined for its
+    /// handler effects, with the handler depth at the call: a handler
+    /// installed below that depth that aborts frees them; the call frees
+    /// them when it returns. A freed block's variable holds 0.
+    sink_blocks: Vec<(usize, Variable)>,
     /// The failure-record pointer of a `fail_only` function being compiled,
     /// with the error type of each of its `Fail` instances.
     fail_record: Option<(ir::Value, Vec<Type>)>,
@@ -3090,8 +3096,9 @@ impl<M: Module> Codegen<'_, '_, M> {
             postorder
         });
         order.extend(unreached);
-        // Box drop elaboration (`fip::elaborate_non_fip_drops`) assumes a
-        // forward-only graph without early exits; refuse rather than leak.
+        // Box drop elaboration (`fip::elaborate_non_fip_drops`) solves
+        // loops and early exits; refuse a graph it could not plan rather
+        // than leak.
         if f.blocks
             .iter()
             .flat_map(|b| &b.instructions)
@@ -3100,7 +3107,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                 .values()
                 .chain(f.locals.values())
                 .any(|t| crate::fip::mentions_box(self.world, t))
-            && !crate::fip::loop_boxes_reclaimed(self.world, f)
+            && !crate::fip::loop_drops_elaborated(self.world, f)
         {
             return Err(format!(
                 "native '{}': {}",
@@ -5959,12 +5966,13 @@ impl<M: Module> Codegen<'_, '_, M> {
             && !direct_trace
             && dyn_target.is_none()
         {
-            if !sink_blocks.is_empty() {
-                // The inlined body reads the object in its block, and an
-                // abort through a handler would skip the free after it.
-                return Err(format!(
-                    "native: a boxed object lent `sink` to '{name}', whose effects are specialized at the call, is not supported in Stage 1; lend it to a function without handler effects"
-                ));
+            // The inlined body reads the object in its block, so the block
+            // lives until the body returns or a handler outside it aborts.
+            let lent = self.sink_blocks.len();
+            for block in sink_blocks.drain(..) {
+                let var = self.b.declare_var(self.m.target_config().pointer_type());
+                self.def_var(var, block);
+                self.sink_blocks.push((self.handlers.len(), var));
             }
             if self.inline_depth >= 64 {
                 return Err("recursive effect specialization exceeds 64 inline frames".into());
@@ -6043,6 +6051,9 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.in_fip_fn = fip_scope;
             self.capabilities = capability_scope;
             let result = result?;
+            for (_, var) in self.sink_blocks.split_off(lent) {
+                self.free_sink_block(var)?;
+            }
             match into {
                 Some(out) if result_layout.aggregate() => {
                     self.copy_bytes(result, out, result_layout.size);
@@ -6217,6 +6228,36 @@ impl<M: Module> Codegen<'_, '_, M> {
     }
     fn fip_box_free(&mut self, ptr: ir::Value) -> Result<(), String> {
         emit_fip_box_free(&mut self.b, self.m, ptr)
+    }
+    /// Frees the block a lent `sink` object's variable holds, unless it
+    /// was freed already (0), and empties the variable.
+    fn free_sink_block(&mut self, var: Variable) -> Result<(), String> {
+        let block = self.use_var(var);
+        let live = self.b.ins().icmp_imm(IntCC::NotEqual, block, 0);
+        let free = self.b.create_block();
+        let done = self.b.create_block();
+        self.branch(live, free, &[], done, &[]);
+        self.b.switch_to_block(free);
+        self.fip_box_free(block)?;
+        self.jump(done, &[]);
+        self.b.switch_to_block(done);
+        let zero = self.zero();
+        self.def_var(var, zero);
+        Ok(())
+    }
+    /// Frees the lent `sink` blocks of calls made inside the handler at
+    /// `depth` (all of them for 0): control is leaving their bodies.
+    fn free_sink_blocks_within(&mut self, depth: usize) -> Result<(), String> {
+        let vars: Vec<Variable> = self
+            .sink_blocks
+            .iter()
+            .filter(|(at, _)| *at > depth || depth == 0)
+            .map(|(_, var)| *var)
+            .collect();
+        for var in vars {
+            self.free_sink_block(var)?;
+        }
+        Ok(())
     }
     fn drop_box_value(&mut self, value: ir::Value, ty: &Type) -> Result<(), String> {
         emit_drop_box_value(&mut self.b, self.m, self.world, value, ty)
@@ -6395,6 +6436,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         let payload = self.offset(record, 8);
         self.store(payload, values[0], &ty)?;
         self.seq_drop_exit(0)?;
+        self.free_sink_blocks_within(0)?;
         let returns = self.b.func.signature.returns[0].value_type;
         let placeholder = if is_float_type(returns) {
             self.float_const(returns, 0.0)
@@ -6611,6 +6653,9 @@ impl<M: Module> Codegen<'_, '_, M> {
         let saved = self.handlers.split_off(index);
         let output = self.shared_control("handler_clause", &clause.body)?;
         let output = self.coerce(output, Some(&h.output_type));
+        // Leaving the handled body frees the blocks lent inside it (a
+        // resumed body has freed them already).
+        self.free_sink_blocks_within(index)?;
         self.jump(h.control.dispatch, &[output.into()]);
         self.b.switch_to_block(entry);
         if let Some(state) = h.state {
@@ -6627,6 +6672,7 @@ impl<M: Module> Codegen<'_, '_, M> {
     fn return_trace_placeholder(&mut self) {
         // A trace failure leaves the whole function; it cannot fail here.
         let _ = self.seq_drop_exit(0);
+        let _ = self.free_sink_blocks_within(0);
         let returns = self.b.func.signature.returns[0].value_type;
         let placeholder = if is_float_type(returns) {
             self.float_const(returns, 0.0)
