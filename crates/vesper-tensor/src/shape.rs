@@ -13,6 +13,8 @@ pub type Environment = BTreeMap<String, u64>;
 pub struct DimId(usize, u64);
 
 #[derive(Clone, Debug)]
+// The port-backed build reads the flat tables instead (see `Flat`).
+#[cfg_attr(vesper_port, allow(dead_code))]
 enum Expr {
     Const(u64),
     Symbol(String),
@@ -26,6 +28,18 @@ pub struct Dimensions {
     max_nodes: usize,
     max_depth: usize,
     max_factors: usize,
+    #[cfg(vesper_port)]
+    flat: Flat,
+}
+
+/// The port-backed build's copy of the arena, as `vesper/src/shape.ves`
+/// reads it: three words per node (kind, then the constant, the symbol's
+/// index, or the factor nodes), and each symbol name's index.
+#[cfg(vesper_port)]
+#[derive(Debug, Default)]
+struct Flat {
+    nodes: Vec<u64>,
+    names: BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,6 +140,8 @@ impl Dimensions {
             max_nodes,
             max_depth,
             max_factors,
+            #[cfg(vesper_port)]
+            flat: Flat::default(),
         })
     }
 
@@ -134,6 +150,19 @@ impl Dimensions {
             return Err(Error::Limit("dimension nodes/depth"));
         }
         let id = DimId(self.nodes.len(), self.owner);
+        #[cfg(vesper_port)]
+        {
+            let flat = &mut self.flat;
+            let words = match &expr {
+                Expr::Const(n) => [0, *n, 0],
+                Expr::Symbol(name) => {
+                    let next = flat.names.len() as u64;
+                    [1, *flat.names.entry(name.clone()).or_insert(next), 0]
+                }
+                Expr::Mul(a, b) => [2, a.0 as u64, b.0 as u64],
+            };
+            flat.nodes.extend(words);
+        }
         self.nodes.push((expr, depth));
         Ok(id)
     }
@@ -158,6 +187,7 @@ impl Dimensions {
         self.insert(Expr::Mul(a, b), da.max(db) + 1)
     }
 
+    #[cfg(not(vesper_port))]
     pub fn normalize(&self, id: DimId, env: &Environment) -> Result<CanonicalDim, Error> {
         if id.1 != self.owner || id.0 >= self.nodes.len() {
             return Err(Error::InvalidId);
@@ -223,6 +253,57 @@ impl Dimensions {
             out[i] = Some(value);
         }
         out[id.0].take().ok_or(Error::InvalidId)
+    }
+
+    /// The port-backed build: `vesper/src/shape.ves` counts each node's
+    /// factors instead of listing them, and returns the factors as ranks in
+    /// name order, which one ordered pass over the names and `env` gives.
+    #[cfg(vesper_port)]
+    pub fn normalize(&self, id: DimId, env: &Environment) -> Result<CanonicalDim, Error> {
+        if id.1 != self.owner || id.0 >= self.nodes.len() {
+            return Err(Error::InvalidId);
+        }
+        let symbols = self.flat.names.len();
+        // One zeroed buffer: bindings, ranks, work words and the result.
+        let mut words = vec![0u64; 3 * symbols + 4 * (id.0 + 1) + 2 + self.max_factors];
+        let (bound, rest) = words.split_at_mut(2 * symbols);
+        let (ranks, rest) = rest.split_at_mut(symbols);
+        let (work, out) = rest.split_at_mut(4 * (id.0 + 1));
+        let mut by_rank = Vec::with_capacity(symbols);
+        let mut bindings = env.iter().peekable();
+        for (rank, (name, &index)) in self.flat.names.iter().enumerate() {
+            while bindings
+                .next_if(|(k, _)| k.as_str() < name.as_str())
+                .is_some()
+            {}
+            let index = index as usize;
+            if let Some((_, &value)) = bindings.next_if(|(k, _)| *k == name) {
+                bound[2 * index] = 1;
+                bound[2 * index + 1] = value;
+            }
+            ranks[index] = rank as u64;
+            by_rank.push(name);
+        }
+        let code = crate::port::must(crate::port::binding::shape_normalize(
+            &self.flat.nodes[..3 * (id.0 + 1)],
+            id.0 as u64,
+            bound,
+            ranks,
+            self.max_factors as u64,
+            work,
+            out,
+        ));
+        match code {
+            0 => Ok(CanonicalDim {
+                coefficient: out[0],
+                symbols: out[2..2 + out[1] as usize]
+                    .iter()
+                    .map(|&r| by_rank[r as usize].clone())
+                    .collect(),
+            }),
+            1 => Err(Error::Overflow),
+            _ => Err(Error::Limit("symbol factors")),
+        }
     }
 
     pub fn value(&self, id: DimId, env: &Environment) -> Result<u64, Error> {
@@ -360,11 +441,20 @@ impl Dimensions {
     }
 }
 
+#[cfg(not(vesper_port))]
 pub fn gqa_ratio(query_heads: u64, kv_heads: u64) -> Result<u64, Error> {
     if query_heads == 0 || kv_heads == 0 || !query_heads.is_multiple_of(kv_heads) {
         return Err(Error::Shape("invalid GQA ratio"));
     }
     Ok(query_heads / kv_heads)
+}
+
+#[cfg(vesper_port)]
+pub fn gqa_ratio(query_heads: u64, kv_heads: u64) -> Result<u64, Error> {
+    match crate::port::must(crate::port::binding::shape_gqa_ratio(query_heads, kv_heads)) {
+        0 => Err(Error::Shape("invalid GQA ratio")),
+        group => Ok(group),
+    }
 }
 
 pub fn gqa_kv_head(query_heads: u64, kv_heads: u64, query_index: u64) -> Result<u64, Error> {

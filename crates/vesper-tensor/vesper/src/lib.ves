@@ -14,7 +14,9 @@
 // (src/quant.rs), `run.c` sampling (src/sampling.rs) and the decoder kernels
 // softmax, argmax, RMSNorm, SwiGLU and residual add (src/ops.rs), and the
 // llama2.c BPE prompt encoder (src/tokenizer.rs), the GGUF reader
-// (src/gguf.rs) and the safetensors header's JSON reader (src/json.rs).
+// (src/gguf.rs), the safetensors header's JSON reader (src/json.rs), the
+// paged K/V pool's bookkeeping (src/kv.rs) and the dimension planner's
+// normal form (src/shape.rs).
 //
 // The export ABI has no f32, so an f32 crosses the boundary as its bit
 // pattern: a `u32` scalar, and `Slice[u32]` for `&[f32]`, which the Rust
@@ -86,6 +88,10 @@ use self::sampling::{
     rng_next,
     sample_mult as s_sample_mult,
     sample_top_p as s_sample_top_p
+};
+use self::shape::{
+    gqa_ratio as d_gqa_ratio,
+    normalize as d_normalize
 };
 
 // A typed failure; src/port.rs maps it to the crate's `Error` with the
@@ -586,4 +592,21 @@ pub fn swiglu(inout gate: Slice[u32], in up: Slice[u32]) eff [
         let g = silu_f(f(in gate, i)) * f(in up, i);
         gate.set(i, to_bits_f32(g));
     }
+}
+
+// The dimension planner's normal form (see shape.ves).
+pub fn shape_normalize(
+    in nodes: Slice[u64],
+    id: u64,
+    in bound: Slice[u64],
+    in ranks: Slice[u64],
+    max_factors: u64,
+    inout work: Slice[u64],
+    inout out: Slice[u64]
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    d_normalize(in nodes, id, in bound, in ranks, max_factors, inout work, inout out)
+}
+
+pub fn shape_gqa_ratio(query_heads: u64, kv_heads: u64) -> u64 eff [Fail[RuntimeError]] {
+    d_gqa_ratio(query_heads, kv_heads)
 }

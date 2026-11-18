@@ -115,6 +115,8 @@ unsafe extern "C" {
     fn vesper_tensor_sample(result: *mut u64, probs: *mut u64, logits: *mut u64, temperature_bits: i64, top_p_bits: i64, rng: i64, scratch: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_sample_mult(probs: *mut u64, coin: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_sample_top_p(probs: *mut u64, top_p: i64, coin: i64, scratch: *mut u64, fail: *mut u64) -> i64;
+    fn vesper_tensor_shape_gqa_ratio(query_heads: i64, kv_heads: i64, fail: *mut u64) -> i64;
+    fn vesper_tensor_shape_normalize(nodes: *mut u64, id: i64, bound: *mut u64, ranks: *mut u64, max_factors: i64, work: *mut u64, out: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_silu(v: i64) -> i64;
     fn vesper_tensor_softmax(x: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_swiglu(gate: *mut u64, up: *mut u64, fail: *mut u64) -> i64;
@@ -1076,6 +1078,42 @@ pub fn sample_top_p(probs: &[u32], top_p: u32, coin: u32, scratch: &mut [u64]) -
         1 => Err(SampleTopPError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
         2 => Err(SampleTopPError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
         status => panic!("invalid failure status {status} from vesper_tensor_sample_top_p"),
+    }
+}
+
+/// Calls `shape_gqa_ratio` of the Vesper library `tensor` (`vesper_tensor_shape_gqa_ratio`).
+pub fn shape_gqa_ratio(query_heads: u64, kv_heads: u64) -> Result<u64, vesper_port_abi::RuntimeError> {
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_shape_gqa_ratio` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_tensor_shape_gqa_ratio(query_heads as i64, kv_heads as i64, fail.as_mut_ptr()) };
+    match fail[0] {
+        0 => Ok(raw as u64),
+        1 => Err(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..])),
+        status => panic!("invalid failure status {status} from vesper_tensor_shape_gqa_ratio"),
+    }
+}
+
+/// The errors `shape_normalize` can raise, in status order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShapeNormalizeError {
+    ArithOverflow(vesper_port_abi::ArithOverflow),
+    RuntimeError(vesper_port_abi::RuntimeError),
+}
+
+/// Calls `shape_normalize` of the Vesper library `tensor` (`vesper_tensor_shape_normalize`).
+pub fn shape_normalize(nodes: &[u64], id: u64, bound: &[u64], ranks: &[u64], max_factors: u64, work: &mut [u64], out: &mut [u64]) -> Result<u64, ShapeNormalizeError> {
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_shape_normalize` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(nodes, |view_nodes| vesper_port_abi::with_slice(bound, |view_bound| vesper_port_abi::with_slice(ranks, |view_ranks| vesper_port_abi::with_slice_mut(work, |view_work| vesper_port_abi::with_slice_mut(out, |view_out| unsafe { vesper_tensor_shape_normalize(view_nodes, id as i64, view_bound, view_ranks, max_factors as i64, view_work, view_out, fail.as_mut_ptr()) })))));
+    match fail[0] {
+        0 => Ok(raw as u64),
+        1 => Err(ShapeNormalizeError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
+        2 => Err(ShapeNormalizeError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
+        status => panic!("invalid failure status {status} from vesper_tensor_shape_normalize"),
     }
 }
 

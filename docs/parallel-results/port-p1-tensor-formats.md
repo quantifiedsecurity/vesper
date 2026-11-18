@@ -6,8 +6,9 @@ Claim [#905](https://github.com/robot-head/vesper/issues/905). Base `main` at
 This is the first part of the lane. It splits the crate into the seed copy
 and the port-backed build, and ports the element and block formats, every
 quantizer, the row decoder of `Matrix`, sampling and the FP32 kernels that
-sampling and decoding use. The tokenizer, the container parsers, the K/V pool
-and the shape planner are the second part (see "Not ported yet").
+sampling and decoding use. Part 2 ports the tokenizer and the container
+readers; part 3 ports the K/V pool's bookkeeping and the shape planner (see
+"Not ported yet" for what is left).
 
 ## Builds
 
@@ -39,8 +40,8 @@ Public modules and the part of each this PR ports:
 | `ops` | `rms_norm`, `rope`, `rope_half`, `silu`, `swiglu`, `swiglu_matvec(_with)`, `softmax`, `argmax`, `add_assign` | `rms_norm`, `silu`, `swiglu`, `softmax`, `argmax`, `add_assign` |
 | `tokenizer` | `BOS`, `EOS`, `MAX_PROMPT_BYTES`, `Encoder {new, id, encode}` | second part |
 | `gguf`, `safetensors`, `json` | container readers and writers | second part |
-| `kv` | `KvPool` and its types | second part |
-| `shape` | `Dimensions`, `CheckedShape`, GQA helpers | second part |
+| `kv` | `KvPool` and its types | third part: every pool operation's bookkeeping and byte moves; the storage, the borrowed views and the pool identity check stay Rust |
+| `shape` | `Dimensions`, `CheckedShape`, GQA helpers | third part: `normalize` (which every plan and discharge runs on) and `gqa_ratio`; the arena's names, owner tags and the obligation lists stay Rust |
 | `host` | the small FP32/Q4_0 graph executor, `decode_fp16` | outside the lane's boundary (`src/host.rs`) |
 | `attention`, `llama` | paged GQA attention, model loading and inference | second part (pure tensor parts), host glue stays |
 | `simd`, `mmap` | `std::arch` kernels, file mapping | stay Rust (F11 #587; memory mapping) |
@@ -126,6 +127,30 @@ details, which the wrapper maps to the Rust build's error and message.
 `safetensors.rs` itself stays Rust: past the JSON it only interprets the
 `Value` tree.
 
+### Part 3: the K/V pool and the shape planner
+
+| File | Rust source | Contents |
+|---|---|---|
+| `pool.ves` | `kv.rs` | the paged pool's layout and limits, page leasing with generations, append (BF16 and FP32 steps), token and page reads, checkpoints, rollback, truncation and release; every failure in the Rust build's order |
+| `shape.ves` | `shape.rs` | the dimension arena's normal form (coefficient and sorted symbol factors, checked products and factor limits) and the GQA ratio |
+
+`KvPool` in the port build keeps its pages, slots and leases as word tables
+and lends them to `pool.ves` per call; the K/V bytes stay in the Rust-owned
+storage, which the port reads and writes through borrowed slices. A failed
+call changes nothing, as in the Rust build. The check that a `Sequence`
+belongs to this pool stays Rust (it compares an owner tag the port never
+sees).
+
+The shape planner keeps the arena in Rust and adds flat tables for the port:
+three words per node and an index per symbol name. The Rust build copies and
+sorts each product's factor list; `shape.ves` counts each node's factors
+instead, checks every needed product in node order (so the first failure is
+the Rust build's), then counts the paths from the requested node to each
+unbound symbol and lists the symbol once per path. Symbols cross as ranks in
+name order, which one ordered pass over the names and the environment gives,
+so sorting ranks sorts names. `unify`, `matmul`, `gqa_rope` and `discharge`
+are unchanged decision code over `normalize`.
+
 ## What stays in Rust
 
 | File | Reason | Unblocked by |
@@ -134,7 +159,9 @@ details, which the wrapper maps to the Rust build's error and message.
 | `src/mmap.rs` | the one `memmap2::Mmap::map` call | a `.vsys` mapping surface (second part) |
 | `src/host.rs` | outside the lane's exclusive boundary; `host::decode_fp16` stays Rust, the port has its own copy | the lane that owns `host.rs` |
 | `ops::rope`, `ops::rope_half` | `powf`, `sin`, `cos` from the platform library; Vesper's `sin`/`cos` lack Payne-Hanek reduction (#893) and would change bits | a `.vsys` import like `Libm`, or Vesper transcendentals the Rust build adopts |
-| `kv`, `shape`, `attention`, `llama` | not ported yet | a third part of this lane |
+| `kv` storage and views, the pool identity check | the bytes are the caller's views; the owner tag never crosses | nothing; the views could become slices of the port's storage |
+| `shape` names, owner tags, obligation lists | strings and Rust enums the export ABI cannot carry | richer export types |
+| `attention`, `llama` | not ported yet | a later part of this lane |
 | `safetensors.rs` past the JSON reader | interprets the parsed `Value` tree only | nothing; it could move with the tree builder |
 | `Value` tree building in `json.rs`, `gguf.rs` | the export ABI cannot return a recursive Rust enum; the port returns a checked tape | richer export types |
 | `seed/` | the compiler's copy | self-hosting Stage 2 |
@@ -162,11 +189,20 @@ one `#[unsafe(no_mangle)]` shim function; the Vesper source has none.
   single-byte edits) whose results and errors must match, reaching at least
   12 distinct errors. `tokenizer_sampling` already compared the encoder with
   a literal `run.c` transliteration.
+- Part 3 adds two more: 60 K/V pool scripts of 300 operations each (begin,
+  append in both formats, reads, checkpoints, rollback, truncation, release,
+  and stale handles), whose outcomes must match and which reach every pool
+  error; and 300 shape scripts (random arenas of up to 63 nodes, two
+  environments, contractions, matmuls and GQA plans with their discharges),
+  whose results must match and which reach every shape error. The unit tests
+  in `kv.rs` now go through test accessors that both builds have.
 
 All 100 tests pass against both packages (`cargo test -p vesper-tensor -p
 vesper-tensor-seed`, Linux x86_64). After part 2, the port-backed package passes
 94 tests (8 ignored benchmarks) and the seed 90 (it does not build
 `tests/abba.rs`), Linux x86_64; `port/test-port.sh` passes with the eight
+divergent edits. After part 3, the port-backed package passes 96 tests (10
+ignored benchmarks) and the seed 90; `port/test-port.sh` passes with ten
 divergent edits.
 
 ## Divergence checks
@@ -186,6 +222,8 @@ to fail and an unchanged test of the same file to pass:
 | `tokenizer.rs` (`tokens.ves`) | byte-fallback pieces looked up as lowercase `<0xab>` | `encoder_matches_run_c_and_round_trips` | `rng_matches_run_c_xorshift` |
 | `json.rs` (`text.ves`) | a leading zero is accepted before two more digits | `both_builds_read_the_same_safetensors_headers` | `both_builds_encode_the_same_prompt` |
 | `gguf.rs` (`store.ves`) | the default alignment is 16 | `both_builds_read_the_same_gguf_files` | same |
+| `kv.rs` (`pool.ves`) | a sequence may hold one token more than its limit | `both_builds_run_the_same_kv_scripts` | same |
+| `shape.rs` (`shape.ves`) | a product may hold one factor more than the limit | `both_builds_plan_the_same_shapes` | same |
 
 A first tokenizer edit (equal-score merges take the rightmost pair) passed
 every test: `tok512` never offers two mergeable pairs with the same score, so
@@ -214,14 +252,25 @@ port compiled by the in-tree `vesper` at 69c79b9 (Cranelift, inliner on).
 | BPE encode, 16 KiB prompt, `tok512` (part 2) | 1177.3 us | 3236.0 us | 2.75x | [2.69, 2.77] |
 | safetensors header, 5,000 tensors (part 2) | 4738.0 us | 11683.5 us | 2.47x | [2.43, 2.51] |
 | GGUF header, stories260K (part 2) | 65.5 us | 106.6 us | 1.63x | [1.57, 1.66] |
+| K/V pool, 1,024 FP32 appends and reads, 8x64 heads (part 3) | 445.8 us | 684.7 us | 1.53x | [1.51, 1.56] |
+| shape plan, 64 llama layers (part 3) | 1180.4 us | 2841.4 us | 2.41x | [2.40, 2.42] |
 
 The part 2 rows were measured on the same machine with the compiler at
 153f264. The safetensors and GGUF rows time the whole `from_vec`, so the
 Rust work both builds share (copying the file, building the values, and for
-safetensors the tensor table) dilutes the ratio; the GGUF reader is the only
-port inside the 2x rule.
+safetensors the tensor table) dilutes the ratio; the GGUF reader and the K/V pool are
+the ports inside the 2x rule.
 
-Every workload is past the plan's 2x stop rule. Under the owner's parity rule
+The part 3 rows were measured on the same machine with the compiler at
+7513075. The K/V row appends and reads 1,024 FP32 tokens (8 heads of 64),
+reads every page, truncates and releases. The shape row builds a 64-layer
+llama plan (about 450 nodes) and runs matmul and GQA plans and discharges
+over it; each `normalize` walks the arena up to the requested node, as the
+Rust build does, and the port adds one pass over the names and one zeroed
+buffer per call.
+
+Every workload but the GGUF reader and the K/V pool is past the plan's 2x
+stop rule. Under the owner's parity rule
 the port stays non-default and the Rust code stays. Where the time goes, from
 the source (not profiled yet): every element read and write is a checked
 `s[i]`/`set` with a failure status, every float goes through
@@ -258,13 +307,11 @@ Locally: Linux x86_64 (both packages, the divergence check, clippy 1.100,
 
 ## Was the Rust code deleted?
 
-No. The port is 1.6x to 5.9x slower than the Rust build, and the compiler
+No. The port is 1.5x to 5.9x slower than the Rust build, and the compiler
 links the seed until Stage 2.
 
-## Not ported yet (third part of the lane)
+## Not ported yet
 
-`kv.rs` (the paged K/V pool's bookkeeping; the storage and the borrowed
-views stay Rust), `shape.rs` (the symbolic dimension algebra, which needs
-symbols interned), the pure tensor parts of `attention.rs` and `llama.rs`,
-and the memory map as a `.vsys` surface. The crate has no `tokenizer.json`
-reader, so part 1's list naming one was wrong.
+The pure tensor parts of `attention.rs` and `llama.rs`, and the memory map
+as a `.vsys` surface. The crate has no `tokenizer.json` reader, so part 1's
+list naming one was wrong.

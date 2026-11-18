@@ -56,6 +56,9 @@ const DIVERGENT: &[(&str, &str)] = &[
     // kv.rs (vesper/src/pool.ves): a sequence may hold one token more than
     // its limit; abba both_builds_run_the_same_kv_scripts fails.
     ("    if new_len > cfg[4] {", "    if new_len > cfg[4] + 1 {"),
+    // shape.rs (vesper/src/shape.ves): a product may hold one factor more
+    // than the limit; abba both_builds_plan_the_same_shapes fails.
+    ("if count > max_factors {", "if count > max_factors + 1 {"),
     // json.rs (vesper/src/text.ves): a leading zero is accepted before two
     // more digits only; abba both_builds_read_the_same_safetensors_headers
     // fails.

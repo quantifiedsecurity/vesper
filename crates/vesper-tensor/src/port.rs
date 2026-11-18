@@ -108,6 +108,7 @@ failures! {
     SampleError [ArithOverflow, RuntimeError, Fault],
     SampleMultError [ArithOverflow, RuntimeError],
     SampleTopPError [ArithOverflow, RuntimeError],
+    ShapeNormalizeError [ArithOverflow, RuntimeError],
     SoftmaxError [RuntimeError, Fault],
     SwigluError [RuntimeError, Fault],
     VocabLookupError [ArithOverflow, RuntimeError],
