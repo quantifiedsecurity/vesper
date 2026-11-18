@@ -23,5 +23,8 @@ const EDITS: &[(&str, &str)] = &[
     // region.rs watermarks: a rewound watermark stays outstanding.
     ("b.marks.truncate(pos);", "b.marks.truncate(inc(pos));"),
     // vec.rs: a linear vector of one element is no live obligation.
-    ("s.elin && s.elen > 0;", "s.elin && s.elen > 1;"),
+    (
+        "        && sget(in b, index, f_elen())\n        > 0;",
+        "        && sget(in b, index, f_elen())\n        > 1;",
+    ),
 ];

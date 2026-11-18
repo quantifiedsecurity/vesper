@@ -186,10 +186,26 @@ impl<B: ChunkBacking> Region<B> {
     }
 
     /// Takes the book's queued actions and does them, oldest first. Each is
-    /// removed before it runs, so a panicking destructor cannot run twice;
-    /// the rest stay queued for `Drop`.
+    /// removed before it runs, so a panicking destructor cannot run twice.
+    /// The book has already made the storage of every queued payload
+    /// reusable, so a panicking destructor does not stop the rest: they run
+    /// while unwinding (a second panic aborts, as for `Vec`), before any
+    /// caller that catches the panic can allocate over them.
     pub(super) fn settle(&mut self) {
+        struct Rest<'a, B: ChunkBacking>(&'a mut Region<B>);
+        impl<B: ChunkBacking> Drop for Rest<'_, B> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    self.0.run_pending();
+                }
+            }
+        }
         self.pending.extend(self.book.take_pending());
+        let rest = Rest(self);
+        rest.0.run_pending();
+    }
+
+    fn run_pending(&mut self) {
         while let Some(action) = self.pending.pop_front() {
             match action {
                 Action::Finalize { fin, addr } => {
