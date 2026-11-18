@@ -256,7 +256,7 @@ vesper-loom-trust = { path = "crates/vesper-loom-trust" }
 vesper-loom-admission = { path = "crates/vesper-loom-admission" }
 vesper-loom-audit = { path = "crates/vesper-loom-audit" }
 vesper-loom-cas = { path = "crates/vesper-loom-cas" }
-vesper-pact = { path = "crates/vesper-pact" }
+vesper-pact = { path = "crates/vesper-pact/seed", package = "vesper-pact-seed" }
 vesper-pact-binding = { path = "crates/vesper-pact-binding" }
 # Integration B (#136): wave-five verifiers and tools wired into the CLI.
 vesper-aegis = { path = "crates/vesper-aegis" }
