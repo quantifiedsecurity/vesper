@@ -31,7 +31,7 @@ callable trait objects, boxes owned across loops, and opaque Bridge handles.
 
 The [P3b gaps wave](p3b-gaps/README.md) closes the compiler gaps the P3a and
 P3b ports measured: `f32` vectors, bounds checks, `inout` slice inlining,
-fixed arrays, `while`/`continue`, two-phase arguments, the export boundary,
+fixed arrays, `continue`, two-phase arguments, the export boundary,
 std sort and five correctness fixes.
 
 Earlier assignments retained as dependencies:

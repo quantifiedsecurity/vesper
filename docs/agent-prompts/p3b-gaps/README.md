@@ -19,7 +19,7 @@ by measured port impact:
    locals in stack slots (eBPF `scalar_normalize` 64%), and the export
    boundary (silicon 23% `memcpy`; `f32` as bits everywhere).
 2. **Missing language.** Fixed-size arrays and constant tables (Bench, Warp,
-   Prism H3, Aegis), `while`/`continue` and literal typing (every port),
+   Prism H3, Aegis), `continue` and literal typing (every port),
    qualified paths and submodule items, and two-phase `inout` arguments
    (Chorus hoists about 140 arguments, Pact about 50).
 3. **Correctness.** E0410 on bit builtins assigned to a `let mut`, a native
@@ -39,7 +39,7 @@ Claims are #1086-#1097 (lane n is issue 1085+n).
 | 4 | [Inline helpers that take an inout slice](04-inline-inout-slices.md) | #1089 | helpers that take an `inout` slice stay calls (`w_vi` 9% and `vi_put` 4% of Warp's `fr_encode`) | Warp, warp-tcp, Resonance, Prism H3, Kinetic | now | `src/ir_inline.rs`, `src/ir_inline/**`; `tests/native_inline_inout_slice*.rs` |
 | 5 | [Copy-struct locals in registers](05-aggregate-registers.md) | #1090 | copy-struct locals live in stack slots and reload each field per use; `Option[Struct]` results go through a temporary; `s.try_get(d).f` copies the whole element | eBPF (`scalar_normalize` 64% of scalar workload), silicon, BBR, Quarry, Kinetic | now | the aggregate-local home and result hunks of `src/native.rs` (not the slice-header hunk, which lane 3 owns); `src/native_aggregates.rs`; the element field-read hunk of `src/seq/native.rs`; `tests/native_sroa*.rs`, `tests/native_result_in_place*.rs`, `tests/native_seq_field_reads*.rs` |
 | 6 | [Fixed-size arrays and constant tables](06-fixed-arrays.md) | #1091 | no fixed-size arrays or static data: scratch tables are heap `ChunkSeq`s read through `try_get`, constant tables are built at run time | Bench, Warp (ACK ranges), Prism H3 (Huffman/static tables), Aegis (`[u8; N]` fields), Chorus (module constants) | now (part 1); the export-mirror part after lane 2; merge after lanes 7 and 8 if both touch the parser | new `src/arrays.rs`, `src/arrays/**`; the array type, literal and `const` item hunks of `crates/vesper-syntax/src/parser.rs` (and the lexer only if needed); the array and `const` hunks of `src/check.rs`, `src/layout.rs`, the evaluator, and native lowering in a new `src/native_arrays.rs`; the `[u8; N]` mirror-field hunk of `src/native_export/**` (part 2, after lane 2 merges); `tests/arrays*.rs`, `tests/const_items*.rs`; the manuscript hunks for array types and `const` items |
-| 7 | [while, continue and literal typing](07-loops-and-literals.md) | #1092 | no `while` or `continue`; `0..3` and `if c { 1 } else { 2 }` are `i64` against `u64` uses; `?` only on `Result` | every P3 port (Kinetic, Prism H3, Chorus, Pact, Bench, eBPF, Loom audit, Aegis) | now; the `while` part follows the owner's decision on the plan PR | the loop and `continue` hunks of `crates/vesper-syntax/src/parser.rs`, their HIR lowering and `vesper fmt`/highlighting support; the integer-literal inference and `?` hunks of `src/check.rs` and `src/integer_widths/check.rs`; the `wrapping_neg` builtin wherever the other wrapping builtins live; `tests/while_continue*.rs`, `tests/literal_typing*.rs`, `tests/try_option*.rs`; the manuscript hunks for these forms (§2.2 grammar, the `while` note in §7.6) |
+| 7 | [continue and literal typing](07-loops-and-literals.md) | #1092 | no `continue`; `0..3` and `if c { 1 } else { 2 }` are `i64` against `u64` uses; `?` only on `Result` | every P3 port (Kinetic, Prism H3, Chorus, Pact, Bench, eBPF, Loom audit, Aegis) | now | the loop and `continue` hunks of `crates/vesper-syntax/src/parser.rs`, their HIR lowering and `vesper fmt`/highlighting support; the integer-literal inference and `?` hunks of `src/check.rs` and `src/integer_widths/check.rs`; the `wrapping_neg` builtin wherever the other wrapping builtins live; `tests/continue*.rs`, `tests/literal_typing*.rs`, `tests/try_option*.rs`; the manuscript hunks for these forms (§2.2 grammar) |
 | 8 | [Qualified paths and submodule items](08-modules-and-paths.md) | #1093 | submodule functions need unique names, `.vsys` imports and exports only work in the root module, an imported function named `u64` shadows the type | Prism H3, Pact, Kinetic, Flux, Aegis, Chorus | now | package module resolution (`src/packages.rs`, `src/package_graph.rs` and the name-resolution hunks of `src/check.rs`); the path-expression, `use` and pattern hunks of `crates/vesper-syntax/src/parser.rs`; the module hunks of `src/ffi_lowering/**` (where `.vsys` imports are bound) and of `src/native_export/directives.rs` (which module's `pub fn`s are exported); `tests/package_paths*.rs`, `tests/package_submodule_exports*.rs`; the module hunks of the manuscript |
 | 9 | [Two-phase inout arguments and bound views](09-argument-borrows.md) | #1094 | `f(inout c, g(in c))` is E0301, so ports hoist reads into locals (Chorus about 140 places, Pact about 50, eBPF throughout) | Chorus, Pact, eBPF verifier, Loom audit, Aegis, Warp | now | the argument-loan reservation hunk of `src/check.rs` (next to `reserved_receivers`); the matching Place IR check hunk of `src/ir_check.rs`; the E1531 hunk of `src/strings/check.rs` and the E1521 hunk of `src/seq/check.rs`; `tests/two_phase_arguments*.rs`, `tests/bound_views*.rs`; the two-phase loan paragraph of the manuscript (§5, "Two-phase receiver loans") |
 | 10 | [Drops on every exit and handler fixes](10-exits-and-handlers.md) | #1095 | five correctness bugs the P3b lanes found; ports work around each | Kinetic, Prism H3 (E0410), Chorus, Warp, Kinetic (boxes), Flux/Chorus (handlers), Warp (affine handles) | parts 1-2 now; part 3 after #1076 merges; part 4 after #1077 merges | the bit-builtin rewrite hunk of `src/integer_widths.rs` (`lower_bit_builtin_calls`); the loop/resume hunks of `src/native_handlers.rs`, `src/native_handlers/**`; the `Fail`-exit and specialized-callee `sink` hunks of `src/fip.rs` (after #1076); the affine drop-import hunks of `src/ffi_lowering/**`, `src/fip.rs` and the evaluator (after #1077); `tests/bit_builtin_mut*.rs`, `tests/native_handler_loops*.rs`, `tests/native_fail_exit_drops*.rs`, `tests/native_specialized_sink*.rs`, `tests/ffi_affine_drop*.rs`; the §16.3 affine-handle bullet of the manuscript (part 4) |
@@ -59,11 +59,8 @@ three edit the parser; merge `main` between them); 2, 5, 9 and 11 as green;
 
 ### Spec calls flagged for the owner
 
-- **`while` (lane 7).** The manuscript says `while` is not a core keyword so
-  the library can define it with `sugar` (§7.6), but `sugar` is not
-  implemented. The plan recommends a core `while cond { .. }` now, lowered to
-  `loop`/`if`/`break` in HIR, with `while_verified` staying library sugar.
-  Lane 7 follows the owner's decision on this plan's PR.
+- **`while` (decided).** The owner chose to keep `while` out of the core
+  and wait for library `sugar` (§7.6), so no lane adds it.
 - **Two-phase `inout` arguments (lane 9).** Extends the manuscript's receiver
   rule ("Only receivers are reserved") to every `inout` argument.
 - **Arrays and `const` items (lane 6)**, **`f32` lanes (lane 1)**, **export
@@ -72,6 +69,7 @@ three edit the parser; merge `main` between them); 2, 5, 9 and 11 as green;
 
 ### Not in this wave
 
+- A core `while`: the owner chose to wait for `sugar` (§7.6).
 - 128-bit integers (Bench emulates `u128`/`i128` in `wide.ves`): one port.
 - The realtime verifier's policy gaps (Resonance: `reject_unbounded_loops:
   false` ignored, `--verify-realtime` only for `emit --entry`, undeclared
@@ -120,7 +118,7 @@ In addition:
 
 | Shared file | Lanes | Rule |
 |---|---|---|
-| `crates/vesper-syntax/src/parser.rs` | 6 (array types/literals, `const`), 7 (`while`, `continue`), 8 (paths, `use .. as`, patterns, contextual keywords) | Separate hunks; merge 7, then 8, then 6, each after merging `main`. |
+| `crates/vesper-syntax/src/parser.rs` | 6 (array types/literals, `const`), 7 (`continue`), 8 (paths, `use .. as`, patterns, contextual keywords) | Separate hunks; merge 7, then 8, then 6, each after merging `main`. |
 | `src/check.rs` | 6 (array/`const` typing), 7 (literal inference, `?` on `Option`), 8 (name resolution), 9 (argument reservation) | Edit only your hunks; merge `main` before merging. |
 | `src/native.rs` | 3 (slice-header loads), 5 (aggregate homes, results) | Separate hunks; 6's array lowering goes in a new `src/native_arrays.rs`. |
 | `src/seq/check.rs`, `src/seq/eval.rs`, `src/seq/native*.rs` | 5 (element field reads), 9 (E1521 receivers), 11 (new builtins, `find_not_in` fallback) | Separate hunks. |
