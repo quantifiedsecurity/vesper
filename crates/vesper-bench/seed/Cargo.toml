@@ -1,0 +1,89 @@
+[package]
+name = "vesper-bench-seed"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Frozen Rust seed copy of vesper-bench for the compiler's own dependency closure"
+autotests = false
+autoexamples = false
+autobenches = false
+build = false
+
+# The seed-copy rule (port wave P1 lane 2, #899): the compiler links this
+# package, the Rust build of ../src, under the library name `vesper_bench`.
+# Crates inside `cargo tree -p vesper -e normal,build` depend on it with
+# `vesper-bench = { path = ".../seed", package = "vesper-bench-seed" }`;
+# every other crate uses the package `vesper-bench`, which also builds the
+# Rust code unless its `vesper-port` feature is on. The Rust code takes bug
+# fixes only until self-hosting Stage 2.
+[lib]
+name = "vesper_bench"
+path = "../src/lib.rs"
+
+[[test]]
+name = "causal"
+path = "../tests/causal.rs"
+
+[[test]]
+name = "contract"
+path = "../tests/contract.rs"
+
+[[test]]
+name = "contract_gate"
+path = "../tests/contract_gate.rs"
+
+[[test]]
+name = "execution"
+path = "../tests/execution.rs"
+
+[[test]]
+name = "gate_classification"
+path = "../tests/gate_classification.rs"
+
+[[test]]
+name = "hodges_lehmann"
+path = "../tests/hodges_lehmann.rs"
+
+[[test]]
+name = "implementation"
+path = "../tests/implementation.rs"
+
+[[test]]
+name = "layout"
+path = "../tests/layout.rs"
+
+[[test]]
+name = "observations"
+path = "../tests/observations.rs"
+
+[[test]]
+name = "paired_difference"
+path = "../tests/paired_difference.rs"
+
+[[test]]
+name = "paired_sample_confidence"
+path = "../tests/paired_sample_confidence.rs"
+
+[[test]]
+name = "signed_rank"
+path = "../tests/signed_rank.rs"
+
+[[test]]
+name = "signed_rank_confidence"
+path = "../tests/signed_rank_confidence.rs"
+
+[[test]]
+name = "statistics"
+path = "../tests/statistics.rs"
+
+[[test]]
+name = "walsh"
+path = "../tests/walsh.rs"
+
+[[test]]
+name = "wire"
+path = "../tests/wire.rs"
+
+[lints.rust]
+# cfg(vesper_port) is set only by the port-backed package's build script.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(vesper_port)"] }

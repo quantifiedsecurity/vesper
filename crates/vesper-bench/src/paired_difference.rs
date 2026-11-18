@@ -43,21 +43,26 @@ fn difference(sample: PairedSample, index: usize) -> Result<i64, PairedDifferenc
 pub fn exact_paired_differences(
     samples: &[PairedSample],
 ) -> Result<Vec<i64>, PairedDifferenceError> {
-    if samples.is_empty() {
-        return Err(PairedDifferenceError::EmptyEvidence);
+    #[cfg(vesper_port)]
+    return crate::port::exact_paired_differences(&crate::port::samples(samples));
+    #[cfg(not(vesper_port))]
+    {
+        if samples.is_empty() {
+            return Err(PairedDifferenceError::EmptyEvidence);
+        }
+        if samples.len() > MAX_EXACT_DIFFERENCE_SAMPLES {
+            return Err(PairedDifferenceError::TooManySamples);
+        }
+        for (index, &sample) in samples.iter().enumerate() {
+            difference(sample, index)?;
+        }
+        let mut result = Vec::new();
+        result
+            .try_reserve_exact(samples.len())
+            .map_err(|_| PairedDifferenceError::AllocationFailed)?;
+        for (index, &sample) in samples.iter().enumerate() {
+            result.push(difference(sample, index)?);
+        }
+        Ok(result)
     }
-    if samples.len() > MAX_EXACT_DIFFERENCE_SAMPLES {
-        return Err(PairedDifferenceError::TooManySamples);
-    }
-    for (index, &sample) in samples.iter().enumerate() {
-        difference(sample, index)?;
-    }
-    let mut result = Vec::new();
-    result
-        .try_reserve_exact(samples.len())
-        .map_err(|_| PairedDifferenceError::AllocationFailed)?;
-    for (index, &sample) in samples.iter().enumerate() {
-        result.push(difference(sample, index)?);
-    }
-    Ok(result)
 }

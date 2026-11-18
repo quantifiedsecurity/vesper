@@ -1,0 +1,511 @@
+// Module stats of @vesper/bench (see lib.ves): statistics.rs (Mann-Whitney
+// ranks and exact probabilities, the exact median-ratio interval behind
+// `analyze_pairs`), contract.rs `PairedSample` and layout.rs's survival
+// test and sample fold.
+//
+// Mann-Whitney counts are binomial coefficients of at most 64 choose 32
+// (below 2^61), so they fit a word; Rust keeps them in `u128`, and the
+// wrappers widen them. The checked additions still raise
+// `ArithmeticOverflow` exactly where Rust's `checked_add` would.
+use self::{
+    AnalysisOut,
+    BpBounds,
+    Decision,
+    ExactMw,
+    MannWhitneyRanks,
+    PortError,
+    Sample,
+    SurvivalOut,
+    W
+};
+use self::util::{
+    add,
+    cs,
+    cu,
+    dec,
+    div,
+    gs,
+    gu,
+    inc,
+    min_u64,
+    mul,
+    no_sample,
+    pow2,
+    sort_u64,
+    sub,
+    zeros
+};
+use self::wide::{
+    w,
+    w_add,
+    w_floor_divrem,
+    w_is_zero,
+    w_mul_small,
+    w_mul_u64,
+    w_sub,
+    w_twice,
+    w_u64,
+    w_ucmp,
+    w_udivrem,
+    w_ult,
+    w_zero
+};
+
+// Error::Limit codes (src/port.rs LIMITS).
+pub fn limit_rank() -> u64 {
+    0
+}
+
+pub fn limit_exact_rank() -> u64 {
+    1
+}
+
+pub fn limit_epochs() -> u64 {
+    2
+}
+
+pub fn limit_layouts() -> u64 {
+    3
+}
+
+pub fn limit_body_calls() -> u64 {
+    4
+}
+
+pub fn limit_elapsed() -> u64 {
+    5
+}
+
+fn overflow() eff [Fail[PortError]] {
+    Fail::raise(PortError::ArithmeticOverflow);
+}
+
+// a + b, raising ArithmeticOverflow where `checked_add` returns None.
+pub fn cadd(a: u64, b: u64) -> u64 eff [Fail[PortError]] {
+    let s = wrapping_add(a, b);
+    if s < a {
+        overflow();
+    }
+    s
+}
+
+// ---------------------------------------------------------------------------
+// statistics.rs
+
+pub fn do_mann_whitney_ranks(in first: Slice[u64], in second: Slice[u64])
+    -> MannWhitneyRanks eff [Fail[PortError]] {
+    let n = first.len();
+    let m = second.len();
+    if n == 0 || m == 0 {
+        Fail::raise(PortError::EmptyEvidence);
+    }
+    if n > 64 || m > 64 {
+        Fail::raise(
+            PortError::Limit {
+                code: limit_rank()
+            }
+        );
+    }
+    let mut greater: u64 = 0;
+    let mut less: u64 = 0;
+    let mut tied: u64 = 0;
+    for i in 0..n {
+        let x = gu(in first, i);
+        for j in 0..m {
+            let y = gu(in second, j);
+            if x > y {
+                greater = add(greater, 2);
+            } else if x < y {
+                less = add(less, 2);
+            } else {
+                greater = inc(greater);
+                less = inc(less);
+                tied = inc(tied);
+            }
+        }
+    }
+    MannWhitneyRanks {
+        first_count: widen_usize(n),
+        second_count: widen_usize(m),
+        twice_u_first: greater,
+        twice_u_second: less,
+        tied_pairs: tied
+    }
+}
+
+fn pooled_sorted(in first: Slice[u64], in second: Slice[u64]) -> ChunkSeq[u64] {
+    let n = first.len();
+    let m = second.len();
+    let mut pooled = zeros(add(n, m));
+    for i in 0..n {
+        pooled.try_set(i, gu(in first, i));
+    }
+    for j in 0..m {
+        pooled.try_set(add(n, j), gu(in second, j));
+    }
+    sort_u64(inout pooled, add(n, m));
+    pooled
+}
+
+fn check_exact_sizes(n: u64, m: u64) eff [Fail[PortError]] {
+    if n == 0 || m == 0 {
+        Fail::raise(PortError::EmptyEvidence);
+    }
+    if n > 32 || m > 32 {
+        Fail::raise(
+            PortError::Limit {
+                code: limit_exact_rank()
+            }
+        );
+    }
+}
+
+pub fn do_mann_whitney_exact(in first: Slice[u64], in second: Slice[u64])
+    -> ExactMw eff [Fail[PortError]] {
+    let n = first.len();
+    let m = second.len();
+    check_exact_sizes(n, m);
+    let pooled = pooled_sorted(in first, in second);
+    for i in 1..add(n, m) {
+        if cu(in pooled, dec(i)) == cu(in pooled, i) {
+            Fail::raise(PortError::TiedObservations);
+        }
+    }
+    let ranks = do_mann_whitney_ranks(in first, in second);
+    let observed = div(ranks.twice_u_first, 2);
+    let max_u = mul(n, m);
+    let width = inc(max_u);
+    let cells = mul(inc(m), width);
+    // `previous` and `current` are the two halves of one buffer.
+    let mut table = zeros(mul(2, cells));
+    let mut prev: u64 = 0;
+    let mut cur: u64 = cells;
+    for j in 0..inc(m) {
+        table.try_set(add(prev, mul(j, width)), 1);
+    }
+    for i in 1..inc(n) {
+        for c in 0..cells {
+            table.try_set(add(cur, c), 0);
+        }
+        table.try_set(cur, 1);
+        for j in 1..inc(m) {
+            for u in 0..inc(mul(i, j)) {
+                let from_second = cu(in table, add(cur, add(mul(dec(j), width), u)));
+                let from_first = if u >= j {
+                    cu(in table, add(prev, sub(add(mul(j, width), u), j)))
+                } else {
+                    0
+                };
+                table.try_set(add(cur, add(mul(j, width), u)), cadd(from_second, from_first));
+            }
+        }
+        let t = prev;
+        prev = cur;
+        cur = t;
+    }
+    let base = add(prev, mul(m, width));
+    let mut denominator: u64 = 0;
+    let mut tail: u64 = 0;
+    let tail_limit = min_u64(observed, sub(max_u, observed));
+    for u in 0..width {
+        let count = cu(in table, add(base, u));
+        denominator = cadd(denominator, count);
+        if u <= tail_limit {
+            tail = cadd(tail, count);
+        }
+    }
+    ExactMw {
+        u_first: observed,
+        numerator: min_u64(cadd(tail, tail), denominator),
+        denominator: denominator
+    }
+}
+
+pub fn do_mann_whitney_exact_with_ties(in first: Slice[u64], in second: Slice[u64])
+    -> ExactMw eff [Fail[PortError]] {
+    let n = first.len();
+    let m = second.len();
+    check_exact_sizes(n, m);
+    let total_count = add(n, m);
+    let pooled = pooled_sorted(in first, in second);
+    let width = inc(mul(mul(2, n), total_count));
+    let mut counts = zeros(mul(inc(n), width));
+    counts.try_set(0, 1);
+    let mut processed: u64 = 0;
+    let mut start: u64 = 0;
+    loop {
+        if start >= total_count {
+            break;
+        }
+        let value = cu(in pooled, start);
+        let mut end = inc(start);
+        loop {
+            if end >= total_count || cu(in pooled, end) != value {
+                break;
+            }
+            end = inc(end);
+        }
+        let doubled_rank = add(inc(start), end);
+        for k in start..end {
+            processed = inc(processed);
+            let mut selected = inc(min_u64(n, processed));
+            loop {
+                selected = dec(selected);
+                if selected == 0 {
+                    break;
+                }
+                let from = mul(dec(selected), width);
+                let to = mul(selected, width);
+                for sum in doubled_rank..width {
+                    let add_v = cu(in counts, add(from, sub(sum, doubled_rank)));
+                    let at = add(to, sum);
+                    counts.try_set(at, cadd(cu(in counts, at), add_v));
+                }
+            }
+        }
+        start = end;
+    }
+    let twice_u_first = do_mann_whitney_ranks(in first, in second).twice_u_first;
+    let observed = cadd(twice_u_first, mul(n, inc(n)));
+    let base = mul(n, width);
+    let mut lower: u64 = 0;
+    let mut upper: u64 = 0;
+    let mut denominator: u64 = 0;
+    for sum in 0..width {
+        let count = cu(in counts, add(base, sum));
+        denominator = cadd(denominator, count);
+        if sum <= observed {
+            lower = cadd(lower, count);
+        }
+        if sum >= observed {
+            upper = cadd(upper, count);
+        }
+    }
+    let low = min_u64(lower, upper);
+    ExactMw {
+        u_first: twice_u_first,
+        numerator: min_u64(cadd(low, low), denominator),
+        denominator: denominator
+    }
+}
+
+// ---------------------------------------------------------------------------
+// contract.rs PairedSample
+
+pub fn do_paired_sample_new(baseline: u64, candidate: u64, operations: u64)
+    -> Sample eff [Fail[PortError]] {
+    if baseline == 0 || candidate == 0 || operations == 0 {
+        Fail::raise(PortError::NonPositiveEvidence);
+    }
+    Sample {
+        baseline: baseline,
+        candidate: candidate,
+        operations: operations
+    }
+}
+
+// Directed rounding of the regression in basis points, floor and ceiling.
+pub fn do_regression_bp_bounds(s: Sample) -> BpBounds {
+    let scaled = w_mul_small(w_sub(w_u64(s.candidate), w_u64(s.baseline)), 10000);
+    let (q, r) = w_floor_divrem(scaled, w_u64(s.baseline));
+    BpBounds {
+        floor: q,
+        ceil: if w_is_zero(r) {
+            q
+        } else {
+            w_add(q, w_u64(1))
+        }
+    }
+}
+
+// The exact ratio order candidate/baseline (-1, 0, 1).
+fn compare_ratio(a: Sample, b: Sample) -> i64 {
+    w_ucmp(w_mul_u64(a.candidate, b.baseline), w_mul_u64(b.candidate, a.baseline))
+}
+
+// candidate/baseline against 1 + bp/10000, for bp >= -9999.
+fn compare_threshold(s: Sample, bp: i64) -> i64 {
+    let factor = wrapping_add(wrapping_u64(bp), 10000);
+    w_ucmp(w_mul_u64(s.candidate, 10000), w_mul_u64(s.baseline, factor))
+}
+
+// A stable bottom-up merge sort by ratio (Rust `sort_by` is stable, and
+// the interval reports the samples themselves, so equal ratios keep their
+// input order): runs of width 1, 2, 4, ... merge from `src` into `dst`,
+// taking the left run's sample on a tie.
+fn sorted_by_ratio(in samples: Slice[Sample]) -> ChunkSeq[Sample] {
+    let n = samples.len();
+    let mut src: ChunkSeq[Sample] = ChunkSeq::with_capacity[Sample](n);
+    let mut dst: ChunkSeq[Sample] = ChunkSeq::with_capacity[Sample](n);
+    for i in 0..n {
+        src.push(gs(in samples, i));
+        dst.push(gs(in samples, i));
+    }
+    let mut width: u64 = 1;
+    loop {
+        if width >= n {
+            break;
+        }
+        let mut lo: u64 = 0;
+        loop {
+            if lo >= n {
+                break;
+            }
+            let mid = min_u64(add(lo, width), n);
+            let hi = min_u64(add(mid, width), n);
+            let mut i = lo;
+            let mut j = mid;
+            let mut k = lo;
+            loop {
+                if k >= hi {
+                    break;
+                }
+                let take_left = if i < mid && j < hi {
+                    compare_ratio(cs(in src, i), cs(in src, j)) <= 0
+                } else {
+                    i < mid
+                };
+                if take_left {
+                    dst.try_set(k, cs(in src, i));
+                    i = inc(i);
+                } else {
+                    dst.try_set(k, cs(in src, j));
+                    j = inc(j);
+                }
+                k = inc(k);
+            }
+            lo = hi;
+        }
+        swap(inout src, inout dst);
+        width = add(width, width);
+    }
+    src
+}
+
+// Decision codes are the crate's `Decision`; reasons: 0 none, 1
+// InsufficientEpochs, 2 IntervalCrossesThreshold.
+pub fn do_analyze_pairs(in samples: Slice[Sample], max_regression_bp: i64)
+    -> AnalysisOut eff [Fail[PortError]] {
+    let n = samples.len();
+    if n == 0 {
+        Fail::raise(PortError::EmptyEvidence);
+    }
+    if n > 64 {
+        Fail::raise(
+            PortError::Limit {
+                code: limit_epochs()
+            }
+        );
+    }
+    if max_regression_bp < -9999 {
+        Fail::raise(PortError::InvalidThreshold);
+    }
+    let sorted = sorted_by_ratio(in samples);
+    let median_lower = cs(in sorted, div(dec(n), 2));
+    let median_upper = cs(in sorted, div(n, 2));
+    let total = if n == 64 {
+        w(1, 0)
+    } else {
+        w_u64(pow2(n))
+    };
+    let mut coefficient = w_u64(1);
+    let mut tail = w_zero();
+    let mut found = false;
+    let mut rank: u64 = 0;
+    let mut chosen_tail = w_zero();
+    for j in 0..div(n, 2) {
+        tail = w_add(tail, coefficient);
+        if !w_ult(w_mul_small(total, 5), w_mul_small(tail, 200)) {
+            found = true;
+            rank = inc(j);
+            chosen_tail = tail;
+        } else {
+            break;
+        }
+        let (q, r) = w_udivrem(w_mul_small(coefficient, sub(n, j)), w_u64(inc(j)));
+        coefficient = q;
+    }
+    if !found {
+        return AnalysisOut {
+            decision: Decision::Inconclusive,
+            reason: 1,
+            median_lower: median_lower,
+            median_upper: median_upper,
+            has_interval: false,
+            lower: no_sample(),
+            upper: no_sample(),
+            lower_rank: widen_usize(0),
+            upper_rank: widen_usize(0),
+            covered_outcomes: w_zero(),
+            total_outcomes: w_zero()
+        };
+    }
+    let lower = cs(in sorted, dec(rank));
+    let upper = cs(in sorted, sub(n, rank));
+    let (decision, reason): (Decision, u64) = if compare_threshold(upper, max_regression_bp) != 1 {
+        (Decision::Pass, 0)
+    } else if compare_threshold(lower, max_regression_bp) == 1 {
+        (Decision::Regression, 0)
+    } else {
+        (Decision::Inconclusive, 2)
+    };
+    AnalysisOut {
+        decision: decision,
+        reason: reason,
+        median_lower: median_lower,
+        median_upper: median_upper,
+        has_interval: true,
+        lower: lower,
+        upper: upper,
+        lower_rank: widen_usize(rank),
+        upper_rank: widen_usize(inc(sub(n, rank))),
+        covered_outcomes: w_sub(total, w_twice(chosen_tail)),
+        total_outcomes: total
+    }
+}
+
+// ---------------------------------------------------------------------------
+// layout.rs
+
+// Verdicts: 0 CandidateSlower, 1 CandidateFaster, 2 DoesNotSurvive, 3
+// InsufficientLayouts.
+pub fn do_layout_survival(in per_layout: Slice[Sample]) -> SurvivalOut eff [Fail[PortError]] {
+    if per_layout.len() > 64 {
+        Fail::raise(
+            PortError::Limit {
+                code: limit_layouts()
+            }
+        );
+    }
+    let analysis = do_analyze_pairs(in per_layout, 0);
+    let verdict: u64 = if !analysis.has_interval {
+        3
+    } else {
+        match analysis.decision {
+            Decision::Regression => 0,
+            _ => if analysis.upper.candidate < analysis.upper.baseline {
+                1
+            } else {
+                2
+            },
+        }
+    };
+    SurvivalOut {
+        verdict: verdict,
+        analysis: analysis
+    }
+}
+
+// Every measured epoch of one run summed into one paired sample.
+pub fn do_layout_sample(in pairs: Slice[Sample]) -> Sample eff [Fail[PortError]] {
+    let mut baseline: u64 = 0;
+    let mut candidate: u64 = 0;
+    let mut operations: u64 = 0;
+    for i in 0..pairs.len() {
+        let p = gs(in pairs, i);
+        baseline = cadd(baseline, p.baseline);
+        candidate = cadd(candidate, p.candidate);
+        operations = cadd(operations, p.operations);
+    }
+    do_paired_sample_new(baseline, candidate, operations)
+}

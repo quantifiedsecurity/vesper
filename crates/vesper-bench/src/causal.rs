@@ -225,10 +225,7 @@ impl CausalThread {
         s.region_visits[region.0].fetch_add(1, Ordering::AcqRel);
         s.region_ns[region.0].fetch_add(elapsed, Ordering::AcqRel);
         if s.selected.load(Ordering::Acquire) == region.0 {
-            let pct = u128::from(s.speedup_pct.load(Ordering::Acquire));
-            // pct <= 100, so the product of a u64 and 100 fits u128 and the
-            // quotient fits u64.
-            let delay = (u128::from(elapsed) * pct / 100) as u64;
+            let delay = region_delay(elapsed, s.speedup_pct.load(Ordering::Acquire));
             s.global_delay_ns.fetch_add(delay, Ordering::AcqRel);
             self.local_delay_ns = self.local_delay_ns.saturating_add(delay);
         }
@@ -283,24 +280,91 @@ impl CausalReport {
     }
 }
 
+/// The delay one visit of the selected region charges: `elapsed * pct / 100`.
+fn region_delay(elapsed: u64, pct: u32) -> u64 {
+    #[cfg(vesper_port)]
+    return crate::port::region_delay(elapsed, pct);
+    // pct <= 100, so the product of a u64 and 100 fits u128 and the
+    // quotient fits u64.
+    #[cfg(not(vesper_port))]
+    {
+        (u128::from(elapsed) * u128::from(pct) / 100) as u64
+    }
+}
+
+/// One experiment's effective time: its elapsed time minus the inserted
+/// delay, which must leave a positive time and some progress.
+fn experiment_run<E>(
+    elapsed: u64,
+    delay: u64,
+    progress: u64,
+) -> Result<ExperimentRun, CausalError<E>> {
+    #[cfg(vesper_port)]
+    return crate::port::experiment_run(elapsed, delay, progress).map_err(|e| match e {
+        crate::port::CausalErr::EmptyEvidence => CausalError::Harness(Error::EmptyEvidence),
+        crate::port::CausalErr::DelayExceedsElapsed { elapsed, delay } => {
+            CausalError::DelayExceedsElapsed { elapsed, delay }
+        }
+    });
+    #[cfg(not(vesper_port))]
+    {
+        if progress == 0 {
+            return Err(CausalError::Harness(Error::EmptyEvidence));
+        }
+        let effective = elapsed
+            .checked_sub(delay)
+            .filter(|e| *e > 0)
+            .ok_or(CausalError::DelayExceedsElapsed { elapsed, delay })?;
+        Ok(ExperimentRun {
+            elapsed_ns: elapsed,
+            global_delay_ns: delay,
+            effective_ns: effective,
+            progress,
+        })
+    }
+}
+
+/// The median of the repetitions' predictions.
+fn median_prediction(predictions: Vec<i64>) -> i64 {
+    #[cfg(vesper_port)]
+    return crate::port::median_i64(&predictions);
+    #[cfg(not(vesper_port))]
+    {
+        let mut predictions = predictions;
+        predictions.sort_unstable();
+        predictions[predictions.len() / 2]
+    }
+}
+
 /// Compares periods effective/progress exactly: a < b.
 fn period_cmp(a: ExperimentRun, b: ExperimentRun) -> std::cmp::Ordering {
     (u128::from(a.effective_ns) * u128::from(b.progress))
         .cmp(&(u128::from(b.effective_ns) * u128::from(a.progress)))
 }
-fn median(mut runs: Vec<ExperimentRun>) -> ExperimentRun {
-    runs.sort_by(|a, b| period_cmp(*a, *b));
-    runs[runs.len() / 2]
+fn median(runs: Vec<ExperimentRun>) -> ExperimentRun {
+    #[cfg(vesper_port)]
+    return crate::port::median_run(&runs);
+    #[cfg(not(vesper_port))]
+    {
+        let mut runs = runs;
+        runs.sort_by(|a, b| period_cmp(*a, *b));
+        runs[runs.len() / 2]
+    }
 }
 /// 10000 * (1 - period_s / period_0), floored.
 fn predicted_bp(baseline: ExperimentRun, run: ExperimentRun) -> Result<i64, Error> {
-    let num = i128::from(run.effective_ns) * i128::from(baseline.progress) * 10_000;
-    let den = i128::from(run.progress) * i128::from(baseline.effective_ns);
-    if den == 0 {
-        return Err(Error::EmptyEvidence);
+    #[cfg(vesper_port)]
+    return crate::port::predicted_bp(baseline, run).map_err(crate::port::error);
+    #[cfg(not(vesper_port))]
+    {
+        let num = i128::from(run.effective_ns) * i128::from(baseline.progress) * 10_000;
+        let den = i128::from(run.progress) * i128::from(baseline.effective_ns);
+        if den == 0 {
+            return Err(Error::EmptyEvidence);
+        }
+        i64::try_from(10_000 - num.div_euclid(den) - i128::from(num.rem_euclid(den) != 0))
+            .map_err(|_| Error::ArithmeticOverflow)
     }
-    i64::try_from(10_000 - num.div_euclid(den) - i128::from(num.rem_euclid(den) != 0))
-        .map_err(|_| Error::ArithmeticOverflow)
 }
 
 /// Runs every experiment: `repetitions` baseline runs with no region selected,
@@ -344,19 +408,7 @@ pub fn profile<E>(
             .map_err(|_| CausalError::Harness(Error::ClockOverflow))?;
         let delay = profiler.global_delay_nanos();
         let progress = profiler.progress_count(point);
-        if progress == 0 {
-            return Err(CausalError::Harness(Error::EmptyEvidence));
-        }
-        let effective = elapsed
-            .checked_sub(delay)
-            .filter(|e| *e > 0)
-            .ok_or(CausalError::DelayExceedsElapsed { elapsed, delay })?;
-        Ok(ExperimentRun {
-            elapsed_ns: elapsed,
-            global_delay_ns: delay,
-            effective_ns: effective,
-            progress,
-        })
+        experiment_run(elapsed, delay, progress)
     };
     let mut baselines = Vec::with_capacity(config.repetitions);
     for _ in 0..config.repetitions {
@@ -376,12 +428,11 @@ pub fn profile<E>(
                 predictions.push(predicted_bp(paired, run).map_err(CausalError::Harness)?);
                 runs.push(run);
             }
-            predictions.sort_unstable();
             points.push(CausalPoint {
                 region,
                 speedup_pct: pct,
                 run: median(runs),
-                predicted_speedup_bp: predictions[predictions.len() / 2],
+                predicted_speedup_bp: median_prediction(predictions),
             });
         }
     }

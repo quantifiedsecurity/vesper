@@ -1,0 +1,289 @@
+// Module util of @vesper/bench (see lib.ves): total element access and
+// sorting. Every helper is total (no `Fail` row): reads past the end give
+// 0, which no caller reaches, so the exported functions raise only their
+// crate's own errors.
+use self::{
+    Sample,
+    W
+};
+use self::wide::{
+    w_slt,
+    w_ult,
+    w_zero
+};
+
+pub fn gi(in s: Slice[i64], i: u64) -> i64 {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+pub fn gu(in s: Slice[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+pub fn gb(in s: Slice[u8], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(x) => widen_u64(x),
+        Option::None => 256,
+    }
+}
+
+pub fn cu(in s: ChunkSeq[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+pub fn ci(in s: ChunkSeq[i64], i: u64) -> i64 {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+pub fn cw(in s: ChunkSeq[W], i: u64) -> W {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => w_zero(),
+    }
+}
+
+pub fn no_sample() -> Sample {
+    Sample {
+        baseline: 0,
+        candidate: 0,
+        operations: 0
+    }
+}
+
+pub fn gs(in s: Slice[Sample], i: u64) -> Sample {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => no_sample(),
+    }
+}
+
+pub fn cs(in s: ChunkSeq[Sample], i: u64) -> Sample {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => no_sample(),
+    }
+}
+
+pub fn inc(a: u64) -> u64 {
+    wrapping_add(a, 1)
+}
+
+pub fn dec(a: u64) -> u64 {
+    wrapping_sub(a, 1)
+}
+
+pub fn add(a: u64, b: u64) -> u64 {
+    wrapping_add(a, b)
+}
+
+pub fn sub(a: u64, b: u64) -> u64 {
+    wrapping_sub(a, b)
+}
+
+pub fn mul(a: u64, b: u64) -> u64 {
+    wrapping_mul(a, b)
+}
+
+pub fn min_u64(a: u64, b: u64) -> u64 {
+    if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+// `a / b` and `a % b` for b > 0 (0 for b = 0, which no caller passes).
+pub fn div(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        return 0;
+    }
+    handle Fail[RuntimeError] in {
+        a / b
+    } with {
+        return v => v,
+        raise(e, k) => 0,
+    }
+}
+
+pub fn rem(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        return 0;
+    }
+    handle Fail[RuntimeError] in {
+        a % b
+    } with {
+        return v => v,
+        raise(e, k) => 0,
+    }
+}
+
+pub fn pow2(n: u64) -> u64 {
+    wrapping_shl_u64(1, wrapping_u32(n))
+}
+
+// `i64::unsigned_abs`.
+pub fn uabs(x: i64) -> u64 {
+    if x < 0 {
+        wrapping_sub(0, wrapping_u64(x))
+    } else {
+        wrapping_u64(x)
+    }
+}
+
+// A sequence of `n` zero words.
+pub fn zeros(n: u64) -> ChunkSeq[u64] {
+    let mut s: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](n);
+    for i in 0..n {
+        s.push(0);
+    }
+    s
+}
+
+// Sorts the first `n` words ascending (heap sort; ties are
+// indistinguishable, so the order matches any Rust sort).
+pub fn sort_u64(inout s: ChunkSeq[u64], n: u64) {
+    if n < 2 {
+        return;
+    }
+    let mut i = n / 2;
+    loop {
+        if i == 0 {
+            break;
+        }
+        i = dec(i);
+        sift_u64(inout s, i, n);
+    }
+    let mut end = n;
+    loop {
+        if end < 2 {
+            break;
+        }
+        end = dec(end);
+        let a = cu(in s, 0);
+        let b = cu(in s, end);
+        s.try_set(0, b);
+        s.try_set(end, a);
+        sift_u64(inout s, 0, end);
+    }
+}
+
+fn sift_u64(inout s: ChunkSeq[u64], start: u64, n: u64) {
+    let mut root = start;
+    loop {
+        let left = add(mul(root, 2), 1);
+        if left >= n {
+            break;
+        }
+        let mut child = left;
+        let right = inc(left);
+        if right < n && cu(in s, left) < cu(in s, right) {
+            child = right;
+        }
+        let r = cu(in s, root);
+        let c = cu(in s, child);
+        if r < c {
+            s.try_set(root, c);
+            s.try_set(child, r);
+            root = child;
+        } else {
+            break;
+        }
+    }
+}
+
+// Sorts the first `n` values ascending by signed (`i128`) order, or by
+// unsigned (`u128`) order when `unsigned`.
+pub fn sort_w(inout s: ChunkSeq[W], n: u64, unsigned: bool) {
+    if n < 2 {
+        return;
+    }
+    let mut i = n / 2;
+    loop {
+        if i == 0 {
+            break;
+        }
+        i = dec(i);
+        sift_w(inout s, i, n, unsigned);
+    }
+    let mut end = n;
+    loop {
+        if end < 2 {
+            break;
+        }
+        end = dec(end);
+        let a = cw(in s, 0);
+        let b = cw(in s, end);
+        s.try_set(0, b);
+        s.try_set(end, a);
+        sift_w(inout s, 0, end, unsigned);
+    }
+}
+
+fn w_less(a: W, b: W, unsigned: bool) -> bool {
+    if unsigned {
+        w_ult(a, b)
+    } else {
+        w_slt(a, b)
+    }
+}
+
+fn sift_w(inout s: ChunkSeq[W], start: u64, n: u64, unsigned: bool) {
+    let mut root = start;
+    loop {
+        let left = add(mul(root, 2), 1);
+        if left >= n {
+            break;
+        }
+        let mut child = left;
+        let right = inc(left);
+        if right < n && w_less(cw(in s, left), cw(in s, right), unsigned) {
+            child = right;
+        }
+        let r = cw(in s, root);
+        let c = cw(in s, child);
+        if w_less(r, c, unsigned) {
+            s.try_set(root, c);
+            s.try_set(child, r);
+            root = child;
+        } else {
+            break;
+        }
+    }
+}
+
+// The subset-sum distribution step of the signed-rank tests: one more
+// observation of (doubled) rank `rank` over sums `0..=max_sum`. Counts are
+// at most 2^32 (at most 32 observations), so they never wrap.
+pub fn add_rank(inout dist: ChunkSeq[u64], max_sum: u64, rank: u64) {
+    let mut sum = inc(max_sum);
+    loop {
+        if sum == 0 {
+            break;
+        }
+        sum = dec(sum);
+        let v = cu(in dist, sum);
+        let t = add(sum, rank);
+        dist.try_set(t, add(cu(in dist, t), v));
+    }
+}
+
+// The inclusive lower tail `dist[0..=limit]`.
+pub fn tail_sum(in dist: ChunkSeq[u64], limit: u64) -> u64 {
+    let mut tail: u64 = 0;
+    for i in 0..inc(limit) {
+        tail = add(tail, cu(in dist, i));
+    }
+    tail
+}

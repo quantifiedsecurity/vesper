@@ -45,20 +45,25 @@ pub struct SignedRankProbability {
 /// do not automatically establish those assumptions. This function does not
 /// produce a confidence interval or change the existing regression gate.
 pub fn signed_rank_exact(differences: &[i64]) -> Result<SignedRankProbability, SignedRankError> {
-    validate_len(differences.len())?;
-    let mut observations = [Observation::EMPTY; MAX_SIGNED_RANK_PAIRS];
-    let mut n = 0;
-    for &difference in differences {
-        if difference != 0 {
-            observations[n] = Observation {
-                magnitude: difference.unsigned_abs(),
-                denominator: 1,
-                positive: difference > 0,
-            };
-            n += 1;
+    #[cfg(vesper_port)]
+    return crate::port::signed_rank_exact(differences);
+    #[cfg(not(vesper_port))]
+    {
+        validate_len(differences.len())?;
+        let mut observations = [Observation::EMPTY; MAX_SIGNED_RANK_PAIRS];
+        let mut n = 0;
+        for &difference in differences {
+            if difference != 0 {
+                observations[n] = Observation {
+                    magnitude: difference.unsigned_abs(),
+                    denominator: 1,
+                    positive: difference > 0,
+                };
+                n += 1;
+            }
         }
+        rank_observations(&mut observations, n, differences.len())
     }
-    rank_observations(&mut observations, n, differences.len())
 }
 
 /// Exact signed-rank probability for per-operation candidate-minus-baseline
@@ -71,22 +76,27 @@ pub fn signed_rank_exact(differences: &[i64]) -> Result<SignedRankProbability, S
 pub fn signed_rank_exact_paired_samples(
     samples: &[PairedSample],
 ) -> Result<SignedRankProbability, SignedRankError> {
-    validate_len(samples.len())?;
-    let mut observations = [Observation::EMPTY; MAX_SIGNED_RANK_PAIRS];
-    let mut n = 0;
-    for &sample in samples {
-        let baseline = sample.baseline_total();
-        let candidate = sample.candidate_total();
-        if baseline != candidate {
-            observations[n] = Observation {
-                magnitude: candidate.abs_diff(baseline),
-                denominator: sample.operations_per_arm(),
-                positive: candidate > baseline,
-            };
-            n += 1;
+    #[cfg(vesper_port)]
+    return crate::port::signed_rank_exact_paired_samples(&crate::port::samples(samples));
+    #[cfg(not(vesper_port))]
+    {
+        validate_len(samples.len())?;
+        let mut observations = [Observation::EMPTY; MAX_SIGNED_RANK_PAIRS];
+        let mut n = 0;
+        for &sample in samples {
+            let baseline = sample.baseline_total();
+            let candidate = sample.candidate_total();
+            if baseline != candidate {
+                observations[n] = Observation {
+                    magnitude: candidate.abs_diff(baseline),
+                    denominator: sample.operations_per_arm(),
+                    positive: candidate > baseline,
+                };
+                n += 1;
+            }
         }
+        rank_observations(&mut observations, n, samples.len())
     }
-    rank_observations(&mut observations, n, samples.len())
 }
 
 fn validate_len(len: usize) -> Result<(), SignedRankError> {

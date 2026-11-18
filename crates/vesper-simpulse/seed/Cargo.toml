@@ -30,7 +30,8 @@ name = "abba"
 path = "../examples/abba.rs"
 
 [dev-dependencies]
-vesper-bench = { path = "../../vesper-bench" }
+# The compiler links this seed, so it takes the vesper-bench seed too (#1040).
+vesper-bench = { path = "../../vesper-bench/seed", package = "vesper-bench-seed" }
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

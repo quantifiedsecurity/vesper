@@ -20,33 +20,38 @@ pub struct MannWhitneyRanks {
 /// distributions; in particular, these ranks do not make paired ABBA epochs
 /// independent, and this function does not participate in the regression gate.
 pub fn mann_whitney_ranks(first: &[u64], second: &[u64]) -> Result<MannWhitneyRanks, Error> {
-    if first.is_empty() || second.is_empty() {
-        return Err(Error::EmptyEvidence);
-    }
-    if first.len() > MAX_EPOCHS || second.len() > MAX_EPOCHS {
-        return Err(Error::Limit("rank sample size"));
-    }
-    let mut result = MannWhitneyRanks {
-        first_count: first.len(),
-        second_count: second.len(),
-        twice_u_first: 0,
-        twice_u_second: 0,
-        tied_pairs: 0,
-    };
-    for &x in first {
-        for &y in second {
-            match x.cmp(&y) {
-                Ordering::Greater => result.twice_u_first += 2,
-                Ordering::Less => result.twice_u_second += 2,
-                Ordering::Equal => {
-                    result.twice_u_first += 1;
-                    result.twice_u_second += 1;
-                    result.tied_pairs += 1;
+    #[cfg(vesper_port)]
+    return crate::port::mann_whitney_ranks(first, second).map_err(crate::port::error);
+    #[cfg(not(vesper_port))]
+    {
+        if first.is_empty() || second.is_empty() {
+            return Err(Error::EmptyEvidence);
+        }
+        if first.len() > MAX_EPOCHS || second.len() > MAX_EPOCHS {
+            return Err(Error::Limit("rank sample size"));
+        }
+        let mut result = MannWhitneyRanks {
+            first_count: first.len(),
+            second_count: second.len(),
+            twice_u_first: 0,
+            twice_u_second: 0,
+            tied_pairs: 0,
+        };
+        for &x in first {
+            for &y in second {
+                match x.cmp(&y) {
+                    Ordering::Greater => result.twice_u_first += 2,
+                    Ordering::Less => result.twice_u_second += 2,
+                    Ordering::Equal => {
+                        result.twice_u_first += 1;
+                        result.twice_u_second += 1;
+                        result.tied_pairs += 1;
+                    }
                 }
             }
         }
+        Ok(result)
     }
-    Ok(result)
 }
 
 /// Exact two-sided permutation probability as an unreduced fraction.
@@ -65,83 +70,94 @@ pub struct ExactMannWhitney {
 /// paired ABBA epochs do not automatically meet that assumption. This function
 /// does not run the paired regression gate or produce a confidence interval.
 pub fn mann_whitney_exact(first: &[u64], second: &[u64]) -> Result<ExactMannWhitney, Error> {
-    if first.is_empty() || second.is_empty() {
-        return Err(Error::EmptyEvidence);
-    }
-    if first.len() > 32 || second.len() > 32 {
-        return Err(Error::Limit("exact rank sample size"));
-    }
-    let (n, m) = (first.len(), second.len());
-    let mut observations = [0u64; 64];
-    observations[..n].copy_from_slice(first);
-    observations[n..n + m].copy_from_slice(second);
-    observations[..n + m].sort_unstable();
-    if observations[..n + m]
-        .windows(2)
-        .any(|pair| pair[0] == pair[1])
+    #[cfg(vesper_port)]
+    return crate::port::mann_whitney_exact(first, second)
+        .map(|r| ExactMannWhitney {
+            u_first: r.u_first,
+            numerator: u128::from(r.numerator),
+            denominator: u128::from(r.denominator),
+        })
+        .map_err(crate::port::error);
+    #[cfg(not(vesper_port))]
     {
-        return Err(Error::TiedObservations);
-    }
+        if first.is_empty() || second.is_empty() {
+            return Err(Error::EmptyEvidence);
+        }
+        if first.len() > 32 || second.len() > 32 {
+            return Err(Error::Limit("exact rank sample size"));
+        }
+        let (n, m) = (first.len(), second.len());
+        let mut observations = [0u64; 64];
+        observations[..n].copy_from_slice(first);
+        observations[n..n + m].copy_from_slice(second);
+        observations[..n + m].sort_unstable();
+        if observations[..n + m]
+            .windows(2)
+            .any(|pair| pair[0] == pair[1])
+        {
+            return Err(Error::TiedObservations);
+        }
 
-    let ranks = mann_whitney_ranks(first, second)?;
-    let observed =
-        usize::try_from(ranks.twice_u_first / 2).map_err(|_| Error::ArithmeticOverflow)?;
-    let max_u = n * m;
-    let width = max_u + 1;
-    let cells = (m + 1) * width;
-    let mut previous = Vec::new();
-    previous
-        .try_reserve_exact(cells)
-        .map_err(|_| Error::AllocationFailed)?;
-    previous.resize(cells, 0u128);
-    let mut current = Vec::new();
-    current
-        .try_reserve_exact(cells)
-        .map_err(|_| Error::AllocationFailed)?;
-    current.resize(cells, 0u128);
-    // For zero first-sample observations, each second-sample prefix has U=0.
-    for j in 0..=m {
-        previous[j * width] = 1;
-    }
-    for i in 1..=n {
-        current.fill(0);
-        current[0] = 1;
-        for j in 1..=m {
-            for u in 0..=i * j {
-                let from_second = current[(j - 1) * width + u];
-                let from_first = if u >= j {
-                    previous[j * width + u - j]
-                } else {
-                    0
-                };
-                current[j * width + u] = from_second
-                    .checked_add(from_first)
-                    .ok_or(Error::ArithmeticOverflow)?;
+        let ranks = mann_whitney_ranks(first, second)?;
+        let observed =
+            usize::try_from(ranks.twice_u_first / 2).map_err(|_| Error::ArithmeticOverflow)?;
+        let max_u = n * m;
+        let width = max_u + 1;
+        let cells = (m + 1) * width;
+        let mut previous = Vec::new();
+        previous
+            .try_reserve_exact(cells)
+            .map_err(|_| Error::AllocationFailed)?;
+        previous.resize(cells, 0u128);
+        let mut current = Vec::new();
+        current
+            .try_reserve_exact(cells)
+            .map_err(|_| Error::AllocationFailed)?;
+        current.resize(cells, 0u128);
+        // For zero first-sample observations, each second-sample prefix has U=0.
+        for j in 0..=m {
+            previous[j * width] = 1;
+        }
+        for i in 1..=n {
+            current.fill(0);
+            current[0] = 1;
+            for j in 1..=m {
+                for u in 0..=i * j {
+                    let from_second = current[(j - 1) * width + u];
+                    let from_first = if u >= j {
+                        previous[j * width + u - j]
+                    } else {
+                        0
+                    };
+                    current[j * width + u] = from_second
+                        .checked_add(from_first)
+                        .ok_or(Error::ArithmeticOverflow)?;
+                }
+            }
+            std::mem::swap(&mut previous, &mut current);
+        }
+        let distribution = &previous[m * width..(m + 1) * width];
+        let mut denominator = 0u128;
+        let mut tail = 0u128;
+        let tail_limit = observed.min(max_u - observed);
+        for (u, &count) in distribution.iter().enumerate() {
+            denominator = denominator
+                .checked_add(count)
+                .ok_or(Error::ArithmeticOverflow)?;
+            if u <= tail_limit {
+                tail = tail.checked_add(count).ok_or(Error::ArithmeticOverflow)?;
             }
         }
-        std::mem::swap(&mut previous, &mut current);
+        let numerator = tail
+            .checked_mul(2)
+            .ok_or(Error::ArithmeticOverflow)?
+            .min(denominator);
+        Ok(ExactMannWhitney {
+            u_first: observed as u64,
+            numerator,
+            denominator,
+        })
     }
-    let distribution = &previous[m * width..(m + 1) * width];
-    let mut denominator = 0u128;
-    let mut tail = 0u128;
-    let tail_limit = observed.min(max_u - observed);
-    for (u, &count) in distribution.iter().enumerate() {
-        denominator = denominator
-            .checked_add(count)
-            .ok_or(Error::ArithmeticOverflow)?;
-        if u <= tail_limit {
-            tail = tail.checked_add(count).ok_or(Error::ArithmeticOverflow)?;
-        }
-    }
-    let numerator = tail
-        .checked_mul(2)
-        .ok_or(Error::ArithmeticOverflow)?
-        .min(denominator);
-    Ok(ExactMannWhitney {
-        u_first: observed as u64,
-        numerator,
-        denominator,
-    })
 }
 
 /// Exact two-sided permutation probability using doubled pooled midranks.
@@ -165,74 +181,85 @@ pub fn mann_whitney_exact_with_ties(
     first: &[u64],
     second: &[u64],
 ) -> Result<ExactTiedMannWhitney, Error> {
-    if first.is_empty() || second.is_empty() {
-        return Err(Error::EmptyEvidence);
-    }
-    if first.len() > 32 || second.len() > 32 {
-        return Err(Error::Limit("exact rank sample size"));
-    }
-    let (n, m) = (first.len(), second.len());
-    let total_count = n + m;
-    let mut pooled = [0u64; 64];
-    pooled[..n].copy_from_slice(first);
-    pooled[n..total_count].copy_from_slice(second);
-    pooled[..total_count].sort_unstable();
-
-    let width = 2 * n * total_count + 1;
-    let cells = (n + 1) * width;
-    let mut counts = Vec::new();
-    counts
-        .try_reserve_exact(cells)
-        .map_err(|_| Error::AllocationFailed)?;
-    counts.resize(cells, 0u128);
-    counts[0] = 1;
-    let mut processed = 0;
-    let mut start = 0;
-    while start < total_count {
-        let mut end = start + 1;
-        while end < total_count && pooled[end] == pooled[start] {
-            end += 1;
+    #[cfg(vesper_port)]
+    return crate::port::mann_whitney_exact_with_ties(first, second)
+        .map(|r| ExactTiedMannWhitney {
+            twice_u_first: r.u_first,
+            numerator: u128::from(r.numerator),
+            denominator: u128::from(r.denominator),
+        })
+        .map_err(crate::port::error);
+    #[cfg(not(vesper_port))]
+    {
+        if first.is_empty() || second.is_empty() {
+            return Err(Error::EmptyEvidence);
         }
-        // Ranks are 1-based; `end` is also the last 1-based rank.
-        let doubled_rank = start + 1 + end;
-        for _ in start..end {
-            processed += 1;
-            for selected in (1..=n.min(processed)).rev() {
-                for sum in doubled_rank..width {
-                    let add = counts[(selected - 1) * width + sum - doubled_rank];
-                    let cell = &mut counts[selected * width + sum];
-                    *cell = cell.checked_add(add).ok_or(Error::ArithmeticOverflow)?;
+        if first.len() > 32 || second.len() > 32 {
+            return Err(Error::Limit("exact rank sample size"));
+        }
+        let (n, m) = (first.len(), second.len());
+        let total_count = n + m;
+        let mut pooled = [0u64; 64];
+        pooled[..n].copy_from_slice(first);
+        pooled[n..total_count].copy_from_slice(second);
+        pooled[..total_count].sort_unstable();
+
+        let width = 2 * n * total_count + 1;
+        let cells = (n + 1) * width;
+        let mut counts = Vec::new();
+        counts
+            .try_reserve_exact(cells)
+            .map_err(|_| Error::AllocationFailed)?;
+        counts.resize(cells, 0u128);
+        counts[0] = 1;
+        let mut processed = 0;
+        let mut start = 0;
+        while start < total_count {
+            let mut end = start + 1;
+            while end < total_count && pooled[end] == pooled[start] {
+                end += 1;
+            }
+            // Ranks are 1-based; `end` is also the last 1-based rank.
+            let doubled_rank = start + 1 + end;
+            for _ in start..end {
+                processed += 1;
+                for selected in (1..=n.min(processed)).rev() {
+                    for sum in doubled_rank..width {
+                        let add = counts[(selected - 1) * width + sum - doubled_rank];
+                        let cell = &mut counts[selected * width + sum];
+                        *cell = cell.checked_add(add).ok_or(Error::ArithmeticOverflow)?;
+                    }
                 }
             }
+            start = end;
         }
-        start = end;
+        let twice_u_first = mann_whitney_ranks(first, second)?.twice_u_first;
+        let observed =
+            usize::try_from(twice_u_first).map_err(|_| Error::ArithmeticOverflow)? + n * (n + 1);
+        let distribution = &counts[n * width..(n + 1) * width];
+        let (mut lower, mut upper, mut denominator) = (0u128, 0u128, 0u128);
+        for (sum, &count) in distribution.iter().enumerate() {
+            denominator = denominator
+                .checked_add(count)
+                .ok_or(Error::ArithmeticOverflow)?;
+            if sum <= observed {
+                lower = lower.checked_add(count).ok_or(Error::ArithmeticOverflow)?;
+            }
+            if sum >= observed {
+                upper = upper.checked_add(count).ok_or(Error::ArithmeticOverflow)?;
+            }
+        }
+        let numerator = lower
+            .min(upper)
+            .checked_mul(2)
+            .ok_or(Error::ArithmeticOverflow)?
+            .min(denominator);
+        Ok(ExactTiedMannWhitney {
+            twice_u_first,
+            numerator,
+            denominator,
+        })
     }
-    let twice_u_first = mann_whitney_ranks(first, second)?.twice_u_first;
-    let observed =
-        usize::try_from(twice_u_first).map_err(|_| Error::ArithmeticOverflow)? + n * (n + 1);
-    let distribution = &counts[n * width..(n + 1) * width];
-    let (mut lower, mut upper, mut denominator) = (0u128, 0u128, 0u128);
-    for (sum, &count) in distribution.iter().enumerate() {
-        denominator = denominator
-            .checked_add(count)
-            .ok_or(Error::ArithmeticOverflow)?;
-        if sum <= observed {
-            lower = lower.checked_add(count).ok_or(Error::ArithmeticOverflow)?;
-        }
-        if sum >= observed {
-            upper = upper.checked_add(count).ok_or(Error::ArithmeticOverflow)?;
-        }
-    }
-    let numerator = lower
-        .min(upper)
-        .checked_mul(2)
-        .ok_or(Error::ArithmeticOverflow)?
-        .min(denominator);
-    Ok(ExactTiedMannWhitney {
-        twice_u_first,
-        numerator,
-        denominator,
-    })
 }
 /// Positive elapsed totals, with equal operation counts for the two arms.
 /// This may also represent synthetic statistical test data, not measured cycles.
@@ -253,14 +280,30 @@ impl PairedSample {
         candidate_total: u64,
         operations_per_arm: u64,
     ) -> Result<Self, Error> {
-        if baseline_total == 0 || candidate_total == 0 || operations_per_arm == 0 {
-            return Err(Error::NonPositiveEvidence);
+        #[cfg(vesper_port)]
+        return crate::port::paired_sample_new(baseline_total, candidate_total, operations_per_arm)
+            .map(crate::port::paired)
+            .map_err(crate::port::error);
+        #[cfg(not(vesper_port))]
+        {
+            if baseline_total == 0 || candidate_total == 0 || operations_per_arm == 0 {
+                return Err(Error::NonPositiveEvidence);
+            }
+            Ok(Self {
+                baseline: baseline_total,
+                candidate: candidate_total,
+                operations: operations_per_arm,
+            })
         }
-        Ok(Self {
-            baseline: baseline_total,
-            candidate: candidate_total,
-            operations: operations_per_arm,
-        })
+    }
+    /// A sample whose totals and count the port already checked are nonzero.
+    #[cfg(vesper_port)]
+    pub(crate) fn from_validated(baseline: u64, candidate: u64, operations: u64) -> Self {
+        Self {
+            baseline,
+            candidate,
+            operations,
+        }
     }
     pub fn baseline_total(self) -> u64 {
         self.baseline
@@ -273,13 +316,20 @@ impl PairedSample {
     }
     /// Directed rounding is presentation only. Gates compare exact ratios.
     pub fn regression_bp_bounds(self) -> BasisPointBounds {
-        // Difference of u64s and scaling by 10,000 fit strictly inside i128.
-        let scaled = (i128::from(self.candidate) - i128::from(self.baseline)) * 10_000;
-        let denominator = i128::from(self.baseline);
-        let floor = scaled.div_euclid(denominator);
-        BasisPointBounds {
-            floor,
-            ceil: floor + i128::from(scaled.rem_euclid(denominator) != 0),
+        #[cfg(vesper_port)]
+        return crate::port::bp_bounds(crate::port::regression_bp_bounds(crate::port::sample(
+            self,
+        )));
+        #[cfg(not(vesper_port))]
+        {
+            // Difference of u64s and scaling by 10,000 fit strictly inside i128.
+            let scaled = (i128::from(self.candidate) - i128::from(self.baseline)) * 10_000;
+            let denominator = i128::from(self.baseline);
+            let floor = scaled.div_euclid(denominator);
+            BasisPointBounds {
+                floor,
+                ceil: floor + i128::from(scaled.rem_euclid(denominator) != 0),
+            }
         }
     }
     fn compare_ratio(self, other: Self) -> Ordering {
@@ -346,77 +396,84 @@ pub struct Analysis {
 /// passes; a lower bound > threshold detects regression; overlap is inconclusive.
 /// No threshold is applied by the measurement runner itself.
 pub fn analyze_pairs(samples: &[PairedSample], max_regression_bp: i64) -> Result<Analysis, Error> {
-    if samples.is_empty() {
-        return Err(Error::EmptyEvidence);
-    }
-    if samples.len() > MAX_EPOCHS {
-        return Err(Error::Limit("epochs"));
-    }
-    if max_regression_bp < -9999 {
-        return Err(Error::InvalidThreshold);
-    }
-    let mut sorted = samples.to_vec();
-    sorted.sort_by(|a, b| a.compare_ratio(*b));
-    let n = sorted.len();
-    let median_lower = sorted[(n - 1) / 2];
-    let median_upper = sorted[n / 2];
-    let total = 1u128
-        .checked_shl(u32::try_from(n).map_err(|_| Error::ArithmeticOverflow)?)
-        .ok_or(Error::ArithmeticOverflow)?;
-    let mut coefficient = 1u128;
-    let mut tail = 0u128;
-    let mut chosen = None;
-    for j in 0..n / 2 {
-        tail = tail
-            .checked_add(coefficient)
-            .ok_or(Error::ArithmeticOverflow)?;
-        if tail.checked_mul(200).ok_or(Error::ArithmeticOverflow)?
-            <= total.checked_mul(5).ok_or(Error::ArithmeticOverflow)?
-        {
-            chosen = Some((j + 1, tail));
-        } else {
-            break;
+    #[cfg(vesper_port)]
+    return crate::port::analyze_pairs(&crate::port::samples(samples), max_regression_bp)
+        .map(crate::port::analysis)
+        .map_err(crate::port::error);
+    #[cfg(not(vesper_port))]
+    {
+        if samples.is_empty() {
+            return Err(Error::EmptyEvidence);
         }
-        coefficient = coefficient
-            .checked_mul(u128::try_from(n - j).map_err(|_| Error::ArithmeticOverflow)?)
-            .ok_or(Error::ArithmeticOverflow)?
-            / u128::try_from(j + 1).map_err(|_| Error::ArithmeticOverflow)?;
-    }
-    let Some((rank, tail)) = chosen else {
-        return Ok(Analysis {
-            decision: Decision::Inconclusive,
-            reason: Some(InconclusiveReason::InsufficientEpochs),
+        if samples.len() > MAX_EPOCHS {
+            return Err(Error::Limit("epochs"));
+        }
+        if max_regression_bp < -9999 {
+            return Err(Error::InvalidThreshold);
+        }
+        let mut sorted = samples.to_vec();
+        sorted.sort_by(|a, b| a.compare_ratio(*b));
+        let n = sorted.len();
+        let median_lower = sorted[(n - 1) / 2];
+        let median_upper = sorted[n / 2];
+        let total = 1u128
+            .checked_shl(u32::try_from(n).map_err(|_| Error::ArithmeticOverflow)?)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let mut coefficient = 1u128;
+        let mut tail = 0u128;
+        let mut chosen = None;
+        for j in 0..n / 2 {
+            tail = tail
+                .checked_add(coefficient)
+                .ok_or(Error::ArithmeticOverflow)?;
+            if tail.checked_mul(200).ok_or(Error::ArithmeticOverflow)?
+                <= total.checked_mul(5).ok_or(Error::ArithmeticOverflow)?
+            {
+                chosen = Some((j + 1, tail));
+            } else {
+                break;
+            }
+            coefficient = coefficient
+                .checked_mul(u128::try_from(n - j).map_err(|_| Error::ArithmeticOverflow)?)
+                .ok_or(Error::ArithmeticOverflow)?
+                / u128::try_from(j + 1).map_err(|_| Error::ArithmeticOverflow)?;
+        }
+        let Some((rank, tail)) = chosen else {
+            return Ok(Analysis {
+                decision: Decision::Inconclusive,
+                reason: Some(InconclusiveReason::InsufficientEpochs),
+                median_lower,
+                median_upper,
+                interval: None,
+            });
+        };
+        let interval = MedianInterval {
+            lower: sorted[rank - 1],
+            upper: sorted[n - rank],
+            lower_rank: rank,
+            upper_rank: n - rank + 1,
+            covered_outcomes: total
+                .checked_sub(tail.checked_mul(2).ok_or(Error::ArithmeticOverflow)?)
+                .ok_or(Error::ArithmeticOverflow)?,
+            total_outcomes: total,
+        };
+        let (decision, reason) =
+            if interval.upper.compare_threshold(max_regression_bp)? != Ordering::Greater {
+                (Decision::Pass, None)
+            } else if interval.lower.compare_threshold(max_regression_bp)? == Ordering::Greater {
+                (Decision::Regression, None)
+            } else {
+                (
+                    Decision::Inconclusive,
+                    Some(InconclusiveReason::IntervalCrossesThreshold),
+                )
+            };
+        Ok(Analysis {
+            decision,
+            reason,
             median_lower,
             median_upper,
-            interval: None,
-        });
-    };
-    let interval = MedianInterval {
-        lower: sorted[rank - 1],
-        upper: sorted[n - rank],
-        lower_rank: rank,
-        upper_rank: n - rank + 1,
-        covered_outcomes: total
-            .checked_sub(tail.checked_mul(2).ok_or(Error::ArithmeticOverflow)?)
-            .ok_or(Error::ArithmeticOverflow)?,
-        total_outcomes: total,
-    };
-    let (decision, reason) =
-        if interval.upper.compare_threshold(max_regression_bp)? != Ordering::Greater {
-            (Decision::Pass, None)
-        } else if interval.lower.compare_threshold(max_regression_bp)? == Ordering::Greater {
-            (Decision::Regression, None)
-        } else {
-            (
-                Decision::Inconclusive,
-                Some(InconclusiveReason::IntervalCrossesThreshold),
-            )
-        };
-    Ok(Analysis {
-        decision,
-        reason,
-        median_lower,
-        median_upper,
-        interval: Some(interval),
-    })
+            interval: Some(interval),
+        })
+    }
 }

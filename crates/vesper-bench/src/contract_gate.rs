@@ -107,77 +107,83 @@ pub fn evaluate(
     sample: &PmuSample,
     counts: Counts,
 ) -> Result<GateReport, GateError> {
-    if contract
-        .max_instructions_per_byte
-        .is_some_and(|v| v.scale > 18)
+    #[cfg(vesper_port)]
+    return crate::port::gate_evaluate(crate::port::gate_in(contract, sample, counts))
+        .map(crate::port::gate_report);
+    #[cfg(not(vesper_port))]
     {
-        return Err(GateError::InvalidDecimalScale);
+        if contract
+            .max_instructions_per_byte
+            .is_some_and(|v| v.scale > 18)
+        {
+            return Err(GateError::InvalidDecimalScale);
+        }
+        let instructions_per_byte = match contract.max_instructions_per_byte {
+            Some(limit) => ratio_gate(
+                sample.get(PmuField::InstructionsRetired),
+                counts.input_bytes,
+                limit,
+                PmuField::InstructionsRetired,
+                Unavailable::InputBytes,
+                Unavailable::ZeroInputBytes,
+            ),
+            None => GateStatus::NotRequested,
+        };
+        let l1d_misses_per_op = match contract.max_l1d_misses_per_op {
+            Some(limit) => ratio_gate(
+                sample.get(PmuField::L1dReadMisses),
+                counts.operations,
+                Decimal {
+                    coefficient: limit,
+                    scale: 0,
+                },
+                PmuField::L1dReadMisses,
+                Unavailable::Operations,
+                Unavailable::ZeroOperations,
+            ),
+            None => GateStatus::NotRequested,
+        };
+        let zero_alloc = if contract.zero_alloc == Some(true) {
+            GateStatus::Inconclusive(Unavailable::AllocationEvidence)
+        } else {
+            GateStatus::NotRequested
+        };
+        let expect_vectorized = if contract.expect_vectorized == Some(true) {
+            GateStatus::Inconclusive(Unavailable::VectorizationEvidence)
+        } else {
+            GateStatus::NotRequested
+        };
+        let stabilizer_pages = if contract.stabilizer_pages.is_some() {
+            GateStatus::Inconclusive(Unavailable::LayoutEvidence)
+        } else {
+            GateStatus::NotRequested
+        };
+        let statuses = [
+            instructions_per_byte,
+            l1d_misses_per_op,
+            zero_alloc,
+            expect_vectorized,
+            stabilizer_pages,
+        ];
+        let overall = if statuses.contains(&GateStatus::Fail) {
+            Overall::Fail
+        } else if statuses
+            .iter()
+            .any(|s| matches!(s, GateStatus::Inconclusive(_)))
+        {
+            Overall::Inconclusive
+        } else if statuses.contains(&GateStatus::Pass) {
+            Overall::Pass
+        } else {
+            Overall::NotRequested
+        };
+        Ok(GateReport {
+            instructions_per_byte,
+            l1d_misses_per_op,
+            zero_alloc,
+            expect_vectorized,
+            stabilizer_pages,
+            overall,
+        })
     }
-    let instructions_per_byte = match contract.max_instructions_per_byte {
-        Some(limit) => ratio_gate(
-            sample.get(PmuField::InstructionsRetired),
-            counts.input_bytes,
-            limit,
-            PmuField::InstructionsRetired,
-            Unavailable::InputBytes,
-            Unavailable::ZeroInputBytes,
-        ),
-        None => GateStatus::NotRequested,
-    };
-    let l1d_misses_per_op = match contract.max_l1d_misses_per_op {
-        Some(limit) => ratio_gate(
-            sample.get(PmuField::L1dReadMisses),
-            counts.operations,
-            Decimal {
-                coefficient: limit,
-                scale: 0,
-            },
-            PmuField::L1dReadMisses,
-            Unavailable::Operations,
-            Unavailable::ZeroOperations,
-        ),
-        None => GateStatus::NotRequested,
-    };
-    let zero_alloc = if contract.zero_alloc == Some(true) {
-        GateStatus::Inconclusive(Unavailable::AllocationEvidence)
-    } else {
-        GateStatus::NotRequested
-    };
-    let expect_vectorized = if contract.expect_vectorized == Some(true) {
-        GateStatus::Inconclusive(Unavailable::VectorizationEvidence)
-    } else {
-        GateStatus::NotRequested
-    };
-    let stabilizer_pages = if contract.stabilizer_pages.is_some() {
-        GateStatus::Inconclusive(Unavailable::LayoutEvidence)
-    } else {
-        GateStatus::NotRequested
-    };
-    let statuses = [
-        instructions_per_byte,
-        l1d_misses_per_op,
-        zero_alloc,
-        expect_vectorized,
-        stabilizer_pages,
-    ];
-    let overall = if statuses.contains(&GateStatus::Fail) {
-        Overall::Fail
-    } else if statuses
-        .iter()
-        .any(|s| matches!(s, GateStatus::Inconclusive(_)))
-    {
-        Overall::Inconclusive
-    } else if statuses.contains(&GateStatus::Pass) {
-        Overall::Pass
-    } else {
-        Overall::NotRequested
-    };
-    Ok(GateReport {
-        instructions_per_byte,
-        l1d_misses_per_op,
-        zero_alloc,
-        expect_vectorized,
-        stabilizer_pages,
-        overall,
-    })
 }

@@ -125,83 +125,88 @@ impl Parser<'_> {
 /// Parse one complete attribute of at most 4096 bytes. ASCII whitespace is
 /// accepted; comments, expressions and undocumented options are not.
 pub fn parse_attribute(source: &str) -> Result<BenchContract, ParseError> {
-    if source.len() > 4096 {
-        return Err(ParseError {
-            kind: ErrorKind::InputLimit,
-            offset: 4096,
-        });
-    }
-    let mut p = Parser {
-        input: source.as_bytes(),
-        pos: 0,
-    };
-    p.byte(b'@')?;
-    if p.name() != b"bench" {
-        return Err(p.error(ErrorKind::Syntax));
-    }
-    p.space();
-    if p.pos == p.input.len() {
-        return Ok(BenchContract::default());
-    }
-    p.byte(b'(')?;
-    let mut result = BenchContract::default();
-    loop {
-        p.space();
-        if p.input.get(p.pos) == Some(&b')') {
-            p.pos += 1;
-            break;
+    #[cfg(vesper_port)]
+    return crate::port::parse_attribute(source.as_bytes()).map(crate::port::contract);
+    #[cfg(not(vesper_port))]
+    {
+        if source.len() > 4096 {
+            return Err(ParseError {
+                kind: ErrorKind::InputLimit,
+                offset: 4096,
+            });
         }
-        let start = p.pos;
-        let field = p.name();
-        let id = match field {
-            b"zero_alloc" => 0,
-            b"expect_vectorized" => 1,
-            b"max_instructions_per_byte" => 2,
-            b"stabilizer_pages" => 3,
-            b"max_l1d_misses_per_op" => 4,
-            b"" => return Err(p.error(ErrorKind::Syntax)),
-            _ => {
-                return Err(ParseError {
-                    kind: ErrorKind::UnknownField,
-                    offset: start,
-                });
-            }
+        let mut p = Parser {
+            input: source.as_bytes(),
+            pos: 0,
         };
-        p.byte(b'=')?;
-        macro_rules! set {
-            ($field:ident, $value:expr) => {{
-                if result.$field.is_some() {
-                    return Err(ParseError {
-                        kind: ErrorKind::DuplicateField,
-                        offset: start,
-                    });
-                }
-                result.$field = Some($value);
-            }};
-        }
-        match id {
-            0 => set!(zero_alloc, p.boolean()?),
-            1 => set!(expect_vectorized, p.boolean()?),
-            2 => set!(max_instructions_per_byte, p.number(true)?),
-            3 => set!(stabilizer_pages, p.number(false)?.coefficient),
-            4 => set!(max_l1d_misses_per_op, p.number(false)?.coefficient),
-            _ => unreachable!(),
+        p.byte(b'@')?;
+        if p.name() != b"bench" {
+            return Err(p.error(ErrorKind::Syntax));
         }
         p.space();
-        match p.input.get(p.pos) {
-            Some(b',') => {
-                p.pos += 1;
-            }
-            Some(b')') => {
+        if p.pos == p.input.len() {
+            return Ok(BenchContract::default());
+        }
+        p.byte(b'(')?;
+        let mut result = BenchContract::default();
+        loop {
+            p.space();
+            if p.input.get(p.pos) == Some(&b')') {
                 p.pos += 1;
                 break;
             }
-            _ => return Err(p.error(ErrorKind::Syntax)),
+            let start = p.pos;
+            let field = p.name();
+            let id = match field {
+                b"zero_alloc" => 0,
+                b"expect_vectorized" => 1,
+                b"max_instructions_per_byte" => 2,
+                b"stabilizer_pages" => 3,
+                b"max_l1d_misses_per_op" => 4,
+                b"" => return Err(p.error(ErrorKind::Syntax)),
+                _ => {
+                    return Err(ParseError {
+                        kind: ErrorKind::UnknownField,
+                        offset: start,
+                    });
+                }
+            };
+            p.byte(b'=')?;
+            macro_rules! set {
+                ($field:ident, $value:expr) => {{
+                    if result.$field.is_some() {
+                        return Err(ParseError {
+                            kind: ErrorKind::DuplicateField,
+                            offset: start,
+                        });
+                    }
+                    result.$field = Some($value);
+                }};
+            }
+            match id {
+                0 => set!(zero_alloc, p.boolean()?),
+                1 => set!(expect_vectorized, p.boolean()?),
+                2 => set!(max_instructions_per_byte, p.number(true)?),
+                3 => set!(stabilizer_pages, p.number(false)?.coefficient),
+                4 => set!(max_l1d_misses_per_op, p.number(false)?.coefficient),
+                _ => unreachable!(),
+            }
+            p.space();
+            match p.input.get(p.pos) {
+                Some(b',') => {
+                    p.pos += 1;
+                }
+                Some(b')') => {
+                    p.pos += 1;
+                    break;
+                }
+                _ => return Err(p.error(ErrorKind::Syntax)),
+            }
         }
+        p.space();
+        if p.pos != p.input.len() {
+            return Err(p.error(ErrorKind::Syntax));
+        }
+        Ok(result)
     }
-    p.space();
-    if p.pos != p.input.len() {
-        return Err(p.error(ErrorKind::Syntax));
-    }
-    Ok(result)
 }
