@@ -149,6 +149,17 @@ pub fn project(chor: &Choreography, role: &str) -> Result<LocalType, ProjectionE
 
 /// Project every role, in declaration order.
 pub fn project_all(chor: &Choreography) -> Result<Vec<LocalType>, ProjectionError> {
+    #[cfg(feature = "vesper-port")]
+    {
+        crate::port::project(chor, None)
+    }
+    #[cfg(not(feature = "vesper-port"))]
+    {
+        project_all_rust(chor)
+    }
+}
+
+fn project_all_rust(chor: &Choreography) -> Result<Vec<LocalType>, ProjectionError> {
     (0..chor.roles().len())
         .map(|i| project_role(chor, RoleId(i as u16)))
         .collect()
@@ -158,6 +169,17 @@ pub fn project_role(chor: &Choreography, target: RoleId) -> Result<LocalType, Pr
     if chor.role_name(target).is_none() {
         return Err(ProjectionError::UnknownRole(format!("#{}", target.0)));
     }
+    #[cfg(feature = "vesper-port")]
+    {
+        crate::port::project(chor, Some(target)).map(|mut v| v.pop().unwrap_or(LocalType::End))
+    }
+    #[cfg(not(feature = "vesper-port"))]
+    {
+        project_role_rust(chor, target)
+    }
+}
+
+fn project_role_rust(chor: &Choreography, target: RoleId) -> Result<LocalType, ProjectionError> {
     let mut p = Projector {
         chor,
         target,
@@ -716,7 +738,14 @@ impl LocalType {
 /// selection is offered with the same labels, and both end together.
 /// Recursion is compared structurally (both must loop at the same points).
 pub fn are_dual(a: RoleId, s_a: &LocalType, b: RoleId, s_b: &LocalType) -> bool {
-    dual_in(a, s_a, b, s_b, &mut Vec::new())
+    #[cfg(feature = "vesper-port")]
+    {
+        crate::port::are_dual(a, s_a, b, s_b)
+    }
+    #[cfg(not(feature = "vesper-port"))]
+    {
+        dual_in(a, s_a, b, s_b, &mut Vec::new())
+    }
 }
 
 fn dual_in(

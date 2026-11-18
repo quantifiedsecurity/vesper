@@ -187,8 +187,17 @@ impl Choreography {
     /// error found.
     pub fn new(roles: Vec<String>, body: GlobalChor) -> Result<Self, WellFormedError> {
         let chor = Self { roles, body };
+        #[cfg(feature = "vesper-port")]
+        crate::port::validate(&chor)?;
+        #[cfg(not(feature = "vesper-port"))]
         chor.validate()?;
         Ok(chor)
+    }
+
+    /// A choreography the Vesper parser has already checked.
+    #[cfg(feature = "vesper-port")]
+    pub(crate) fn from_checked_parts(roles: Vec<String>, body: GlobalChor) -> Self {
+        Self { roles, body }
     }
 
     pub fn roles(&self) -> &[String] {

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Vesper Chorus: choreographies, endpoint projection, linear session channels (in memory and over Warp QUIC streams), simulated quorum replication and a software RDMA model (design section 25)"
 publish = false
+build = "build.rs"
 
 [dependencies]
 vesper-simpulse = { path = "../vesper-simpulse" }
@@ -13,3 +14,20 @@ vesper-warp = { path = "../vesper-warp" }
 vesper-warp-crypto = { path = "../vesper-warp-crypto" }
 vesper-warp-shard = { path = "../vesper-warp-shard" }
 vesper-warp-umem = { path = "../vesper-warp-umem" }
+# Port wave P3b lane 6 (#1068): the Vesper build of the choreography front
+# end (vesper/). Rust stays the default until the port reaches parity.
+vesper-port-abi = { path = "../vesper-port-abi", optional = true }
+
+[features]
+# Forward parsing, well-formedness, projection, duality and exploration to
+# the Vesper library in vesper/ (docs/maintenance/porting-a-crate.md).
+vesper-port = ["dep:vesper-port-abi", "dep:vesper-port-harness"]
+# A deliberately wrong Vesper build, one change per ported module: the port
+# test runs must fail (port/test-port.sh and Bazel assert it).
+vesper-port-divergent = ["vesper-port"]
+
+[dev-dependencies]
+vesper-bench = { path = "../vesper-bench" }
+
+[build-dependencies]
+vesper-port-harness = { path = "../vesper-port-harness", optional = true }

@@ -83,6 +83,17 @@ struct State {
 
 /// Explore every reachable state of the projected system.
 pub fn explore(chor: &Choreography, limits: ExploreLimits) -> Result<ExploreReport, ExploreError> {
+    #[cfg(feature = "vesper-port")]
+    {
+        crate::port::explore(chor, None, limits)
+    }
+    #[cfg(not(feature = "vesper-port"))]
+    {
+        explore_rust(chor, limits)
+    }
+}
+
+fn explore_rust(chor: &Choreography, limits: ExploreLimits) -> Result<ExploreReport, ExploreError> {
     let locals = project_all(chor).map_err(ExploreError::Projection)?;
     explore_locals(chor, locals, limits)
 }
@@ -91,6 +102,21 @@ pub fn explore(chor: &Choreography, limits: ExploreLimits) -> Result<ExploreRepo
 /// order). Used to show that hand-written, non-projected endpoints can
 /// deadlock.
 pub fn explore_locals(
+    chor: &Choreography,
+    locals: Vec<LocalType>,
+    limits: ExploreLimits,
+) -> Result<ExploreReport, ExploreError> {
+    #[cfg(feature = "vesper-port")]
+    {
+        crate::port::explore(chor, Some(&locals), limits)
+    }
+    #[cfg(not(feature = "vesper-port"))]
+    {
+        explore_locals_rust(chor, locals, limits)
+    }
+}
+
+fn explore_locals_rust(
     chor: &Choreography,
     locals: Vec<LocalType>,
     limits: ExploreLimits,

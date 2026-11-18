@@ -582,6 +582,17 @@ impl Builder {
 
 /// Parse and check a choreography.
 pub fn parse_choreography(src: &str) -> Result<Choreography, ParseError> {
+    #[cfg(feature = "vesper-port")]
+    {
+        crate::port::parse_choreography(src)
+    }
+    #[cfg(not(feature = "vesper-port"))]
+    {
+        parse_rust(src)
+    }
+}
+
+fn parse_rust(src: &str) -> Result<Choreography, ParseError> {
     if src.len() > MAX_SOURCE_BYTES {
         return Err(ParseError {
             line: 1,
