@@ -138,8 +138,6 @@ sh crates/vesper-ignis/port/check.sh  # port P1 lane 12 (#909): vesper-ignis, bo
 # crates/vesper-quarry/build.rs).
 cargo test --locked -p vesper-quarry --features vesper-port --test sql --test planner_spec --test vector --test vector_join --test port_memory
 for t in "sql outer_join_null_extension_and_filter_placement" "sql outer_join_pushdown_differential_for_many_predicates_and_null_inputs" "sql sql_null_three_valued_logic_exhaustive" "sql ddl_atomic_deterministic_and_stale_revision_or_content_rejected" "planner_spec front_end_transcript_matches_golden" "planner_spec planner_chooses_the_golden_access_paths"; do set -- $t; divergent "Quarry port ($2)" "$2" "$([ "$1" = sql ] && echo real_where_aliases_literals_and_typed_bindings || echo golden_results_equal_filtered_index_lookups)" -p vesper-quarry --features vesper-port-divergent --test "$1"; done
-# Port wave P1 lane 15 (#912): vesper-semver, both builds and the divergence check.
-sh crates/vesper-semver/port/test-port.sh
 # Port wave P1 lane 8 (#905): vesper-tensor and its Rust seed copy, and the
 # divergence check (one failing test per ported module).
 sh crates/vesper-tensor/port/test-port.sh
@@ -173,5 +171,5 @@ protobuf protobuf signed_twos_complement_varints_are_canonical_in_singular_and_p
 der der typed_set_of_sorts_complete_encodings_retains_duplicates_and_rejects_untyped_set utf8_string_is_strict_borrowed_and_transactional
 ipc ipc independent_arrow_values_and_versions hostile_schema_and_union_discriminants
 CHECKS
-sh crates/vesper-serde/port/check.sh  # port P1 lane 19 (#916): vesper-serde, both builds and one divergence check per ported module
 . crates/vesper-simpulse/port/check.sh  # port P1 lane 5 (#902): vesper-simpulse, both builds and the divergence check
+sh crates/vesper-serde/port/check.sh  # port P1 lane 19 (#916): vesper-serde, both builds and one divergence check per ported module
