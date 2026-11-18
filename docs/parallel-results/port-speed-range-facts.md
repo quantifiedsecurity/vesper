@@ -11,9 +11,11 @@ free of handlers.
 
 - `src/check.rs`: each binding now carries inclusive bounds (`IntRange`). The bounds are tied to the
   binding's write identity (`Binding::mutation`). Every write, `inout` borrow,
-  loop havoc, swap or handler checkpoint already renews that identity, so a
-  range is dropped exactly where an exact fact is dropped. This needs no edits
-  outside the lane's paths.
+  loop havoc and swap already renews that identity, so the range is dropped
+  there with no edits outside the lane's paths. The one place that drops facts
+  without renewing the identity is the join after an abortable handler, where
+  an abort may skip the body's writes. That join now clears the range
+  explicitly (found in review; `tests/inout_abort.rs` covers it).
 - Bounds come from these sources:
   - the integer kind;
   - a comparison with a pure integer expression that dominates the use: the matching branch of `if`, `!`, `&&` in
