@@ -1505,6 +1505,108 @@ pub fn jit_traced_with_options(
 ) -> Result<crate::runtime::Value, String> {
     jit_run_entry(world, entry, optimize, EntryEffects::TraceHost)
 }
+/// A JIT-compiled function whose parameters and result are each one
+/// machine word (`in` aggregates are their addresses), for host code that
+/// calls compiled Vesper from several threads at once (source atomics,
+/// [`crate::atomics`]). The module owns the code; the function pointer is
+/// valid while this value lives.
+pub struct WordFunction {
+    _module: JITModule,
+    code: usize,
+    arity: usize,
+}
+// SAFETY: finalized JIT code is immutable and the module is only dropped
+// with the value; calling the code needs no access to the module.
+unsafe impl Sync for WordFunction {}
+// SAFETY: as above; nothing in the module is tied to the creating thread.
+unsafe impl Send for WordFunction {}
+impl WordFunction {
+    /// Compiles `entry` of `world` (optimized when `optimize`). Every
+    /// parameter and the result must have an eight-byte native lane or be
+    /// an `in` aggregate, and the row must be empty.
+    pub fn compile(world: &World, entry: &str, optimize: bool) -> Result<Self, String> {
+        let f = world.functions.get(entry).ok_or("unknown entry")?;
+        if !f.effects.instances.is_empty() || f.effects.tail.is_some() || f.params.len() > 3 {
+            return Err("a word function takes at most three words and has no effects".into());
+        }
+        if Layout::of(world, &f.result)?.aggregate() {
+            return Err("a word function returns one word".into());
+        }
+        let mut flags = settings::builder();
+        flags
+            .set("use_colocated_libcalls", "false")
+            .map_err(|e| e.to_string())?;
+        flags.set("is_pic", "false").map_err(|e| e.to_string())?;
+        if optimize {
+            flags.set("opt_level", "speed").map_err(|e| e.to_string())?;
+        }
+        let isa = cranelift_native::builder()
+            .map_err(str::to_string)?
+            .finish(settings::Flags::new(flags))
+            .map_err(|e| e.to_string())?;
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        register_jit_runtime_symbols(&mut builder, false);
+        let mut m = JITModule::new(builder);
+        let (ids, _) = compile_entry(
+            &mut m,
+            world,
+            entry,
+            optimize,
+            None,
+            None,
+            CodegenOptions::default(),
+            EntryEffects::Handled,
+            DefinitionLinkage::Jit,
+        )?;
+        let sig = signature(&m, world, f)?;
+        if sig.params.len() != f.params.len()
+            || sig.returns.len() != 1
+            || sig
+                .params
+                .iter()
+                .chain(&sig.returns)
+                .any(|p| p.value_type != types::I64)
+            || sig.call_conv != m.target_config().default_call_conv
+        {
+            return Err("word function ABI mismatch".into());
+        }
+        m.finalize_definitions().map_err(|e| e.to_string())?;
+        let code = m.get_finalized_function(ids[entry]) as usize;
+        Ok(Self {
+            _module: m,
+            code,
+            arity: f.params.len(),
+        })
+    }
+    /// Calls the function with `args` (one word per parameter).
+    ///
+    /// # Safety
+    ///
+    /// Every word must be a valid value of its parameter: an `in` aggregate
+    /// is the address of a live value in the native layout, which the call
+    /// only reads (atomic cells are updated through their shared element).
+    pub unsafe fn call(&self, args: &[u64]) -> Result<u64, String> {
+        if args.len() != self.arity {
+            return Err("word function arity mismatch".into());
+        }
+        // SAFETY: compile() checked a host-ABI signature of `arity` words
+        // returning one word; the caller vouches for the arguments.
+        unsafe {
+            let code = self.code as *const u8;
+            Ok(match *args {
+                [] => std::mem::transmute::<*const u8, extern "C" fn() -> u64>(code)(),
+                [a] => std::mem::transmute::<*const u8, extern "C" fn(u64) -> u64>(code)(a),
+                [a, b] => {
+                    std::mem::transmute::<*const u8, extern "C" fn(u64, u64) -> u64>(code)(a, b)
+                }
+                [a, b, c] => std::mem::transmute::<*const u8, extern "C" fn(u64, u64, u64) -> u64>(
+                    code,
+                )(a, b, c),
+                _ => unreachable!("arity checked at compile"),
+            })
+        }
+    }
+}
 pub(crate) fn register_jit_runtime_symbols(builder: &mut JITBuilder, trace_host: bool) {
     builder.symbol("fmod", native_float_remainder as *const u8);
     builder.symbol("fmodf", float_math::native_float_remainder_f32 as *const u8);
@@ -5171,6 +5273,108 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.b.ins().uextend(types::I64, r)
         })
     }
+    /// An atomic operation of `atomics` on the one element of the receiver's
+    /// cell (`args[0]`, an `Atomic[T]`): one `atomic_load`, `atomic_store`,
+    /// `atomic_rmw` or `atomic_cas` at the width of `T` (`bool` and `u8` are
+    /// one byte), on the element at offset 0 of the sequence data. Operands
+    /// and results are canonical lanes. Cranelift atomics are sequentially
+    /// consistent, so the order arguments (literals, `E0820`) need no code.
+    fn atomic_call(
+        &mut self,
+        op: crate::atomics::AtomicOp,
+        args: &[Arg],
+        site: &Expr,
+        into: Option<ir::Value>,
+    ) -> Result<ir::Value, String> {
+        use crate::atomics::AtomicOp as A;
+        use cranelift_codegen::ir::AtomicRmwOp as Rmw;
+        let vars = call_vars(self.world, site, &self.generic_vars);
+        let cell = vars.get("T").ok_or("native atomic without a cell type")?;
+        let kind = crate::atomics::cell_kind(cell)
+            .ok_or_else(|| format!("native atomics are not defined on Atomic[{cell}]"))?;
+        let (narrow, signed) = match kind {
+            None => (types::I8, false),
+            Some(k) => (
+                match k.bits() {
+                    8 => types::I8,
+                    16 => types::I16,
+                    32 => types::I32,
+                    _ => types::I64,
+                },
+                k.signed(),
+            ),
+        };
+        if args.len() != 1 + op.values() + op.orders() {
+            return Err("native atomic operation with the wrong arity".into());
+        }
+        let flags = ir::MemFlags::trusted();
+        // `Atomic { cell }` -> sequence header `{len, cap, data}` -> element.
+        let receiver = self.expr(&args[0].expr)?;
+        let handle = self.b.ins().load(types::I64, flags, receiver, 0);
+        let data = self.b.ins().load(types::I64, flags, handle, 16);
+        let mut operands = vec![];
+        for a in &args[1..1 + op.values()] {
+            let v = self.expr(&a.expr)?;
+            operands.push(if narrow == types::I64 {
+                v
+            } else {
+                self.b.ins().ireduce(narrow, v)
+            });
+        }
+        let widen = |c: &mut Self, v: ir::Value| {
+            if narrow == types::I64 {
+                v
+            } else if signed {
+                c.b.ins().sextend(types::I64, v)
+            } else {
+                c.b.ins().uextend(types::I64, v)
+            }
+        };
+        let rmw = match op {
+            A::Load => {
+                let v = self.b.ins().atomic_load(narrow, flags, data);
+                return Ok(widen(self, v));
+            }
+            A::Store => {
+                self.b.ins().atomic_store(flags, operands[0], data);
+                return Ok(self.zero());
+            }
+            A::CompareExchange => {
+                let old = self
+                    .b
+                    .ins()
+                    .atomic_cas(flags, data, operands[0], operands[1]);
+                let same = self.b.ins().icmp(IntCC::Equal, old, operands[0]);
+                let old = widen(self, old);
+                let ty = Type::Named("Result".into(), vec![cell.clone(), cell.clone()]);
+                let layout = Layout::of(self.world, &ty)?;
+                let (ok, ok_fields) = layout.variant("Ok").ok_or("native Result without Ok")?;
+                let (err, _) = layout.variant("Err").ok_or("native Result without Err")?;
+                let offset = ok_fields.first().map_or(8, |f| f.offset);
+                let ok = self.b.ins().iconst(types::I64, ok as i64);
+                let err = self.b.ins().iconst(types::I64, err as i64);
+                let tag = self.b.ins().select(same, ok, err);
+                let ptr = match into {
+                    Some(out) => out,
+                    None => self.alloc(layout.size),
+                };
+                self.b.ins().store(ir::MemFlags::new(), tag, ptr, 0);
+                self.b.ins().store(ir::MemFlags::new(), old, ptr, offset);
+                return Ok(ptr);
+            }
+            A::Swap => Rmw::Xchg,
+            A::FetchAdd => Rmw::Add,
+            A::FetchSub => Rmw::Sub,
+            A::FetchAnd => Rmw::And,
+            A::FetchOr => Rmw::Or,
+            A::FetchXor => Rmw::Xor,
+        };
+        let old = self
+            .b
+            .ins()
+            .atomic_rmw(narrow, flags, rmw, data, operands[0]);
+        Ok(widen(self, old))
+    }
     /// `widen_k`, `narrow_k` and `wrapping_k` on a canonical `from` lane.
     /// In-range values have the same lane in every kind, so only the range
     /// check of a narrowing and the reduction of a wrapping emit code.
@@ -5571,6 +5775,10 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.b.ins().store(ir::MemFlags::new(), low, ptr, 0);
             self.b.ins().store(ir::MemFlags::new(), high, ptr, 8);
             return Ok(ptr);
+        }
+        if let Some(op) = crate::atomics::intercepted(self.world, name) {
+            // An atomic operation (`atomics`): one Cranelift atomic.
+            return self.atomic_call(op, args, site, into);
         }
         if let Some((op, _)) = crate::integer_widths::bit_builtin(name)
             && args.len() == op.arity()
