@@ -802,3 +802,224 @@ fn clone_loop(
         no: h,
     };
 }
+
+/// A sequence header read once before a loop (port gaps lane 7, #990).
+///
+/// Element accesses in a loop read the receiver's handle and its `{len,
+/// data}` words on every iteration, even when the loop cannot change them.
+/// [`header_hoists`] finds, for each loop, the receiver places that no
+/// instruction of the loop writes, rebinds, moves, resizes or lends other
+/// than `in`; the native backend reads such a receiver and its header words
+/// once at the end of `preheader` and gives the loop's `reads` of it those
+/// values. Unlike [`run`] this needs no counted loop and no guard: element
+/// accesses still check their bounds, against the hoisted length.
+#[derive(Clone, Debug)]
+pub struct HeaderHoist {
+    /// The block that enters the loop (it dominates every loop block).
+    pub preheader: usize,
+    /// The receiver place.
+    pub place: Place,
+    /// The receiver's sequence or slice type.
+    pub ty: Type,
+    /// The reads of `place` in the loop that only receivers of accesses use.
+    pub reads: BTreeSet<ValueId>,
+}
+
+/// The hoistable sequence headers of `f` ([`HeaderHoist`]); each read is
+/// hoisted out of the outermost loop that keeps it stable.
+pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
+    if !f.fip_join_slots.is_empty()
+        || !f.box_drops_before_inst.is_empty()
+        || !f.box_drops_after_inst.is_empty()
+        || !f.box_drops_before_term.is_empty()
+        || !f.fip_call_slots.is_empty()
+    {
+        return vec![];
+    }
+    // Predecessors among the blocks the entry reaches (a block after a
+    // `break` or `return` has none and enters nothing).
+    let mut reached = BTreeSet::from([0]);
+    let mut stack = vec![0];
+    while let Some(b) = stack.pop() {
+        for s in successors(&f.blocks[b].terminator) {
+            if s < f.blocks.len() && reached.insert(s) {
+                stack.push(s);
+            }
+        }
+    }
+    let mut preds = vec![vec![]; f.blocks.len()];
+    for &b in &reached {
+        for s in successors(&f.blocks[b].terminator) {
+            if let Some(p) = preds.get_mut(s) {
+                p.push(b);
+            }
+        }
+    }
+    // Uses of each value, by block.
+    let mut users: BTreeMap<ValueId, Vec<(usize, Option<&Instruction>)>> = BTreeMap::new();
+    for (b, block) in f.blocks.iter().enumerate() {
+        for i in &block.instructions {
+            for v in uses(&i.op) {
+                users.entry(v).or_default().push((b, Some(i)));
+            }
+        }
+        for v in terminator_uses(&block.terminator) {
+            users.entry(v).or_default().push((b, None));
+        }
+    }
+    let mut found: Vec<(usize, HeaderHoist)> = vec![];
+    for &h in &reached {
+        let blocks = natural_loop(f, h, &preds);
+        if !preds[h].iter().any(|p| blocks.contains(p)) {
+            continue;
+        }
+        let outside: Vec<usize> = preds[h]
+            .iter()
+            .copied()
+            .filter(|p| !blocks.contains(p))
+            .collect();
+        let [pre] = outside.as_slice() else {
+            continue;
+        };
+        if blocks
+            .iter()
+            .any(|&b| b != h && preds[b].iter().any(|p| !blocks.contains(p)))
+        {
+            continue;
+        }
+        let insts = || blocks.iter().flat_map(|&b| f.blocks[b].instructions.iter());
+        if insts().any(|i| match &i.op {
+            Op::Closure { .. } | Op::Handle { .. } | Op::Indirect { .. } => true,
+            // An effect operation runs a handler outside the loop's view.
+            Op::Call { callee, .. } => callee.contains("::"),
+            _ => false,
+        }) {
+            continue;
+        }
+        let mut places: BTreeMap<String, HeaderHoist> = BTreeMap::new();
+        for i in insts() {
+            let Op::Read {
+                root,
+                path,
+                pass: Pass::In,
+                ..
+            } = &i.op
+            else {
+                continue;
+            };
+            let ty = crate::numeric::default_type(&i.ty);
+            if !(crate::seq::is_seq_type(&ty) || crate::seq::is_slice_type(&ty))
+                || crate::strings::is_text(&ty)
+            {
+                continue;
+            }
+            let place = Place {
+                root: root.clone(),
+                path: path.clone(),
+            };
+            // Every use is the receiver of an access in the loop.
+            let only_receivers = users.get(&i.dest).is_some_and(|us| {
+                us.iter().all(|(b, user)| {
+                    blocks.contains(b)
+                        && user.is_some_and(|u| match &u.op {
+                            Op::Seq { op, args } => {
+                                op.has_receiver()
+                                    && (keeps_length(*op) || matches!(op, SeqOp::Hoisted(_)))
+                                    && args.first().is_some_and(|a| {
+                                        a.value == i.dest
+                                            && a.pass == Pass::In
+                                            && a.place.as_ref() == Some(&place)
+                                    })
+                                    && args[1..].iter().all(|a| a.value != i.dest)
+                            }
+                            _ => false,
+                        })
+                })
+            });
+            if !only_receivers || !stable_place(f, &blocks, &place) {
+                continue;
+            }
+            places
+                .entry(place.display())
+                .or_insert_with(|| HeaderHoist {
+                    preheader: *pre,
+                    place: place.clone(),
+                    ty: ty.clone(),
+                    reads: BTreeSet::new(),
+                })
+                .reads
+                .insert(i.dest);
+        }
+        found.extend(places.into_values().map(|hoist| (blocks.len(), hoist)));
+    }
+    // Outermost loop first; a read claimed by an enclosing loop is skipped.
+    found.sort_by_key(|f| std::cmp::Reverse(f.0));
+    let mut claimed = BTreeSet::new();
+    let mut out: Vec<HeaderHoist> = vec![];
+    for (_, mut hoist) in found {
+        hoist.reads.retain(|r| !claimed.contains(r));
+        if hoist.reads.is_empty() {
+            continue;
+        }
+        claimed.extend(hoist.reads.iter().copied());
+        match out
+            .iter_mut()
+            .find(|o| o.preheader == hoist.preheader && o.place == hoist.place)
+        {
+            Some(o) => o.reads.extend(hoist.reads),
+            None => out.push(hoist),
+        }
+    }
+    out
+}
+
+fn parse_place(place: &str) -> Place {
+    let mut parts = place.split('.');
+    Place {
+        root: parts.next().unwrap_or_default().into(),
+        path: parts.map(str::to_owned).collect(),
+    }
+}
+
+/// Whether nothing in `blocks` can change the handle or the `{len, data}`
+/// header of the sequence at `place`: no write, binding or move of a place
+/// that overlaps it, no operation that resizes it, and no loan of it other
+/// than `in`. Writing a disjoint field of the same root is allowed.
+fn stable_place(f: &FunctionIr, blocks: &BTreeSet<usize>, place: &Place) -> bool {
+    let lent =
+        |a: &Argument| a.pass != Pass::In && a.place.as_ref().is_some_and(|p| p.overlaps(place));
+    blocks.iter().all(|&b| {
+        f.blocks[b].instructions.iter().all(|i| match &i.op {
+            Op::Write { place: w, .. } => !parse_place(w).overlaps(place),
+            Op::Bind { pattern, .. } => !binds(pattern, &place.root),
+            Op::Read {
+                root, path, pass, ..
+            } => {
+                *pass != Pass::Sink
+                    || !Place {
+                        root: root.clone(),
+                        path: path.clone(),
+                    }
+                    .overlaps(place)
+            }
+            Op::Seq { op, args } => {
+                let receiver = op.has_receiver()
+                    && args
+                        .first()
+                        .is_some_and(|a| a.place.as_ref().is_some_and(|p| p.overlaps(place)));
+                let others = if op.has_receiver() && !args.is_empty() {
+                    &args[1..]
+                } else {
+                    &args[..]
+                };
+                (!receiver || keeps_length(*op) || matches!(op, SeqOp::Hoisted(_)))
+                    && !others.iter().any(lent)
+            }
+            Op::Call { args, .. } | Op::Tiled { args, .. } | Op::Fip { args, .. } => {
+                !args.iter().any(lent)
+            }
+            Op::Closure { .. } | Op::Handle { .. } | Op::Indirect { .. } => false,
+            _ => true,
+        })
+    })
+}
