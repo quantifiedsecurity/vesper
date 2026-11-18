@@ -45,3 +45,5 @@ vesper-port-harness = { path = "../vesper-port-harness", optional = true }
 # rustls already uses.
 bytes = "=1.12.1"
 quinn-proto = { version = "=0.11.13", default-features = false, features = ["rustls-aws-lc-rs"] }
+# The ABBA benchmark of the two builds (examples/abba.rs, #1066).
+vesper-bench = { path = "../vesper-bench" }

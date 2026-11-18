@@ -571,13 +571,86 @@ pub fn fr_check_ranges(in ranges: Slice[AckRange], ack_delay: u64) eff [Fail[Fra
     }
 }
 
-pub fn fr_type(f: FrameW) -> u64 {
+// A frame's kind is the variant index of `Frame` (and of `FrameW`):
+// Padding 0, Ping 1, Ack 2, Crypto 3, Stream 4, MaxData 5, MaxStreamData 6,
+// ResetStream 7, StopSending 8, MaxStreams 9, DataBlocked 10,
+// StreamDataBlocked 11, StreamsBlocked 12, ConnectionClose 13,
+// HandshakeDone 14, NewToken 15, NewConnectionId 16, RetireConnectionId 17,
+// PathChallenge 18, PathResponse 19. `bits` holds what else the wire type
+// encodes: ECN for an ACK (1); FIN (1), LEN (2) and OFF (4) for a STREAM;
+// `uni` (1) for MAX_STREAMS and STREAMS_BLOCKED; the transport variant (1)
+// for a CONNECTION_CLOSE.
+pub fn fr_kind_type(kind: u64, bits: u64) -> u64 {
+    if kind == 0 {
+        0
+    } else if kind == 1 {
+        1
+    } else if kind == 2 {
+        2 | bits & 1
+    } else if kind == 3 {
+        6
+    } else if kind == 4 {
+        t_stream() | bits & 7
+    } else if kind == 5 {
+        16
+    } else if kind == 6 {
+        17
+    } else if kind == 7 {
+        4
+    } else if kind == 8 {
+        5
+    } else if kind == 9 {
+        18 | bits & 1
+    } else if kind == 10 {
+        20
+    } else if kind == 11 {
+        21
+    } else if kind == 12 {
+        22 | bits & 1
+    } else if kind == 13 {
+        wrapping_sub(29, bits & 1)
+    } else if kind == 14 {
+        30
+    } else if kind == 15 {
+        7
+    } else if kind == 16 {
+        24
+    } else if kind == 17 {
+        25
+    } else if kind == 18 {
+        26
+    } else {
+        27
+    }
+}
+
+// RFC 9002 §2: everything but ACK, PADDING and CONNECTION_CLOSE.
+pub fn fr_kind_is_ack_eliciting(kind: u64) -> bool {
+    !(kind == 0 || kind == 2 || kind == 13)
+}
+
+// RFC 9000 §9.1 probing frames: PADDING, PATH_CHALLENGE, PATH_RESPONSE and
+// NEW_CONNECTION_ID.
+pub fn fr_kind_is_probing(kind: u64) -> bool {
+    kind == 0 || kind == 18 || kind == 19 || kind == 16
+}
+
+fn flag(b: bool, v: u64) -> u64 {
+    if b {
+        v
+    } else {
+        0
+    }
+}
+
+// The kind and type bits of a frame's words.
+fn kind_of(f: FrameW) -> (u64, u64) {
     match f {
         FrameW::Padding {
             len
         }
-        => 0,
-        FrameW::Ping => 1,
+        => (0, 0),
+        FrameW::Ping => (1, 0),
         FrameW::Ack {
             largest,
             ack_delay,
@@ -590,16 +663,12 @@ pub fn fr_type(f: FrameW) -> u64 {
             count,
             pairs
         }
-        => if has_ecn {
-            3
-        } else {
-            2
-        },
+        => (2, flag(has_ecn, 1)),
         FrameW::Crypto {
             offset,
             data
         }
-        => 6,
+        => (3, 0),
         FrameW::Stream {
             stream_id,
             offset,
@@ -607,114 +676,89 @@ pub fn fr_type(f: FrameW) -> u64 {
             fin,
             has_length
         }
-        => {
-            let mut t = t_stream();
-            if offset != 0 {
-                t = t | stream_off();
-            }
-            if has_length {
-                t = t | stream_len();
-            }
-            if fin {
-                t = t | stream_fin();
-            }
-            t
-        },
+        => (
+            4,
+            flag(fin, stream_fin()) | flag(has_length, stream_len()) | flag(
+                offset != 0,
+                stream_off()
+            )
+        ),
         FrameW::MaxData {
             max
         }
-        => 16,
+        => (5, 0),
         FrameW::MaxStreamData {
             stream_id,
             max
         }
-        => 17,
+        => (6, 0),
         FrameW::ResetStream {
             stream_id,
             error_code,
             final_size
         }
-        => 4,
+        => (7, 0),
         FrameW::StopSending {
             stream_id,
             error_code
         }
-        => 5,
+        => (8, 0),
         FrameW::MaxStreams {
             uni,
             max
         }
-        => if uni {
-            19
-        } else {
-            18
-        },
+        => (9, flag(uni, 1)),
         FrameW::DataBlocked {
             limit
         }
-        => 20,
+        => (10, 0),
         FrameW::StreamDataBlocked {
             stream_id,
             limit
         }
-        => 21,
+        => (11, 0),
         FrameW::StreamsBlocked {
             uni,
             limit
         }
-        => if uni {
-            23
-        } else {
-            22
-        },
+        => (12, flag(uni, 1)),
         FrameW::ConnectionClose {
             error_code,
             has_frame_type,
             frame_type,
             reason
         }
-        => if has_frame_type {
-            28
-        } else {
-            29
-        },
-        FrameW::HandshakeDone => 30,
+        => (13, flag(has_frame_type, 1)),
+        FrameW::HandshakeDone => (14, 0),
         FrameW::NewToken {
             token
         }
-        => 7,
+        => (15, 0),
         FrameW::NewConnectionId {
             seq,
             retire_prior_to,
             cid,
             reset_token
         }
-        => 24,
+        => (16, 0),
         FrameW::RetireConnectionId {
             seq
         }
-        => 25,
+        => (17, 0),
         FrameW::PathChallenge {
             data
         }
-        => 26,
+        => (18, 0),
         FrameW::PathResponse {
             data
         }
-        => 27,
+        => (19, 0),
     }
 }
 
-// RFC 9002 §2: everything but ACK, PADDING and CONNECTION_CLOSE.
-pub fn fr_is_ack_eliciting(f: FrameW) -> bool {
-    let t = fr_type(f);
-    !(t == 0 || t == 2 || t == 3 || t == 28 || t == 29)
-}
-
-// RFC 9000 §9.1 probing frames.
-pub fn fr_is_probing(f: FrameW) -> bool {
-    let t = fr_type(f);
-    t == 0 || t == 26 || t == 27 || t == 24
+pub fn fr_type(f: FrameW) -> u64 {
+    let (kind, bits) = kind_of(f);
+    fr_kind_type(kind, bits)
 }
 
 fn enc() eff [Fail[FrameErr]] {

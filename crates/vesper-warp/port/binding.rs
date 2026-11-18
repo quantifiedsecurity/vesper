@@ -1133,11 +1133,11 @@ unsafe extern "C" {
     fn vesper_warp_frame_encode(out: *mut u64, f: *mut u64, a: *mut u64, b: *mut u64, ranges: *mut u64, fail: *mut u64) -> i64;
     fn vesper_warp_frame_encode_crypto_header(out: *mut u64, offset: i64, len: i64, fail: *mut u64) -> i64;
     fn vesper_warp_frame_encode_stream_header(out: *mut u64, stream_id: i64, offset: i64, len: i64, fin: i64, fail: *mut u64) -> i64;
-    fn vesper_warp_frame_is_ack_eliciting(f: *mut u64) -> i64;
-    fn vesper_warp_frame_is_probing(f: *mut u64) -> i64;
+    fn vesper_warp_frame_is_ack_eliciting(kind: i64) -> i64;
+    fn vesper_warp_frame_is_probing(kind: i64) -> i64;
     fn vesper_warp_frame_parse_at(result: *mut u64, buf: *mut u64, at: i64, packet_type: *mut u64, fail: *mut u64) -> i64;
     fn vesper_warp_frame_stream_header_len(stream_id: i64, offset: i64, len: i64) -> i64;
-    fn vesper_warp_frame_type(f: *mut u64) -> i64;
+    fn vesper_warp_frame_type(kind: i64, bits: i64) -> i64;
     fn vesper_warp_frame_wire_next(result: *mut u64, pairs: *mut u64, at: i64, prev_smallest: i64) -> i64;
     fn vesper_warp_header_check_reserved_bits(first_byte: i64, short: i64, fail: *mut u64) -> i64;
     fn vesper_warp_header_first_byte_mask(long: i64) -> i64;
@@ -1257,24 +1257,20 @@ pub fn frame_encode_stream_header(out: &mut [u8], stream_id: u64, offset: u64, l
 }
 
 /// Calls `frame_is_ack_eliciting` of the Vesper library `warp` (`vesper_warp_frame_is_ack_eliciting`).
-pub fn frame_is_ack_eliciting(f: FrameW) -> bool {
-    let mut arg_f = [0u64; <FrameW as Abi>::WORDS];
-    Abi::put(&f, &mut arg_f);
+pub fn frame_is_ack_eliciting(kind: u64) -> bool {
     // SAFETY: `vesper_warp_frame_is_ack_eliciting` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
-    let raw = unsafe { vesper_warp_frame_is_ack_eliciting(arg_f.as_mut_ptr()) };
+    let raw = unsafe { vesper_warp_frame_is_ack_eliciting(kind as i64) };
     raw != 0
 }
 
 /// Calls `frame_is_probing` of the Vesper library `warp` (`vesper_warp_frame_is_probing`).
-pub fn frame_is_probing(f: FrameW) -> bool {
-    let mut arg_f = [0u64; <FrameW as Abi>::WORDS];
-    Abi::put(&f, &mut arg_f);
+pub fn frame_is_probing(kind: u64) -> bool {
     // SAFETY: `vesper_warp_frame_is_probing` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
-    let raw = unsafe { vesper_warp_frame_is_probing(arg_f.as_mut_ptr()) };
+    let raw = unsafe { vesper_warp_frame_is_probing(kind as i64) };
     raw != 0
 }
 
@@ -1305,13 +1301,11 @@ pub fn frame_stream_header_len(stream_id: u64, offset: u64, len: u64) -> u64 {
 }
 
 /// Calls `frame_type` of the Vesper library `warp` (`vesper_warp_frame_type`).
-pub fn frame_type(f: FrameW) -> u64 {
-    let mut arg_f = [0u64; <FrameW as Abi>::WORDS];
-    Abi::put(&f, &mut arg_f);
+pub fn frame_type(kind: u64, bits: u64) -> u64 {
     // SAFETY: `vesper_warp_frame_type` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
-    let raw = unsafe { vesper_warp_frame_type(arg_f.as_mut_ptr()) };
+    let raw = unsafe { vesper_warp_frame_type(kind as i64, bits as i64) };
     raw as u64
 }
 

@@ -348,20 +348,51 @@ fn advanced(buf: &[u8], pos: usize) -> Reader<'_> {
     r
 }
 
+/// The frame's kind (its variant index) and the bits its wire type adds
+/// (see `fr_kind_type` in vesper/src/frame.ves).
+fn kind(f: &Frame<'_>) -> (u64, u64) {
+    match f {
+        Frame::Padding { .. } => (0, 0),
+        Frame::Ping => (1, 0),
+        Frame::Ack(a) => (2, u64::from(a.ecn.is_some())),
+        Frame::Crypto { .. } => (3, 0),
+        Frame::Stream(s) => (
+            4,
+            u64::from(s.fin) | u64::from(s.has_length) << 1 | u64::from(s.offset != 0) << 2,
+        ),
+        Frame::MaxData(_) => (5, 0),
+        Frame::MaxStreamData { .. } => (6, 0),
+        Frame::ResetStream { .. } => (7, 0),
+        Frame::StopSending { .. } => (8, 0),
+        Frame::MaxStreams { uni, .. } => (9, u64::from(*uni)),
+        Frame::DataBlocked(_) => (10, 0),
+        Frame::StreamDataBlocked { .. } => (11, 0),
+        Frame::StreamsBlocked { uni, .. } => (12, u64::from(*uni)),
+        Frame::ConnectionClose(c) => (13, u64::from(c.frame_type.is_some())),
+        Frame::HandshakeDone => (14, 0),
+        Frame::NewToken { .. } => (15, 0),
+        Frame::NewConnectionId { .. } => (16, 0),
+        Frame::RetireConnectionId { .. } => (17, 0),
+        Frame::PathChallenge(_) => (18, 0),
+        Frame::PathResponse(_) => (19, 0),
+    }
+}
+
 impl Frame<'_> {
     /// RFC 9002 §2: everything but ACK, PADDING and CONNECTION_CLOSE.
     pub fn is_ack_eliciting(&self) -> bool {
-        b::frame_is_ack_eliciting(words(self).0)
+        b::frame_is_ack_eliciting(kind(self).0)
     }
     /// The frame's wire type (the first type of a PADDING run).
     pub fn frame_type(&self) -> u64 {
-        b::frame_type(words(self).0)
+        let (kind, bits) = kind(self);
+        b::frame_type(kind, bits)
     }
 
     /// RFC 9000 §9.1 probing frames: a packet with nothing else is a
     /// probing packet and does not move the connection to its path.
     pub fn is_probing(&self) -> bool {
-        b::frame_is_probing(words(self).0)
+        b::frame_is_probing(kind(self).0)
     }
 
     /// Encodes the frame, returning the bytes written.
