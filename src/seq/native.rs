@@ -620,7 +620,11 @@ impl<M: Module> Codegen<'_, '_, M> {
             | SeqOp::Wide(_)
             | SeqOp::SumBe16
             | SeqOp::BytesEq
-            | SeqOp::FindByte => {
+            | SeqOp::FindByte
+            | SeqOp::FindEither
+            | SeqOp::FindNotIn
+            | SeqOp::EqIgnoreAsciiCase
+            | SeqOp::ExtendAsciiLowercase => {
                 unreachable!("string, hoisted and byte operations return above")
             }
             SeqOp::SubSlice => {
