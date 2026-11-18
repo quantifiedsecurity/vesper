@@ -1,0 +1,198 @@
+// Module common of @vesper/grammar (see lib.ves): the failure record and
+// the checked helpers every module shares.
+use self::{
+    GErr,
+    P2
+};
+
+// The largest u64, also the "absent" marker in result streams.
+pub fn none() -> u64 {
+    18446744073709551615
+}
+
+// Raise `kind` (the index of the variant in the Rust module's ErrorKind)
+// at `offset`.
+pub fn fail(kind: u64, offset: u64) -> Never eff [Fail[GErr]] {
+    Fail::raise(
+        GErr {
+            kind: kind,
+            offset: offset,
+            a: 0,
+            b: 0
+        }
+    )
+}
+
+// Raise with two payload words (DER UnsupportedTag, IPC Column).
+pub fn fail2(kind: u64, offset: u64, a: u64, b: u64) -> Never eff [Fail[GErr]] {
+    Fail::raise(
+        GErr {
+            kind: kind,
+            offset: offset,
+            a: a,
+            b: b
+        }
+    )
+}
+
+pub fn pair(a: u64, b: u64) -> P2 {
+    P2 {
+        a: a,
+        b: b
+    }
+}
+
+// `a + b`, raising `kind` at `offset` when it overflows.
+pub fn add_or(a: u64, b: u64, kind: u64, offset: u64) -> u64 eff [Fail[GErr]] {
+    if a > wrapping_sub(none(), b) {
+        fail(kind, offset);
+    }
+    wrapping_add(a, b)
+}
+
+// `a * b`, raising `kind` at `offset` when it overflows.
+pub fn mul_or(a: u64, b: u64, kind: u64, offset: u64) -> u64 eff [Fail[GErr]] {
+    let (lo, hi) = mul_wide(a, b);
+    if hi != 0 {
+        fail(kind, offset);
+    }
+    lo
+}
+
+// `n > max` raises `kind` at offset zero.
+pub fn bound(n: u64, max: u64, kind: u64) -> Unit eff [Fail[GErr]] {
+    if n > max {
+        fail(kind, 0);
+    }
+}
+
+// `remaining -= units`, raising `kind` (at offset zero) when it would go
+// below zero; the remainder is unchanged then.
+pub fn charge_or(inout remaining: u64, units: u64, kind: u64) -> Unit eff [Fail[GErr]] {
+    if units > remaining {
+        fail(kind, 0);
+    }
+    remaining = wrapping_sub(remaining, units);
+}
+
+pub fn min(a: u64, b: u64) -> u64 {
+    if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+pub fn max(a: u64, b: u64) -> u64 {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+// The byte at `i`, or 0 past the end (callers check bounds first).
+pub fn sb(in s: Slice[u8], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(x) => widen_u64(x),
+        Option::None => 0,
+    }
+}
+
+// The word at `i`, or 0 past the end.
+pub fn sw(in s: Slice[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(x) => x,
+        Option::None => 0,
+    }
+}
+
+// `x << s`, 0 when `s >= 64` (bits shifted out are lost).
+pub fn shl(x: u64, s: u64) -> u64 {
+    if s >= 64 {
+        return 0;
+    }
+    handle Fail[ArithOverflow] in {
+        x << s
+    } with {
+        return v => v,
+        raise(e, k) => 0
+    }
+}
+
+// `x >> s`, 0 when `s >= 64`.
+pub fn shr(x: u64, s: u64) -> u64 {
+    if s >= 64 {
+        return 0;
+    }
+    handle Fail[ArithOverflow] in {
+        x >> s
+    } with {
+        return v => v,
+        raise(e, k) => 0
+    }
+}
+
+// Bytes `[at, at + 4)` of `s` as a little-endian u32, widened (in bounds).
+pub fn le32(in s: Slice[u8], at: u64) -> u64 {
+    match s.try_read_u32_le(at) {
+        Option::Some(v) => widen_u64(v),
+        Option::None => 0,
+    }
+}
+
+pub fn le16(in s: Slice[u8], at: u64) -> u64 {
+    match s.try_read_u16_le(at) {
+        Option::Some(v) => widen_u64(v),
+        Option::None => 0,
+    }
+}
+
+pub fn le64(in s: Slice[u8], at: u64) -> u64 {
+    match s.try_read_u64_le(at) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+// The number of set bits of a byte.
+pub fn ones8(b: u64) -> u64 {
+    let mut n: u64 = 0;
+    let mut x = b;
+    loop {
+        if x == 0 {
+            break;
+        }
+        n = wrapping_add(n, x & 1);
+        x = x >> 1;
+    }
+    n
+}
+
+// The length of the canonical unsigned LEB128 encoding of `value`.
+pub fn leb_len(value: u64) -> u64 {
+    let mut v = value;
+    let mut count: u64 = 1;
+    loop {
+        if v < 128 {
+            break;
+        }
+        v = v >> 7;
+        count = wrapping_add(count, 1);
+    }
+    count
+}
+
+// Write the `len`-byte LEB128 form of `value` at `at` (in bounds).
+pub fn put_leb(inout out: Slice[u8], at: u64, value: u64, len: u64) {
+    let mut v = value;
+    for i in 0..len {
+        let more: u64 = if v >= 128 {
+            128
+        } else {
+            0
+        };
+        out.try_set(wrapping_add(at, i), wrapping_u8((v & 127) | more));
+        v = v >> 7;
+    }
+}

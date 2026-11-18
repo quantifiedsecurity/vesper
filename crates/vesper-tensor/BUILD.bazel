@@ -1,8 +1,64 @@
 load("//tools/bazel:defs.bzl", "vesper_crate")
+load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_package", "vesper_port_object")
+
+# The port-backed package (seed-copy rule, docs/maintenance/porting-a-crate.md;
+# port wave P1 lane 8, #905): build.rs links the object built here from the
+# Loom package in vesper/ and checks port/binding.rs against the generated
+# binding. The compiler and every other dependent link the Rust seed copy,
+# //crates/vesper-tensor/seed, instead.
+vesper_package(
+    name = "port_package",
+    srcs = glob(["vesper/src/**/*.ves"]),
+    manifest = "vesper/Loom.toml",
+)
+
+vesper_port_object(
+    name = "tensor_vesper",
+    library = "tensor",
+    package = ":port_package",
+    target = VESPER_TARGET,
+)
+
+filegroup(
+    name = "tensor_vesper_binding",
+    srcs = [":tensor_vesper"],
+    output_group = "rust_binding",
+)
 
 vesper_crate(
+    build_script_data = [
+        ":tensor_vesper",
+        ":tensor_vesper_binding",
+    ],
+    build_script_env = {
+        # rules_rust already makes these execpaths absolute.
+        "VESPER_PORT_OBJECT": "$(execpath :tensor_vesper)",
+        "VESPER_PORT_GENERATED_BINDING": "$(execpath :tensor_vesper_binding)",
+    },
     # tests/lean_kv.rs reads lean/TensorKv.lean; Lean rejects symlinked
     # runfiles outside --root, so it runs in a regular copy.
     copy_test_cwd = ["test/lean_kv"],
     extra_test_data = ["//:lean"],
+)
+
+# The seed package (seed/) builds these same Rust sources without the port.
+exports_files(glob([
+    "src/**/*.rs",
+    "tests/**/*.rs",
+]))
+
+filegroup(
+    name = "rust_srcs",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/vesper-tensor/seed:__pkg__"],
+)
+
+# What the tests embed with include_bytes!.
+filegroup(
+    name = "test_inputs",
+    srcs = glob([
+        "fixtures/**",
+        "models/**",
+    ]),
+    visibility = ["//crates/vesper-tensor/seed:__pkg__"],
 )

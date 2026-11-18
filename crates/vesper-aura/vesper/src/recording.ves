@@ -15,6 +15,7 @@ use self::{
 use self::util::{
     add,
     dec,
+    fits,
     inc,
     limits_from,
     seq_bool
@@ -235,6 +236,76 @@ pub fn child_edge(in s: RState, parent: u64, index: u64) -> u64 {
     none_id()
 }
 
+// One pass over the edges for `parent`: its child count, and the position
+// in `edges` of its `index`-th child (none when `index` is not below the
+// count).
+pub fn child_scan(in s: RState, parent: u64, index: u64) -> (u64, u64) {
+    let mut n: u64 = 0;
+    let mut at = none_id();
+    for i in 0..s.edges.len() {
+        if redge(in s.edges, i).parent == parent {
+            if n == index {
+                at = i;
+            }
+            n = inc(n);
+        }
+    }
+    (n, at)
+}
+
+// Where the edge at `at` (a child of `parent`) lands when it is removed
+// and inserted again as the `to`-th child: the position of the `to`-th of
+// the other children in the array without it, or its end.
+pub fn move_target(in s: RState, parent: u64, at: u64, to: u64) -> u64 {
+    let mut n: u64 = 0;
+    let ne = s.edges.len();
+    let mut i: u64 = 0;
+    loop {
+        if i >= ne {
+            break dec(ne);
+        }
+        if i != at && redge(in s.edges, i).parent == parent {
+            if n == to {
+                // Past `at`, everything shifts down by one.
+                let dest = if i < at {
+                    i
+                } else {
+                    dec(i)
+                };
+                break dest;
+            }
+            n = inc(n);
+        }
+        i = inc(i);
+    }
+}
+
+// remove_edge(at) then insert_edge(dest) as one shift of the edges between.
+pub fn move_edge(inout s: RState, at: u64, dest: u64) {
+    let e = redge(in s.edges, at);
+    let mut j = at;
+    if dest > at {
+        loop {
+            if j >= dest {
+                break;
+            }
+            let moved = redge(in s.edges, inc(j));
+            s.edges.try_set(j, moved);
+            j = inc(j);
+        }
+    } else {
+        loop {
+            if j <= dest {
+                break;
+            }
+            let moved = redge(in s.edges, dec(j));
+            s.edges.try_set(j, moved);
+            j = dec(j);
+        }
+    }
+    s.edges.try_set(dest, e);
+}
+
 pub fn remove_edge(inout s: RState, at: u64) {
     let n = s.edges.len();
     if at < n {
@@ -305,24 +376,35 @@ pub fn copy_state(in src: RState, inout dst: RState) {
     dst.blive.clear();
     dst.text.clear();
     dst.events.clear();
-    for i in 0..src.widgets.len() {
+    // Live entries are copied a run at a time.
+    let nw = src.widgets.len();
+    let mut i: u64 = 0;
+    loop {
+        if i >= nw {
+            break;
+        }
         if seq_bool(in src.wlive, i) {
-            dst.widgets.push(rwidget(in src.widgets, i));
-            dst.wlive.push(true);
+            let mut j = inc(i);
+            loop {
+                if j >= nw || !seq_bool(in src.wlive, j) {
+                    break;
+                }
+                j = inc(j);
+            }
+            dst.widgets.extend(in src.widgets[i..j]);
+            dst.wlive.extend(in src.wlive[i..j]);
+            i = j;
+        } else {
+            i = inc(i);
         }
     }
-    for i in 0..src.edges.len() {
-        dst.edges.push(redge(in src.edges, i));
-    }
+    dst.edges.extend(in src.edges.as_slice());
     for i in 0..src.slots.len() {
         if seq_bool(in src.slive, i) {
             let v = rslot(in src.slots, i);
             let tstart = dst.text.len();
-            for k in 0..v.tlen {
-                match src.text.try_get(add(v.tstart, k)) {
-                    Option::Some(b) => dst.text.push(b),
-                    Option::None => (),
-                }
+            if fits(v.tstart, v.tlen, src.text.len()) {
+                dst.text.extend(in src.text[v.tstart..add(v.tstart, v.tlen)]);
             }
             dst
                 .slots
@@ -340,21 +422,31 @@ pub fn copy_state(in src: RState, inout dst: RState) {
             dst.slive.push(true);
         }
     }
-    for i in 0..src.subs.len() {
+    let nb = src.subs.len();
+    let mut i: u64 = 0;
+    loop {
+        if i >= nb {
+            break;
+        }
         if seq_bool(in src.blive, i) {
-            dst.subs.push(rsub(in src.subs, i));
-            dst.blive.push(true);
+            let mut j = inc(i);
+            loop {
+                if j >= nb || !seq_bool(in src.blive, j) {
+                    break;
+                }
+                j = inc(j);
+            }
+            dst.subs.extend(in src.subs[i..j]);
+            dst.blive.extend(in src.blive[i..j]);
+            i = j;
+        } else {
+            i = inc(i);
         }
     }
     dst.nwidgets = src.nwidgets;
     dst.nslots = src.nslots;
     dst.nsubs = src.nsubs;
-    for i in 0..src.events.len() {
-        match src.events.try_get(i) {
-            Option::Some(o) => dst.events.push(o),
-            Option::None => (),
-        }
-    }
+    dst.events.extend(in src.events.as_slice());
 }
 
 pub fn copy_recorder(in src: Recorder, inout dst: Recorder) {
@@ -370,10 +462,7 @@ pub fn do_recorder_new(in limits: Slice[u64]) -> Recorder {
         st: rstate_new(),
         stage: rstate_new(),
         has_reject: false,
-        reject: 0,
-        seen: ChunkSeq::new[bool](),
-        stack: ChunkSeq::new[u64](),
-        depths: ChunkSeq::new[u64]()
+        reject: 0
     }
 }
 
@@ -384,10 +473,7 @@ pub fn do_recorder_clone(in rec: Recorder) -> Recorder {
         st: rstate_new(),
         stage: rstate_new(),
         has_reject: false,
-        reject: 0,
-        seen: ChunkSeq::new[bool](),
-        stack: ChunkSeq::new[u64](),
-        depths: ChunkSeq::new[u64]()
+        reject: 0
     };
     copy_recorder(in rec, inout out);
     out

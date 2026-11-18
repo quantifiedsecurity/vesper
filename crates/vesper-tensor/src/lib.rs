@@ -18,8 +18,16 @@
 //! [`attention::AttentionMode::Online`]).
 //!
 //! `unsafe` is denied crate-wide and allowed only in [`simd`] (`std::arch`
-//! intrinsics, each with a scalar reference) and [`mmap`] (the one
-//! `memmap2::Mmap::map` call).
+//! intrinsics, each with a scalar reference), [`mmap`] (the one
+//! `memmap2::Mmap::map` call) and, in the port-backed build, the generated
+//! binding and its `Libm` shim (`src/port.rs`).
+//!
+//! Two packages build this source (the seed-copy rule of
+//! `docs/maintenance/porting-a-crate.md`, port wave P1 lane 8, #905):
+//! `vesper-tensor-seed` is the Rust build that the compiler and every other
+//! dependent link, and `vesper-tensor` forwards the element and block
+//! formats, the quantizers, sampling and the FP32 kernels to the Vesper port
+//! in `vesper/` ([`IMPLEMENTATION`]).
 #![deny(unsafe_code)]
 
 pub mod attention;
@@ -37,6 +45,13 @@ pub mod sampling;
 pub mod shape;
 pub mod simd;
 pub mod tokenizer;
+
+#[cfg(vesper_port)]
+mod port;
+
+/// Which build this is: `"vesper"` for the port-backed package
+/// `vesper-tensor`, `"rust"` for the seed copy `vesper-tensor-seed`.
+pub const IMPLEMENTATION: &str = if cfg!(vesper_port) { "vesper" } else { "rust" };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {

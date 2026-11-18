@@ -4,7 +4,10 @@
 //! columns are published. Padding is opaque (Arrow IPC is not canonical).
 //! Mandatory relative eight-byte IPC alignment is independent of optional
 //! relative/host-address 64-byte suitability. No unsafe casts or SIMD occur.
-use crate::arrow::{self, AlignmentProfile, BufferDesc, FieldNode, I64Column};
+#[cfg(not(vesper_port))]
+use crate::arrow::{self, BufferDesc, FieldNode};
+use crate::arrow::{AlignmentProfile, I64Column};
+#[cfg(not(vesper_port))]
 use core::mem::size_of;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,12 +60,15 @@ pub type Result<T> = core::result::Result<T, Error>;
 fn err(kind: ErrorKind, offset: usize) -> Error {
     Error { kind, offset }
 }
+#[cfg(not(vesper_port))]
 fn add(a: usize, b: usize) -> Result<usize> {
     a.checked_add(b).ok_or(err(ErrorKind::Overflow, a))
 }
+#[cfg(not(vesper_port))]
 fn mul(a: usize, b: usize) -> Result<usize> {
     a.checked_mul(b).ok_or(err(ErrorKind::Overflow, a))
 }
+#[cfg(not(vesper_port))]
 fn nonnegative(n: i64, at: usize) -> Result<usize> {
     usize::try_from(n).map_err(|_| err(ErrorKind::Descriptor, at))
 }
@@ -127,12 +133,14 @@ impl Limits {
         Ok(())
     }
 }
+#[cfg(not(vesper_port))]
 struct Budget {
     limits: Limits,
     remaining: usize,
     allocation: usize,
     metadata: usize,
 }
+#[cfg(not(vesper_port))]
 impl Budget {
     fn work(&mut self, n: usize) -> Result<()> {
         self.remaining = self
@@ -244,6 +252,7 @@ impl<'a> Parsed<'a> {
     }
 }
 
+#[cfg(not(vesper_port))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Message,
@@ -252,6 +261,7 @@ enum Kind {
     Int,
     RecordBatch,
 }
+#[cfg(not(vesper_port))]
 impl Kind {
     fn width(self, index: usize) -> Option<usize> {
         let widths: &[usize] = match self {
@@ -264,6 +274,7 @@ impl Kind {
         widths.get(index).copied()
     }
 }
+#[cfg(not(vesper_port))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
     Root,
@@ -272,24 +283,28 @@ enum Role {
     Vector(usize),
     String,
 }
+#[cfg(not(vesper_port))]
 #[derive(Clone, Copy)]
 struct Region {
     start: usize,
     end: usize,
     role: Role,
 }
+#[cfg(not(vesper_port))]
 #[derive(Clone, Copy)]
 struct Table {
     pos: usize,
     vtable: usize,
     slots: usize,
 }
+#[cfg(not(vesper_port))]
 struct Fb<'a, 'b> {
     bytes: &'a [u8],
     base: usize,
     budget: &'b mut Budget,
     regions: Vec<Region>,
 }
+#[cfg(not(vesper_port))]
 impl<'a, 'b> Fb<'a, 'b> {
     fn new(bytes: &'a [u8], base: usize, budget: &'b mut Budget) -> Result<Self> {
         let cap = budget.limits.max_metadata_objects.min(bytes.len() / 4 + 1);
@@ -509,6 +524,7 @@ impl<'a, 'b> Fb<'a, 'b> {
     }
 }
 
+#[cfg(not(vesper_port))]
 fn schema<'a>(fb: &mut Fb<'a, '_>, message: Table, version: u16) -> Result<Schema<'a>> {
     let table = fb.header(message, Kind::Schema)?;
     if fb.scalar16(table, 0, 0)? != 0 {
@@ -565,6 +581,7 @@ fn schema<'a>(fb: &mut Fb<'a, '_>, message: Table, version: u16) -> Result<Schem
     }
     Ok(Schema { fields, version })
 }
+#[cfg(not(vesper_port))]
 fn batch<'a>(
     fb: &mut Fb<'a, '_>,
     message: Table,
@@ -700,6 +717,7 @@ pub fn parse_exact_with_alignment(
     }
     Ok(parsed.stream)
 }
+#[cfg(not(vesper_port))]
 pub fn parse_prefix_with_alignment(
     input: &[u8],
     limits: Limits,
@@ -822,6 +840,17 @@ pub fn parse_prefix_with_alignment(
         pos = end;
     }
 }
+#[cfg(vesper_port)]
+pub fn parse_prefix_with_alignment(
+    input: &[u8],
+    limits: Limits,
+    profile: AlignmentProfile,
+) -> Result<Parsed<'_>> {
+    let words = crate::port::vesper::ipc_parse_prefix(input, &port::limits(limits, input, profile))
+        .map_err(port::error)?;
+    Ok(port::parsed(&words, input))
+}
+#[cfg(not(vesper_port))]
 fn read_u32(input: &[u8], at: usize, budget: &mut Budget) -> Result<u32> {
     let end = add(at, 4)?;
     let bytes = input
@@ -829,4 +858,148 @@ fn read_u32(input: &[u8], at: usize, budget: &mut Budget) -> Result<u32> {
         .ok_or(err(ErrorKind::UnexpectedEof, at))?;
     budget.work(4)?;
     Ok(u32::from_le_bytes(bytes.try_into().expect("four bytes")))
+}
+
+/// The port-backed build's IPC glue: limits, failures and the result
+/// stream of `vesper/src/ipc.ves`.
+#[cfg(vesper_port)]
+mod port {
+    use super::{
+        AlignmentProfile, Batch, Error, ErrorKind, Field, I64Column, Limits, Parsed, Schema, Stream,
+    };
+    use crate::port_binding::{ArCol, GErr};
+    use core::mem::size_of;
+
+    const KINDS: [ErrorKind; 31] = [
+        ErrorKind::Configuration,
+        ErrorKind::InputLimit,
+        ErrorKind::MetadataLimit,
+        ErrorKind::CountLimit,
+        ErrorKind::NameLimit,
+        ErrorKind::DepthLimit,
+        ErrorKind::WorkLimit,
+        ErrorKind::AllocationLimit,
+        ErrorKind::AllocationFailed,
+        ErrorKind::Overflow,
+        ErrorKind::UnexpectedEof,
+        ErrorKind::Framing,
+        ErrorKind::Flatbuffer,
+        ErrorKind::Alignment,
+        ErrorKind::Aliasing,
+        ErrorKind::Utf8,
+        ErrorKind::Schema,
+        ErrorKind::MissingSchema,
+        ErrorKind::UnsupportedVersion,
+        ErrorKind::UnsupportedHeader,
+        ErrorKind::UnsupportedType,
+        ErrorKind::UnsupportedEndian,
+        ErrorKind::UnsupportedDictionary,
+        ErrorKind::UnsupportedCompression,
+        ErrorKind::UnsupportedMetadata,
+        ErrorKind::UnsupportedFeature,
+        ErrorKind::UnsupportedNested,
+        ErrorKind::UnsupportedVariadic,
+        ErrorKind::Descriptor,
+        ErrorKind::NonNullable,
+        ErrorKind::TrailingBytes,
+    ];
+
+    pub(super) fn error(e: GErr) -> Error {
+        let kind = match KINDS.get(e.kind as usize) {
+            Some(kind) => *kind,
+            None => ErrorKind::Column(crate::port::kind(e.a)),
+        };
+        Error {
+            kind,
+            offset: e.offset as usize,
+        }
+    }
+
+    /// The vectors the Rust parser reserves: Region (start, end, role).
+    #[allow(dead_code)]
+    struct Region {
+        start: usize,
+        end: usize,
+        role: (u8, usize),
+    }
+
+    pub(super) fn limits(l: Limits, input: &[u8], profile: AlignmentProfile) -> [u64; 19] {
+        [
+            l.max_input_bytes as u64,
+            l.max_metadata_bytes as u64,
+            l.max_total_metadata_bytes as u64,
+            l.max_fields as u64,
+            l.max_batches as u64,
+            l.max_rows_per_batch as u64,
+            l.max_total_rows as u64,
+            l.max_name_bytes as u64,
+            l.max_metadata_objects as u64,
+            l.max_depth as u64,
+            l.max_work as u64,
+            l.max_allocation_bytes as u64,
+            size_of::<Region>() as u64,
+            size_of::<Field<'_>>() as u64,
+            size_of::<I64Column<'_>>() as u64,
+            size_of::<core::ops::Range<usize>>() as u64,
+            size_of::<Batch<'_>>() as u64,
+            input.as_ptr() as usize as u64,
+            profile as u64,
+        ]
+    }
+
+    pub(super) fn parsed<'a>(w: &[u64], input: &'a [u8]) -> Parsed<'a> {
+        let version = w[0] as u16;
+        let nf = w[1] as usize;
+        let mut at = 2;
+        let mut fields = Vec::with_capacity(nf);
+        for _ in 0..nf {
+            let (start, len) = (w[at] as usize, w[at + 1] as usize);
+            fields.push(Field {
+                name: core::str::from_utf8(&input[start..start + len]).expect("validated name"),
+                nullable: w[at + 2] != 0,
+            });
+            at += 3;
+        }
+        let count = w[at] as usize;
+        at += 1;
+        let mut batches = Vec::with_capacity(count);
+        for _ in 0..count {
+            let rows = w[at] as usize;
+            let (start, len) = (w[at + 1] as usize, w[at + 2] as usize);
+            let body = &input[start..start + len];
+            let batch_version = w[at + 3] as u16;
+            at += 4;
+            let mut columns = Vec::with_capacity(nf);
+            for _ in 0..nf {
+                let c = ArCol {
+                    values_start: w[at],
+                    values_end: w[at + 1],
+                    has_validity: w[at + 2] != 0,
+                    validity_start: w[at + 3],
+                    validity_end: w[at + 4],
+                    rows: w[at + 5],
+                    nulls: w[at + 6],
+                };
+                columns.push(I64Column::from_parts(body, c));
+                at += 7;
+            }
+            batches.push(Batch {
+                rows,
+                columns,
+                body,
+                version: batch_version,
+            });
+        }
+        let consumed = w[at + 2] as usize;
+        Parsed {
+            stream: Stream {
+                schema: Schema { fields, version },
+                batches,
+                work_used: w[at] as usize,
+                metadata_allocation_bytes: w[at + 1] as usize,
+            },
+            consumed,
+            tail: &input[consumed..],
+        }
+    }
 }

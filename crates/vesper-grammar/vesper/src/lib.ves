@@ -1,0 +1,370 @@
+// @vesper/grammar: Vesper port of vesper-grammar (port wave P1 lane 9,
+// #906): canonical framing, primitive Arrow validation, Cap'n Proto framing
+// and packing, the executable byte grammar and its logical-value codec, the
+// Protobuf and DER profiles, and Arrow IPC stream reading.
+//
+// Every exported function is named `<module>_<rust fn>` and raises one
+// failure type, `GErr`, whose `kind` is the index of the variant in the
+// Rust module's own ErrorKind (the Rust wrapper maps it back). Limits are
+// passed as a word slice holding the fields of the Rust `Limits` in
+// declaration order. Results that are trees are flat word streams; the
+// encodings are documented beside each export and in src/port.rs.
+use self::framing::{
+    decode_prefix,
+    encode_frame_into,
+    encode_u24_frame_into,
+    encode_u64_into,
+    frame_encoded_len,
+    frame_parts,
+    parse_u64,
+    u24_frame_parts
+};
+
+use self::arrow::{
+    checked_buffer_range,
+    checked_sum,
+    get,
+    validate,
+    wire_pair
+};
+
+use self::capnp::{
+    list_pointer,
+    pack_into,
+    packed_len,
+    parse_prefix,
+    struct_pointer,
+    unpack_into,
+    unpacked_len
+};
+
+use self::grammar::{
+    parse_prefix as grammar_parse_prefix,
+    validate as grammar_validate
+};
+use self::codec::{
+    decode_exact,
+    validate_limits,
+    encode_into,
+    encoded_len
+};
+
+use self::der::{
+    as_i64 as der_as_i64_impl,
+    encode_into as der_encode,
+    encoding_plan as der_plan,
+    parse_prefix as der_parse,
+    reencode_into as der_reencode
+};
+
+use self::ipc::{
+    parse_prefix as ipc_parse
+};
+
+use self::protobuf::{
+    encode_into as pb_encode,
+    encoded_len as pb_encoded,
+    parse_exact as pb_parse,
+    validate as pb_validate
+};
+
+// A failure: the ErrorKind index, the byte (or rule) offset, and two
+// payload words for the variants that carry data.
+pub copy struct GErr {
+    kind: u64,
+    offset: u64,
+    a: u64,
+    b: u64
+}
+
+// Two words.
+pub copy struct P2 {
+    a: u64,
+    b: u64
+}
+
+// Four words.
+pub copy struct P4 {
+    a: u64,
+    b: u64,
+    c: u64,
+    d: u64
+}
+
+// The request of I64Column::validate: the descriptor words (i64 bits), the
+// alignment profile, the body's host address and the limits.
+pub copy struct ArReq {
+    row_length: u64,
+    null_count: u64,
+    validity_offset: u64,
+    validity_length: u64,
+    values_offset: u64,
+    values_length: u64,
+    profile: u64,
+    body_address: u64,
+    max_body_bytes: u64,
+    max_rows: u64,
+    max_work: u64
+}
+
+// A validated I64Column: byte ranges of the body, rows and nulls.
+pub copy struct ArCol {
+    values_start: u64,
+    values_end: u64,
+    has_validity: bool,
+    validity_start: u64,
+    validity_end: u64,
+    rows: u64,
+    nulls: u64
+}
+
+// framing.rs
+
+// decode_canonical_u64_leb128 with `work` units: (value, consumed).
+pub fn fr_decode(in input: Slice[u8], work: u64) -> P2 eff [Fail[GErr]] {
+    decode_prefix(in input, work)
+}
+
+pub fn fr_encode_u64_into(value: u64, inout output: Slice[u8], in lim: Slice[u64])
+    -> u64 eff [Fail[GErr]] {
+    encode_u64_into(value, inout output, in lim)
+}
+
+// (payload start, frame end).
+pub fn fr_frame_parts(in input: Slice[u8], in lim: Slice[u64]) -> P2 eff [Fail[GErr]] {
+    frame_parts(in input, in lim)
+}
+
+pub fn fr_u24_frame_parts(in input: Slice[u8], in lim: Slice[u64]) -> P2 eff [Fail[GErr]] {
+    u24_frame_parts(in input, in lim)
+}
+
+pub fn fr_encode_u24_frame_into(in payload: Slice[u8], inout output: Slice[u8], in lim: Slice[u64])
+    -> u64 eff [Fail[GErr]] {
+    encode_u24_frame_into(in payload, inout output, in lim)
+}
+
+// (value, consumed).
+pub fn fr_parse_u64(in input: Slice[u8], in lim: Slice[u64]) -> P2 eff [Fail[GErr]] {
+    parse_u64(in input, in lim)
+}
+
+pub fn fr_frame_encoded_len(payload_len: u64, in lim: Slice[u64]) -> u64 eff [Fail[GErr]] {
+    frame_encoded_len(payload_len, in lim)
+}
+
+pub fn fr_encode_frame_into(in payload: Slice[u8], inout output: Slice[u8], in lim: Slice[u64])
+    -> u64 eff [Fail[GErr]] {
+    encode_frame_into(in payload, inout output, in lim)
+}
+
+// arrow.rs
+
+// BufferDesc/FieldNode::from_wire: the two i64 words as bits.
+pub fn ar_from_wire(in bytes: Slice[u8]) -> P2 eff [Fail[GErr]] {
+    wire_pair(in bytes)
+}
+
+// (start, end).
+pub fn ar_checked_buffer_range(total: u64, offset_bytes: u64, byte_length: u64, alignment: u64)
+    -> P2 eff [Fail[GErr]] {
+    checked_buffer_range(total, offset_bytes, byte_length, alignment)
+}
+
+pub fn ar_validate(in body: Slice[u8], r: ArReq) -> ArCol eff [Fail[GErr]] {
+    validate(in body, r)
+}
+
+pub fn ar_get(in values: Slice[u8], in validity: Slice[u8], has_validity: bool, rows: u64, row: u64)
+    -> P2 {
+    get(in values, in validity, has_validity, rows, row)
+}
+
+pub fn ar_checked_sum(
+    in values: Slice[u8],
+    in validity: Slice[u8],
+    has_validity: bool,
+    rows: u64,
+    max_work: u64
+) -> P2 eff [Fail[GErr]] {
+    checked_sum(in values, in validity, has_validity, rows, max_work)
+}
+
+// capnp.rs
+
+// (segment count, payload start, message end).
+pub fn cp_parse_prefix(in input: Slice[u8], in lim: Slice[u64]) -> P4 eff [Fail[GErr]] {
+    parse_prefix(in input, in lim)
+}
+
+// (present, data start, data end, pointers end).
+pub fn cp_struct_pointer(in segment: Slice[u8], pointer_word: u64) -> P4 eff [Fail[GErr]] {
+    struct_pointer(in segment, pointer_word)
+}
+
+// (ListKind index + 1 or 0 for null, element count, data start, data end).
+pub fn cp_list_pointer(in segment: Slice[u8], pointer_word: u64) -> P4 eff [Fail[GErr]] {
+    list_pointer(in segment, pointer_word)
+}
+
+// capnp_packed.rs
+
+pub fn pk_unpacked_len(in input: Slice[u8], in lim: Slice[u64]) -> u64 eff [Fail[GErr]] {
+    unpacked_len(in input, in lim)
+}
+
+pub fn pk_unpack_into(in input: Slice[u8], inout output: Slice[u8], in lim: Slice[u64])
+    -> u64 eff [Fail[GErr]] {
+    unpack_into(in input, inout output, in lim)
+}
+
+pub fn pk_packed_len(in input: Slice[u8], in lim: Slice[u64]) -> u64 eff [Fail[GErr]] {
+    packed_len(in input, in lim)
+}
+
+pub fn pk_pack_into(in input: Slice[u8], inout output: Slice[u8], in lim: Slice[u64])
+    -> u64 eff [Fail[GErr]] {
+    pack_into(in input, inout output, in lim)
+}
+
+// grammar.rs (rules, lits and limits: see grammar.ves)
+
+// Grammar::validate: seven metadata words per rule.
+pub fn gr_validate(in rules: Slice[u64], in lits: Slice[u8], root: u64, in lim: Slice[u64])
+    -> ChunkSeq[u64] eff [Fail[GErr]] {
+    grammar_validate(in rules, in lits, root, in lim)
+}
+
+// Grammar::parse_prefix: ten words per capture, then the end position.
+pub fn gr_parse_prefix(
+    in rules: Slice[u64],
+    in lits: Slice[u8],
+    in meta: Slice[u64],
+    root: u64,
+    in lim: Slice[u64],
+    in input: Slice[u8]
+) -> ChunkSeq[u64] eff [Fail[GErr]] {
+    grammar_parse_prefix(in rules, in lits, in meta, root, in lim, in input)
+}
+
+// grammar/codec.rs (value streams: see codec.ves)
+
+// CodecLimits::validate.
+pub fn cd_validate_limits(in cl: Slice[u64]) -> Unit eff [Fail[GErr]] {
+    validate_limits(in cl)
+}
+
+pub fn cd_decode_exact(
+    in rules: Slice[u64],
+    in lits: Slice[u8],
+    in meta: Slice[u64],
+    root: u64,
+    in lim: Slice[u64],
+    in cl: Slice[u64],
+    in input: Slice[u8]
+) -> ChunkSeq[u64] eff [Fail[GErr]] {
+    decode_exact(in rules, in lits, in meta, root, in lim, in cl, in input)
+}
+
+pub fn cd_encoded_len(
+    in rules: Slice[u64],
+    root: u64,
+    in lim: Slice[u64],
+    in cl: Slice[u64],
+    in vals: Slice[u64]
+) -> u64 eff [Fail[GErr]] {
+    encoded_len(in rules, root, in lim, in cl, in vals)
+}
+
+pub fn cd_encode_into(
+    in rules: Slice[u64],
+    in lits: Slice[u8],
+    root: u64,
+    in lim: Slice[u64],
+    in cl: Slice[u64],
+    in vals: Slice[u64],
+    in arena: Slice[u8],
+    inout output: Slice[u8]
+) -> u64 eff [Fail[GErr]] {
+    encode_into(in rules, in lits, root, in lim, in cl, in vals, in arena, inout output)
+}
+
+// protobuf.rs (schema, limits and message streams: see protobuf.ves)
+
+pub fn pb_schema_validate(in schema: Slice[u64], root: u64, in lim: Slice[u64])
+    -> Unit eff [Fail[GErr]] {
+    pb_validate(in schema, root, in lim)
+}
+
+pub fn pb_parse_exact(in schema: Slice[u64], root: u64, in lim: Slice[u64], in input: Slice[u8])
+    -> ChunkSeq[u64] eff [Fail[GErr]] {
+    pb_parse(in schema, root, in lim, in input)
+}
+
+pub fn pb_encoded_size(in schema: Slice[u64], root: u64, in lim: Slice[u64], in vals: Slice[u64])
+    -> u64 eff [Fail[GErr]] {
+    pb_encoded(in schema, root, in lim, in vals)
+}
+
+pub fn pb_encode_into(
+    in schema: Slice[u64],
+    root: u64,
+    in lim: Slice[u64],
+    in vals: Slice[u64],
+    in arena: Slice[u8],
+    inout output: Slice[u8]
+) -> u64 eff [Fail[GErr]] {
+    pb_encode(in schema, root, in lim, in vals, in arena, inout output)
+}
+
+// der.rs. Schemas and values are graphs and documents are six-word
+// records (see der.ves).
+
+pub fn der_parse_prefix(in input: Slice[u8], in sch: Slice[u64], in lim: Slice[u64])
+    -> ChunkSeq[u64] eff [Fail[GErr]] {
+    der_parse(in input, in sch, in lim)
+}
+
+// (encoded bytes, nodes, metadata bytes, intermediate bytes).
+pub fn der_encoding_plan(
+    in vals: Slice[u64],
+    in arena: Slice[u8],
+    in sch: Slice[u64],
+    in lim: Slice[u64]
+) -> P4 eff [Fail[GErr]] {
+    let p = der_plan(in vals, in arena, in sch, in lim);
+    P4 {
+        a: p.encoded,
+        b: p.nodes,
+        c: p.metadata,
+        d: p.intermediate
+    }
+}
+
+pub fn der_encode_into(
+    in vals: Slice[u64],
+    in arena: Slice[u8],
+    in sch: Slice[u64],
+    in lim: Slice[u64],
+    inout output: Slice[u8]
+) -> u64 eff [Fail[GErr]] {
+    der_encode(in vals, in arena, in sch, in lim, inout output)
+}
+
+pub fn der_reencode_into(
+    in recs: Slice[u64],
+    in input: Slice[u8],
+    in lim: Slice[u64],
+    inout output: Slice[u8]
+) -> u64 eff [Fail[GErr]] {
+    der_reencode(in recs, in input, in lim, inout output)
+}
+
+pub fn der_as_i64(in bytes: Slice[u8]) -> u64 eff [Fail[GErr]] {
+    der_as_i64_impl(in bytes)
+}
+
+// ipc.rs: parse_prefix_with_alignment; the stream is described in ipc.ves.
+pub fn ipc_parse_prefix(in input: Slice[u8], in lim: Slice[u64]) -> ChunkSeq[u64] eff [Fail[GErr]] {
+    ipc_parse(in input, in lim)
+}

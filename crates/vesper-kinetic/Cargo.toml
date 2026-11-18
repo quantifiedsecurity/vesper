@@ -13,7 +13,9 @@ num-bigint = "=0.4.8"
 num-traits = "=0.2.19"
 sha2 = { workspace = true }
 vesper-alloc = { path = "../vesper-alloc/seed", package = "vesper-alloc-seed" }
-vesper-tensor = { path = "../vesper-tensor" }
+# The Rust seed copy: the Vesper port of vesper-tensor stays non-default
+# until it reaches performance parity (port wave P1 lane 8, #905).
+vesper-tensor = { path = "../vesper-tensor/seed", package = "vesper-tensor-seed" }
 
 [dev-dependencies]
 cranelift-frontend = "0.125"

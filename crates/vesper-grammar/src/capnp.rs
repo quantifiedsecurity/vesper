@@ -4,6 +4,8 @@
 //! pointers, validate schemas, unpack compressed streams, or claim canonical
 //! message contents. Segment and remainder slices borrow the original input.
 
+#[cfg(vesper_port)]
+use crate::port;
 use crate::{Error, ErrorKind, Result, add, bound, mul};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,6 +83,7 @@ pub enum PointerError {
 ///
 /// This checks only this pointer's type and section extents. It does not
 /// validate aliases, cycles, far pointers, schemas, or canonical encoding.
+#[cfg(not(vesper_port))]
 pub fn local_struct_pointer(
     segment: &[u8],
     pointer_word: usize,
@@ -108,6 +111,28 @@ pub fn local_struct_pointer(
         .ok_or(PointerError::TargetOutOfBounds)?;
     Ok(Some(StructView { data, pointers }))
 }
+#[cfg(vesper_port)]
+pub fn local_struct_pointer(
+    segment: &[u8],
+    pointer_word: usize,
+) -> core::result::Result<Option<StructView<'_>>, PointerError> {
+    let p = port::vesper::cp_struct_pointer(segment, pointer_word as u64).map_err(pointer_error)?;
+    Ok((p.a == 1).then(|| StructView {
+        data: &segment[p.b as usize..p.c as usize],
+        pointers: &segment[p.c as usize..p.d as usize],
+    }))
+}
+#[cfg(vesper_port)]
+fn pointer_error(e: port::vesper::GErr) -> PointerError {
+    match e.kind {
+        0 => PointerError::MisalignedSegment,
+        1 => PointerError::Overflow,
+        2 => PointerError::PointerOutOfBounds,
+        3 => PointerError::UnsupportedKind(e.a as u8),
+        4 => PointerError::UnsupportedCompositeList,
+        _ => PointerError::TargetOutOfBounds,
+    }
+}
 
 /// A non-composite list element's wire representation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,6 +157,7 @@ pub struct ListView<'a> {
 }
 
 /// Decode one local primitive-list pointer without traversing its elements.
+#[cfg(not(vesper_port))]
 pub fn local_list_pointer(
     segment: &[u8],
     pointer_word: usize,
@@ -172,6 +198,27 @@ pub fn local_list_pointer(
         kind,
         element_count: count,
         data,
+    }))
+}
+#[cfg(vesper_port)]
+pub fn local_list_pointer(
+    segment: &[u8],
+    pointer_word: usize,
+) -> core::result::Result<Option<ListView<'_>>, PointerError> {
+    const KINDS: [ListKind; 7] = [
+        ListKind::Void,
+        ListKind::Bit,
+        ListKind::Byte,
+        ListKind::TwoBytes,
+        ListKind::FourBytes,
+        ListKind::EightBytes,
+        ListKind::Pointer,
+    ];
+    let p = port::vesper::cp_list_pointer(segment, pointer_word as u64).map_err(pointer_error)?;
+    Ok((p.a != 0).then(|| ListView {
+        kind: KINDS[p.a as usize - 1],
+        element_count: p.b as u32,
+        data: &segment[p.c as usize..p.d as usize],
     }))
 }
 
@@ -245,6 +292,7 @@ impl ExactSizeIterator for Segments<'_> {}
 
 /// Parse one unpacked stream message, returning the exact unconsumed suffix.
 /// The framing padding is ignored as specified; it is not a canonicality check.
+#[cfg(not(vesper_port))]
 pub fn parse_prefix(input: &[u8], limits: Limits) -> Result<(Message<'_>, &[u8])> {
     bound(input.len(), limits.max_input_bytes, ErrorKind::InputLimit)?;
     bound(1, limits.max_work, ErrorKind::WorkLimit)?;
@@ -281,6 +329,25 @@ pub fn parse_prefix(input: &[u8], limits: Limits) -> Result<(Message<'_>, &[u8])
         Message {
             table,
             payload,
+            count,
+        },
+        &input[end..],
+    ))
+}
+#[cfg(vesper_port)]
+pub fn parse_prefix(input: &[u8], limits: Limits) -> Result<(Message<'_>, &[u8])> {
+    let lim = [
+        limits.max_input_bytes as u64,
+        limits.max_segments as u64,
+        limits.max_words,
+        limits.max_work as u64,
+    ];
+    let p = port::vesper::cp_parse_prefix(input, &lim).map_err(port::error)?;
+    let (count, payload, end) = (p.a as usize, p.b as usize, p.c as usize);
+    Ok((
+        Message {
+            table: &input[4..4 + count * 4],
+            payload: &input[payload..end],
             count,
         },
         &input[end..],

@@ -145,21 +145,20 @@ pub fn is_alpha(b: u8) -> bool {
     (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
 }
 
-// Whether `b` is one of the bytes of `set`.
-fn in_set(b: u8, in set: Str) -> bool {
-    for i in 0..set.len() {
-        match set.try_byte_at(i) {
-            Option::Some(c) => if c == b {
-                return true;
-            },
-            Option::None => (),
-        }
-    }
-    false
-}
-
+// The RFC 9110 `tchar` bytes (ALPHA, DIGIT and !#$%&'*+-.^_`|~) as two
+// 64-bit masks. A mask test calls nothing and stays small enough to inline;
+// a comparison chain does not. `rotate_right` is the total shift.
 fn token(b: u8) -> bool {
-    is_digit(b) || is_alpha(b) || in_set(b, "!#$%&'*+-.^_`|~")
+    let i = widen_u64(b);
+    let low: u64 = 288068722172624896;
+    let high: u64 = 6341068274398134270;
+    if i < 64 {
+        (rotate_right(low, i) & 1) == 1
+    } else if i < 128 {
+        (rotate_right(high, wrapping_sub(i, 64)) & 1) == 1
+    } else {
+        false
+    }
 }
 
 pub fn node_at(in r: RouterCore, i: u64) -> Node {

@@ -1,5 +1,9 @@
 # vesper-grammar
 
+> **Port freeze (2026-11-18):** this crate is ported to Vesper (port wave P1
+> lane 9, [#906](https://github.com/robot-head/vesper/issues/906)). Its Rust
+> code takes bug fixes only, and it stays the default build.
+
 Dependency-free, safe scalar host implementations of an explicit [manuscript §30](../../docs/manuscript/README.md) subset:
 canonical unsigned LEB128, dependent-length frames, validated primitive Arrow
 signed-i64 buffers, executable deterministic byte-FIRST grammars and canonical
@@ -206,3 +210,17 @@ Run the self-checking example:
 ```sh
 cargo run -p vesper-grammar --example grammar
 ```
+
+## Seed copy and port
+
+Port wave P1 lane 9 (#906) splits this crate into two packages built from the
+same sources. `vesper-grammar` is the port-backed build: `build.rs` links the
+Vesper package in `vesper/` (every module: framing, Arrow, Cap'n Proto and
+packing, the grammar and its codec, Protobuf, DER and Arrow IPC), and the Rust
+API forwards to it through `port/binding.rs` and `src/port.rs`. The compiler
+and every other dependent link `vesper-grammar-seed` (`seed/`), the Rust
+build, under the same library name, until the port matches it in function and
+speed. See `docs/parallel-results/port-p1-grammar.md` and "Crates the
+compiler links" in `docs/maintenance/porting-a-crate.md`.
+
+Compare the two builds with the ABBA benchmark in `examples/grammar_abba.rs`.

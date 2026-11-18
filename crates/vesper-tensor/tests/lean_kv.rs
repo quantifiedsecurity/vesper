@@ -27,7 +27,14 @@ const THEOREMS: [&str; 11] = [
 ];
 
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lean")
+    // The seed package (seed/) runs this file too, one level deeper.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let up = if dir.ends_with("seed") {
+        "../../../lean"
+    } else {
+        "../../lean"
+    };
+    dir.join(up)
 }
 
 fn strip_comments(source: &str) -> String {

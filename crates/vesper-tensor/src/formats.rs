@@ -21,6 +21,9 @@
 //! `quantize_row_q4_K_ref` and `make_qkx2_quants` ([`quantize_q4_k`]) and
 //! produces llama.cpp's bytes. The MXFP4 quantizer follows GGML / gguf-py's
 //! rule with an exact exponent.
+// The port-backed build (src/port.rs) replaces some Rust bodies, leaving
+// their helpers unused there.
+#![cfg_attr(vesper_port, allow(dead_code, unused_imports))]
 use crate::host::decode_fp16;
 use crate::quant::encode_fp16;
 use crate::Error;
@@ -35,6 +38,7 @@ fn half(bytes: &[u8], at: usize) -> f32 {
 }
 
 /// GGML `get_scale_min_k4`: the 6-bit scale and minimum of sub-block `j`.
+#[cfg(not(vesper_port))]
 pub fn q4_k_scale_min(j: usize, scales: &[u8]) -> (u8, u8) {
     if j < 4 {
         (scales[j] & 63, scales[j + 4] & 63)
@@ -45,8 +49,13 @@ pub fn q4_k_scale_min(j: usize, scales: &[u8]) -> (u8, u8) {
         )
     }
 }
+#[cfg(vesper_port)]
+pub fn q4_k_scale_min(j: usize, scales: &[u8]) -> (u8, u8) {
+    crate::port::must(crate::port::binding::q4_k_scale_min(j as u64, scales))
+}
 
 /// Dequantizes one 144-byte Q4_K block into 256 values.
+#[cfg(not(vesper_port))]
 pub fn dequantize_q4_k_block(block: &[u8], out: &mut [f32]) {
     let d = half(block, 0);
     let dmin = half(block, 2);
@@ -64,10 +73,26 @@ pub fn dequantize_q4_k_block(block: &[u8], out: &mut [f32]) {
         }
     }
 }
+#[cfg(vesper_port)]
+pub fn dequantize_q4_k_block(block: &[u8], out: &mut [f32]) {
+    crate::port::must(crate::port::binding::dequantize_q4_k_block(
+        block,
+        crate::port::bits_mut(out),
+    ));
+}
 
 /// Checks a Q4_K block's two scales are finite.
+#[cfg(not(vesper_port))]
 pub fn check_q4_k_block(block: &[u8]) -> Result<(), Error> {
     if half(block, 0).is_finite() && half(block, 2).is_finite() {
+        Ok(())
+    } else {
+        Err(Error::NonFinite)
+    }
+}
+#[cfg(vesper_port)]
+pub fn check_q4_k_block(block: &[u8]) -> Result<(), Error> {
+    if crate::port::must(crate::port::binding::check_q4_k_block(block)) {
         Ok(())
     } else {
         Err(Error::NonFinite)
@@ -79,9 +104,14 @@ pub fn check_q4_k_block(block: &[u8]) -> Result<(), Error> {
 /// `|v| <= 4194303`; outside that range it returns the same (meaningless)
 /// bits as the C code, so callers keep GGML's behaviour bit for bit.
 #[inline]
+#[cfg(not(vesper_port))]
 pub fn nearest_int(v: f32) -> i32 {
     let bits = (v + 12_582_912.0f32).to_bits() as i32;
     (bits & 0x007f_ffff) - 0x0040_0000
+}
+#[cfg(vesper_port)]
+pub fn nearest_int(v: f32) -> i32 {
+    crate::port::must(crate::port::binding::nearest_int(v.to_bits()))
 }
 
 /// GGML `make_qkx2_quants` for `x.len()` elements with non-negative
@@ -92,6 +122,7 @@ pub fn nearest_int(v: f32) -> i32 {
 /// source's order (no fused multiply-add), so the result is bit-identical to
 /// a GGML build without FP contraction.
 #[allow(clippy::too_many_arguments)]
+#[cfg(not(vesper_port))]
 pub fn make_qkx2_quants(
     nmax: i32,
     x: &[f32],
@@ -175,6 +206,32 @@ pub fn make_qkx2_quants(
     }
     (scale, -min)
 }
+#[cfg(vesper_port)]
+#[allow(clippy::too_many_arguments)]
+pub fn make_qkx2_quants(
+    nmax: i32,
+    x: &[f32],
+    weights: &[f32],
+    l: &mut [u8],
+    laux: &mut [u8],
+    rmin: f32,
+    rdelta: f32,
+    nstep: i32,
+    use_mad: bool,
+) -> (f32, f32) {
+    let (scale, min) = crate::port::must(crate::port::binding::make_qkx2_quants(
+        nmax,
+        crate::port::bits(x),
+        crate::port::bits(weights),
+        l,
+        laux,
+        rmin.to_bits(),
+        rdelta.to_bits(),
+        nstep,
+        use_mad,
+    ));
+    (f32::from_bits(scale), f32::from_bits(min))
+}
 
 /// Quantizes rows of 256-element super-blocks to Q4_K exactly as llama.cpp's
 /// `quantize_row_q4_K_ref` (the path `llama-quantize` takes without an
@@ -184,6 +241,7 @@ pub fn make_qkx2_quants(
 /// `dmin` rounded to binary16, and the 4-bit quants recomputed from the
 /// stored parameters. The bytes equal llama.cpp's for the same FP32 input
 /// (checked against a llama.cpp-quantized GGUF in `tests/kquant_interop.rs`).
+#[cfg(not(vesper_port))]
 pub fn quantize_q4_k(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
     check_rows(data, cols, QK_K)?;
     let mut out = Vec::new();
@@ -198,8 +256,20 @@ pub fn quantize_q4_k(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
     }
     Ok(out)
 }
+#[cfg(vesper_port)]
+pub fn quantize_q4_k(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
+    crate::port::check(
+        crate::port::binding::quantize_q4_k(crate::port::bits(data), cols as u64),
+        |fault| match fault {
+            crate::port::Fault::Shape => Error::Shape("quantized rows need whole blocks"),
+            crate::port::Fault::NonFinite => Error::NonFinite,
+            crate::port::Fault::Limit => Error::Limit("Q4_K scale exceeds binary16"),
+        },
+    )
+}
 
 /// One llama.cpp `quantize_row_q4_K_ref` super-block.
+#[cfg(not(vesper_port))]
 pub fn quantize_q4_k_block(x: &[f32; QK_K]) -> [u8; Q4_K_BYTES] {
     let mut l = [0u8; QK_K];
     let mut laux = [0u8; 32];
@@ -284,11 +354,21 @@ pub fn quantize_q4_k_block(x: &[f32; QK_K]) -> [u8; Q4_K_BYTES] {
     }
     block
 }
+#[cfg(vesper_port)]
+pub fn quantize_q4_k_block(x: &[f32; QK_K]) -> [u8; Q4_K_BYTES] {
+    let bytes = crate::port::must(crate::port::binding::quantize_q4_k_block(
+        crate::port::bits(x),
+    ));
+    let mut block = [0u8; Q4_K_BYTES];
+    block.copy_from_slice(&bytes);
+    block
+}
 
 /// E2M1 code values, doubled (GGML `kvalues_mxfp4`).
 pub const E2M1_DOUBLED: [i8; 16] = [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12];
 
 /// `2^(e - 128)` exactly (GGML `ggml_e8m0_to_fp32_half`), for `e < 255`.
+#[cfg(not(vesper_port))]
 pub fn e8m0_half(e: u8) -> f32 {
     let bits = if e < 2 {
         0x0020_0000u32 << e
@@ -297,7 +377,12 @@ pub fn e8m0_half(e: u8) -> f32 {
     };
     f32::from_bits(bits)
 }
+#[cfg(vesper_port)]
+pub fn e8m0_half(e: u8) -> f32 {
+    f32::from_bits(crate::port::must(crate::port::binding::e8m0_half(e)))
+}
 
+#[cfg(not(vesper_port))]
 pub fn check_mxfp4_block(block: &[u8]) -> Result<(), Error> {
     if block[0] == 0xff {
         Err(Error::NonFinite)
@@ -305,7 +390,16 @@ pub fn check_mxfp4_block(block: &[u8]) -> Result<(), Error> {
         Ok(())
     }
 }
+#[cfg(vesper_port)]
+pub fn check_mxfp4_block(block: &[u8]) -> Result<(), Error> {
+    if crate::port::must(crate::port::binding::check_mxfp4_block(block)) {
+        Ok(())
+    } else {
+        Err(Error::NonFinite)
+    }
+}
 
+#[cfg(not(vesper_port))]
 pub fn dequantize_mxfp4_block(block: &[u8], out: &mut [f32]) {
     let d = e8m0_half(block[0]);
     for j in 0..16 {
@@ -313,6 +407,13 @@ pub fn dequantize_mxfp4_block(block: &[u8], out: &mut [f32]) {
         out[j] = d * f32::from(E2M1_DOUBLED[usize::from(b & 0x0f)]);
         out[j + 16] = d * f32::from(E2M1_DOUBLED[usize::from(b >> 4)]);
     }
+}
+#[cfg(vesper_port)]
+pub fn dequantize_mxfp4_block(block: &[u8], out: &mut [f32]) {
+    crate::port::must(crate::port::binding::dequantize_mxfp4_block(
+        block,
+        crate::port::bits_mut(out),
+    ));
 }
 
 /// `floor(log2(v))` for finite `v > 0`, exact (from the exponent bits).
@@ -334,6 +435,7 @@ fn floor_log2(v: f32) -> i32 {
 /// ties. The exponent is computed exactly; gguf-py takes it from an FP32
 /// `log2`, which can differ by one for values within an ulp below a power
 /// of two.
+#[cfg(not(vesper_port))]
 pub fn quantize_mxfp4(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
     check_rows(data, cols, MXFP4_BLOCK)?;
     let mut out = Vec::new();
@@ -365,6 +467,16 @@ pub fn quantize_mxfp4(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
         }
     }
     Ok(out)
+}
+#[cfg(vesper_port)]
+pub fn quantize_mxfp4(data: &[f32], cols: usize) -> Result<Vec<u8>, Error> {
+    crate::port::check(
+        crate::port::binding::quantize_mxfp4(crate::port::bits(data), cols as u64),
+        |fault| match fault {
+            crate::port::Fault::Shape => Error::Shape("quantized rows need whole blocks"),
+            _ => Error::NonFinite,
+        },
+    )
 }
 
 /// An OCP FP8 encoding.
@@ -408,6 +520,7 @@ impl Fp8 {
         table.get_or_init(|| std::array::from_fn(|c| self.decode_exact(c as u8)))[usize::from(code)]
     }
     /// The defining computation behind [`Fp8::decode`].
+    #[cfg(not(vesper_port))]
     pub fn decode_exact(self, code: u8) -> f32 {
         let sign = if code & 0x80 != 0 { -1.0f64 } else { 1.0 };
         let m_bits = self.mantissa_bits();
@@ -433,6 +546,13 @@ impl Fp8 {
         };
         (sign * value) as f32
     }
+    #[cfg(vesper_port)]
+    pub fn decode_exact(self, code: u8) -> f32 {
+        f32::from_bits(crate::port::must(crate::port::binding::fp8_decode(
+            self == Self::E5M2,
+            code,
+        )))
+    }
     /// Whether `code` is a finite value.
     pub fn is_finite_code(self, code: u8) -> bool {
         self.decode(code).is_finite()
@@ -440,6 +560,7 @@ impl Fp8 {
     /// Round-to-nearest-even encoding; NaN becomes the canonical NaN code and
     /// magnitudes beyond the largest finite value (after rounding) saturate
     /// to it (also for E5M2, whose infinities are never produced).
+    #[cfg(not(vesper_port))]
     pub fn encode_saturating(self, value: f32) -> u8 {
         let sign: u8 = if value.is_sign_negative() { 0x80 } else { 0 };
         if value.is_nan() {
@@ -481,11 +602,19 @@ impl Fp8 {
         };
         sign | bits
     }
+    #[cfg(vesper_port)]
+    pub fn encode_saturating(self, value: f32) -> u8 {
+        crate::port::must(crate::port::binding::fp8_encode(
+            self == Self::E5M2,
+            value.to_bits(),
+        ))
+    }
 }
 
 /// Per-tensor FP8 quantization: `scale = amax / max_finite` (1 for an
 /// all-zero matrix) and codes `encode(x / scale)`. Element value is
 /// `decode(code) * scale`.
+#[cfg(not(vesper_port))]
 pub fn quantize_fp8(data: &[f32], format: Fp8) -> Result<(Vec<u8>, f32), Error> {
     if data.iter().any(|v| !v.is_finite()) {
         return Err(Error::NonFinite);
@@ -504,6 +633,20 @@ pub fn quantize_fp8(data: &[f32], format: Fp8) -> Result<(Vec<u8>, f32), Error> 
         .map_err(|_| Error::Limit("allocation"))?;
     out.extend(data.iter().map(|v| format.encode_saturating(v / scale)));
     Ok((out, scale))
+}
+#[cfg(vesper_port)]
+pub fn quantize_fp8(data: &[f32], format: Fp8) -> Result<(Vec<u8>, f32), Error> {
+    let e5m2 = format == Fp8::E5M2;
+    let scale = crate::port::check(
+        crate::port::binding::fp8_scale(crate::port::bits(data), e5m2),
+        |_| Error::NonFinite,
+    )?;
+    let codes = crate::port::must(crate::port::binding::fp8_codes(
+        crate::port::bits(data),
+        e5m2,
+        scale,
+    ));
+    Ok((codes, f32::from_bits(scale)))
 }
 
 fn check_rows(data: &[f32], cols: usize, block: usize) -> Result<(), Error> {

@@ -13,17 +13,10 @@ fn sort_seq[T: mod copy](inout s: ChunkSeq[T]) where T: Ord {
     if n < 2 {
         return;
     }
-    let mut src: ChunkSeq[T] = ChunkSeq::new[T]();
-    let mut dst: ChunkSeq[T] = ChunkSeq::new[T]();
-    for i in 0..n {
-        match s.try_get(i) {
-            Option::Some(v) => {
-                src.push(v);
-                dst.push(v);
-            },
-            Option::None => (),
-        }
-    }
+    let mut src: ChunkSeq[T] = ChunkSeq::with_capacity[T](n);
+    src.extend(in s.as_slice());
+    let mut dst: ChunkSeq[T] = ChunkSeq::with_capacity[T](n);
+    dst.extend(in src.as_slice());
     let mut width: u64 = 1;
     loop {
         if width >= n {
@@ -84,24 +77,11 @@ fn sort_seq[T: mod copy](inout s: ChunkSeq[T]) where T: Ord {
             }
             lo = hi;
         }
-        for x in 0..n {
-            match dst.try_get(x) {
-                Option::Some(v) => {
-                    src.try_set(x, v);
-                },
-                Option::None => (),
-            }
-        }
+        // Same lengths: the total copy cannot refuse.
+        let _copied = src.try_copy_from(0, in dst.as_slice());
         width = wrapping_mul(width, 2);
     }
-    for x in 0..n {
-        match src.try_get(x) {
-            Option::Some(v) => {
-                s.try_set(x, v);
-            },
-            Option::None => (),
-        }
-    }
+    let _copied = s.try_copy_from(0, in src.as_slice());
 }
 
 // Sorts and removes adjacent duplicates (a `BTreeSet` in the Rust code).
@@ -368,57 +348,259 @@ fn get_queue(in g: Graph, q: u64) -> QueueKind {
     }
 }
 
-// Pairwise hazards in declaration order plus explicit edges, sorted.
+// The hazard between use `a` of pass `i` and use `b` of a later pass `j`
+// on the same resource, pushed onto `out` unless there is none.
+fn push_hazard(inout out: ChunkSeq[Edge], i: u64, j: u64, a: Use, b: Use) {
+    let aw = access_is_write(a.access);
+    let bw = access_is_write(b.access);
+    let buffer_writers = a.bytes && aw && bw;
+    if buffer_writers || uses_overlap(a, b) {
+        let kind: u32 = if aw && bw {
+            2
+        } else if aw {
+            0
+        } else if bw {
+            1
+        } else if a.bytes || (a.has_layout && b.has_layout && a.layout == b.layout) {
+            5
+        } else {
+            3
+        };
+        if kind != 5 {
+            out
+                .push(
+                Edge {
+                    before: wrapping_u32(i),
+                    after: wrapping_u32(j),
+                    kind: kind,
+                    has_resource: 1,
+                    resource: a.resource
+                }
+            );
+        }
+    }
+}
+
+// Sorts a short run of edges in place and drops duplicates (insertion
+// sort: the run holds the hazards of one pass pair).
+fn sort_dedup_short(inout s: ChunkSeq[Edge]) {
+    let n = s.len();
+    for r in 1..n {
+        match s.try_get(r) {
+            Option::Some(v) => {
+                let mut k = r;
+                loop {
+                    if k == 0 {
+                        break;
+                    }
+                    match s.try_get(wrapping_sub(k, 1)) {
+                        Option::Some(prev) => {
+                            if less(v, prev) {
+                                s.try_set(k, prev);
+                                k = wrapping_sub(k, 1);
+                            } else {
+                                break;
+                            }
+                        },
+                        Option::None => {
+                            break;
+                        },
+                    }
+                }
+                s.try_set(k, v);
+            },
+            Option::None => (),
+        }
+    }
+    if n < 2 {
+        return;
+    }
+    let mut w: u64 = 1;
+    for r in 1..n {
+        match s.try_get(r) {
+            Option::Some(v) => match s.try_get(wrapping_sub(w, 1)) {
+                Option::Some(prev) => match v.cmp(prev) {
+                    Equal => (),
+                    _ => {
+                        s.try_set(w, v);
+                        w = wrapping_add(w, 1);
+                    },
+                },
+                Option::None => (),
+            },
+            Option::None => (),
+        }
+    }
+    s.truncate(w);
+}
+
+// The pass of the use at `list[k]`, or `none32()` past the list.
+fn pass_at(in list: ChunkSeq[u64], in use_pass: ChunkSeq[u32], k: u64) -> u32 {
+    match list.try_get(k) {
+        Option::Some(u) => get32(in use_pass, u),
+        Option::None => none32(),
+    }
+}
+
+// Pairwise hazards plus explicit edges, sorted and distinct (a `BTreeSet`
+// in the Rust code). Each pass `i` walks, for each of its uses, the later
+// uses of the same resource (a per-resource index in pass order) and merges
+// those walks by pass, so the edges come out in `(before, after)` order and
+// only one pass pair's hazards need sorting.
 fn hazard_edges(in g: Graph) -> ChunkSeq[Edge] {
-    let mut edges: ChunkSeq[Edge] = ChunkSeq::new[Edge]();
     let n = g.passes.len();
-    for j in 0..n {
-        let pj = get_pass(in g, j);
-        for i in 0..j {
-            let pi = get_pass(in g, i);
+    let nr = g.resources.len();
+    let nu = g.uses.len();
+    let mut use_pass: ChunkSeq[u32] = ChunkSeq::with_capacity[u32](nu);
+    let mut start: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](wrapping_add(nr, 1));
+    for u in 0..nu {
+        use_pass.push(0);
+    }
+    for r in 0..wrapping_add(nr, 1) {
+        start.push(0);
+    }
+    for p in 0..n {
+        let pp = get_pass(in g, p);
+        for x in 0..pp.use_count {
+            let u = wrapping_add(pp.first_use, x);
+            use_pass.try_set(u, wrapping_u32(p));
+            let at = wrapping_add(widen_u64(get_use(in g.uses, u).resource), 1);
+            let c = wrapping_add(get64(in start, at), 1);
+            start.try_set(at, c);
+        }
+    }
+    for r in 0..nr {
+        let at = wrapping_add(r, 1);
+        let c = wrapping_add(get64(in start, at), get64(in start, r));
+        start.try_set(at, c);
+    }
+    // `list[start[r]..start[r + 1]]`: the uses of resource `r`, in pass
+    // order; `slot[u]`: where use `u` sits in it.
+    let mut fill: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](nr);
+    let mut list: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](nu);
+    let mut slot: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](nu);
+    for r in 0..nr {
+        let c = get64(in start, r);
+        fill.push(c);
+    }
+    for u in 0..nu {
+        list.push(0);
+        slot.push(0);
+    }
+    for p in 0..n {
+        let pp = get_pass(in g, p);
+        for x in 0..pp.use_count {
+            let u = wrapping_add(pp.first_use, x);
+            let r = widen_u64(get_use(in g.uses, u).resource);
+            let k = get64(in fill, r);
+            list.try_set(k, u);
+            slot.try_set(u, k);
+            fill.try_set(r, wrapping_add(k, 1));
+        }
+    }
+    // `next_write[k]`: the first position at or after `k` in its
+    // resource's run that holds a write (the run's end when none). A buffer
+    // read has hazards only with later writes, so its walk jumps there.
+    let mut next_write: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](nu);
+    for u in 0..nu {
+        next_write.push(0);
+    }
+    for r in 0..nr {
+        let lo = get64(in start, r);
+        let hi = get64(in start, wrapping_add(r, 1));
+        let mut nw = hi;
+        let mut k = hi;
+        loop {
+            if k <= lo {
+                break;
+            }
+            k = wrapping_sub(k, 1);
+            let u = get64(in list, k);
+            if access_is_write(get_use(in g.uses, u).access) {
+                nw = k;
+            }
+            next_write.try_set(k, nw);
+        }
+    }
+    let mut edges: ChunkSeq[Edge] = ChunkSeq::new[Edge]();
+    let mut group: ChunkSeq[Edge] = ChunkSeq::new[Edge]();
+    let mut jump: ChunkSeq[bool] = ChunkSeq::new[bool]();
+    let mut cur: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut end: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for i in 0..n {
+        let pi = get_pass(in g, i);
+        let mine = wrapping_u32(i);
+        cur.clear();
+        end.clear();
+        jump.clear();
+        for x in 0..pi.use_count {
+            let u = wrapping_add(pi.first_use, x);
+            let a = get_use(in g.uses, u);
+            let r = widen_u64(a.resource);
+            let stop = get64(in start, wrapping_add(r, 1));
+            let mut k = wrapping_add(get64(in slot, u), 1);
+            loop {
+                if k >= stop || pass_at(in list, in use_pass, k) > mine {
+                    break;
+                }
+                k = wrapping_add(k, 1);
+            }
+            let skip_reads = a.bytes && !access_is_write(a.access);
+            if skip_reads && k < stop {
+                k = get64(in next_write, k);
+            }
+            cur.push(k);
+            end.push(stop);
+            jump.push(skip_reads);
+        }
+        loop {
+            let mut j = none32();
+            for x in 0..pi.use_count {
+                let k = get64(in cur, x);
+                if k < get64(in end, x) {
+                    let q = pass_at(in list, in use_pass, k);
+                    if q < j {
+                        j = q;
+                    }
+                }
+            }
+            if j == none32() {
+                break;
+            }
+            group.clear();
             for x in 0..pi.use_count {
                 let a = get_use(in g.uses, wrapping_add(pi.first_use, x));
-                for y in 0..pj.use_count {
-                    let b = get_use(in g.uses, wrapping_add(pj.first_use, y));
-                    if a.resource == b.resource {
-                        let aw = access_is_write(a.access);
-                        let bw = access_is_write(b.access);
-                        let buffer_writers = a.bytes && aw && bw;
-                        if buffer_writers || uses_overlap(a, b) {
-                            let kind: u32 = if aw && bw {
-                                2
-                            } else if aw {
-                                0
-                            } else if bw {
-                                1
-                            } else if a
-                                .bytes
-                                || (a.has_layout && b.has_layout && a.layout == b.layout) {
-                                5
-                            } else {
-                                3
-                            };
-                            if kind != 5 {
-                                edges
-                                    .push(
-                                    Edge {
-                                        before: wrapping_u32(i),
-                                        after: wrapping_u32(j),
-                                        kind: kind,
-                                        has_resource: 1,
-                                        resource: a.resource
-                                    }
-                                );
-                            }
-                        }
+                let stop = get64(in end, x);
+                let mut k = get64(in cur, x);
+                loop {
+                    if k >= stop || pass_at(in list, in use_pass, k) != j {
+                        break;
                     }
+                    let b = match list.try_get(k) {
+                        Option::Some(v) => get_use(in g.uses, v),
+                        Option::None => get_use(in g.uses, nu),
+                    };
+                    push_hazard(inout group, i, widen_u64(j), a, b);
+                    k = wrapping_add(k, 1);
+                }
+                if k < stop && getb(in jump, x) {
+                    k = get64(in next_write, k);
+                }
+                cur.try_set(x, k);
+            }
+            sort_dedup_short(inout group);
+            for e in 0..group.len() {
+                match group.try_get(e) {
+                    Option::Some(v) => edges.push(v),
+                    Option::None => (),
                 }
             }
         }
     }
+    let mut explicit: ChunkSeq[Edge] = ChunkSeq::new[Edge]();
     for e in 0..g.explicit.len() {
         match g.explicit.try_get(e) {
-            Option::Some(x) => edges
+            Option::Some(x) => explicit
                 .push(
                 Edge {
                     before: x.before,
@@ -431,8 +613,46 @@ fn hazard_edges(in g: Graph) -> ChunkSeq[Edge] {
             Option::None => (),
         }
     }
-    sort_dedup(inout edges);
-    edges
+    if explicit.len() == 0 {
+        return edges;
+    }
+    sort_dedup(inout explicit);
+    // Merge the two sorted, distinct runs (a hazard never equals an
+    // explicit edge: `has_resource` differs).
+    let mut out: ChunkSeq[Edge] = ChunkSeq::with_capacity[Edge](
+        wrapping_add(edges.len(), explicit.len())
+    );
+    let mut h: u64 = 0;
+    let mut x: u64 = 0;
+    loop {
+        match edges.try_get(h) {
+            Option::Some(a) => match explicit.try_get(x) {
+                Option::Some(b) => {
+                    if less(b, a) {
+                        out.push(b);
+                        x = wrapping_add(x, 1);
+                    } else {
+                        out.push(a);
+                        h = wrapping_add(h, 1);
+                    }
+                },
+                Option::None => {
+                    out.push(a);
+                    h = wrapping_add(h, 1);
+                },
+            },
+            Option::None => match explicit.try_get(x) {
+                Option::Some(b) => {
+                    out.push(b);
+                    x = wrapping_add(x, 1);
+                },
+                Option::None => {
+                    break;
+                },
+            },
+        }
+    }
+    out
 }
 
 copy enum OrderOutcome {
@@ -440,35 +660,101 @@ copy enum OrderOutcome {
     Cyclic
 }
 
-// Distinct (before, after) pairs of `edges`, sorted by `(key, other)`.
-fn pairs_by(in edges: ChunkSeq[Edge], by_after: bool) -> ChunkSeq[Edge2] {
-    let mut out: ChunkSeq[Edge2] = ChunkSeq::new[Edge2]();
-    for i in 0..edges.len() {
-        match edges.try_get(i) {
-            Option::Some(e) => {
-                if by_after {
+// Distinct (before, after) pairs of `edges` (sorted and distinct, as
+// `hazard_edges` returns them), sorted by `(key, other)`. By `before` they
+// are already in order; by `after` a stable counting sort over the `n`
+// passes keeps each bucket in `before` order.
+fn pairs_by(in edges: ChunkSeq[Edge], by_after: bool, n: u64) -> ChunkSeq[Edge2] {
+    let m = edges.len();
+    let mut out: ChunkSeq[Edge2] = ChunkSeq::with_capacity[Edge2](m);
+    if by_after {
+        let mut at: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](wrapping_add(n, 1));
+        for v in 0..wrapping_add(n, 1) {
+            at.push(0);
+        }
+        for i in 0..m {
+            match edges.try_get(i) {
+                Option::Some(e) => {
+                    let k = wrapping_add(widen_u64(e.after), 1);
+                    let c = wrapping_add(get64(in at, k), 1);
+                    at.try_set(k, c);
+                },
+                Option::None => (),
+            }
+        }
+        for v in 0..n {
+            let k = wrapping_add(v, 1);
+            let c = wrapping_add(get64(in at, k), get64(in at, v));
+            at.try_set(k, c);
+        }
+        for i in 0..m {
+            out
+                .push(
+                Edge2 {
+                    before: 0,
+                    after: 0
+                }
+            );
+        }
+        for i in 0..m {
+            match edges.try_get(i) {
+                Option::Some(e) => {
+                    let k = widen_u64(e.after);
+                    let w = get64(in at, k);
                     out
-                        .push(
+                        .try_set(
+                        w,
                         Edge2 {
                             before: e.after,
                             after: e.before
                         }
                     );
-                } else {
-                    out
-                        .push(
-                        Edge2 {
-                            before: e.before,
-                            after: e.after
-                        }
-                    );
-                }
+                    at.try_set(k, wrapping_add(w, 1));
+                },
+                Option::None => (),
+            }
+        }
+    } else {
+        for i in 0..m {
+            match edges.try_get(i) {
+                Option::Some(e) => out
+                    .push(
+                    Edge2 {
+                        before: e.before,
+                        after: e.after
+                    }
+                ),
+                Option::None => (),
+            }
+        }
+    }
+    dedup_sorted(inout out);
+    out
+}
+
+// Removes adjacent duplicates of a sorted sequence.
+fn dedup_sorted[T: mod copy](inout s: ChunkSeq[T]) where T: Ord {
+    let n = s.len();
+    if n < 2 {
+        return;
+    }
+    let mut w: u64 = 1;
+    for r in 1..n {
+        match s.try_get(r) {
+            Option::Some(v) => match s.try_get(wrapping_sub(w, 1)) {
+                Option::Some(prev) => match v.cmp(prev) {
+                    Equal => (),
+                    _ => {
+                        s.try_set(w, v);
+                        w = wrapping_add(w, 1);
+                    },
+                },
+                Option::None => (),
             },
             Option::None => (),
         }
     }
-    sort_dedup(inout out);
-    out
+    s.truncate(w);
 }
 
 impl Ord for Edge2 {}
@@ -508,8 +794,8 @@ fn topological_order(
     inout order: ChunkSeq[u32],
     inout cycle: ChunkSeq[u32]
 ) -> OrderOutcome {
-    let succ = pairs_by(in edges, false);
-    let pred = pairs_by(in edges, true);
+    let succ = pairs_by(in edges, false, n);
+    let pred = pairs_by(in edges, true, n);
     let succ_at = offsets(in succ, n);
     let pred_at = offsets(in pred, n);
     let mut indegree: ChunkSeq[u64] = ChunkSeq::new[u64]();
