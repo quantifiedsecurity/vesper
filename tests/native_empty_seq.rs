@@ -87,7 +87,11 @@ fn differential_with(name: &str, source: &str, no_teardown: bool) -> u64 {
             .to_string();
         assert_eq!(jit, evaluated, "{name}: JIT (optimize {optimize})");
         assert_eq!(
-            if no_teardown { native_runtime::teardown_frees() } else { 0 },
+            if no_teardown {
+                native_runtime::teardown_frees()
+            } else {
+                0
+            },
             0,
             "{name}: JIT (optimize {optimize}) left sequences for teardown"
         );
@@ -176,7 +180,6 @@ fn library(name: &str, source: &str, declarations: &str, body: &str) -> Option<S
     );
     Some(text)
 }
-
 
 const SUM: &str = r#"
 fn u(x: u64) -> u64 { x }

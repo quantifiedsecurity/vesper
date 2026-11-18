@@ -639,9 +639,8 @@ impl<M: Module> Codegen<'_, '_, M> {
         }
         // A growing operation on a sequence writes a new handle back to its
         // place (#1021); a string grows in place.
-        let receiver = receiver.filter(|_| {
-            op.mutates() && arg_types.first().is_some_and(seq::is_seq_type)
-        });
+        let receiver =
+            receiver.filter(|_| op.mutates() && arg_types.first().is_some_and(seq::is_seq_type));
         if let Some(value) = self.byte_seq_op(op, args, arg_types, receiver)? {
             return Ok(value);
         }
