@@ -1,8 +1,10 @@
-//! ABBA comparison of the Rust build (baseline) and the Vesper port
-//! (candidate). The two builds cannot share a binary (the public error types
-//! name one `Session`), so this example is built twice and, in `compare` mode,
-//! runs the two executables as separate processes in Rust, port, port, Rust
-//! order per epoch, then analyzes the paired totals with vesper-bench. Run
+//! ABBA comparison of the replaced Rust implementation (baseline) and the
+//! Vesper port (candidate). The two builds cannot share a binary (the public
+//! error types name one `Session`), and the Rust implementation now lives only
+//! in history (#979), so this example is built twice, once at a commit that
+//! still has the Rust implementation, and, in `compare` mode, runs the two
+//! executables as separate processes in Rust, port, port, Rust order per
+//! epoch, then analyzes the paired totals with vesper-bench. Run
 //! `crates/vesper-aura/bench-abba.sh`.
 //!
 //! `abba measure <ops>` warms each workload up and prints its total

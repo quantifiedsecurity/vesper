@@ -4,6 +4,13 @@ Claim: [#953](https://github.com/robot-head/vesper/issues/953). Plan:
 [docs/agent-prompts/port-parity/05-aura.md](../agent-prompts/port-parity/05-aura.md).
 Base: `main` at `cee8b1a` (a descendant of `69c79b9`).
 
+**Update (#979).** At the owner's request the Vesper port replaced the Rust
+implementation in the same PR: `src/reference/` and the `vesper-port`
+feature are gone, `build.rs` always links the port (Bazel prebuilds the
+object, as for `vesper-beacon`), and `bench-abba.sh` builds the Rust
+baseline from commit `cee8b1a` in a temporary worktree. The text below
+describes the measurements made before the switch.
+
 **Result.** The Vesper build of `vesper-aura` now runs the `examples/abba.rs`
 workloads in 0.42x (one-text), 0.58x (reorder) and 0.85x (encode-audit) of
 the Rust build's time, down from 1.54x, 1.94x and 1.47x on `main`. Every
