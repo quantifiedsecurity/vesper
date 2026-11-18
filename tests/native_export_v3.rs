@@ -170,7 +170,9 @@ fn the_abi_directive_is_checked() {
     assert_eq!(lib.interface.abi, export::EXPORT_ABI_V3);
 }
 
-const OPTIONS: &str = include_str!("fixtures/native_export/options.ves");
+// Not a `.ves` file: the repository corpus of the self-hosted parser walks
+// every `.ves` source, and that parser has no `pub` items yet.
+const OPTIONS: &str = include_str!("fixtures/native_export/options.ves.in");
 
 /// `// @export abi 3 options` (#991): `Option`/`Result` parameters and
 /// results of copy payloads are lent as `OptionMirror`/`ResultMirror`.

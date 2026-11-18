@@ -75,7 +75,7 @@ on the whole process. The port rewrites below are local and uncommitted
 |---|---|---|
 | `src/lib.ves` with `// @export abi 3` plus `src/a.ves` (Aura gap 1, Quarry gap 4) | `vesper.native.export-abi/1` | `vesper.native.export-abi/3` |
 | Aura and Quarry with the directive moved into `lib.ves` | v2 (directive ignored) | same committed binding as today, no bless |
-| `tests/fixtures/native_export/options.ves`: `state_observe(inout State, Option[Rtt])` + `rtt_of(in State) -> Option[Rtt]`, one call of each, wrapper plus Vesper code | 116 instructions | 113 instructions |
+| `tests/fixtures/native_export/options.ves.in`: `state_observe(inout State, Option[Rtt])` + `rtt_of(in State) -> Option[Rtt]`, one call of each, wrapper plus Vesper code | 116 instructions | 113 instructions |
 | `SeqRef<u8>::to_vec`, 1 KiB | 428 instructions | 326 instructions |
 | `SeqRef<u8>::to_vec`, 16 or 64 bytes | 218-226 | 212-213 (the allocation dominates) |
 | `SeqRef<u8>::as_slice` (new) | n/a | 22 instructions, no allocation |
@@ -122,3 +122,7 @@ takes Rust values, unless the public event types become the mirrors.
   enums other than Option and Result still convert.
 - `SeqRef::as_slice` covers only packed scalars. A `SeqRef` of a mirrored
   struct could view `&[repr::T]` if handle field views returned mirrors.
+- The options fixture is `options.ves.in`, not `.ves`. The self-hosted
+  parser's repository corpus (`tests/self_host_front_end.rs`) walks every
+  `.ves` file, and `packages/vesper-compiler` does not parse `pub` items
+  yet. The fixture can become `.ves` once it does.
