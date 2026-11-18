@@ -5644,6 +5644,8 @@ dependencies = [
 name = "vesper-beacon"
 version = "0.1.0"
 dependencies = [
+ "vesper-beacon-seed",
+ "vesper-bench",
  "vesper-port-abi",
  "vesper-port-harness",
 ]
