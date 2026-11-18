@@ -10,13 +10,22 @@
 //! [`Region::vec_freeze`] turns a vector into a copyable, read-only
 //! [`RegionSlice<T>`]. Copies of a slice handle name the same buffer and can
 //! only produce shared views.
-use super::{Elems, Region, RegionId, SlotKind, SlotState};
+use super::RegionId;
+#[cfg(not(vesper_port))]
+use super::{Elems, Region, SlotKind, SlotState};
+#[cfg(not(vesper_port))]
 use crate::backing::ChunkBacking;
+#[cfg(not(vesper_port))]
 use crate::error::{AllocError, HandleError, InsertError, OwnerError, RegionError};
 use std::fmt;
 use std::marker::PhantomData;
+#[cfg(not(vesper_port))]
 use std::mem;
 use std::ptr;
+
+// The port-backed build's vector methods (cfg(vesper_port)).
+#[cfg(vesper_port)]
+mod port;
 
 /// Unique owning handle to a region-backed growable vector
 /// (`RegionVec[r, T]`).
@@ -159,7 +168,7 @@ impl<T> fmt::Debug for RegionSlice<T> {
 ///
 /// `base[from..to]` must be initialized, aligned `T`s that nothing else will
 /// read or drop afterwards.
-unsafe fn drop_range<T>(base: *mut T, from: usize, to: usize) {
+pub(crate) unsafe fn drop_range<T>(base: *mut T, from: usize, to: usize) {
     struct Rest<T> {
         base: *mut T,
         from: usize,
@@ -189,12 +198,13 @@ unsafe fn drop_range<T>(base: *mut T, from: usize, to: usize) {
 }
 
 /// Element finalizer registered for a buffer of `T`.
-unsafe fn drop_elems<T>(base: *mut u8, len: usize) {
+pub(crate) unsafe fn drop_elems<T>(base: *mut u8, len: usize) {
     // SAFETY: the region registers this only for a live buffer of `T` whose
     // first `len` elements are initialized, and removes the slot first.
     unsafe { drop_range(base.cast::<T>(), 0, len) }
 }
 
+#[cfg(not(vesper_port))]
 /// Smallest nonzero capacity chosen by amortized growth (as for `Vec`).
 fn min_growth_cap(elem_size: usize) -> usize {
     if elem_size == 1 {
@@ -206,12 +216,14 @@ fn min_growth_cap(elem_size: usize) -> usize {
     }
 }
 
+#[cfg(not(vesper_port))]
 fn buffer_bytes(cap: usize, elem_size: usize) -> Result<usize, AllocError> {
     cap.checked_mul(elem_size)
         .filter(|b| *b <= isize::MAX as usize)
         .ok_or(AllocError::SizeOverflow)
 }
 
+#[cfg(not(vesper_port))]
 impl<B: ChunkBacking> Region<B> {
     // ----- internal element-buffer machinery --------------------------------
 

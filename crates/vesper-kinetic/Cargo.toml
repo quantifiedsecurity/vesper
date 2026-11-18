@@ -12,7 +12,7 @@ cranelift-codegen = "0.125"
 num-bigint = "=0.4.8"
 num-traits = "=0.2.19"
 sha2 = { workspace = true }
-vesper-alloc = { path = "../vesper-alloc" }
+vesper-alloc = { path = "../vesper-alloc/seed", package = "vesper-alloc-seed" }
 vesper-tensor = { path = "../vesper-tensor" }
 
 [dev-dependencies]

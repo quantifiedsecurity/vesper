@@ -1,0 +1,136 @@
+[package]
+name = "vesper-alloc-seed"
+version = "0.1.0"
+edition = "2024"
+description = "Frozen Rust seed copy of vesper-alloc for the compiler's own dependency closure"
+publish = false
+autotests = false
+autoexamples = false
+autobenches = false
+build = false
+
+# The seed-copy rule (port wave P1 lane 2, #899; this crate's port is lane 6,
+# #903): the compiler links this package, the Rust build of ../src, under the
+# library name `vesper_alloc`. Crates inside `cargo tree -p vesper -e
+# normal,build` depend on it with
+# `vesper-alloc = { path = ".../seed", package = "vesper-alloc-seed" }`.
+# Until the Vesper port matches the Rust build in speed, every other
+# dependent uses it too. The Rust code takes bug fixes only.
+[lib]
+name = "vesper_alloc"
+path = "../src/lib.rs"
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+# The ABBA benchmark (examples/region_abba.rs).
+vesper-bench = { path = "../../vesper-bench" }
+
+[[test]]
+name = "arena_core"
+path = "../tests/arena_core.rs"
+
+[[test]]
+name = "arena_model"
+path = "../tests/arena_model.rs"
+
+[[test]]
+name = "arena_region"
+path = "../tests/arena_region.rs"
+
+[[test]]
+name = "cache_btree"
+path = "../tests/cache_btree.rs"
+
+[[test]]
+name = "collections"
+path = "../tests/collections.rs"
+
+[[test]]
+name = "collections_conformance"
+path = "../tests/collections_conformance.rs"
+
+[[test]]
+name = "flat_core"
+path = "../tests/flat_core.rs"
+
+[[test]]
+name = "flat_layout"
+path = "../tests/flat_layout.rs"
+
+[[test]]
+name = "flat_model"
+path = "../tests/flat_model.rs"
+
+[[test]]
+name = "flat_region"
+path = "../tests/flat_region.rs"
+
+[[test]]
+name = "region"
+path = "../tests/region.rs"
+
+[[test]]
+name = "region_ref"
+path = "../tests/region_ref.rs"
+
+[[test]]
+name = "sharded"
+path = "../tests/sharded.rs"
+
+[[test]]
+name = "slab"
+path = "../tests/slab.rs"
+
+[[test]]
+name = "slot_arena_model"
+path = "../tests/slot_arena_model.rs"
+
+[[test]]
+name = "tiled_aosoa"
+path = "../tests/tiled_aosoa.rs"
+
+[[test]]
+name = "tiled_core"
+path = "../tests/tiled_core.rs"
+
+[[test]]
+name = "tiled_layout"
+path = "../tests/tiled_layout.rs"
+
+[[test]]
+name = "tiled_region"
+path = "../tests/tiled_region.rs"
+
+[[test]]
+name = "virtual_arena"
+path = "../tests/virtual_arena.rs"
+
+[[test]]
+name = "zero_alloc"
+path = "../tests/zero_alloc.rs"
+
+[[test]]
+name = "implementation"
+path = "../tests/implementation.rs"
+
+[[example]]
+name = "arena_graph"
+path = "../examples/arena_graph.rs"
+
+[[example]]
+name = "flat_table"
+path = "../examples/flat_table.rs"
+
+[[example]]
+name = "tiled_columns"
+path = "../examples/tiled_columns.rs"
+
+[[example]]
+name = "region_abba"
+path = "../examples/region_abba.rs"
+
+[lints.rust]
+# cfg(vesper_port) is set only by the port-backed package's build script.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(vesper_port)"] }

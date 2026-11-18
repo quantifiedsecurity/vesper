@@ -21,7 +21,7 @@ const THEOREMS: [&str; 7] = [
 ];
 
 fn lean_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lean")
+    crate_dir().join("../../lean")
 }
 
 fn strip_comments(source: &str) -> String {
@@ -186,4 +186,14 @@ fn rust_arena_and_lean_model_agree_on_every_issued_key() {
     }
     assert!(stale_checks > 1000, "sequence must exercise reused slots");
     region.arena_release(arena).ok().unwrap();
+}
+
+/// The crate directory: the seed package (seed/) runs these same tests.
+fn crate_dir() -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if dir.ends_with("seed") {
+        dir.parent().expect("seed/ has a parent").to_path_buf()
+    } else {
+        dir
+    }
 }

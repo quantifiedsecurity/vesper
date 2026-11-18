@@ -5535,7 +5535,7 @@ dependencies = [
  "serde_json",
  "target-lexicon",
  "vesper-aegis",
- "vesper-alloc",
+ "vesper-alloc-seed",
  "vesper-beacon-seed",
  "vesper-bench",
  "vesper-bench-pmu",
@@ -5620,6 +5620,17 @@ name = "vesper-alloc"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
+
+[[package]]
+name = "vesper-alloc-seed"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "vesper-bench",
 ]
 
 [[package]]
@@ -5739,7 +5750,7 @@ dependencies = [
 name = "vesper-crucible"
 version = "0.1.0"
 dependencies = [
- "vesper-alloc",
+ "vesper-alloc-seed",
  "vesper-simpulse",
 ]
 
@@ -5925,7 +5936,7 @@ dependencies = [
  "num-traits",
  "sha2",
  "target-lexicon",
- "vesper-alloc",
+ "vesper-alloc-seed",
  "vesper-tensor",
 ]
 
@@ -6179,6 +6190,7 @@ dependencies = [
 name = "vesper-prism"
 version = "0.1.0"
 dependencies = [
+ "vesper-bench",
  "vesper-port-abi",
  "vesper-port-harness",
 ]

@@ -140,3 +140,14 @@ for t in manifest_corpus_matches_the_rust_build semver_matrix_matches_the_rust_b
 done
 grep -q 'test documented_manifest_is_declarative_and_secure_by_default ... ok' "$log" || { cat "$log"; echo "the divergent loom-calculus port failed an unchanged test" >&2; exit 1; }
 echo "divergent loom-calculus port detected (one failure per ported module)"
+# Port wave P1 lane 6 (#903): vesper-alloc (the Vesper port of the region
+# bookkeeping) and vesper-alloc-seed (the Rust copy every dependent links)
+# both pass the crate's tests; one divergent edit per ported area fails that
+# area's test (EDITS in crates/vesper-alloc/build.rs).
+cargo test --locked -p vesper-alloc -p vesper-alloc-seed
+divergent "Strata port (placement)" rewind_reuses_bytes_and_keeps_spare_chunks size_arithmetic_is_checked \
+    -p vesper-alloc --features vesper-port-divergent --test region
+divergent "Strata port (watermarks)" rewinding_an_outer_watermark_invalidates_inner_ones size_arithmetic_is_checked \
+    -p vesper-alloc --features vesper-port-divergent --test region
+divergent "Strata port (vectors)" linear_elements_block_discard_until_drained capacity_arithmetic_is_checked \
+    -p vesper-alloc --features vesper-port-divergent --test collections

@@ -32,6 +32,7 @@ members = [
     "crates/vesper-loom-audit",
     "crates/vesper-loom-tuf",
     "crates/vesper-alloc",
+    "crates/vesper-alloc/seed",
     "crates/vesper-aura",
     "crates/vesper-beacon",
     "crates/vesper-beacon/seed",
@@ -114,6 +115,7 @@ default-members = [
     "crates/vesper-loom-audit",
     "crates/vesper-loom-tuf",
     "crates/vesper-alloc",
+    "crates/vesper-alloc/seed",
     "crates/vesper-aura",
     "crates/vesper-beacon",
     "crates/vesper-beacon/seed",
@@ -250,7 +252,9 @@ vesper-resonance = { path = "crates/vesper-resonance" }
 vesper-silicon = { path = "crates/vesper-silicon" }
 vesper-vault = { path = "crates/vesper-vault" }
 # Source Strata regions (wave seven lane 29) run on the host region allocator.
-vesper-alloc = { path = "crates/vesper-alloc" }
+# The compiler links the frozen Rust seed copy (seed-copy rule); the Vesper
+# port is the package crates/vesper-alloc.
+vesper-alloc = { path = "crates/vesper-alloc/seed", package = "vesper-alloc-seed" }
 # Source tensor types (wave eight lane 10) evaluate on the host kernels.
 vesper-tensor = { path = "crates/vesper-tensor" }
 ariadne = "0.5"

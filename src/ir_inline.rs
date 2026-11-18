@@ -108,6 +108,11 @@ pub struct Report {
     pub callees: BTreeMap<String, usize>,
     /// Instructions added to the program.
     pub added: usize,
+    /// Caller -> every function whose body now appears in it, including
+    /// bodies inlined into those callees first. Verifiers use it to carry
+    /// per-function policy facts (for example declared realtime effects) to
+    /// the code that holds the inlined copy (#959).
+    pub inlined_into: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Inline small, non-recursive direct calls in `program`, bottom-up over the
@@ -454,6 +459,14 @@ fn inline_into(
             report.added += cost;
             report.sites += 1;
             *report.callees.entry(target.name.clone()).or_default() += 1;
+            let nested = report
+                .inlined_into
+                .get(&target.name)
+                .cloned()
+                .unwrap_or_default();
+            let into = report.inlined_into.entry(caller.name.clone()).or_default();
+            into.insert(target.name.clone());
+            into.extend(nested);
             // The rest of this block moved to the continuation block, which
             // the outer loop reaches later.
             break;
