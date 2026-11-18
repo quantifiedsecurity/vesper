@@ -28,7 +28,11 @@
 //! `Fail[RuntimeError]` `IndexOutOfBounds` on every backend. An abortable
 //! effect may cross a live `inout` sequence or slice (keep-writes, #935): the
 //! caller keeps every write made before the failure. The total `try_get` (an
-//! `Option[T]`) and `try_set` (a `bool`) avoid the failure altogether. An interval `s[a..b]` is evaluated while its sibling loans are
+//! `Option[T]`) and `try_set` (a `bool`) avoid the failure altogether.
+//! The block operations `copy_from` and `fill` and the fixed-width byte
+//! accesses (`read_u32_be`, `write_u16_le`, ...) check their whole interval
+//! once ([`SeqOp::CopyFrom`], [`SeqOp::Fill`], [`SeqOp::Wide`]); native code
+//! lowers them in `src/seq/native_bytes.rs`. An interval `s[a..b]` is evaluated while its sibling loans are
 //! live, so an interval outside `0 <= a <= b <= len` is a run-time fault
 //! like a `TiledSeq` bounds fault: the evaluator and the JIT report an error
 //! and an executable exits with [`FAULT_STATUS`].
@@ -102,6 +106,94 @@ pub enum SeqOp {
     /// length without overflow). A `bool`; total. Created by
     /// [`crate::bounds_hoist`].
     BoundsGuard { inclusive: bool },
+    /// `s.copy_from(at, in src)` (`try_copy_from` when `total`): copies every
+    /// element of `src` to `s[at..at + src.len()]` with one bounds check.
+    /// The checked form raises `IndexOutOfBounds` and the total one yields
+    /// `false` when the interval does not fit; neither writes anything then.
+    CopyFrom { total: bool },
+    /// `s.fill(v)`: every element of `s` becomes `v`. Total.
+    Fill,
+    /// A fixed-width integer read or write of a byte sequence or slice.
+    Wide(Wide),
+}
+
+/// `read_u16_le`, `try_write_u64_be` and the other fixed-width accesses of a
+/// `ChunkSeq[u8]` or `Slice[u8]`: one bounds check for all `bytes` bytes at
+/// `at`, then one unaligned load or store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Wide {
+    /// 2, 4 or 8.
+    pub bytes: u8,
+    /// Big-endian (`_be`) rather than little-endian (`_le`).
+    pub big: bool,
+    /// `write_*(at, v)` rather than `read_*(at)`.
+    pub write: bool,
+    /// The total `try_` form: `Option[uN]` for a read, `bool` for a write.
+    pub total: bool,
+}
+
+const WIDE_NAMES: [&str; 24] = [
+    "read_u16_le",
+    "read_u16_be",
+    "read_u32_le",
+    "read_u32_be",
+    "read_u64_le",
+    "read_u64_be",
+    "write_u16_le",
+    "write_u16_be",
+    "write_u32_le",
+    "write_u32_be",
+    "write_u64_le",
+    "write_u64_be",
+    "try_read_u16_le",
+    "try_read_u16_be",
+    "try_read_u32_le",
+    "try_read_u32_be",
+    "try_read_u64_le",
+    "try_read_u64_be",
+    "try_write_u16_le",
+    "try_write_u16_be",
+    "try_write_u32_le",
+    "try_write_u32_be",
+    "try_write_u64_le",
+    "try_write_u64_be",
+];
+
+impl Wide {
+    fn index(self) -> usize {
+        let width = match self.bytes {
+            2 => 0,
+            4 => 1,
+            _ => 2,
+        };
+        usize::from(self.total) * 12
+            + usize::from(self.write) * 6
+            + width * 2
+            + usize::from(self.big)
+    }
+    pub fn name(self) -> &'static str {
+        WIDE_NAMES[self.index()]
+    }
+    /// The access a method name denotes, such as `try_read_u32_be`.
+    pub fn parse(method: &str) -> Option<Self> {
+        (0..24).find_map(|k| {
+            let wide = Self {
+                bytes: [2, 4, 8][(k / 2) % 3],
+                big: k % 2 == 1,
+                write: (k / 6) % 2 == 1,
+                total: k >= 12,
+            };
+            (WIDE_NAMES[wide.index()] == method).then_some(wide)
+        })
+    }
+    /// The integer type read or written: `u16`, `u32` or `u64`.
+    pub fn int_type(self) -> &'static str {
+        match self.bytes {
+            2 => "u16",
+            4 => "u32",
+            _ => "u64",
+        }
+    }
 }
 
 /// The element access a [`SeqOp::Hoisted`] performs without its check.
@@ -140,7 +232,13 @@ impl SeqOp {
         }
         matches!(
             self,
-            Self::Get | Self::Set | Self::Finish | Self::SliceGet | Self::SliceSet
+            Self::Get
+                | Self::Set
+                | Self::Finish
+                | Self::SliceGet
+                | Self::SliceSet
+                | Self::CopyFrom { total: false }
+                | Self::Wide(Wide { total: false, .. })
         )
     }
     /// Whether the operation mutates its receiver (argument 0) in place.
@@ -157,6 +255,9 @@ impl SeqOp {
                 | Self::Clear
                 | Self::Truncate
                 | Self::Extend
+                | Self::CopyFrom { .. }
+                | Self::Fill
+                | Self::Wide(Wide { write: true, .. })
         )
     }
     /// How the operation borrows its receiver.
@@ -194,6 +295,10 @@ impl SeqOp {
             Self::Str(op) => op.name(),
             Self::Hoisted(access) => access.checked(false).name(),
             Self::BoundsGuard { .. } => "bounds_guard",
+            Self::CopyFrom { total: false } => "copy_from",
+            Self::CopyFrom { total: true } => "try_copy_from",
+            Self::Fill => "fill",
+            Self::Wide(wide) => wide.name(),
         }
     }
 }
@@ -375,6 +480,16 @@ pub fn fip_allocation(world: &World, callee: &Expr) -> Option<&'static str> {
     .then(|| op.name())
 }
 
+/// The block operations of both `ChunkSeq[T]` and `Slice[T]`.
+fn shared_method(method: &str) -> Option<SeqOp> {
+    Some(match method {
+        "copy_from" => SeqOp::CopyFrom { total: false },
+        "try_copy_from" => SeqOp::CopyFrom { total: true },
+        "fill" => SeqOp::Fill,
+        _ => SeqOp::Wide(Wide::parse(method)?),
+    })
+}
+
 pub fn resolve(callee_name: &str, receiver_ty: Option<&Type>) -> Option<SeqOp> {
     if let Some(t) = receiver_ty {
         let method = callee_name.rsplit("::").next().unwrap_or(callee_name);
@@ -392,9 +507,9 @@ pub fn resolve(callee_name: &str, receiver_ty: Option<&Type>) -> Option<SeqOp> {
                 "try_set" => SeqOp::TrySet,
                 "clear" => SeqOp::Clear,
                 "truncate" => SeqOp::Truncate,
-                "extend" => SeqOp::Extend,
+                "extend" | "extend_from_slice" => SeqOp::Extend,
                 "as_slice" | "as_slice_mut" => SeqOp::AsSlice,
-                _ => return None,
+                _ => return shared_method(method),
             });
         }
         if is_slice_type(t) {
@@ -404,7 +519,7 @@ pub fn resolve(callee_name: &str, receiver_ty: Option<&Type>) -> Option<SeqOp> {
                 "set" => SeqOp::SliceSet,
                 "try_get" => SeqOp::TryGet,
                 "try_set" => SeqOp::TrySet,
-                _ => return None,
+                _ => return shared_method(method),
             });
         }
         return None;

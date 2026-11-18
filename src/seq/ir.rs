@@ -59,9 +59,10 @@ impl Lower<'_> {
                             let pass = op.receiver_pass();
                             let mut operands: Vec<Argument> =
                                 vec![self.argument(base, pass, vec![])];
-                            for a in args {
+                            for (i, a) in args.iter().enumerate() {
                                 let pass = if op == SeqOp::Extend
                                     || op == SeqOp::Str(crate::strings::StrOp::PushStr)
+                                    || (matches!(op, SeqOp::CopyFrom { .. }) && i == 1)
                                 {
                                     Pass::In
                                 } else {

@@ -178,7 +178,9 @@ impl Checker<'_> {
             | SeqOp::SliceGet
             | SeqOp::TryGet
             | SeqOp::Truncate
-            | SeqOp::Extend => 1,
+            | SeqOp::Extend
+            | SeqOp::Fill => 1,
+            SeqOp::Wide(w) if !w.write => 1,
             _ => 2,
         };
         if args.len() != arity {
@@ -201,11 +203,24 @@ impl Checker<'_> {
                     ),
                     span.clone(),
                 ),
-            SeqOp::Extend if known && mode != Mode::Copy => self.error(
-                "E1522",
-                format!("extend copies its elements, but '{elem_ty}' is not copy"),
-                span.clone(),
-            ),
+            SeqOp::Extend | SeqOp::CopyFrom { .. } | SeqOp::Fill if known && mode != Mode::Copy => {
+                self.error(
+                    "E1522",
+                    format!("{method} copies its elements, but '{elem_ty}' is not copy"),
+                    span.clone(),
+                )
+            }
+            SeqOp::Wide(_)
+                if known && crate::numeric::default_type(&elem_ty) != Type::named("u8") =>
+            {
+                self.error(
+                    "E1525",
+                    format!(
+                        "'{method}' reads and writes bytes, so it needs a ChunkSeq[u8] or Slice[u8], found element type '{elem_ty}'"
+                    ),
+                    span.clone(),
+                )
+            }
             SeqOp::Set | SeqOp::SliceSet | SeqOp::TrySet | SeqOp::Clear | SeqOp::Truncate
                 if known && mode == Mode::Linear =>
             {
@@ -229,19 +244,23 @@ impl Checker<'_> {
                         | SeqOp::SliceSet
                         | SeqOp::TryGet
                         | SeqOp::TrySet
-                        | SeqOp::Truncate,
+                        | SeqOp::Truncate
+                        | SeqOp::CopyFrom { .. }
+                        | SeqOp::Wide(_),
                     0
                 )
             );
+            let source_arg =
+                op == SeqOp::Extend || (matches!(op, SeqOp::CopyFrom { .. }) && i == 1);
             if index_arg {
                 self.seq_by_value(method, a);
                 let t = self.expr_expected(&a.expr, env, Usage::Own, &u64_ty);
                 self.expect_type(&u64_ty, &t, a.expr.span.clone());
-            } else if op == SeqOp::Extend {
+            } else if source_arg {
                 if a.explicit && a.pass != Pass::In {
                     self.error(
                         "E0308",
-                        "extend borrows its source slice by 'in'",
+                        format!("{method} borrows its source slice by 'in'"),
                         a.expr.span.clone(),
                     );
                 }
@@ -255,10 +274,15 @@ impl Checker<'_> {
                 {
                     self.error(
                         "E0301",
-                        "extend cannot read from the sequence it grows",
+                        format!("{method} cannot read from the sequence it writes"),
                         a.expr.span.clone(),
                     );
                 }
+            } else if let (SeqOp::Wide(w), 1) = (op, i) {
+                self.seq_by_value(method, a);
+                let int_ty = Type::named(w.int_type());
+                let t = self.expr_expected(&a.expr, env, Usage::Own, &int_ty);
+                self.expect_type(&int_ty, &t, a.expr.span.clone());
             } else if i < arity {
                 let t = self.expr_expected(&a.expr, env, Usage::Own, &elem_ty);
                 self.expect_type(&elem_ty, &t, a.expr.span.clone());
@@ -272,8 +296,14 @@ impl Checker<'_> {
         Some(match op {
             SeqOp::Len | SeqOp::SliceLen => u64_ty,
             SeqOp::Pop | SeqOp::TryGet => Type::Named("Option".into(), vec![elem_ty]),
-            SeqOp::TrySet => Type::named("bool"),
+            SeqOp::TrySet | SeqOp::CopyFrom { total: true } => Type::named("bool"),
             SeqOp::Get | SeqOp::SliceGet => elem_ty,
+            SeqOp::Wide(w) => match (w.write, w.total) {
+                (false, false) => Type::named(w.int_type()),
+                (false, true) => Type::Named("Option".into(), vec![Type::named(w.int_type())]),
+                (true, false) => Type::unit(),
+                (true, true) => Type::named("bool"),
+            },
             _ => Type::unit(),
         })
     }

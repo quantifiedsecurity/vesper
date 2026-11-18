@@ -1,4 +1,98 @@
-# Stage 1 performance lane 3, part 1: bounds-check hoisting and `mul_wide`
+# Stage 1 performance lane 3: byte loops
+
+Part 1 (PR #942) added bounds-check hoisting and `mul_wide`. Part 2 (this
+update) adds the block and fixed-width sequence builtins. Part 2 is described
+first; the part 1 report follows unchanged except for "What is left".
+
+## Part 2: copy, fill and fixed-width builtins
+
+Baseline: `main` at 2368d88, after lane 2 (#932, PR #945) merged.
+
+### What changed
+
+- **New methods** on `ChunkSeq[T]` and `Slice[T]` (`src/seq.rs`,
+  `SeqOp::CopyFrom`, `SeqOp::Fill`, `SeqOp::Wide`):
+  - `s.copy_from(at, in src)` copies all of `src` to `s[at..at + src.len()]`;
+    `try_copy_from` is its total form (`bool`). The element type must be copy.
+    `src` cannot be a view of `s`'s own sequence (`E0301`, as for `extend`),
+    but disjoint views of one sequence passed side by side
+    (`f(inout s[0..k], in s[k..n])`) can be copied between.
+  - `s.fill(v)` sets every element. Total.
+  - `ChunkSeq::extend_from_slice` is another name for `extend`.
+  - On `ChunkSeq[u8]` and `Slice[u8]`: `read_u16_le`, `read_u16_be`,
+    `read_u32_le`, `read_u32_be`, `read_u64_le`, `read_u64_be`, the matching
+    `write_*(at, v)`, and their total forms `try_read_*` (an `Option`) and
+    `try_write_*` (a `bool`). Any other element type is `E1525`.
+  - The checked forms check the whole interval once and raise
+    `Fail[RuntimeError]` `IndexOutOfBounds` before writing anything, so a short
+    buffer is never partly written. The total forms write nothing either.
+- **Typing** in `src/seq/check.rs`, the source operand's `in` pass in
+  `src/seq/ir.rs` (a one-line change), reference semantics in
+  `src/seq/eval.rs`. The Lean model refuses the new operations
+  (`src/seq/lean.rs`), as it does `inout` slices.
+- **Native lowering** in the new `src/seq/native_bytes.rs`, a child module of
+  `src/seq/native.rs` (whose hunk is the module declaration and a three-line
+  dispatch). Copies are one bounds check and a `memmove` call; `fill` of bytes
+  is a `memset` call, and other element types use a store loop. Wide reads and
+  writes are one bounds check, one unaligned load or store of 2, 4 or 8 bytes
+  and a `bswap` for big-endian. A freestanding image (no C library) falls back
+  to byte loops. `extend` now also uses `memmove` instead of a byte loop.
+- **`@vesper-std/bytes`** calls the builtins: each `read_*` and `put_*` is one
+  `try_` call, and each `push_*` appends zero bytes and writes them with one
+  `try_write_*`. The API and the `@vesper-std` tests are unchanged and pass.
+- **Manuscript:** one new bullet in section 13 (sequences) specifies the
+  methods, their single check and their overlap rule.
+- **Tests:** `tests/native_bytes_builtins.rs`, 7 differential tests
+  (evaluator, JIT with and without `optimize`, AOT executable): every width and
+  byte order at every offset, including slices that start at odd bytes;
+  writes read back; the total forms at and past the end, including the offset
+  `u64::MAX`; checked forms that fault before writing, with the writes of the
+  earlier calls kept; copies on sequences and slices, an empty copy at the
+  end, a copy between disjoint views of one sequence; `fill` of bytes and of
+  words; and the type errors.
+
+### Stage 1 guard (part 2)
+
+Nothing under `src/verified_codegen/**`, `src/ir.rs`, `ir_opt::optimize`,
+`lean/**`, `bootstrap/**` or `packages/vesper-compiler/**` changed. The new
+methods enter a program only when its source calls them, and the Stage 1
+corpus does not. The `extend` lowering change is in the Cranelift path only.
+The `bootstrap-stage1` run on this branch is linked from the PR body.
+
+### Port measurements (part 2)
+
+Same host and method as part 1: callgrind instruction counts (`Ir`), release
+builds. "Before" is the unchanged port compiled by this branch, which includes
+lanes 1, 2, 4 and 5. "After" rewrites the hot byte loops to the builtins in a
+local experiment that is not pushed. The outputs are identical: the warp-tcp
+worker printed the same results for Rust, before and after, and the 67
+warp-tcp tests and Prism's `malformed` tests pass with the rewrite.
+
+| Port, workload | Rust Ir | Vesper Ir before | Vesper Ir after | ratio before → after |
+|---|---|---|---|---|
+| warp-tcp codec, 64 requests | 33.9 M | 259.0 M | 75.1 M | 7.6x → 2.2x |
+| warp-tcp transfer, 4 transfers | 8.74 M | 46.8 M | 19.0 M | 5.4x → 2.2x |
+| Prism `tests/malformed.rs` | 101.8 M | 264.5 M | 252.7 M | 2.6x → 2.5x |
+
+The rewrites:
+
+- **warp-tcp** (`segment.ves`, `options.ves`, `conn_input.ves`): the checksum
+  `sum_range_raw` reads 8 bytes at a time with `read_u64_be` and adds the two
+  32-bit halves (RFC 1071: the folded one's complement sum is the same), then
+  `read_u16_be` for the tail. `rd16`/`rd32`/`wr16`/`wr32` use
+  `try_read_u16_be` and friends, keeping the old partial behavior at the end
+  of the buffer. `copy_into` uses `try_copy_from` when the source interval is
+  in bounds. The checksum was 92% of the codec's instructions.
+- **Prism** (`decoder/src/syntax.ves`, `response/src/lib.ves`): `push_range`,
+  the header copies of the response writer and `push_text` use
+  `extend_from_slice` instead of a `push` per byte. Prism spends most of its
+  time in byte-at-a-time scanning (`byte(in s, i)` in parser loops), which a
+  copy cannot replace; lane 6's `find_byte` is the builtin for that.
+- **BBR** has no byte loops. Its 64x64→128 multiply moved to `mul_wide` in
+  part 1 (no measurable change, because its 32-bit fast paths almost never
+  reach the full multiply), so it was not re-measured.
+
+## Part 1: bounds-check hoisting and `mul_wide`
 
 Claim: #933. Prompt: `docs/agent-prompts/stage1-perf/03-byte-loops.md`.
 Baseline: `main` at 22b7296 (a descendant of 943d901).
@@ -134,13 +228,12 @@ Why the ports barely moved:
 
 ## What is left
 
-- After lane 2 (#932) merges: `copy_from`, `ChunkSeq::extend_from_slice`,
-  `fill`, `read_*`/`write_*` (u16/u32/u64, le/be) with one bounds check each,
-  lowered to `memcpy`/`memmove` and unaligned loads with a byte swap. Then
-  `@vesper-std/bytes` switches to them, and the ports are re-measured with
-  their hot loops rewritten (warp-tcp's checksum and copies, Prism's byte
-  reads).
+- Lane 6 (#936) builds the vectorized byte builtins (`sum_be16`, slice `eq`,
+  `find_byte`) on part 2's lowering module, `src/seq/native_bytes.rs`.
+- The ports adopting the builtins is port follow-up work; this lane only
+  measured local rewrites.
 - Hoisting extensions: strided indexes (`c + m*i`), accesses through `Str`
   (`try_byte_at`), and `inout` slice arguments to calls in the loop (callees
   cannot resize a slice). The last one is safe but not yet allowed.
+- The Lean model of the new builtins (refused today).
 - The native register model (above), outside this lane.

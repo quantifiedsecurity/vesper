@@ -207,6 +207,34 @@ impl Runtime<'_> {
                     len,
                 })
             }
+            SeqOp::CopyFrom { total } => {
+                let (cell, start, len) = view(arg(0)?)?;
+                let at = index(arg(1)?)?;
+                let (src, from, n) = view(arg(2)?)?;
+                if !fits(len, at, n) {
+                    return Ok(if total {
+                        V(Value::Bool(false))
+                    } else {
+                        OutOfBounds
+                    });
+                }
+                // Copy out first: the source may be a view of the same cell.
+                let items = src.borrow()[from..from + n].to_vec();
+                let at = start + at as usize;
+                cell.borrow_mut()[at..at + n].clone_from_slice(&items);
+                V(if total {
+                    Value::Bool(true)
+                } else {
+                    Value::Tuple(vec![])
+                })
+            }
+            SeqOp::Fill => {
+                let (cell, start, len) = view(arg(0)?)?;
+                let value = arg(1)?.clone();
+                cell.borrow_mut()[start..start + len].fill(value);
+                V(Value::Tuple(vec![]))
+            }
+            SeqOp::Wide(wide) => return self.wide_op(wide, &args, site),
             SeqOp::Str(_) | SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. } => {
                 unreachable!("string and hoisted operations return above")
             }
@@ -230,7 +258,78 @@ impl Runtime<'_> {
     }
 }
 
+/// Whether `n` elements starting at `at` fit in `len`.
+fn fits(len: usize, at: u64, n: usize) -> bool {
+    at <= len as u64 && n as u64 <= len as u64 - at
+}
+
 impl Runtime<'_> {
+    /// `read_*`, `write_*` and their total `try_` forms on a byte sequence:
+    /// the reference semantics of one bounds check for the whole width.
+    fn wide_op(
+        &mut self,
+        wide: crate::seq::Wide,
+        args: &[Value],
+        site: &crate::ast::Span,
+    ) -> Result<SeqOutcome, String> {
+        use SeqOutcome::{OutOfBounds, Value as V};
+        let arg = |i: usize| {
+            args.get(i)
+                .ok_or_else(|| format!("ChunkSeq::{} is missing an operand", wide.name()))
+        };
+        let (cell, start, len) = view(arg(0)?)?;
+        let at = index(arg(1)?)?;
+        let n = usize::from(wide.bytes);
+        let bits = u32::from(wide.bytes) * 8;
+        let inside = fits(len, at, n);
+        // Only an in-bounds offset is made absolute: `at` may be near
+        // `u64::MAX`.
+        let at = if inside { start + at as usize } else { 0 };
+        if wide.write {
+            if inside {
+                let v = index(arg(2)?)?;
+                let bytes = v.to_le_bytes();
+                let mut items = cell.borrow_mut();
+                for k in 0..n {
+                    let b = if wide.big { bytes[n - 1 - k] } else { bytes[k] };
+                    items[at + k] = Value::UInt(u64::from(b), 8);
+                }
+            }
+            return Ok(match (wide.total, inside) {
+                (true, _) => V(Value::Bool(inside)),
+                (false, true) => V(Value::Tuple(vec![])),
+                (false, false) => OutOfBounds,
+            });
+        }
+        let read = if inside {
+            let items = cell.borrow();
+            let mut v: u64 = 0;
+            for k in 0..n {
+                let b = index(&items[if wide.big { at + k } else { at + n - 1 - k }])?;
+                v = (v << 8) | (b & 0xff);
+            }
+            Some(Value::UInt(v, bits))
+        } else {
+            None
+        };
+        Ok(match (wide.total, read) {
+            (false, Some(v)) => V(v),
+            (false, None) => OutOfBounds,
+            (true, read) => {
+                let (constructor, fields) = match read {
+                    Some(v) => ("Some", BTreeMap::from([("0".to_string(), v)])),
+                    None => ("None", BTreeMap::new()),
+                };
+                V(self.construct_data(
+                    "Option".into(),
+                    constructor.into(),
+                    fields,
+                    Some(site.clone()),
+                )?)
+            }
+        })
+    }
+
     /// A string primitive (§13 strings). A string and a view are both a
     /// Rust `String` here: a view is a copy of its bytes, which no
     /// operation can tell apart from a borrow because views are read-only.
