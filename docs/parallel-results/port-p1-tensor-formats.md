@@ -7,8 +7,9 @@ This is the first part of the lane. It splits the crate into the seed copy
 and the port-backed build, and ports the element and block formats, every
 quantizer, the row decoder of `Matrix`, sampling and the FP32 kernels that
 sampling and decoding use. Part 2 ports the tokenizer and the container
-readers; part 3 ports the K/V pool's bookkeeping and the shape planner (see
-"Not ported yet" for what is left).
+readers; part 3 ports the K/V pool's bookkeeping and the shape planner; part 4
+ports scalar paged attention, the pure checks of `llama.rs` and the memory
+map's policy behind a `.vsys` import (see "Not ported yet" for what is left).
 
 ## Builds
 
@@ -43,8 +44,9 @@ Public modules and the part of each this PR ports:
 | `kv` | `KvPool` and its types | third part: every pool operation's bookkeeping and byte moves; the storage, the borrowed views and the pool identity check stay Rust |
 | `shape` | `Dimensions`, `CheckedShape`, GQA helpers | third part: `normalize` (which every plan and discharge runs on) and `gqa_ratio`; the arena's names, owner tags and the obligation lists stay Rust |
 | `host` | the small FP32/Q4_0 graph executor, `decode_fp16` | outside the lane's boundary (`src/host.rs`) |
-| `attention`, `llama` | paged GQA attention, model loading and inference | second part (pure tensor parts), host glue stays |
-| `simd`, `mmap` | `std::arch` kernels, file mapping | stay Rust (F11 #587; memory mapping) |
+| `attention`, `llama` | paged GQA attention, model loading and inference | fourth part: scalar-kernel attention (both schedules), `Config::validate`, the llama2.c checkpoint and `tokenizer.bin` checks, `Tokenizer::decode`; the forward pass, GGUF/safetensors model glue and the SIMD kernels stay Rust |
+| `mmap` | file mapping | fourth part: `Mapping::open`'s policy in Vesper, the stat and map calls as the `.vsys` library `WeightFile` |
+| `simd` | `std::arch` kernels | stays Rust (F11 #587) |
 
 Unit tests in the crate: `json.rs` (1) and `kv.rs` (3). Neither module is
 ported yet, so both run unchanged in both packages.
@@ -151,24 +153,46 @@ name order, which one ordered pass over the names and the environment gives,
 so sorting ranks sorts names. `unify`, `matmul`, `gqa_rope` and `discharge`
 are unchanged decision code over `normalize`.
 
+### Part 4: attention, model loading and the memory map
+
+| File | Rust source | Contents |
+|---|---|---|
+| `lib.ves` (`attend`) | `attention.rs` | paged GQA decode attention with the scalar kernel: two-pass (scores, softmax, values, the `run.c` order) and online (per-page running maximum and sum), FP32 and BF16 K/V, over the pool's tables and storage with the same lease check per page as `read_page`, and the non-finite checks |
+| `llama.ves` | `llama.rs` | `Config::validate`; `Model::from_llama2c`'s checks in the Rust build's order (header fields, limits, shape rules, each weight run present then finite, the legacy RoPE tables, the exact length); `Tokenizer::from_llama2c`'s checks; the bytes `Tokenizer::decode` prints (BOS space, `<0xHH>`, which also takes `<0x+H>` as `u8::from_str_radix` does, and unprintable single bytes) |
+| `lib.ves` (`open_weights`) | `mmap.rs` | `Mapping::open` after the file is opened: stat, the 64 GiB limit, the empty-file case and the map, the last two through the `.vsys` library `WeightFile` |
+
+The attention call checks shapes, the GQA ratio and the causal limit in Rust
+(each is a distinct error the Rust build returns first), then makes one port
+call per attention for all heads; `Kernel::Simd` stays on the Rust
+`simd.rs` path. After the port's checks, the Rust wrapper builds the model's
+vectors and the tokenizer's pieces from offsets, without checking again.
+
+`WeightFile` is implemented by `port::files` in Rust: the file and its
+mapping sit in a per-thread slot for the one synchronous `open_weights`
+call, because the `.vsys` ABI has no handles or dynamic slices (a path cannot
+cross). The `unsafe` `memmap2::Mmap::map` call moves into that shim in the
+port build.
+
 ## What stays in Rust
 
 | File | Reason | Unblocked by |
 |---|---|---|
 | `src/simd.rs` | `std::arch` kernels | source `VVec` (F11, #587) |
-| `src/mmap.rs` | the one `memmap2::Mmap::map` call | a `.vsys` mapping surface (second part) |
+| `src/mmap.rs` file opening, `Mapping::read`, `WeightBytes` | paths and `Arc` ownership; the `.vsys` ABI has no handles or dynamic slices | a `.vsys` ABI with handles |
 | `src/host.rs` | outside the lane's exclusive boundary; `host::decode_fp16` stays Rust, the port has its own copy | the lane that owns `host.rs` |
 | `ops::rope`, `ops::rope_half` | `powf`, `sin`, `cos` from the platform library; Vesper's `sin`/`cos` lack Payne-Hanek reduction (#893) and would change bits | a `.vsys` import like `Libm`, or Vesper transcendentals the Rust build adopts |
 | `kv` storage and views, the pool identity check | the bytes are the caller's views; the owner tag never crosses | nothing; the views could become slices of the port's storage |
 | `shape` names, owner tags, obligation lists | strings and Rust enums the export ABI cannot carry | richer export types |
-| `attention`, `llama` | not ported yet | a later part of this lane |
+| `attention` SIMD schedule | `simd.rs` intrinsics | F11 (#587) |
+| `llama` forward pass, batching, sessions, GGUF/safetensors model glue | host glue over `Matrix`, `KvCache` and RoPE; the kernels it calls are already ported | nothing for the kernels; RoPE as above |
 | `safetensors.rs` past the JSON reader | interprets the parsed `Value` tree only | nothing; it could move with the tree builder |
 | `Value` tree building in `json.rs`, `gguf.rs` | the export ABI cannot return a recursive Rust enum; the port returns a checked tape | richer export types |
 | `seed/` | the compiler's copy | self-hosting Stage 2 |
 
 The crate's `unsafe` count is unchanged in the Rust build. The port-backed
 build adds the generated binding (`port/binding.rs`, `unsafe` FFI calls) and
-one `#[unsafe(no_mangle)]` shim function; the Vesper source has none.
+three `#[unsafe(no_mangle)]` shim functions (`Libm` and `WeightFile`), one of
+which makes the `memmap2` call; the Vesper source has none.
 
 ## Unit tests and test changes
 
@@ -196,6 +220,15 @@ one `#[unsafe(no_mangle)]` shim function; the Vesper source has none.
   environments, contractions, matmuls and GQA plans with their discharges),
   whose results must match and which reach every shape error. The unit tests
   in `kv.rs` now go through test accessors that both builds have.
+- Part 4 adds three: 96 attention scripts (K/V heads 1-3, GQA ratios 1-4,
+  head widths 2-16, both formats and schedules, causal limits, infinite keys)
+  whose outputs must match bit for bit and which reach NonFinite and the
+  causal-limit error; llama2.c checkpoints and tokenizers (a tiny model, its
+  every truncation, NaN weights, edited header fields, the stories260K and
+  tok512 files, tokenizer truncations and byte edits, and crafted decoder
+  pieces) whose models, pieces, decodes and errors must match; and weight
+  files (empty, small, missing, a directory) whose mappings and errors must
+  match.
 
 All 100 tests pass against both packages (`cargo test -p vesper-tensor -p
 vesper-tensor-seed`, Linux x86_64). After part 2, the port-backed package passes
@@ -203,7 +236,9 @@ vesper-tensor-seed`, Linux x86_64). After part 2, the port-backed package passes
 `tests/abba.rs`), Linux x86_64; `port/test-port.sh` passes with the eight
 divergent edits. After part 3, the port-backed package passes 96 tests (10
 ignored benchmarks) and the seed 90; `port/test-port.sh` passes with ten
-divergent edits.
+divergent edits. After part 4, the port-backed package passes 99 tests (12
+ignored benchmarks) and the seed 90; `port/test-port.sh` passes with
+thirteen divergent edits.
 
 ## Divergence checks
 
@@ -224,6 +259,9 @@ to fail and an unchanged test of the same file to pass:
 | `gguf.rs` (`store.ves`) | the default alignment is 16 | `both_builds_read_the_same_gguf_files` | same |
 | `kv.rs` (`pool.ves`) | a sequence may hold one token more than its limit | `both_builds_run_the_same_kv_scripts` | same |
 | `shape.rs` (`shape.ves`) | a product may hold one factor more than the limit | `both_builds_plan_the_same_shapes` | same |
+| `attention.rs` (`lib.ves`) | BF16 elements lose a bit of their high byte | `both_builds_attend_the_same` | same |
+| `llama.rs` (`llama.ves`) | `<0x-A>` decodes as a byte instead of `<0x+A>` | `both_builds_read_the_same_llama2c_files` | same |
+| `mmap.rs` (`lib.ves`) | an empty weight file fails to map | `both_builds_open_the_same_weight_files` | same |
 
 A first tokenizer edit (equal-score merges take the rightmost pair) passed
 every test: `tok512` never offers two mergeable pairs with the same score, so
@@ -254,6 +292,9 @@ port compiled by the in-tree `vesper` at 69c79b9 (Cranelift, inliner on).
 | GGUF header, stories260K (part 2) | 65.5 us | 106.6 us | 1.63x | [1.57, 1.66] |
 | K/V pool, 1,024 FP32 appends and reads, 8x64 heads (part 3) | 445.8 us | 684.7 us | 1.53x | [1.51, 1.56] |
 | shape plan, 64 llama layers (part 3) | 1180.4 us | 2841.4 us | 2.41x | [2.40, 2.42] |
+| attention, two-pass, 16 query / 4 K/V heads x 64, 512 tokens (part 4) | 1075.6 us | 4070.5 us | 3.83x | [3.59, 3.97] |
+| attention, online, same shape (part 4) | 1004.7 us | 3799.8 us | 3.91x | [3.67, 3.97] |
+| llama2.c load, stories260K and tok512 (part 4) | 466.8 us | 689.0 us | 1.78x | [1.58, 1.82] |
 
 The part 2 rows were measured on the same machine with the compiler at
 153f264. The safetensors and GGUF rows time the whole `from_vec`, so the
@@ -269,8 +310,15 @@ over it; each `normalize` walks the arena up to the requested node, as the
 Rust build does, and the port adds one pass over the names and one zeroed
 buffer per call.
 
-Every workload but the GGUF reader and the K/V pool is past the plan's 2x
-stop rule. Under the owner's parity rule
+The part 4 rows were measured on the same machine with the compiler at
+3c075a4, scalar kernel on both sides. The attention loops read each K/V
+element through a checked `read_u32_le` (or two byte reads for BF16) and
+round-trip every output element through its bits; splitting the dot and
+axpy loops by format took it from 5.4x to 3.8x. The load row includes the
+copies into `Vec<f32>` that both builds make.
+
+Every workload but the GGUF reader, the K/V pool and the llama2.c load is
+past the plan's 2x stop rule. Under the owner's parity rule
 the port stays non-default and the Rust code stays. Where the time goes, from
 the source (not profiled yet): every element read and write is a checked
 `s[i]`/`set` with a failure status, every float goes through
@@ -299,6 +347,10 @@ benchmark in this part.
    `inout` status slice before raising.
 7. The export ABI has no recursive or owned result types, so the readers
    return a tape of words that Rust turns into values.
+8. `.vsys` foreign functions take only fixed-arity `CSlice`s and scalars: no
+   dynamic slice (a path) and no handle, so `WeightFile` works on a file the
+   Rust wrapper parks in a per-thread slot. A `ForeignVal[bool]` result is a
+   `Result[bool, ForeignInvalid]` in source, so the library returns `u64`.
 
 ## Platforms run
 
@@ -312,6 +364,8 @@ links the seed until Stage 2.
 
 ## Not ported yet
 
-The pure tensor parts of `attention.rs` and `llama.rs`, and the memory map
-as a `.vsys` surface. The crate has no `tokenizer.json` reader, so part 1's
-list naming one was wrong.
+Nothing the plan lists as portable is left. What stays Rust is in "What
+stays in Rust": the SIMD kernels (F11), RoPE (platform `sin`/`cos`), the
+forward pass and model glue over Rust containers, `host.rs`, and the parts of
+each module that hold Rust strings, enums or `Arc`s. The crate has no
+`tokenizer.json` reader, so part 1's list naming one was wrong.

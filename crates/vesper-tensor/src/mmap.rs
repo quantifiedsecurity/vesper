@@ -35,7 +35,23 @@ pub struct Mapping {
     backing: Backing,
 }
 impl Mapping {
+    /// Maps `path` read-only. The port build opens the file here and lets
+    /// the port's `open_weights` stat, check and map it through the `.vsys`
+    /// library `WeightFile` (src/port.rs).
+    #[cfg(vesper_port)]
+    pub fn open(path: &Path) -> Result<Arc<Self>, Error> {
+        let file = File::open(path).map_err(|_| Error::Io("open weight file"))?;
+        let backing = match crate::port::files::with_file(file) {
+            (0, Some(map)) => Backing::Mapped(map),
+            (1, _) => Backing::Owned(Vec::new()),
+            (2, _) => return Err(Error::Io("stat weight file")),
+            (3, _) => return Err(Error::Limit("weight file bytes")),
+            _ => return Err(Error::Io("map weight file")),
+        };
+        Ok(Arc::new(Self { backing }))
+    }
     /// Maps `path` read-only.
+    #[cfg(not(vesper_port))]
     pub fn open(path: &Path) -> Result<Arc<Self>, Error> {
         let file = File::open(path).map_err(|_| Error::Io("open weight file"))?;
         let len = file
