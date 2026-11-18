@@ -590,7 +590,12 @@ impl<M: Module> Codegen<'_, '_, M> {
         let tag = self.b.ins().iconst(types::I64, some_tag as i64);
         self.seq_set_word(out, 0, tag);
         if lazy {
-            let end = payload as u32 + Layout::of(self.world, elem)?.size;
+            // An `f32` payload store writes only the low half of its word.
+            let end = if elem.name() == "f32" {
+                payload as u32
+            } else {
+                payload as u32 + Layout::of(self.world, elem)?.size
+            };
             for off in (8..layout.size).step_by(8) {
                 if off < payload as u32 || off >= end {
                     let zero = self.zero();
