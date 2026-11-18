@@ -139,9 +139,7 @@ jobs:
     if: ${{ always() && !cancelled() }}
     name: Windows (x86_64 MSVC)${{ needs.plan.outputs.profile == 'full' && ' (full)' || '' }}
     runs-on: windows-latest
-    # The serial port harness alone takes ~50 min here once the loom
-    # calculus and solver ports join it (#913, #914).
-    timeout-minutes: 90
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
