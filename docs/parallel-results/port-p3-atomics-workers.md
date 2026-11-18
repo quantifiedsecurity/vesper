@@ -1,8 +1,8 @@
 # Port wave P3a lane 2: source atomics (F12, #1037)
 
-Base: `3c075a4` (main). Scope of this PR: the atomics half. The scoped-worker
-half waits on the Pulse pool (wave-nine lane 22, #599), which has no PR yet;
-it is a follow-up on the same claim (see "Remaining").
+Atomics half: PR #1052 (merged, base `3c075a4`). Scoped-worker half: the
+follow-up PR on the same claim, stacked on the Pulse pool part 1 (wave-nine
+lane 22, #599, PR #1058). It is described under "Scoped workers" below.
 
 ## What changed
 
@@ -109,8 +109,8 @@ cloud host, 2,000,000 `fetch_add(1, Relaxed)` per thread, three rounds:
 
 The gap is the cell indirection: each operation loads the struct word, then
 the sequence header's data pointer, before the atomic. Cranelift does not
-hoist those loads out of the loop. A 4-worker parallel sum needs scoped
-workers and is measured with that half.
+hoist those loads out of the loop. 
+BENCH_PLACEHOLDER
 
 ## Decisions
 
@@ -126,11 +126,61 @@ workers and is measured with that half.
 - The enum is `MemoryOrder`, not `Ordering`, which would collide with
   comparison orderings in ported code.
 
+## Scoped workers
+
+- **Surface** (manuscript §15.4 "Scoped Workers (`parallel_for`)"):
+  `parallel_for(in data, n, body)` runs `body(in data, i)` for every `i` in
+  `0..n` and returns after the last one. The signature is
+  `fn parallel_for[A](in data: A, n: u64, body: fn @copy(in A, u64))`. It
+  is a prelude function (`atomics::WORKERS_PRELUDE`), injected only when a
+  module calls `parallel_for` and declares none of its own.
+- **Sharing rule.** Workers share `data` only by `in`, so the borrow rules
+  already keep plain fields race-free and an `Atomic` cell is the only
+  thing they update together. `E0824` refuses `parallel_for(inout x, ..)`
+  and a body whose first parameter is `inout` or `sink`
+  (`tests/fixtures/scoped_workers/shared_inout.ves` is the fixture, checked
+  through `vesper check` too). `E0823` refuses a body that is a closure,
+  generic, or has a non-empty effect row: a worker runs the body on its own,
+  with no handler, capability or capture from the caller.
+- **Join.** The call returns only after every iteration, so no worker
+  outlives the borrow and the call needs no effect. A body cannot fail
+  (empty row), so there is no failure to propagate; a body that needs to
+  report one sets an atomic flag.
+- **Backends.** The prelude body is the sequential loop, which is a valid
+  schedule: the evaluator and executables run it unchanged (no new Place IR
+  form, no edit to `src/ir.rs` or the verified backend). The JIT intercepts
+  the call in `Codegen::parallel_for_call` before function-value
+  specialization, resolves the body to its compiled function (the optimize
+  path renames the argument, so it reads the value's closure target), checks
+  that its signature is two words in and at most one word out, and calls
+  `vesper_parallel_for(body, data, n)`. Anything else falls back to the
+  sequential loop.
+- **Runtime** (`src/atomics/workers.rs`). A process-wide Pulse pool
+  (`Pool::start` from #1058, one worker per hardware thread, or
+  `VESPER_WORKERS`) started on first use. A call splits `0..n` into at most
+  four chunks per worker, spawns all but the last, runs the last on the
+  calling thread and waits on a latch. A call from inside a worker (a
+  nested `parallel_for`) runs on that worker, so nesting never deadlocks a
+  pool whose workers are all waiting. A refused spawn runs inline.
+
+Tests (`tests/scoped_workers.rs`, 8 tests plus one ignored measurement):
+a parallel sum, scalar data with empty and one-iteration loops, and nested
+loops in the evaluator and JIT (optimized and not), x86-64 and AArch64
+objects and an executable; two iterations that wait for each other finish
+only if the JIT runs them at the same time (optimized and not); the runtime
+runs each iteration exactly once on more than one thread; `E0824` and
+`E0823` cases; a user `parallel_for` takes precedence.
+
+Measurement: see "4-worker parallel sum" below.
+
 ## Remaining
 
-- **Scoped workers** (`@vesper-std/sync` `scope`/`spawn` over the Pulse pool,
-  the typed rejection of a non-`Atomic` `inout` shared across workers, worker
-  failure propagation, and the 4-worker parallel sum benchmark) wait on #599.
+- **Executables on the pool.** `vesper build` executables run
+  `parallel_for` sequentially; they need the pool runtime linked into the
+  generated C driver (or a freestanding equivalent).
+- **Wider bodies.** Bodies with effects (a `Fail` row joined into the
+  caller's handler), closures with captures, and `spawn`-style scopes with
+  different bodies per task (`@vesper-std/sync`) are follow-ups.
 - **Cell address hoisting**: an `Atomic` stored in place (one indirection
   instead of two), or loop-invariant hoisting of the header load, would close
   most of the 1.1-1.25x gap.
