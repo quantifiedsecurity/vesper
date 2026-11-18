@@ -42,4 +42,9 @@ const EDITS: &[(&str, &str)] = &[
     ("    if outcome == 0 {\n", "    if outcome <= 1 {\n"),
     // fuzz.rs: the "zero a value" mutation writes 1.
     ("self.cur.try_set(pos, 0);", "self.cur.try_set(pos, 1);"),
+    // dpor.rs: unbounded DPOR adds every awake candidate, not the first.
+    (
+        "if (self.bounded || !any) && !self.in_sleep(n, q) {",
+        "if !self.in_sleep(n, q) {",
+    ),
 ];

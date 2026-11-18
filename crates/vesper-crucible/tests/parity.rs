@@ -4,9 +4,13 @@
 //! expected values were recorded from the Rust build; both packages run
 //! this file, so a port that drifts from Rust fails it.
 
+mod common;
+
+use common::{build, cells_key, random_program, random_program_ext, rpc};
 use vesper_crucible::{
     ChoiceTape, FuzzConfig, PropError, ShrinkConfig, ShrinkKey, Source, SplitMix64, fuzz, shrink,
 };
+use vesper_crucible::{ExploreConfig, Search, explore_cached, explore_dpor, explore_exhaustive};
 
 /// FNV-1a over the words, as a compact fingerprint of a long sequence.
 fn fingerprint(words: impl IntoIterator<Item = u64>) -> u64 {
@@ -342,4 +346,91 @@ fn golden_campaigns() -> [String; 5] {
         "execs=3000 invalid=573 corpus=63/a7b140b0e63b5c3a features=64 solver=188/26 cx=None",
     ]
     .map(String::from)
+}
+
+/// Every systematic explorer on one program, as counters and a fingerprint
+/// of every outcome with its schedule (or the error).
+fn explorations(program: &[Vec<common::Op>], bound: Option<u32>) -> Vec<String> {
+    let cfg = ExploreConfig {
+        max_executions: 3_000,
+        preemption_bound: bound,
+        ..ExploreConfig::default()
+    };
+    let observe = |w: &common::Cells| Ok(w.clone());
+    let runs = [
+        explore_exhaustive(&cfg, || build(program), observe),
+        explore_dpor(&cfg, || build(program), observe),
+        explore_cached(
+            Search::Exhaustive,
+            &cfg,
+            || build(program),
+            observe,
+            cells_key,
+        ),
+        explore_cached(Search::Dpor, &cfg, || build(program), observe, cells_key),
+    ];
+    runs.iter()
+        .map(|run| match run {
+            Ok(e) => format!(
+                "{}/{}/{}/{}/{} outcomes={}/{:x}",
+                e.executions,
+                e.sleep_blocked,
+                e.transitions,
+                e.cache_hits,
+                e.bound_pruned,
+                e.outcomes.len(),
+                fingerprint(format!("{:?}", e.outcomes).bytes().map(u64::from)),
+            ),
+            Err(err) => format!("{err:?}"),
+        })
+        .collect()
+}
+
+/// The explorers over a sweep of random programs (plain, and with spawns,
+/// cancellation and chosen I/O results), unbounded and with a preemption
+/// bound of one, and the RPC timeout race.
+fn exploration_sweep() -> Vec<String> {
+    let mut out = Vec::new();
+    for seed in 0..12u64 {
+        let fibers = 2 + (seed % 2) as usize;
+        for program in [
+            random_program(seed, fibers, 3),
+            random_program_ext(seed, fibers, 3),
+        ] {
+            for bound in [None, Some(1)] {
+                out.push(explorations(&program, bound).join(" | "));
+            }
+        }
+    }
+    let cfg = ExploreConfig::default();
+    for checks in [false, true] {
+        let observe = |w: &common::Rpc| common::applied_once(w).map(|()| w.clone());
+        let ex = explore_exhaustive(&cfg, || rpc(checks), observe).unwrap();
+        let dp = explore_dpor(&cfg, || rpc(checks), observe).unwrap();
+        out.push(format!(
+            "rpc {} {} {:x}",
+            ex.executions,
+            dp.executions,
+            fingerprint(
+                format!("{:?}{:?}", ex.outcomes, dp.outcomes)
+                    .bytes()
+                    .map(u64::from)
+            ),
+        ));
+    }
+    out
+}
+
+#[test]
+fn explorations_match_the_rust_build() {
+    let sweep = exploration_sweep();
+    for line in &sweep {
+        println!("{line}");
+    }
+    let total = fingerprint(sweep.iter().flat_map(|l| l.bytes().map(u64::from)));
+    assert_eq!(sweep.len(), 50);
+    assert_eq!(
+        total, 4_769_677_699_205_162_100,
+        "exploration sweep fingerprint"
+    );
 }

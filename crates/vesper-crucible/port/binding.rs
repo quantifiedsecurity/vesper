@@ -65,6 +65,21 @@ impl Abi for Rng {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SearchStats { pub sleep_blocked: u64, pub cache_hits: u64, pub bound_pruned: u64 }
+
+impl Abi for SearchStats {
+    const WORDS: usize = 3;
+    fn put(&self, out: &mut [u64]) {
+        Abi::put(&self.sleep_blocked, &mut out[0..]);
+        Abi::put(&self.cache_hits, &mut out[1..]);
+        Abi::put(&self.bound_pruned, &mut out[2..]);
+    }
+    fn get(words: &[u64]) -> Self {
+        SearchStats { sleep_blocked: Abi::get(&words[0..]), cache_hits: Abi::get(&words[1..]), bound_pruned: Abi::get(&words[2..]) }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stats { pub runs: u64, pub accepted: u64, pub invalid: u64, pub not_reproducing: u64, pub budget_exhausted: bool }
 
 impl Abi for Stats {
@@ -311,6 +326,315 @@ impl<'a> ParsedRef<'a> {
     }
 }
 
+/// Owned handle of a Vesper `Search` value: its words, which own the Vesper
+/// allocations they point to. Dropping it calls `vesper_crucible_Search_drop`.
+pub struct Search {
+    words: [u64; 67],
+}
+
+impl Search {
+    /// # Safety
+    /// `words` must hold a `Search` value of this library that the caller owns.
+    unsafe fn from_words(words: &[u64]) -> Self {
+        let mut owned = [0u64; 67];
+        owned.copy_from_slice(&words[..67]);
+        Self { words: owned }
+    }
+
+    /// A borrowed view of the value.
+    pub fn as_ref(&self) -> SearchRef<'_> {
+        SearchRef { words: &self.words }
+    }
+}
+
+impl Drop for Search {
+    fn drop(&mut self) {
+        // SAFETY: the handle owns its words and is dropped once.
+        unsafe { vesper_crucible_Search_drop(self.words.as_mut_ptr()) };
+    }
+}
+
+impl core::fmt::Debug for Search {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Search { .. }")
+    }
+}
+
+// SAFETY: the handle owns its Vesper allocations exclusively (no Vesper
+// code keeps a reference to them), and they are plain heap memory.
+unsafe impl Send for Search {}
+// SAFETY: shared access only reads the words and the memory they own.
+unsafe impl Sync for Search {}
+
+/// A borrowed view of a Vesper `Search` value, read in place.
+#[derive(Clone, Copy)]
+pub struct SearchRef<'a> {
+    words: &'a [u64],
+}
+
+impl<'a> SearchRef<'a> {
+    pub fn dpor(&self) -> bool {
+        let w: &'a [u64] = self.words;
+        <bool as Abi>::get(&w[0..])
+    }
+    pub fn bounded(&self) -> bool {
+        let w: &'a [u64] = self.words;
+        <bool as Abi>::get(&w[1..])
+    }
+    pub fn sleeping(&self) -> bool {
+        let w: &'a [u64] = self.words;
+        <bool as Abi>::get(&w[2..])
+    }
+    pub fn has_bound(&self) -> bool {
+        let w: &'a [u64] = self.words;
+        <bool as Abi>::get(&w[3..])
+    }
+    pub fn bound(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[4..])
+    }
+    pub fn caching(&self) -> bool {
+        let w: &'a [u64] = self.words;
+        <bool as Abi>::get(&w[5..])
+    }
+    pub fn stats(&self) -> SearchStats {
+        let w: &'a [u64] = self.words;
+        <SearchStats as Abi>::get(&w[6..])
+    }
+    pub fn p_proc(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[9..])
+    }
+    pub fn p_next(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[10..])
+    }
+    pub fn p_pre(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[11..])
+    }
+    pub fn p_mark(&self) -> u64 {
+        let w: &'a [u64] = self.words;
+        <u64 as Abi>::get(&w[12..])
+    }
+    pub fn fp_r_off(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[13]) }
+    }
+    pub fn fp_r(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[14]) }
+    }
+    pub fn fp_w_off(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[15]) }
+    }
+    pub fn fp_w(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[16]) }
+    }
+    pub fn fp_c_off(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[17]) }
+    }
+    pub fn fp_c(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[18]) }
+    }
+    pub fn n_en(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[19]) }
+    }
+    pub fn n_en_len(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[20]) }
+    }
+    pub fn n_nx(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[21]) }
+    }
+    pub fn n_nx_len(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[22]) }
+    }
+    pub fn n_pc(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[23]) }
+    }
+    pub fn n_pc_len(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[24]) }
+    }
+    pub fn n_sl(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[25]) }
+    }
+    pub fn n_sl_len(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[26]) }
+    }
+    pub fn n_sm(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[27]) }
+    }
+    pub fn n_cl(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[28]) }
+    }
+    pub fn n_chosen(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[29]) }
+    }
+    pub fn n_running(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[30]) }
+    }
+    pub fn n_pre(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[31]) }
+    }
+    pub fn n_key(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[32]) }
+    }
+    pub fn en(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[33]) }
+    }
+    pub fn en_ord(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[34]) }
+    }
+    pub fn nx_proc(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[35]) }
+    }
+    pub fn nx_next(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[36]) }
+    }
+    pub fn pc_proc(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[37]) }
+    }
+    pub fn pc_off(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[38]) }
+    }
+    pub fn pc_len(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[39]) }
+    }
+    pub fn cl_proc(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[40]) }
+    }
+    pub fn cl_val(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[41]) }
+    }
+    pub fn sl(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[42]) }
+    }
+    pub fn sm_proc(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[43]) }
+    }
+    pub fn sm_next(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[44]) }
+    }
+    pub fn ev_proc(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[45]) }
+    }
+    pub fn ev_next(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[46]) }
+    }
+    pub fn ev_cl(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[47]) }
+    }
+    pub fn ev_cl_len(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[48]) }
+    }
+    pub fn ca_sl_off(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[49]) }
+    }
+    pub fn ca_sl_len(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[50]) }
+    }
+    pub fn ca_sm_off(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[51]) }
+    }
+    pub fn ca_sm_len(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[52]) }
+    }
+    pub fn ca_sl(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[53]) }
+    }
+    pub fn ca_smp(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[54]) }
+    }
+    pub fn ca_smn(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[55]) }
+    }
+    pub fn p_sleep(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[56]) }
+    }
+    pub fn t1(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[57]) }
+    }
+    pub fn t2(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[58]) }
+    }
+    pub fn t3(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[59]) }
+    }
+    pub fn t4(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[60]) }
+    }
+    pub fn fp_spawn(&self) -> vesper_port_abi::SeqRef<'a, bool> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[61]) }
+    }
+    pub fn n_hit(&self) -> vesper_port_abi::SeqRef<'a, bool> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[62]) }
+    }
+    pub fn en_bt(&self) -> vesper_port_abi::SeqRef<'a, bool> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[63]) }
+    }
+    pub fn en_done(&self) -> vesper_port_abi::SeqRef<'a, bool> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[64]) }
+    }
+    pub fn en_slept(&self) -> vesper_port_abi::SeqRef<'a, bool> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[65]) }
+    }
+    pub fn ca_set(&self) -> vesper_port_abi::SeqRef<'a, bool> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[66]) }
+    }
+}
+
 /// Owned handle of a Vesper `Shrinker` value: its words, which own the Vesper
 /// allocations they point to. Dropping it calls `vesper_crucible_Shrinker_drop`.
 pub struct Shrinker {
@@ -475,6 +799,15 @@ pub mod repr {
         pub word: u64,
     }
 
+    /// Mirror of the Vesper copy struct `SearchStats` (3 words).
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct SearchStats {
+        pub sleep_blocked: u64,
+        pub cache_hits: u64,
+        pub bound_pruned: u64,
+    }
+
     /// Mirror of the Vesper copy struct `Stats` (5 words).
     #[repr(C)]
     #[derive(Clone, Copy, Debug, PartialEq)]
@@ -603,6 +936,35 @@ impl repr::Rng {
     }
 }
 
+// The mirror of `SearchStats` has exactly the Vesper layout.
+const _: () = {
+    assert!(core::mem::size_of::<repr::SearchStats>() == 3 * 8);
+    assert!(core::mem::align_of::<repr::SearchStats>() == 8);
+    assert!(core::mem::offset_of!(repr::SearchStats, sleep_blocked) == 0 * 8);
+    assert!(core::mem::offset_of!(repr::SearchStats, cache_hits) == 1 * 8);
+    assert!(core::mem::offset_of!(repr::SearchStats, bound_pruned) == 2 * 8);
+};
+
+// SAFETY: `repr::SearchStats` is `#[repr(C)]`, 3 words, eight-byte aligned
+// (asserted above), and every field is a word cell or a mirror.
+unsafe impl vesper_port_abi::Mirror for repr::SearchStats {
+    const WORDS: usize = 3;
+}
+
+impl repr::SearchStats {
+    /// The mirror of a Rust value.
+    pub fn from_value(value: &SearchStats) -> Self {
+        let mut words = [0u64; 3];
+        Abi::put(value, &mut words);
+        vesper_port_abi::mirror_from_words(&words)
+    }
+
+    /// The Rust value of the mirror.
+    pub fn to_value(&self) -> SearchStats {
+        <SearchStats as Abi>::get(vesper_port_abi::mirror_words(self))
+    }
+}
+
 // The mirror of `Stats` has exactly the Vesper layout.
 const _: () = {
     assert!(core::mem::size_of::<repr::Stats>() == 5 * 8);
@@ -639,6 +1001,7 @@ const _: () = assert!(<Draw as Abi>::WORDS == 2);
 const _: () = assert!(<FuzzStats as Abi>::WORDS == 5);
 const _: () = assert!(<Key as Abi>::WORDS == 3);
 const _: () = assert!(<Rng as Abi>::WORDS == 1);
+const _: () = assert!(<SearchStats as Abi>::WORDS == 3);
 const _: () = assert!(<Stats as Abi>::WORDS == 5);
 const _: () = assert!(<bool as Abi>::WORDS == 1);
 const _: () = assert!(<u64 as Abi>::WORDS == 1);
@@ -649,6 +1012,7 @@ unsafe extern "C" {
     fn vesper_crucible_live_allocations() -> i64;
     fn vesper_crucible_Fuzzer_drop(value: *mut u64) -> i64;
     fn vesper_crucible_Parsed_drop(value: *mut u64) -> i64;
+    fn vesper_crucible_Search_drop(value: *mut u64) -> i64;
     fn vesper_crucible_Shrinker_drop(value: *mut u64) -> i64;
     fn vesper_crucible_fuzzer_candidate(f: *mut u64) -> i64;
     fn vesper_crucible_fuzzer_corpus_entry(f: *mut u64, e: i64) -> i64;
@@ -663,6 +1027,19 @@ unsafe extern "C" {
     fn vesper_crucible_rng_below_inclusive(r: *mut u64, max_inclusive: i64) -> i64;
     fn vesper_crucible_rng_chance(r: *mut u64, numerator: i64) -> i64;
     fn vesper_crucible_rng_next(r: *mut u64) -> i64;
+    fn vesper_crucible_search_backtrack(s: *mut u64) -> i64;
+    fn vesper_crucible_search_child(s: *mut u64, still_ready: i64, enabled: *mut u64, nexts: *mut u64) -> i64;
+    fn vesper_crucible_search_choose(result: *mut u64, s: *mut u64) -> i64;
+    fn vesper_crucible_search_footprint(s: *mut u64, reads: *mut u64, writes: *mut u64, spawns: i64, cancels: *mut u64) -> i64;
+    fn vesper_crucible_search_key(s: *mut u64, key: i64) -> i64;
+    fn vesper_crucible_search_new(result: *mut u64, dpor: i64, has_bound: i64, bound: i64, caching: i64) -> i64;
+    fn vesper_crucible_search_nodes(s: *mut u64) -> i64;
+    fn vesper_crucible_search_preemptions(s: *mut u64) -> i64;
+    fn vesper_crucible_search_prefix(s: *mut u64) -> i64;
+    fn vesper_crucible_search_root(s: *mut u64, enabled: *mut u64, nexts: *mut u64, key: i64) -> i64;
+    fn vesper_crucible_search_running(s: *mut u64) -> i64;
+    fn vesper_crucible_search_same_enabled(s: *mut u64, enabled: *mut u64) -> i64;
+    fn vesper_crucible_search_stats(result: *mut u64, s: *mut u64) -> i64;
     fn vesper_crucible_shrinker_best(s: *mut u64) -> i64;
     fn vesper_crucible_shrinker_candidate(s: *mut u64) -> i64;
     fn vesper_crucible_shrinker_new(result: *mut u64, best: i64, max_runs: i64) -> i64;
@@ -811,6 +1188,132 @@ pub fn rng_next(r: &mut repr::Rng) -> u64 {
     raw as u64
 }
 
+/// Calls `search_backtrack` of the Vesper library `crucible` (`vesper_crucible_search_backtrack`).
+pub fn search_backtrack(s: &mut Search) -> bool {
+    // SAFETY: `vesper_crucible_search_backtrack` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_crucible_search_backtrack(s.words.as_mut_ptr()) };
+    raw != 0
+}
+
+/// Calls `search_child` of the Vesper library `crucible` (`vesper_crucible_search_child`).
+pub fn search_child(s: &mut Search, still_ready: bool, enabled: &[u64], nexts: &[u64]) -> () {
+    // SAFETY: `vesper_crucible_search_child` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(enabled, |view_enabled| vesper_port_abi::with_slice(nexts, |view_nexts| unsafe { vesper_crucible_search_child(s.words.as_mut_ptr(), still_ready as i64, view_enabled, view_nexts) }));
+    { let _ = raw; }
+}
+
+/// Calls `search_choose` of the Vesper library `crucible` (`vesper_crucible_search_choose`).
+pub fn search_choose(s: &mut Search) -> repr::Draw {
+    let mut result = [0u64; 2];
+    // SAFETY: `vesper_crucible_search_choose` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_crucible_search_choose(result.as_mut_ptr(), s.words.as_mut_ptr()) };
+    vesper_port_abi::mirror_from_words::<repr::Draw>(&result[0..])
+}
+
+/// Calls `search_footprint` of the Vesper library `crucible` (`vesper_crucible_search_footprint`).
+pub fn search_footprint(s: &mut Search, reads: &[u64], writes: &[u64], spawns: bool, cancels: &[u64]) -> u64 {
+    // SAFETY: `vesper_crucible_search_footprint` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(reads, |view_reads| vesper_port_abi::with_slice(writes, |view_writes| vesper_port_abi::with_slice(cancels, |view_cancels| unsafe { vesper_crucible_search_footprint(s.words.as_mut_ptr(), view_reads, view_writes, spawns as i64, view_cancels) })));
+    raw as u64
+}
+
+/// Calls `search_key` of the Vesper library `crucible` (`vesper_crucible_search_key`).
+pub fn search_key(s: &mut Search, key: u64) -> bool {
+    // SAFETY: `vesper_crucible_search_key` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_crucible_search_key(s.words.as_mut_ptr(), key as i64) };
+    raw != 0
+}
+
+/// Calls `search_new` of the Vesper library `crucible` (`vesper_crucible_search_new`).
+pub fn search_new(dpor: bool, has_bound: bool, bound: u64, caching: bool) -> Search {
+    let mut result = [0u64; 67];
+    // SAFETY: `vesper_crucible_search_new` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_crucible_search_new(result.as_mut_ptr(), dpor as i64, has_bound as i64, bound as i64, caching as i64) };
+    unsafe { Search::from_words(&result[0..]) }
+}
+
+/// Calls `search_nodes` of the Vesper library `crucible` (`vesper_crucible_search_nodes`).
+pub fn search_nodes(s: &Search) -> u64 {
+    let mut arg_s = s.words;
+    // SAFETY: `vesper_crucible_search_nodes` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_crucible_search_nodes(arg_s.as_mut_ptr()) };
+    raw as u64
+}
+
+/// Calls `search_preemptions` of the Vesper library `crucible` (`vesper_crucible_search_preemptions`).
+pub fn search_preemptions(s: &Search) -> u64 {
+    let mut arg_s = s.words;
+    // SAFETY: `vesper_crucible_search_preemptions` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_crucible_search_preemptions(arg_s.as_mut_ptr()) };
+    raw as u64
+}
+
+/// Calls `search_prefix` of the Vesper library `crucible` (`vesper_crucible_search_prefix`).
+pub fn search_prefix(s: &Search) -> Vec<u64> {
+    let mut arg_s = s.words;
+    // SAFETY: `vesper_crucible_search_prefix` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_crucible_search_prefix(arg_s.as_mut_ptr()) };
+    unsafe { vesper_port_abi::seq_take::<u64>(RUNTIME, raw as u64) }
+}
+
+/// Calls `search_root` of the Vesper library `crucible` (`vesper_crucible_search_root`).
+pub fn search_root(s: &mut Search, enabled: &[u64], nexts: &[u64], key: u64) -> () {
+    // SAFETY: `vesper_crucible_search_root` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(enabled, |view_enabled| vesper_port_abi::with_slice(nexts, |view_nexts| unsafe { vesper_crucible_search_root(s.words.as_mut_ptr(), view_enabled, view_nexts, key as i64) }));
+    { let _ = raw; }
+}
+
+/// Calls `search_running` of the Vesper library `crucible` (`vesper_crucible_search_running`).
+pub fn search_running(s: &Search) -> u64 {
+    let mut arg_s = s.words;
+    // SAFETY: `vesper_crucible_search_running` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_crucible_search_running(arg_s.as_mut_ptr()) };
+    raw as u64
+}
+
+/// Calls `search_same_enabled` of the Vesper library `crucible` (`vesper_crucible_search_same_enabled`).
+pub fn search_same_enabled(s: &Search, enabled: &[u64]) -> bool {
+    let mut arg_s = s.words;
+    // SAFETY: `vesper_crucible_search_same_enabled` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(enabled, |view_enabled| unsafe { vesper_crucible_search_same_enabled(arg_s.as_mut_ptr(), view_enabled) });
+    raw != 0
+}
+
+/// Calls `search_stats` of the Vesper library `crucible` (`vesper_crucible_search_stats`).
+pub fn search_stats(s: &Search) -> repr::SearchStats {
+    let mut result = [0u64; 3];
+    let mut arg_s = s.words;
+    // SAFETY: `vesper_crucible_search_stats` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_crucible_search_stats(result.as_mut_ptr(), arg_s.as_mut_ptr()) };
+    vesper_port_abi::mirror_from_words::<repr::SearchStats>(&result[0..])
+}
+
 /// Calls `shrinker_best` of the Vesper library `crucible` (`vesper_crucible_shrinker_best`).
 pub fn shrinker_best(s: &Shrinker) -> Vec<u64> {
     let mut arg_s = s.words;
@@ -955,6 +1458,73 @@ impl Fuzzer {
     /// `fuzzer_stats` (`vesper_crucible_fuzzer_stats`).
     pub fn stats(&self) -> repr::FuzzStats {
         fuzzer_stats(self)
+    }
+}
+
+impl Search {
+    /// `search_backtrack` (`vesper_crucible_search_backtrack`).
+    pub fn backtrack(&mut self) -> bool {
+        search_backtrack(self)
+    }
+
+    /// `search_child` (`vesper_crucible_search_child`).
+    pub fn child(&mut self, still_ready: bool, enabled: &[u64], nexts: &[u64]) -> () {
+        search_child(self, still_ready, enabled, nexts)
+    }
+
+    /// `search_choose` (`vesper_crucible_search_choose`).
+    pub fn choose(&mut self) -> repr::Draw {
+        search_choose(self)
+    }
+
+    /// `search_footprint` (`vesper_crucible_search_footprint`).
+    pub fn footprint(&mut self, reads: &[u64], writes: &[u64], spawns: bool, cancels: &[u64]) -> u64 {
+        search_footprint(self, reads, writes, spawns, cancels)
+    }
+
+    /// `search_key` (`vesper_crucible_search_key`).
+    pub fn key(&mut self, key: u64) -> bool {
+        search_key(self, key)
+    }
+
+    /// `search_new` (`vesper_crucible_search_new`).
+    pub fn new(dpor: bool, has_bound: bool, bound: u64, caching: bool) -> Search {
+        search_new(dpor, has_bound, bound, caching)
+    }
+
+    /// `search_nodes` (`vesper_crucible_search_nodes`).
+    pub fn nodes(&self) -> u64 {
+        search_nodes(self)
+    }
+
+    /// `search_preemptions` (`vesper_crucible_search_preemptions`).
+    pub fn preemptions(&self) -> u64 {
+        search_preemptions(self)
+    }
+
+    /// `search_prefix` (`vesper_crucible_search_prefix`).
+    pub fn prefix(&self) -> Vec<u64> {
+        search_prefix(self)
+    }
+
+    /// `search_root` (`vesper_crucible_search_root`).
+    pub fn root(&mut self, enabled: &[u64], nexts: &[u64], key: u64) -> () {
+        search_root(self, enabled, nexts, key)
+    }
+
+    /// `search_running` (`vesper_crucible_search_running`).
+    pub fn running(&self) -> u64 {
+        search_running(self)
+    }
+
+    /// `search_same_enabled` (`vesper_crucible_search_same_enabled`).
+    pub fn same_enabled(&self, enabled: &[u64]) -> bool {
+        search_same_enabled(self, enabled)
+    }
+
+    /// `search_stats` (`vesper_crucible_search_stats`).
+    pub fn stats(&self) -> repr::SearchStats {
+        search_stats(self)
     }
 }
 
