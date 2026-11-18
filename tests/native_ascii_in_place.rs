@@ -83,7 +83,6 @@ fn executable_status(name: &str, source: &str) -> Option<i32> {
     Command::new(&exe).output().unwrap().status.code()
 }
 
-
 /// Runs `main` in the evaluator, both JIT configurations and (where a C
 /// driver links executables) an AOT executable, and checks every result
 /// against `expected`.
@@ -93,7 +92,11 @@ fn differential(name: &str, source: &str, expected: u64) {
         .run("main", vec![])
         .unwrap_or_else(|e| panic!("{name}: evaluator failed: {e}"))
         .to_string();
-    assert_eq!(evaluated, expected.to_string(), "{name}: evaluator vs model");
+    assert_eq!(
+        evaluated,
+        expected.to_string(),
+        "{name}: evaluator vs model"
+    );
     for optimize in [true, false] {
         let jit = native::jit_with_options(&c.world, "main", optimize)
             .unwrap_or_else(|e| panic!("{name}: JIT (optimize {optimize}) failed: {e}"))

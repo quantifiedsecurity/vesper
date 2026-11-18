@@ -86,7 +86,6 @@ fn executable_status(name: &str, source: &str) -> Option<i32> {
     Command::new(&exe).output().unwrap().status.code()
 }
 
-
 /// Runs `main` in the evaluator with `small` (a short sweep), and in both
 /// JIT configurations and (where a C driver links executables) an AOT
 /// executable with `large`, checking each result against its model.
@@ -108,7 +107,11 @@ fn differential(name: &str, small: (&str, u64), large: (&str, u64)) {
         let jit = native::jit_with_options(&c.world, "main", optimize)
             .unwrap_or_else(|e| panic!("{name}: JIT (optimize {optimize}) failed: {e}"))
             .to_string();
-        assert_eq!(jit, large.1.to_string(), "{name}: JIT (optimize {optimize})");
+        assert_eq!(
+            jit,
+            large.1.to_string(),
+            "{name}: JIT (optimize {optimize})"
+        );
     }
     if links_executables() {
         assert_eq!(
@@ -173,7 +176,6 @@ fn mix(acc: u64, v: u64) -> u64 {
     acc.wrapping_mul(1099511628211).wrapping_add(v)
 }
 
-
 /// Views start at `0..offsets`; the large sweep covers more than a page.
 const SMALL: usize = 40;
 const LARGE: usize = 4128;
@@ -185,7 +187,7 @@ const BUF: usize = LARGE + MAX_LEN + SHIFT;
 /// Whether `i` is a multiple of `m`. The Vesper side keeps a counter per
 /// modulus instead of `%`.
 fn every(i: usize, m: usize) -> bool {
-    i % m == 0
+    i.is_multiple_of(m)
 }
 
 /// The buffers of each scan, built the same way by [`buffers_source`].
@@ -250,9 +252,7 @@ fn model_scan(op: &str, offsets: usize) -> u64 {
             let v = &s[off..off + n];
             match op {
                 "find_byte" => acc = mix(acc, found(v.iter().position(|&x| x == 7))),
-                "find_either" => {
-                    acc = mix(acc, found(v.iter().position(|&x| x == 7 || x == 200)))
-                }
+                "find_either" => acc = mix(acc, found(v.iter().position(|&x| x == 7 || x == 200))),
                 "find_not_in" => acc = mix(acc, found(v.iter().position(|&x| !model_tchar(x)))),
                 _ => {
                     let w = &t[off..off + n];

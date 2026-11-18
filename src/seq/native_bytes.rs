@@ -1064,10 +1064,16 @@ impl<M: Module> Codegen<'_, '_, M> {
         let eight = self.b.create_block();
         let below_eight = self.b.create_block();
         let four = self.b.create_block();
-        let wide = self.b.ins().icmp_imm(IntCC::UnsignedGreaterThanOrEqual, n, 8);
+        let wide = self
+            .b
+            .ins()
+            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, n, 8);
         self.branch(wide, eight, &[], below_eight, &[]);
         self.b.switch_to_block(below_eight);
-        let wide = self.b.ins().icmp_imm(IntCC::UnsignedGreaterThanOrEqual, n, 4);
+        let wide = self
+            .b
+            .ins()
+            .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, n, 4);
         let zero = self.zero();
         self.branch(wide, four, &[], scalar, &[zero.into()]);
         for (block, ty) in [(eight, types::I64), (four, types::I32)] {
