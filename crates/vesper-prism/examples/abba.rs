@@ -182,14 +182,19 @@ fn measure(name: &str, ops: u64) -> u128 {
             let mut rest = bytes.as_slice();
             let mut written = 0;
             let mut issued = Vec::with_capacity(BATCH);
-            while !rest.is_empty() || !issued.is_empty() {
+            // At most `max_in_flight` (16) requests are issued at a time, so
+            // the loop runs until every request of the batch was answered.
+            let mut answered = 0;
+            while answered < BATCH {
                 let accepted = connection.receive(rest).unwrap();
                 rest = &rest[accepted..];
                 while let RequestEvent::Request(inbound) = connection.poll_request() {
                     issued.push(inbound.id);
                 }
-                for (i, id) in issued.drain(..).enumerate() {
-                    let body = bodies[i % BATCH].clone();
+                assert!(!issued.is_empty(), "the connection stalled");
+                for id in issued.drain(..) {
+                    let body = bodies[answered % BATCH].clone();
+                    answered += 1;
                     connection
                         .submit(
                             id,
@@ -206,6 +211,7 @@ fn measure(name: &str, ops: u64) -> u128 {
                     connection.advance_output(n).unwrap();
                 }
             }
+            assert_eq!(answered, BATCH);
             written
         }),
         _ => unreachable!(),

@@ -3,8 +3,8 @@
 Claim: #951. Branch: `claude/project-thread-sa8xnh`, from `main` at
 `cee8b1a` (the plan, #958; a descendant of the required `69c79b9`).
 
-The Vesper build of vesper-prism goes from **5.0-6.1x** slower than Rust to
-**2.0-3.4x** on a new wall-clock ABBA benchmark, and from 2.60x to 1.84x in
+The Vesper build of vesper-prism goes from **5.3-6.6x** slower than Rust to
+**2.1-3.4x** on a new wall-clock ABBA benchmark, and from 2.60x to 1.84x in
 instructions on `tests/malformed.rs`. It does not meet the parity bar. Rust
 stays the default build and no Rust code was deleted.
 
@@ -69,10 +69,28 @@ compiler. One profiling build also raised the inliner's program growth budget
 tenfold; it changed nothing (90,612,163 against 90,612,147 instructions), and
 it was reverted before any row below except "byte classes as masks".
 
-## Results, one lever at a time
+## Results
+
+Final check, after review fixed the `connection` workload (it stopped at the
+connection's 16-request in-flight limit and handled only half the batch): one
+ABBA run of `main` and one of this branch, back to back, same machine, the
+same fixed benchmark.
+
+| Build | decode | route | encode | connection |
+|---|---|---|---|---|
+| `main` (`cee8b1a`) | 5.28x (4.98-5.48) | 5.26x (5.14-5.34) | 6.55x (6.44-6.68) | 5.30x (5.12-5.38) |
+| this branch | **2.14x (1.99-2.17)** | **3.43x (3.40-3.50)** | **3.43x (3.36-3.55)** | **2.42x (2.38-2.47)** |
+
+Rust took about 45 µs (decode), 9.2 µs (route), 9.7 µs (encode) and 52 µs
+(connection, the whole batch) per operation; the branch took 94, 32, 34 and
+126 µs. Encode came out at 3.04x in the per-lever run below and 3.43x here,
+so run-to-run spread on this container is about 10%.
+
+### One lever at a time
 
 Wall clock, Vesper/Rust median ratio and its 95% interval, one ABBA run per
-step on the same machine:
+step on the same machine. The `connection` column here covers only the
+first 16 requests of each batch (the bug above):
 
 | Step | decode | route | encode | connection |
 |---|---|---|---|---|
@@ -86,9 +104,6 @@ step on the same machine:
 | length-gated names, fused name pass, sized heads | 2.27x (2.20-2.37) | 3.69x (3.61-3.84) | 3.36x (3.32-3.43) | 2.53x (2.36-2.61) |
 | byte classes as masks | 2.09x (2.07-2.18) | 3.44x (3.37-3.50) | 3.16x (3.08-3.26) | 2.39x (2.34-2.44) |
 | ASCII copy in the adapter (final, unchanged compiler) | **2.01x (1.97-2.07)** | **3.42x (3.31-3.44)** | **3.04x (2.98-3.11)** | **2.29x (2.28-2.34)** |
-
-Rust took about 46 µs (decode), 9.6 µs (route), 10.7 µs (encode) and 27.5 µs
-(connection) per batch in these runs; the final port took 92, 32, 33 and 63 µs.
 
 Instructions (Rust: `tests/malformed.rs` 101.7 M, `abba measure 20` 41.8 M):
 
@@ -250,6 +265,6 @@ same run, against 20.2 M for the port.
 ## Parity
 
 Not met. Every port test passes on the Vesper build locally (CI covers the
-four platforms), but the ABBA ratios are 2.0x (decode), 3.4x (route), 3.0x
-(encode) and 2.3x (connection), far from the 1.05x bar. Rust stays the
+four platforms), but the ABBA ratios are 2.1x (decode), 3.4x (route), 3.0-3.4x
+(encode) and 2.4x (connection), far from the 1.05x bar. Rust stays the
 default build.
