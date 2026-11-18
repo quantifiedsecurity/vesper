@@ -1,5 +1,3 @@
-// @export abi 3
-//
 // @vesper/serde: stage 2 of the two-stage parser (src/stage2.rs). It walks
 // the stage 1 structural index (built by the Rust SIMD kernels, which stay
 // in Rust until source `VVec`, #587) with an explicit bounded stack and

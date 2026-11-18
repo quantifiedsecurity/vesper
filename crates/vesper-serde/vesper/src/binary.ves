@@ -1,5 +1,3 @@
-// @export abi 3
-//
 // @vesper/serde: the binary host codecs of src/streamvbyte.rs (raw,
 // non-delta 1/2/3/4-byte StreamVByte) and src/archive.rs (the VSPA tree
 // archive, version 1, schema 1), with the common errors of src/binary.rs.

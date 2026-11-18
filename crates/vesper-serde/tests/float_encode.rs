@@ -333,3 +333,83 @@ fn finite_size_ceiling_composes_without_authorizing_nonfinite_values() {
     );
     assert_eq!(output, [0xa5; 512]);
 }
+
+/// The encoder writes exactly Rust's `{}` text: the shortest digits, the
+/// closest of them when several are shortest, and the same layout. The
+/// port computes them with Grisu and falls back to Dragon when Grisu
+/// cannot decide, as `core::num::flt2dec` does, so the corpus includes
+/// values whose Grisu attempt gives up (found with a model of
+/// `grisu::format_shortest_opt`, about one random value in 200).
+#[test]
+fn text_is_exactly_rusts_display_on_the_grisu_and_dragon_paths() {
+    fn check(value: f64) {
+        let mut output = [0u8; 520];
+        let limits = EncodeLimits::default();
+        let written = encode_into(&Value::F64(value), &mut output, limits).unwrap();
+        assert_eq!(
+            core::str::from_utf8(&output[..written]).unwrap(),
+            format!("{value}"),
+            "bits {:#x}",
+            value.to_bits()
+        );
+        assert_eq!(encoded_size(&Value::F64(value), limits).unwrap(), written);
+    }
+    // Grisu gives up on these (Dragon decides).
+    for bits in [
+        0x09c9_9482_757f_1cba_u64,
+        0x2e19_3d36_f7ba_38b6,
+        0x435e_15cc_81e0_04fb,
+        0x6ddc_69b5_a2e5_c7d7,
+        0x24d1_acb2_d9f3_dd45,
+        0x3ce4_e6db_b7a0_b785,
+        0x189d_92cd_54b5_9e2d,
+        0x029c_34f5_5187_b6ec,
+        0x03f6_92f9_4f7d_39da,
+        0x4314_4d9b_2809_cebf,
+        0x015f_b90b_6952_aa64,
+        0x18ae_77e8_4c05_7b32,
+    ] {
+        check(f64::from_bits(bits));
+        check(-f64::from_bits(bits));
+    }
+    for value in [
+        0.0,
+        -0.0,
+        1.0,
+        0.1,
+        0.3,
+        1e21,
+        1e22,
+        1e23,
+        123_456_789.0,
+        f64::MIN_POSITIVE,
+        f64::MAX,
+        f64::MIN,
+        f64::EPSILON,
+        5e-324,
+        2.225_073_858_507_201e-308,
+        9_007_199_254_740_993.0,
+    ] {
+        check(value);
+    }
+    for exponent in 0..0x7ff_u64 {
+        for fraction in [0, 1, 2, (1 << 52) - 1, 0x8_0000_0000_0000] {
+            check(f64::from_bits(exponent << 52 | fraction));
+        }
+    }
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    for _ in 0..200_000 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let value = f64::from_bits(state);
+        if value.is_finite() {
+            check(value);
+        }
+    }
+    // Integers and short decimals, where the digits end early.
+    for i in 0..20_000_u32 {
+        check(f64::from(i));
+        check(f64::from(i) / 1000.0);
+    }
+}

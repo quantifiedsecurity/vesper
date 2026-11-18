@@ -1,5 +1,3 @@
-// @export abi 3
-//
 // @vesper/serde: the transactional JSON encoder of src/encode.rs. The Rust
 // wrapper flattens a borrowed `Value` tree into a word stream in prefix
 // order, with string bytes and raw node text in one byte pool:
@@ -18,7 +16,11 @@ use self::{
     ErrorKind,
     Kind
 };
-use self::dragon::float_text;
+use self::dragon::{
+    put_shortest,
+    shortest,
+    shortest_len
+};
 use self::index::raise;
 
 copy struct Check {
@@ -188,11 +190,11 @@ fn value(inout c: Check, in w: Slice[u64], in pool: Slice[u8], depth: u64)
             fail(ErrorKind::Number);
         }
         charge(inout c, wrapping_mul(float_pass_work(), 2));
-        let text = float_text(bits);
-        if text.len() > 512 {
+        let len = shortest_len(shortest(bits));
+        if len > 512 {
             fail(ErrorKind::Number);
         }
-        text.len()
+        len
     } else if tag == 5 {
         let off = next(inout c, in w);
         let len = next(inout c, in w);
@@ -383,14 +385,9 @@ fn write_value(inout out: Slice[u8], inout wr: W, in w: Slice[u64], in pool: Sli
             put_integer(inout out, inout wr, wrapping_u64(v));
         }
     } else if tag == 4 {
-        let text = float_text(take(inout wr, in w));
-        for i in 0..text.len() {
-            let b = match text.try_get(i) {
-                Option::Some(b) => widen_u64(b),
-                Option::None => 48,
-            };
-            put(inout out, inout wr, b);
-        }
+        let s = shortest(take(inout wr, in w));
+        put_shortest(inout out, wr.pos, s);
+        wr.pos = wrapping_add(wr.pos, shortest_len(s));
     } else if tag == 5 {
         let off = take(inout wr, in w);
         let len = take(inout wr, in w);
