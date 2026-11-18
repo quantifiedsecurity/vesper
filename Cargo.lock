@@ -5909,6 +5909,7 @@ dependencies = [
 name = "vesper-ignis"
 version = "0.1.0"
 dependencies = [
+ "vesper-bench",
  "vesper-port-abi",
  "vesper-port-harness",
 ]
