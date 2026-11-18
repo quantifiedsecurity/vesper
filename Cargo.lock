@@ -6269,7 +6269,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "vesper-bench",
+ "vesper-bench-seed",
 ]
 
 [[package]]
