@@ -369,61 +369,144 @@ pub(crate) fn parse_reusing<'a, R>(
 // stream of vesper/src/encode.ves, with strings and raw text in one pool.
 use crate::encode::{EncodeLimits, Value};
 
-fn flatten(value: &Value<'_>, words: &mut Vec<u64>, pool: &mut Vec<u8>) {
-    let mut text = |t: &str, words: &mut Vec<u64>| {
-        words.push(pool.len() as u64);
-        words.push(t.len() as u64);
-        pool.extend_from_slice(t.as_bytes());
-    };
-    match value {
-        Value::Null => words.push(0),
-        Value::Bool(b) => words.extend([1, u64::from(*b)]),
-        Value::U64(n) => words.extend([2, *n]),
-        Value::I64(n) => words.extend([3, *n as u64]),
-        Value::F64(n) => words.extend([4, n.to_bits()]),
-        Value::String(t) => {
-            words.push(5);
-            text(t, words);
+/// The flattened stream, built under the limits. The port's preflight
+/// charges at least what `Flat` counts (one token and one work unit per
+/// token, the bytes of each string and raw node, the depth of each
+/// container), so once a count passes its limit the preflight fails at or
+/// before that value: `Flat` stops there, and the stream never holds more
+/// than the limits admit (shared `Value` slices cannot blow it up, and the
+/// recursion stops at the depth limit).
+struct Flat<'l> {
+    limits: &'l EncodeLimits,
+    words: Vec<u64>,
+    pool: Vec<u8>,
+    tokens: usize,
+    strings: usize,
+    work: usize,
+    stopped: bool,
+}
+
+impl Flat<'_> {
+    fn token(&mut self) {
+        self.tokens = self.tokens.saturating_add(1);
+        self.work = self.work.saturating_add(1);
+    }
+    /// Stop once a count is past its limit.
+    fn check(&mut self) {
+        if self.tokens > self.limits.max_tokens
+            || self.work > self.limits.max_work
+            || self.strings > self.limits.max_total_string_bytes
+        {
+            self.stopped = true;
         }
-        Value::Array(values) => {
-            words.extend([6, values.len() as u64]);
-            for v in *values {
-                flatten(v, words, pool);
+    }
+    /// A string or key: its bytes are copied only within the per-string
+    /// limit (the preflight fails on a longer one before reading it, and
+    /// compares keys of equal length only).
+    fn text(&mut self, t: &str) {
+        self.words.push(self.pool.len() as u64);
+        self.words.push(t.len() as u64);
+        if t.len() > self.limits.max_string_bytes {
+            self.stopped = true;
+            return;
+        }
+        self.pool.extend_from_slice(t.as_bytes());
+        self.strings = self.strings.saturating_add(t.len());
+        self.work = self.work.saturating_add(t.len());
+    }
+    fn value(&mut self, value: &Value<'_>, depth: usize) {
+        if self.stopped {
+            return;
+        }
+        let deep = depth >= self.limits.max_depth || depth >= 128;
+        match value {
+            Value::Null => self.words.push(0),
+            Value::Bool(b) => self.words.extend([1, u64::from(*b)]),
+            Value::U64(n) => self.words.extend([2, *n]),
+            Value::I64(n) => self.words.extend([3, *n as u64]),
+            Value::F64(n) => self.words.extend([4, n.to_bits()]),
+            Value::String(t) => {
+                self.words.push(5);
+                self.token();
+                self.text(t);
+            }
+            Value::Array(values) => {
+                self.token();
+                if deep {
+                    // The preflight fails here with DepthLimit.
+                    self.words.extend([6, 0]);
+                    self.stopped = true;
+                    return;
+                }
+                self.words.extend([6, values.len() as u64]);
+                for v in *values {
+                    self.check();
+                    self.value(v, depth + 1);
+                }
+            }
+            Value::Object(fields) => {
+                self.token();
+                if deep {
+                    self.words.extend([7, 0]);
+                    self.stopped = true;
+                    return;
+                }
+                self.words.extend([7, fields.len() as u64]);
+                for (key, v) in *fields {
+                    self.check();
+                    if self.stopped {
+                        return;
+                    }
+                    self.token();
+                    self.text(key);
+                    self.check();
+                    self.value(v, depth + 1);
+                }
+            }
+            Value::Raw(node) => {
+                let raw = node.raw();
+                self.words
+                    .extend([8, self.pool.len() as u64, raw.len() as u64]);
+                self.pool.extend_from_slice(raw.as_bytes());
+                self.work = self.work.saturating_add(raw.len());
+                let at = self.words.len();
+                self.words.push(0);
+                let mut n = 0;
+                for (kind, depth, bytes) in node.stats() {
+                    self.words.extend([kind as u64, depth as u64, bytes as u64]);
+                    self.token();
+                    n += 1;
+                }
+                self.words[at] = n;
             }
         }
-        Value::Object(fields) => {
-            words.extend([7, fields.len() as u64]);
-            for (key, v) in *fields {
-                words.push(pool.len() as u64);
-                words.push(key.len() as u64);
-                pool.extend_from_slice(key.as_bytes());
-                flatten(v, words, pool);
-            }
+        if !matches!(
+            value,
+            Value::String(_) | Value::Array(_) | Value::Object(_) | Value::Raw(_)
+        ) {
+            self.token();
         }
-        Value::Raw(node) => {
-            words.push(8);
-            text(node.raw(), words);
-            let at = words.len();
-            words.push(0);
-            let mut n = 0;
-            for (kind, depth, bytes) in node.stats() {
-                words.extend([kind as u64, depth as u64, bytes as u64]);
-                n += 1;
-            }
-            words[at] = n;
-        }
+        self.check();
     }
 }
 
-fn flattened(value: &Value<'_>) -> (Vec<u64>, Vec<u8>) {
-    let (mut words, mut pool) = (Vec::new(), Vec::new());
-    flatten(value, &mut words, &mut pool);
-    (words, pool)
+fn flattened(value: &Value<'_>, limits: &EncodeLimits) -> (Vec<u64>, Vec<u8>) {
+    let mut flat = Flat {
+        limits,
+        words: Vec::new(),
+        pool: Vec::new(),
+        tokens: 0,
+        strings: 0,
+        work: 0,
+        stopped: false,
+    };
+    flat.value(value, 0);
+    (flat.words, flat.pool)
 }
 
 /// `encode::encoded_size`.
 pub(crate) fn encoded_size(value: &Value<'_>, limits: EncodeLimits) -> Result<usize, Error> {
-    let (words, pool) = flattened(value);
+    let (words, pool) = flattened(value, &limits);
     vp::value_size(&words, &pool, &vp::repr::EncodeLimits::from_value(&limits)).map(|n| n as usize)
 }
 
@@ -433,7 +516,7 @@ pub(crate) fn encode_into(
     output: &mut [u8],
     limits: EncodeLimits,
 ) -> Result<usize, Error> {
-    let (words, pool) = flattened(value);
+    let (words, pool) = flattened(value, &limits);
     vp::value_write(
         &words,
         &pool,

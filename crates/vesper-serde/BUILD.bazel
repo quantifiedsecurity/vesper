@@ -15,6 +15,7 @@ vesper_package(
 vesper_port_object(
     name = "serde_vesper",
     library = "serde",
+    rust_types = "crate::port_types",
     package = ":port_package",
     target = VESPER_TARGET,
 )
@@ -35,6 +36,7 @@ vesper_port_object(
     edit_src = "vesper/src/lemire.ves",
     edits = {"f.mantissa | sign": "(f.mantissa ^ 1) | sign"},
     library = "serde",
+    rust_types = "crate::port_types",
     package = ":port_package",
     target = VESPER_TARGET,
 )
@@ -44,6 +46,7 @@ vesper_port_object(
     edit_src = "vesper/src/index.ves",
     edits = {"if s == 43 || s == 45 {": "if s == 45 {"},
     library = "serde",
+    rust_types = "crate::port_types",
     package = ":port_package",
     target = VESPER_TARGET,
 )
@@ -53,6 +56,7 @@ vesper_port_object(
     edit_src = "vesper/src/stage2.ves",
     edits = {"if p < end && at(in t, p) == 46 {": "if p < end && at(in t, p) == 47 {"},
     library = "serde",
+    rust_types = "crate::port_types",
     package = ":port_package",
     target = VESPER_TARGET,
 )
@@ -62,6 +66,7 @@ vesper_port_object(
     edit_src = "vesper/src/dragon.ves",
     edits = {"text.push(45);": "text.push(43);"},
     library = "serde",
+    rust_types = "crate::port_types",
     package = ":port_package",
     target = VESPER_TARGET,
 )
@@ -71,6 +76,7 @@ vesper_port_object(
     edit_src = "vesper/src/helpers.ves",
     edits = {"carry = backslashes & bit != 0 && !carry;": "carry = backslashes & bit != 0;"},
     library = "serde",
+    rust_types = "crate::port_types",
     package = ":port_package",
     target = VESPER_TARGET,
 )
@@ -80,6 +86,7 @@ vesper_port_object(
     edit_src = "vesper/src/binary.ves",
     edits = {"let tag = bit_shl(wrapping_sub(w, 1), shift);": "let tag = bit_shl(w, shift);"},
     library = "serde",
+    rust_types = "crate::port_types",
     package = ":port_package",
     target = VESPER_TARGET,
 )
@@ -89,6 +96,7 @@ vesper_port_object(
     edit_src = "vesper/src/records.ves",
     edits = {"status_code: wrapping_u16(status),": "status_code: wrapping_u16(flags),"},
     library = "serde",
+    rust_types = "crate::port_types",
     package = ":port_package",
     target = VESPER_TARGET,
 )
