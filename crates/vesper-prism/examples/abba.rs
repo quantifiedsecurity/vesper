@@ -71,11 +71,7 @@ fn request(i: usize) -> (&'static str, String, Vec<u8>) {
             format!("/api/v1/search?q=caf%C3%A9+{i}&page=2&sort=recent"),
             Vec::new(),
         ),
-        6 => (
-            "PUT",
-            format!("/api/v1/users/{i}"),
-            vec![b'x'; 96 + i],
-        ),
+        6 => ("PUT", format!("/api/v1/users/{i}"), vec![b'x'; 96 + i]),
         _ => (
             "POST",
             format!("/api/v2/items/item-{i}/events"),
@@ -195,7 +191,10 @@ fn measure(name: &str, ops: u64) -> u128 {
                 for (i, id) in issued.drain(..).enumerate() {
                     let body = bodies[i % BATCH].clone();
                     connection
-                        .submit(id, Response::new(200, body).header("Cache-Control", b"no-store"))
+                        .submit(
+                            id,
+                            Response::new(200, body).header("Cache-Control", b"no-store"),
+                        )
                         .unwrap();
                 }
                 loop {

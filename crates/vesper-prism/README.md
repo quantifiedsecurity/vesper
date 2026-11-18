@@ -2,7 +2,9 @@
 
 > **Port freeze (2026-11-17):** this crate is being ported to Vesper (port
 > wave P1 lane 14, [#911](https://github.com/robot-head/vesper/issues/911)).
-> Its Rust code takes bug fixes only.
+> Its Rust code takes bug fixes only. `bench-abba.sh` compares the Rust build
+> with the Vesper build (`--features vesper-port`) on a pipelined batch; see
+> [the port parity report](../../docs/parallel-results/port-parity-prism.md).
 
 This is a safe, dependency-free Rust host library for a bounded part of expanded
 [manuscript §33](../../docs/manuscript/README.md). It is not the Prism server or its source-language APIs.
