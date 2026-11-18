@@ -1,14 +1,793 @@
-// Vesper port of vesper-beacon (port wave P1). Until lane 4 (#901) ports the
-// crate, this is the one-function stub that port wave P1 lane 2 (#899) uses
-// to show the seed-copy rule: `FastLogHistogram::bucket_index` forwards here
-// in the port build, and the compiler keeps the Rust seed copy.
-use self::bits::highest_bit;
+// Vesper port of vesper-beacon (port wave P1 lane 4, #901): the full-u64
+// log-linear histogram (src/histogram.rs), the base-2 exponential histogram
+// (src/exponential.rs), the v00 traceparent parser and formatter
+// (src/traceparent.rs) and the bounded span pool and telemetry ring
+// (src/spans.rs).
+//
+// Export ABI v3: the Rust crate keeps every piece of state in its own
+// fixed-size arrays and `#[repr(C)]` mirrors of the copy structs below, and
+// lends them here in place (`inout Slice[u64]`, `inout Stats`). Vesper owns
+// the logic; nothing here allocates. Vesper has no `u128`, so 128-bit
+// trace IDs and sums travel as (high, low) word pairs, and the Rust
+// wrappers join them.
+//
+// All checks precede mutation, as in the Rust code: a raised error leaves
+// the lent state unchanged. `Fail[ArithOverflow]` is in a row only because
+// variable shifts and checked arithmetic could raise it; the inputs the
+// wrappers pass never do, and the wrappers treat it as unreachable.
+//
+// @export abi 3
+
+// ---------------------------------------------------------------------------
+// Types shared with the Rust crate (crate::port re-exports the crate's own
+// HistogramError, BinRange, TraceError, StartError, FinishError and
+// SpanSchema; the rest are port-only state).
+
+copy enum HistogramError {
+    BinOverflow {
+        index: usize
+    },
+    TotalOverflow
+}
+
+copy struct BinRange {
+    lower: u64,
+    upper: u64
+}
+
+// FastLogHistogram's scalar state; the 496 counters and exemplars are two
+// `[u64; 496]` arrays (exemplar 0 means none: IDs are nonzero).
+copy struct HistogramStats {
+    total_count: u64,
+    sum_lo: u64,
+    sum_hi: u64,
+    min: u64,
+    max: u64
+}
+
+// ExponentialHistogram's scalar state; the counts are a `[u64; 160]` array.
+copy struct ExpState {
+    scale: i32,
+    offset: i32,
+    len: usize,
+    zero_count: u64,
+    total_count: u64,
+    sum_lo: u64,
+    sum_hi: u64,
+    min: u64,
+    max: u64
+}
+
+copy enum TraceError {
+    InvalidLength {
+        actual: usize
+    },
+    MissingHyphen {
+        offset: usize
+    },
+    InvalidHex {
+        offset: usize
+    },
+    UnsupportedVersion {
+        version: u8
+    },
+    ZeroTraceId,
+    ZeroSpanId
+}
+
+// W3cSpanContext with the 128-bit trace ID as two words.
+copy struct SpanContext {
+    trace_hi: u64,
+    trace_lo: u64,
+    span_id: u64,
+    trace_flags: u8
+}
+
+copy enum SpanSchema {
+    Request,
+    StorageAppend,
+    Background
+}
+
+copy enum StartError {
+    PoolFull,
+    IdExhausted
+}
+
+copy enum FinishError {
+    QueueFull,
+    EndBeforeStart
+}
+
+// SpanPool's scalar state; the occupied slots are a `[u8; ACTIVE]` array.
+// `next_id` 0 means the ID space is exhausted (IDs are nonzero).
+copy struct PoolState {
+    trace_hi: u64,
+    trace_lo: u64,
+    flags: u8,
+    next_id: u64
+}
+
+// A live span owner's record of its slot and start.
+copy struct OpenSpan {
+    slot: u64,
+    context: SpanContext,
+    parent_span_id: u64,
+    schema: SpanSchema,
+    start_unix_ns: u64,
+    start_mono_ns: u64
+}
+
+// One completed record in the ring. `status` is 0 for Ok and 1 + the
+// ErrorCode index otherwise; `attribute` is 0 None, 1 ItemCount, 2
+// ByteCount, 3 Redacted, with its payload in `attribute_value`.
+copy struct SpanRow {
+    context: SpanContext,
+    parent_span_id: u64,
+    start_unix_ns: u64,
+    duration_ns: u64,
+    schema: SpanSchema,
+    status: u8,
+    attribute: u8,
+    attribute_value: u64
+}
+
+// TelemetryRing's scalar state; the records are a `[SpanRow; QUEUE]` array.
+copy struct RingState {
+    head: u64,
+    len: u64
+}
+
+fn max_u64() -> u64 {
+    18446744073709551615
+}
+
+// The index of the highest set bit of `v > 0` (63 - leading_zeros), from
+// the exponent of the nearest f64: Vesper has no leading-zeros builtin, and
+// this has no data-dependent branch except when rounding reached the next
+// power of two (only for values above 2^53).
+fn high_bit(v: u64) -> u64 eff [Fail[ArithOverflow]] {
+    let e = wrapping_sub(to_bits_f64(nearest_f64(v)) >> 52, 1023);
+    let one: u64 = 1;
+    if e == 64 {
+        63
+    } else if (one << e) > v {
+        e - 1
+    } else {
+        e
+    }
+}
+
+// Raises a histogram error from a function whose row also has
+// Fail[ArithOverflow].
+fn raise_histogram(e: HistogramError) eff [Fail[HistogramError]] {
+    Fail::raise(e)
+}
+
+fn slot_u64(in s: Slice[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// histogram.rs: FastLogHistogram.
 
 pub fn bucket_index(value: u64) -> usize eff [Fail[ArithOverflow]] {
     if value < 16 {
-        widen_usize(value)
-    } else {
-        let octave = highest_bit(value, 0);
-        widen_usize(16 + (octave - 4) * 8 + ((value >> (octave - 3)) - 8))
+        return widen_usize(value);
     }
+    let octave = high_bit(value);
+    widen_usize(16 + (octave - 4) * 8 + ((value >> (octave - 3)) - 8))
+}
+
+pub fn bin_range(index: usize) -> Option[BinRange] eff [Fail[ArithOverflow]] {
+    let i = widen_u64(index);
+    if i >= 496 {
+        return Option::None;
+    }
+    if i < 16 {
+        return Option::Some(
+            BinRange {
+                lower: i,
+                upper: i
+            }
+        );
+    }
+    let octave = ((i - 16) >> 3) + 4;
+    let sub = (i - 16) & 7;
+    let one: u64 = 1;
+    let width = one << (octave - 3);
+    let lower = (8 + sub) * width;
+    Option::Some(
+        BinRange {
+            lower: lower,
+            upper: lower + (width - 1)
+        }
+    )
+}
+
+pub fn histogram_record(
+    inout buckets: Slice[u64],
+    inout exemplars: Slice[u64],
+    inout stats: HistogramStats,
+    value: u64,
+    span_id: u64
+) eff [Fail[HistogramError], Fail[ArithOverflow]] {
+    let index = bucket_index(value);
+    let i = widen_u64(index);
+    let count = slot_u64(buckets, i);
+    if count == max_u64() {
+        raise_histogram(
+            HistogramError::BinOverflow {
+                index: index
+            }
+        );
+    }
+    if stats.total_count == max_u64() {
+        raise_histogram(HistogramError::TotalOverflow);
+    }
+    buckets.try_set(i, count + 1);
+    exemplars.try_set(i, span_id);
+    stats.total_count = stats.total_count + 1;
+    // At most u64::MAX observations of at most u64::MAX each: the 128-bit
+    // sum cannot overflow.
+    let lo = wrapping_add(stats.sum_lo, value);
+    if lo < value {
+        stats.sum_hi = wrapping_add(stats.sum_hi, 1);
+    }
+    stats.sum_lo = lo;
+    if value < stats.min {
+        stats.min = value;
+    }
+    if value > stats.max {
+        stats.max = value;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// exponential.rs: ExponentialHistogram.
+
+// floor(2^scale * log2(v)) for v >= 1 and 0 < scale <= 20, by the binary
+// logarithm squaring method on a Q1.63 mantissa. The square of a mantissa
+// in [2^63, 2^64), shifted right by 63, is below 2^65: bit 64 of it is the
+// top bit of the high word of the full product.
+fn log2_fixed(v: u64, scale: i32) -> i64 eff [Fail[ArithOverflow]] {
+    let k = high_bit(v);
+    let mut x = v << (63 - k);
+    let mut frac: i64 = 0;
+    for _ in 0..widen_u64(narrow_u32(scale)) {
+        let (lo, hi) = mul_wide(x, x);
+        // Without a branch: bit 64 of the square is the next fraction bit,
+        // and the mantissa is renormalised by that bit.
+        let top = hi >> 63;
+        let low = 1 - top;
+        frac = (frac << 1) | narrow_i64(top);
+        x = (hi << low) | wrapping_mul(lo >> 63, low);
+    }
+    (narrow_i64(k) << scale) + frac
+}
+
+pub fn exp_bucket_index(v: u64, scale: i32) -> i32 eff [Fail[ArithOverflow]] {
+    if scale <= 0 {
+        // ceil(log2 v) - 1, then coarsen.
+        let ceil: i32 = if v == 1 {
+            0
+        } else {
+            narrow_i32(high_bit(v - 1) + 1)
+        };
+        return (ceil - 1) >> (0 - scale);
+    }
+    if v & (v - 1) == 0 {
+        let k = narrow_i32(high_bit(v));
+        return (k << scale) - 1;
+    }
+    // No integer other than a power of two lies on a boundary, so
+    // ceil(x) - 1 = floor(x).
+    narrow_i32(log2_fixed(v, scale))
+}
+
+fn min_i64(a: i64, b: i64) -> i64 {
+    if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+fn max_i64(a: i64, b: i64) -> i64 {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+// The downscale needed so that `index` fits the window alongside the
+// occupied buckets.
+fn needed_shift(in st: ExpState, index: i32) -> i64 eff [Fail[ArithOverflow]] {
+    if st.len == 0 {
+        return 0;
+    }
+    let offset = widen_i64(st.offset);
+    let last = offset + narrow_i64(widen_u64(st.len)) - 1;
+    let lo = min_i64(offset, widen_i64(index));
+    let hi = max_i64(last, widen_i64(index));
+    let mut shift: i64 = 0;
+    loop {
+        if (hi >> shift) - (lo >> shift) + 1 <= 160 {
+            break;
+        }
+        shift = shift + 1;
+    }
+    shift
+}
+
+// Halves the resolution `shift` times, merging adjacent bucket pairs.
+fn downscale(inout counts: Slice[u64], inout st: ExpState, shift: i64) eff [Fail[ArithOverflow]] {
+    if shift == 0 {
+        return ();
+    }
+    let offset = widen_i64(st.offset);
+    let len = widen_u64(st.len);
+    let base = offset >> shift;
+    for j in 0..len {
+        let c = slot_u64(counts, j);
+        counts.try_set(j, 0);
+        let to = narrow_u64(((offset + narrow_i64(j)) >> shift) - base);
+        let merged = slot_u64(counts, to) + c;
+        counts.try_set(to, merged);
+    }
+    let last = (offset + narrow_i64(len) - 1) >> shift;
+    st.len = narrow_usize(last - base + 1);
+    st.offset = narrow_i32(base);
+    st.scale = st.scale - narrow_i32(shift);
+}
+
+pub fn exp_record(inout counts: Slice[u64], inout st: ExpState, value: u64) eff [
+    Fail[HistogramError],
+    Fail[ArithOverflow]
+] {
+    if st.total_count == max_u64() {
+        raise_histogram(HistogramError::TotalOverflow);
+    }
+    let sum_lo = wrapping_add(st.sum_lo, value);
+    let carry: u64 = if sum_lo < value {
+        1
+    } else {
+        0
+    };
+    if carry == 1 && st.sum_hi == max_u64() {
+        raise_histogram(HistogramError::TotalOverflow);
+    }
+    if value == 0 {
+        if st.zero_count == max_u64() {
+            raise_histogram(HistogramError::TotalOverflow);
+        }
+        st.zero_count = st.zero_count + 1;
+    } else {
+        let index = exp_bucket_index(value, st.scale);
+        let shift = needed_shift(st, index);
+        downscale(counts, st, shift);
+        let at = widen_i64(index) >> shift;
+        let offset = widen_i64(st.offset);
+        let len = narrow_i64(widen_u64(st.len));
+        if len == 0 {
+            st.offset = narrow_i32(at);
+            st.len = 1;
+        } else if at < offset {
+            let grow = narrow_u64(offset - at);
+            let n = narrow_u64(len);
+            // Move counts[0..len] up by `grow`, last first, then clear the
+            // gap.
+            for r in 0..n {
+                let j = n - 1 - r;
+                let c = slot_u64(counts, j);
+                counts.try_set(j + grow, c);
+            }
+            for j in 0..grow {
+                counts.try_set(j, 0);
+            }
+            st.offset = narrow_i32(at);
+            st.len = st.len + widen_usize(grow);
+        } else if at >= offset + len {
+            st.len = narrow_usize(at - offset + 1);
+        }
+        // Bucket counts are bounded by the checked total.
+        let slot = narrow_u64(at - widen_i64(st.offset));
+        let count = slot_u64(counts, slot) + 1;
+        counts.try_set(slot, count);
+    }
+    st.total_count = st.total_count + 1;
+    st.sum_lo = sum_lo;
+    st.sum_hi = st.sum_hi + carry;
+    if value < st.min {
+        st.min = value;
+    }
+    if value > st.max {
+        st.max = value;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// traceparent.rs: W3C TraceContext v00.
+
+pub fn span_context_new(trace_hi: u64, trace_lo: u64, span_id: u64, trace_flags: u8)
+    -> SpanContext eff [Fail[TraceError]] {
+    if trace_hi == 0 && trace_lo == 0 {
+        Fail::raise(TraceError::ZeroTraceId);
+    }
+    if span_id == 0 {
+        Fail::raise(TraceError::ZeroSpanId);
+    }
+    SpanContext {
+        trace_hi: trace_hi,
+        trace_lo: trace_lo,
+        span_id: span_id,
+        trace_flags: trace_flags
+    }
+}
+
+fn nibble(b: u8) -> Option[u64] {
+    let c = widen_u64(b);
+    if c >= 48 && c <= 57 {
+        Option::Some(wrapping_sub(c, 48))
+    } else if c >= 97 && c <= 102 {
+        Option::Some(wrapping_sub(c, 87))
+    } else {
+        Option::None
+    }
+}
+
+// The value of the `n <= 16` lowercase hex digits at `start`, or the offset
+// of the first byte that is not one.
+fn hex_at(in raw: Slice[u8], start: u64, n: u64) -> Result[u64, u64] {
+    let mut value: u64 = 0;
+    for i in 0..n {
+        let at = wrapping_add(start, i);
+        let digit = match raw.try_get(at) {
+            Option::Some(b) => nibble(b),
+            Option::None => Option::None,
+        };
+        match digit {
+            Option::Some(d) => value = (value << 4) | d,
+            Option::None => return Result::Err(at),
+        }
+    }
+    Result::Ok(value)
+}
+
+// Eight bytes, first byte highest, as their eight-digit lowercase hex
+// value, or None if any byte is not a digit. SWAR: every per-byte sum below
+// stays under 0x100 once no byte has its top bit set, so no lane carries
+// into the next.
+fn hex8(x: u64) -> Option[u64] {
+    let high: u64 = 9259542123273814144;
+    if x & high != 0 {
+        return Option::None;
+    }
+    // Lanes >= '0' (0x30), <= '9' (0x39), >= 'a' (0x61), <= 'f' (0x66).
+    let ge_0 = wrapping_add(x, 5787213827046133840) & high;
+    let gt_9 = wrapping_add(x, 5063812098665367110) & high;
+    let ge_a = wrapping_add(x, 2242545357980376863) & high;
+    let gt_f = wrapping_add(x, 1808504320951916825) & high;
+    let digit = ge_0 & (gt_9 ^ high);
+    let letter = ge_a & (gt_f ^ high);
+    if (digit | letter) != high {
+        return Option::None;
+    }
+    // A lane's value: its low nibble, plus 9 for a letter (bit 6 set).
+    let n = wrapping_add(x & 1085102592571150095, wrapping_mul((x >> 6) & 72340172838076673, 9));
+    let pairs = (n | (n >> 4)) & 71777214294589695;
+    let quads = (pairs | (pairs >> 8)) & 281470681808895;
+    Option::Some((quads | (quads >> 16)) & 4294967295)
+}
+
+// The value of the 16 hex digits at `start`, eight bytes at a time; any
+// invalid byte falls back to the byte loop, which finds its offset.
+fn hex16_or_raise(in raw: Slice[u8], start: u64) -> u64 eff [Fail[TraceError]] {
+    let hi = match raw.try_read_u64_be(start) {
+        Option::Some(x) => hex8(x),
+        Option::None => Option::None,
+    };
+    let lo = match raw.try_read_u64_be(wrapping_add(start, 8)) {
+        Option::Some(x) => hex8(x),
+        Option::None => Option::None,
+    };
+    match (hi, lo) {
+        (Option::Some(h), Option::Some(l)) => (h << 32) | l,
+        _ => hex_or_raise(raw, start, 16),
+    }
+}
+
+fn hex_or_raise(in raw: Slice[u8], start: u64, n: u64) -> u64 eff [Fail[TraceError]] {
+    match hex_at(raw, start, n) {
+        Result::Ok(v) => v,
+        Result::Err(at) => Fail::raise(
+            TraceError::InvalidHex {
+                offset: widen_usize(at)
+            }
+        ),
+    }
+}
+
+fn hyphen_at(in raw: Slice[u8], at: u64) -> bool {
+    match raw.try_get(at) {
+        Option::Some(b) => b == 45,
+        Option::None => false,
+    }
+}
+
+// Deterministic errors: length, separators left to right, version, trace
+// ID, span ID, flags.
+pub fn parse_traceparent_55(in raw: Slice[u8]) -> SpanContext eff [Fail[TraceError]] {
+    if raw.len() != 55 {
+        Fail::raise(
+            TraceError::InvalidLength {
+                actual: widen_usize(raw.len())
+            }
+        );
+    }
+    if !hyphen_at(raw, 2) {
+        Fail::raise(
+            TraceError::MissingHyphen {
+                offset: 2
+            }
+        );
+    }
+    if !hyphen_at(raw, 35) {
+        Fail::raise(
+            TraceError::MissingHyphen {
+                offset: 35
+            }
+        );
+    }
+    if !hyphen_at(raw, 52) {
+        Fail::raise(
+            TraceError::MissingHyphen {
+                offset: 52
+            }
+        );
+    }
+    let version = hex_or_raise(raw, 0, 2);
+    if version != 0 {
+        Fail::raise(
+            TraceError::UnsupportedVersion {
+                version: wrapping_u8(version)
+            }
+        );
+    }
+    let trace_hi = hex16_or_raise(raw, 3);
+    let trace_lo = hex16_or_raise(raw, 19);
+    if trace_hi == 0 && trace_lo == 0 {
+        Fail::raise(TraceError::ZeroTraceId);
+    }
+    let span_id = hex16_or_raise(raw, 36);
+    if span_id == 0 {
+        Fail::raise(TraceError::ZeroSpanId);
+    }
+    let flags = hex_or_raise(raw, 53, 2);
+    span_context_new(trace_hi, trace_lo, span_id, wrapping_u8(flags))
+}
+
+fn hex_digit(d: u64) -> u8 {
+    if d < 10 {
+        wrapping_u8(wrapping_add(d, 48))
+    } else {
+        wrapping_u8(wrapping_add(d, 87))
+    }
+}
+
+// Writes the low `n` hex digits of `value` to `out[start..start + n]`.
+fn write_hex(inout out: Slice[u8], start: u64, n: u64, value: u64) {
+    let mut v = value;
+    for r in 0..n {
+        out.try_set(wrapping_sub(wrapping_add(start, n), wrapping_add(r, 1)), hex_digit(v & 15));
+        v = v >> 4;
+    }
+}
+
+// The eight lowercase hex digits of the low 32 bits of `v` as eight bytes,
+// first digit highest (SWAR: spread one nibble per lane, then add '0', and
+// 'a' - '0' - 10 more in the lanes that hold 10 or more).
+fn hex8_bytes(v: u64) -> u64 {
+    let a = ((v & 4294967295) | (v << 16)) & 281470681808895;
+    let b = (a | (a << 8)) & 71777214294589695;
+    let n = (b | (b << 4)) & 1085102592571150095;
+    let ten_or_more = (wrapping_add(n, 8536140394893047414) & 9259542123273814144) >> 7;
+    wrapping_add(wrapping_add(n, 3472328296227680304), wrapping_mul(ten_or_more, 39))
+}
+
+fn write_hex16(inout out: Slice[u8], at: u64, v: u64) {
+    out.try_write_u64_be(at, hex8_bytes(v >> 32));
+    out.try_write_u64_be(wrapping_add(at, 8), hex8_bytes(v));
+}
+
+// Writes exactly 55 canonical lowercase ASCII bytes to `out` (55 bytes).
+pub fn format_traceparent(in context: SpanContext, inout out: Slice[u8]) {
+    out.try_set(0, 48);
+    out.try_set(1, 48);
+    out.try_set(2, 45);
+    write_hex16(out, 3, context.trace_hi);
+    write_hex16(out, 19, context.trace_lo);
+    out.try_set(35, 45);
+    write_hex16(out, 36, context.span_id);
+    out.try_set(52, 45);
+    write_hex(out, 53, 2, widen_u64(context.trace_flags));
+}
+
+// ---------------------------------------------------------------------------
+// spans.rs: SpanPool, ActiveSpan and TelemetryRing.
+
+pub fn pool_new(trace_hi: u64, trace_lo: u64, first_span_id: u64, flags: u8)
+    -> PoolState eff [Fail[TraceError]] {
+    let context = span_context_new(trace_hi, trace_lo, first_span_id, flags);
+    PoolState {
+        trace_hi: context.trace_hi,
+        trace_lo: context.trace_lo,
+        flags: flags,
+        next_id: first_span_id
+    }
+}
+
+pub fn pool_unclosed_count(in occupied: Slice[u8]) -> u64 {
+    let mut n: u64 = 0;
+    for i in 0..occupied.len() {
+        match occupied.try_get(i) {
+            Option::Some(o) => if o != 0 {
+                n = wrapping_add(n, 1);
+            },
+            Option::None => (),
+        }
+    }
+    n
+}
+
+fn next_after(id: u64) -> u64 {
+    if id == max_u64() {
+        0
+    } else {
+        wrapping_add(id, 1)
+    }
+}
+
+// Starts a span in the first free slot. Context propagation and timestamps
+// are explicit; a child never gets its parent's span ID, including an
+// imported parent's.
+pub fn pool_start_span(
+    inout pool: PoolState,
+    inout occupied: Slice[u8],
+    parent: Option[SpanContext],
+    schema: SpanSchema,
+    start_unix_ns: u64,
+    start_mono_ns: u64
+) -> OpenSpan eff [Fail[StartError]] {
+    let slot = match occupied.find_byte(0) {
+        Option::Some(i) => i,
+        Option::None => Fail::raise(StartError::PoolFull),
+    };
+    let mut id = pool.next_id;
+    if id == 0 {
+        Fail::raise(StartError::IdExhausted);
+    }
+    let mut parent_span_id: u64 = 0;
+    let mut context = SpanContext {
+        trace_hi: pool.trace_hi,
+        trace_lo: pool.trace_lo,
+        span_id: 0,
+        trace_flags: pool.flags
+    };
+    match parent {
+        Option::Some(p) => {
+            if p.span_id == id {
+                id = next_after(id);
+                pool.next_id = id;
+                if id == 0 {
+                    Fail::raise(StartError::IdExhausted);
+                }
+            }
+            parent_span_id = p.span_id;
+            context.trace_hi = p.trace_hi;
+            context.trace_lo = p.trace_lo;
+            context.trace_flags = p.trace_flags;
+        },
+        Option::None => (),
+    }
+    context.span_id = id;
+    pool.next_id = next_after(id);
+    occupied.try_set(slot, 1);
+    OpenSpan {
+        slot: slot,
+        context: context,
+        parent_span_id: parent_span_id,
+        schema: schema,
+        start_unix_ns: start_unix_ns,
+        start_mono_ns: start_mono_ns
+    }
+}
+
+// The ring position of the record `offset` places after the head.
+fn ring_index(head: u64, offset: u64, capacity: u64) -> u64 {
+    if offset >= wrapping_sub(capacity, head) {
+        wrapping_sub(offset, wrapping_sub(capacity, head))
+    } else {
+        wrapping_add(head, offset)
+    }
+}
+
+// Completes a span: enqueues its record and frees its slot, or fails with
+// the queue and the slot unchanged (the Rust owner stays live).
+pub fn span_finish(
+    inout records: Slice[SpanRow],
+    inout ring: RingState,
+    inout occupied: Slice[u8],
+    in span: OpenSpan,
+    end_mono_ns: u64,
+    status: u8,
+    attribute: u8,
+    attribute_value: u64
+) eff [Fail[FinishError]] {
+    if end_mono_ns < span.start_mono_ns {
+        Fail::raise(FinishError::EndBeforeStart);
+    }
+    let capacity = records.len();
+    if ring.len == capacity {
+        Fail::raise(FinishError::QueueFull);
+    }
+    let row = SpanRow {
+        context: span.context,
+        parent_span_id: span.parent_span_id,
+        start_unix_ns: span.start_unix_ns,
+        duration_ns: wrapping_sub(end_mono_ns, span.start_mono_ns),
+        schema: span.schema,
+        status: status,
+        attribute: attribute,
+        attribute_value: attribute_value
+    };
+    records.try_set(ring_index(ring.head, ring.len, capacity), row);
+    ring.len = wrapping_add(ring.len, 1);
+    occupied.try_set(span.slot, 0);
+}
+
+// The record `offset` places after the head (`offset < len`).
+pub fn ring_record(in records: Slice[SpanRow], in ring: RingState, offset: u64) -> Option[SpanRow] {
+    if offset >= ring.len {
+        return Option::None;
+    }
+    records.try_get(ring_index(ring.head, offset, records.len()))
+}
+
+// How many records a prefix of at most `max_rows` holds.
+pub fn ring_prefix_len(in ring: RingState, max_rows: u64) -> u64 {
+    if ring.len < max_rows {
+        ring.len
+    } else {
+        max_rows
+    }
+}
+
+// Removes the first `count <= len` records.
+pub fn ring_pop_front(inout ring: RingState, capacity: u64, count: u64) {
+    let n = ring_prefix_len(ring, count);
+    if n != 0 {
+        ring.head = ring_index(ring.head, n, capacity);
+        ring.len = wrapping_sub(ring.len, n);
+    }
+}
+
+// Moves up to `out.len()` records, oldest first, into `out`; returns how
+// many. An empty ring or an empty `out` leaves the ring unchanged.
+pub fn ring_drain(inout records: Slice[SpanRow], inout ring: RingState, inout out: Slice[SpanRow])
+    -> u64 {
+    let n = ring_prefix_len(ring, out.len());
+    let capacity = records.len();
+    for i in 0..n {
+        match records.try_get(ring_index(ring.head, i, capacity)) {
+            Option::Some(row) => out.try_set(i, row),
+            Option::None => false,
+        };
+    }
+    ring_pop_front(ring, capacity, n);
+    n
 }

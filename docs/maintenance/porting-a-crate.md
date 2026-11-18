@@ -420,11 +420,14 @@ get the port too. Use two package identities instead:
   one invocation (`document output filename collision`); document them one
   at a time.
 
-`crates/vesper-beacon` shows the rule with a stub port of one function
-(`FastLogHistogram::bucket_index`): `vesper` links `vesper-beacon-seed`
+`crates/vesper-beacon` shows the rule: `vesper` links `vesper-beacon-seed`
 (`IMPLEMENTATION == "rust"`), and `vesper-beacon-arrow`, outside the closure,
-links the port (`IMPLEMENTATION == "vesper"`,
-`crates/vesper-beacon-arrow/tests/beacon_build.rs`).
+links `vesper-beacon`. While a port is slower than its Rust build, the
+user's parity rule keeps Rust the default there too: `vesper-beacon` builds
+the Rust code unless its `vesper-port` feature is on, and its build script
+still depends on `vesper-port-harness` unconditionally, so the guard below
+counts it as port-backed either way (`IMPLEMENTATION` follows the feature,
+`crates/vesper-beacon-arrow/tests/beacon_build.rs`; full port: lane 4, #901).
 
 **The guard.** Two checks fail CI if a port-backed package (one whose build
 script runs `vesper-port-harness`) enters the normal or build dependency
