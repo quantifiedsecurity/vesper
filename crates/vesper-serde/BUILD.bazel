@@ -109,7 +109,7 @@ vesper_crate(
 exports_files(glob([
     "src/**/*.rs",
     "tests/**/*.rs",
-]))
+]) + ["README.md"])
 
 filegroup(
     name = "rust_srcs",

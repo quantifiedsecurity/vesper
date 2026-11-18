@@ -15,6 +15,8 @@ load("@rules_rust//rust:defs.bzl", "rust_clippy_test")
 rust_library(
     name = "seed",
     srcs = ["//crates/vesper-serde:rust_srcs"],
+    # src/lib.rs takes its crate docs from the README.
+    compile_data = ["//crates/vesper-serde:README.md"],
     crate_name = "vesper_serde",
     crate_root = "//crates/vesper-serde:src/lib.rs",
     edition = "2024",
