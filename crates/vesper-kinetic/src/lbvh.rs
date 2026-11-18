@@ -268,6 +268,18 @@ impl Lbvh {
         }
     }
 
+    /// Reserve pair storage for `max_pairs` pairs, so later queries with
+    /// that bound do not allocate (the Rust build needs no pair scratch).
+    pub fn reserve_pairs(&mut self, max_pairs: usize) {
+        #[cfg(vesper_port)]
+        {
+            let p = &mut self.port;
+            p.pairs.reserve(max_pairs.saturating_sub(p.pairs.len()));
+        }
+        #[cfg(not(vesper_port))]
+        let _ = max_pairs;
+    }
+
     /// Primitives reserved for.
     pub fn capacity(&self) -> usize {
         self.capacity
@@ -512,10 +524,10 @@ impl Lbvh {
         {
             let p = &mut self.port;
             let max = max_pairs.min(u64::MAX as usize - 1) as u64;
-            // Room for as many pairs as `out` holds without growing (the
-            // world reserves `max_pairs` there), so steady-state queries
-            // do not allocate; more pairs grow this buffer as `out` grows.
-            let room = out.capacity().max(4 * n).min(max_pairs).max(1);
+            // Use the scratch already reserved (`4 * capacity` by
+            // `with_capacity`, more by `reserve_pairs`), so queries do not
+            // allocate; only more pairs than that grow this buffer.
+            let room = p.pairs.capacity().min(max_pairs).max(1);
             if p.pairs.len() < room {
                 p.pairs.resize(room, 0);
             }
