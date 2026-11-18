@@ -3874,6 +3874,28 @@ fn replicate_and_commit(
 }
 ```
 
+==== Source Atomics (`Atomic[T]`, `MemoryOrder`)
+<ch-14-4-atomics>
+Plain fields stay race-free by the borrow rules above: a place that one worker mutates through `inout` is disjoint from every place another worker reads, so no ordinary load or store ever races. Shared counters, flags, latches and ring indices are the exception, and `Atomic[T]` is the only source type that may be updated through a shared `in` borrow.
+
+- *Cell kinds:* `T` is `bool` or an integer kind (`u8`, `u16`, `u32`, `u64`, `usize`, `i8`, `i16`, `i32`, `i64`); any other `T` is rejected at the first operation (`E0821`). `Atomic::new(v)` allocates the cell like `ChunkSeq::new` and `into_inner(sink self)` consumes it and returns its contents.
+- *Mode:* `Atomic[T]` is `affine`, never `copy`, so a cell has exactly one owner, which frees it. Workers share it only through `in` borrows (`in counter` in a spawned body, or an `in` parameter), and every operation takes the cell by `in`. Its contents are private to the operations (`E0822`): no other read, projection or constructor reaches the stored value.
+- *Operations:* `load(order) -> T`, `store(v, order)`, `swap(v, order) -> T`, `compare_exchange(current, new, success, failure) -> Result[T, T]` (`Ok(previous)` after the update, `Err(actual)` when the cell did not hold `current`), and `fetch_add`, `fetch_sub`, `fetch_and`, `fetch_or`, `fetch_xor(v, order) -> T`, which return the previous contents. `fetch_add` and `fetch_sub` wrap modulo the kind's width and are not defined on `bool`; the bitwise forms are defined on both.
+- *Orders:* every order argument is a literal `MemoryOrder::Relaxed`, `Acquire`, `Release`, `AcqRel` or `SeqCst` with the C++20 and Rust meanings. A `load` and the failure order of `compare_exchange` refuse `Release` and `AcqRel`; a `store` refuses `Acquire` and `AcqRel` (`E0820`). An implementation may strengthen any order; the native backend lowers every operation to one sequentially consistent Cranelift atomic at the kind's width.
+- *Effects:* atomic operations are total and carry no effect. They are not observations of a place in the sense of the equality saturation of #link(<ch-7>)[Chapter 8]: each is an opaque call, so no read is forwarded across one.
+- *Backends:* the evaluator, the JIT and executables run atomics. The verified backend of #link(<ch-9>)[Chapter 10] refuses them with a typed `Unsupported` diagnostic, and lock-free data structures (queues, epoch reclamation) remain library work above these cells.
+
+```
+// A worker records its hits, then publishes them with a Release store.
+fn record(in hits: Atomic[u64], in done: Atomic[bool], n: u64) -> u64 {
+    for i in 0..n {
+        hits.fetch_add(1, MemoryOrder::Relaxed);
+    }
+    done.store(true, MemoryOrder::Release);
+    hits.load(MemoryOrder::Acquire)
+}
+```
+
 === 15.5 Cranelift Stack-Switching Fiber ABI and Evidence-Passing Lowering
 <ch-14-5>
 `vesper-opt-egglog` (Stage 4) and `vesper-codegen-clif` (Stage 5) compile Pulse capabilities without state-machine bloat using a three-tier lowering strategy:

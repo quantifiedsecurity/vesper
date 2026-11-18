@@ -2129,6 +2129,12 @@ impl<'a> Runtime<'a> {
         caller: &Env,
     ) -> Result<Control, String> {
         match callee {
+            Value::Function(name) if crate::atomics::intercepted(self.world, &name).is_some() => {
+                // An atomic operation (`atomics`): one update of the shared cell.
+                self.call_site = None;
+                let op = crate::atomics::intercepted(self.world, &name).unwrap();
+                Ok(Control::Return(atomic_call(op, &args)?))
+            }
             Value::Function(name) => {
                 let f = self
                     .world
@@ -2714,6 +2720,68 @@ fn value_kind(v: &Value) -> Option<(crate::numeric::IntegerKind, i128)> {
         Value::SInt(n, _) => (K::I64, *n as i128),
         _ => return None,
     })
+}
+/// An atomic operation `op` on `args` (the `Atomic[T]` receiver, then the
+/// operands and orders): the cell's one element is updated in place, so
+/// every copy of the receiver's sequence cell observes it.
+fn atomic_call(op: crate::atomics::AtomicOp, args: &[Value]) -> Result<Value, String> {
+    use crate::atomics::AtomicOp as A;
+    let Some(Value::Data { fields, .. }) = args.first() else {
+        return Err("atomic operation without an Atomic receiver".into());
+    };
+    let Some(Value::Seq(cell)) = fields.get("cell") else {
+        return Err("atomic operation on a malformed Atomic cell".into());
+    };
+    let mut elements = cell.borrow_mut();
+    let slot = elements
+        .first_mut()
+        .ok_or("atomic operation on an empty Atomic cell")?;
+    let old = slot.clone();
+    let operand = args.get(1).cloned().unwrap_or(Value::Bool(false));
+    match op {
+        A::Load => return Ok(old),
+        A::Store => {
+            *slot = operand;
+            return Ok(Value::Tuple(vec![]));
+        }
+        A::CompareExchange => {
+            let new = args
+                .get(2)
+                .cloned()
+                .ok_or("compare_exchange without a new value")?;
+            let same = match (value_kind(&old), value_kind(&operand)) {
+                (Some((_, a)), Some((_, b))) => a == b,
+                _ => matches!((&old, &operand), (Value::Bool(a), Value::Bool(b)) if a == b),
+            };
+            if same {
+                *slot = new;
+            }
+            let constructor = if same { "Ok" } else { "Err" };
+            return Ok(Value::Data {
+                ty: "Result".into(),
+                constructor: constructor.into(),
+                fields: BTreeMap::from([("0".to_string(), old)]),
+                resource_identity: None,
+            });
+        }
+        _ => {}
+    }
+    *slot = match (&old, &operand) {
+        (Value::Bool(a), Value::Bool(b)) => Value::Bool(match op {
+            A::Swap => *b,
+            A::FetchAnd => *a && *b,
+            A::FetchOr => *a || *b,
+            A::FetchXor => *a != *b,
+            _ => return Err("arithmetic atomic operation on a bool cell".into()),
+        }),
+        _ => {
+            let (Some((kind, a)), Some((_, b))) = (value_kind(&old), value_kind(&operand)) else {
+                return Err("atomic operation on a non-integer cell".into());
+            };
+            integer_value(kind, op.rmw(kind, a, b).ok_or("not a read-modify-write")?)
+        }
+    };
+    Ok(old)
 }
 fn integer_value(kind: crate::numeric::IntegerKind, n: i128) -> Value {
     if kind.unsigned() {
