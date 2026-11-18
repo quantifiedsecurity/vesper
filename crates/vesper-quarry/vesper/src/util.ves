@@ -4,6 +4,7 @@ use self::{
     Bind,
     CCol,
     CTab,
+    D,
     Link,
     Node,
     Q,
@@ -45,21 +46,31 @@ pub fn new_q() -> Q {
         plan: ChunkSeq::new[Node](),
         links: ChunkSeq::new[Link](),
         rows: ChunkSeq::new[u64](),
-        rowset: ChunkSeq::new[u64](),
-        flags: ChunkSeq::new[bool](),
         work: 0,
         brows: 0,
-        bbytes: 0,
+        bbytes: 0
+    }
+}
+
+// Frees the sequences of a `D`. Native code frees the sequences a function
+// binds itself, but not the sequence fields of a struct it owns.
+pub fn free_d(sink ds: D) {
+    let rowset = ds.rowset;
+    let dtabs = ds.dtabs;
+    let decls = ds.decls;
+    let stats = ds.stats;
+    let vals = ds.vals;
+    let counts = ds.counts;
+}
+
+pub fn new_d() -> D {
+    D {
+        rowset: ChunkSeq::new[u64](),
         dtabs: ChunkSeq::new[CTab](),
         decls: ChunkSeq::new[CCol](),
         stats: ChunkSeq::new[Stat](),
         vals: ChunkSeq::new[Val](),
-        counts: ChunkSeq::new[u64](),
-        aux: ChunkSeq::new[u64](),
-        aux2: ChunkSeq::new[u64](),
-        aux3: ChunkSeq::new[u64](),
-        aux4: ChunkSeq::new[u64](),
-        bits: ChunkSeq::new[bool]()
+        counts: ChunkSeq::new[u64]()
     }
 }
 
@@ -228,17 +239,10 @@ pub fn bool_val(b: bool) -> Val {
     }
 }
 
-pub fn vat(in q: Q, i: u64) -> Val {
-    match q.vals.try_get(i) {
+pub fn vat(in d: D, in q: Q, i: u64) -> Val {
+    match d.vals.try_get(i) {
         Option::Some(v) => v,
         Option::None => null_val(),
-    }
-}
-
-pub fn bflag(in q: Q, i: u64) -> bool {
-    match q.flags.try_get(i) {
-        Option::Some(b) => b,
-        Option::None => false,
     }
 }
 

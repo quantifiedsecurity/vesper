@@ -211,23 +211,21 @@ pub struct Q {
     plan: ChunkSeq[Node],
     links: ChunkSeq[Link],
     rows: ChunkSeq[u64],
-    rowset: ChunkSeq[u64],
-    flags: ChunkSeq[bool],
     work: u64,
     brows: u64,
-    bbytes: u64,
+    bbytes: u64
+}
+
+// The row executor's and the access planner's state, kept out of `Q` so
+// that the front end and the optimizer do not allocate it: every sequence
+// costs an allocation and a free per call.
+pub struct D {
+    rowset: ChunkSeq[u64],
     dtabs: ChunkSeq[CTab],
     decls: ChunkSeq[CCol],
     stats: ChunkSeq[Stat],
     vals: ChunkSeq[Val],
-    counts: ChunkSeq[u64],
-    // Scratch sequences. Locals are not freed by native code yet, so
-    // every function-local sequence lives here.
-    aux: ChunkSeq[u64],
-    aux2: ChunkSeq[u64],
-    aux3: ChunkSeq[u64],
-    aux4: ChunkSeq[u64],
-    bits: ChunkSeq[bool]
+    counts: ChunkSeq[u64]
 }
 
 // The exported API. Each entry point is documented where it is implemented.
