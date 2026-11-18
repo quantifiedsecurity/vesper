@@ -108,9 +108,10 @@ impl<M: Module> Codegen<'_, '_, M> {
         op: SeqOp,
         args: &[ir::Value],
         arg_types: &[Type],
+        receiver: Option<&Expr>,
     ) -> Result<Option<ir::Value>, String> {
         if op.byte_scan() {
-            return self.byte_scan_op(op, args, arg_types).map(Some);
+            return self.byte_scan_op(op, args, arg_types, receiver).map(Some);
         }
         if !matches!(
             op,
@@ -349,6 +350,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         op: SeqOp,
         args: &[ir::Value],
         arg_types: &[Type],
+        receiver: Option<&Expr>,
     ) -> Result<ir::Value, String> {
         let operand = |i: usize| {
             args.get(i)
@@ -408,12 +410,13 @@ impl<M: Module> Codegen<'_, '_, M> {
                 let len = self.seq_word(h, LEN);
                 let (sh, sstart, slen) = self.seq_view(src, src_ty);
                 let needed = self.b.ins().iadd(len, slen);
-                self.seq_reserve(h, needed, 1)?;
-                // The data pointer may move when the sequence grows.
+                // The handle and data pointer may move when it grows (#1021).
+                let h = self.seq_reserve(h, needed, 1, receiver)?;
                 let dst = self.seq_elem_addr(h, zero, len, 1);
                 let src = self.seq_elem_addr(sh, sstart, zero, 1);
                 self.lowercase_copy(dst, src, slen, simd);
-                self.seq_set_word(h, LEN, needed);
+                let some = self.b.ins().icmp_imm(IntCC::NotEqual, slen, 0);
+                self.seq_set_len_if(h, some, needed);
                 zero
             }
             SeqOp::MakeAsciiLowercase { total } => {
