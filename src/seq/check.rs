@@ -315,7 +315,11 @@ impl Checker<'_> {
             | SeqOp::Extend
             | SeqOp::Fill
             | SeqOp::BytesEq
-            | SeqOp::FindByte => 1,
+            | SeqOp::FindByte
+            | SeqOp::EqIgnoreAsciiCase
+            | SeqOp::ExtendAsciiLowercase => 1,
+            SeqOp::FindEither => 2,
+            SeqOp::FindNotIn => 3,
             SeqOp::Wide(w) if !w.write => 1,
             SeqOp::CopyWithin { .. } => 3,
             _ => 2,
@@ -349,8 +353,8 @@ impl Checker<'_> {
                     span.clone(),
                 )
             }
-            SeqOp::Wide(_) | SeqOp::SumBe16 | SeqOp::BytesEq | SeqOp::FindByte
-                if known && crate::numeric::default_type(&elem_ty) != Type::named("u8") =>
+            _ if (matches!(op, SeqOp::Wide(_)) || op.byte_scan())
+                && known && crate::numeric::default_type(&elem_ty) != Type::named("u8") =>
             {
                 self.error(
                     "E1525",
@@ -389,9 +393,13 @@ impl Checker<'_> {
                     0
                 )
             ) || (matches!(op, SeqOp::CopyWithin { .. }) && i < 3);
-            let source_arg = op == SeqOp::Extend
-                || op == SeqOp::BytesEq
-                || (matches!(op, SeqOp::CopyFrom { .. }) && i == 1);
+            let source_arg = matches!(
+                op,
+                SeqOp::Extend
+                    | SeqOp::BytesEq
+                    | SeqOp::EqIgnoreAsciiCase
+                    | SeqOp::ExtendAsciiLowercase
+            ) || (matches!(op, SeqOp::CopyFrom { .. }) && i == 1);
             if index_arg {
                 self.seq_by_value(method, a);
                 let t = self.expr_expected(&a.expr, env, Usage::Own, &u64_ty);
@@ -411,7 +419,7 @@ impl Checker<'_> {
                 // `eq` only reads, so it may compare two views of one sequence.
                 // Distinct field paths are disjoint, as for call arguments.
                 if let (true, Some(src), Some(dst)) = (
-                    op != SeqOp::BytesEq,
+                    !matches!(op, SeqOp::BytesEq | SeqOp::EqIgnoreAsciiCase),
                     self.seq_view_place(&a.expr),
                     Place::from_expr(base),
                 ) && src.overlaps(&dst)
@@ -422,6 +430,16 @@ impl Checker<'_> {
                         a.expr.span.clone(),
                     );
                 }
+            } else if op == SeqOp::FindNotIn {
+                // The class: two 64-bit masks and whether bytes >= 128 belong.
+                self.seq_by_value(method, a);
+                let want = if i < 2 {
+                    u64_ty.clone()
+                } else {
+                    Type::named("bool")
+                };
+                let t = self.expr_expected(&a.expr, env, Usage::Own, &want);
+                self.expect_type(&want, &t, a.expr.span.clone());
             } else if let (SeqOp::Wide(w), 1) = (op, i) {
                 self.seq_by_value(method, a);
                 let int_ty = Type::named(w.int_type());
@@ -443,9 +461,12 @@ impl Checker<'_> {
             SeqOp::TrySet
             | SeqOp::CopyFrom { total: true }
             | SeqOp::CopyWithin { total: true }
-            | SeqOp::BytesEq => Type::named("bool"),
+            | SeqOp::BytesEq
+            | SeqOp::EqIgnoreAsciiCase => Type::named("bool"),
             SeqOp::SumBe16 => u64_ty,
-            SeqOp::FindByte => Type::Named("Option".into(), vec![u64_ty]),
+            SeqOp::FindByte | SeqOp::FindEither | SeqOp::FindNotIn => {
+                Type::Named("Option".into(), vec![u64_ty])
+            }
             SeqOp::Get | SeqOp::SliceGet => elem_ty,
             SeqOp::Wide(w) => match (w.write, w.total) {
                 (false, false) => Type::named(w.int_type()),
