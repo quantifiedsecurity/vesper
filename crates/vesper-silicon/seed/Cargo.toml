@@ -1,0 +1,89 @@
+[package]
+name = "vesper-silicon-seed"
+version = "0.1.0"
+edition = "2024"
+description = "Frozen Rust seed copy of vesper-silicon for the compiler's own dependency closure"
+license = "MIT OR Apache-2.0"
+publish = false
+autotests = false
+autoexamples = false
+autobenches = false
+build = false
+
+# The seed-copy rule (port wave P1 lane 2, #899; this crate's port is port
+# wave P3a lane 7, #1042): the compiler, and for now every other dependent,
+# links this package, the Rust build of ../src, under the library name
+# `vesper_silicon`. Dependents use
+# `vesper-silicon = { path = ".../seed", package = "vesper-silicon-seed" }`.
+# The port-backed package `vesper-silicon` is exercised by its own tests until
+# it reaches performance parity. The Rust code takes bug fixes only.
+[lib]
+name = "vesper_silicon"
+path = "../src/lib.rs"
+
+[dependencies]
+cranelift-codegen = { version = "0.125", features = ["arm64", "riscv64", "x86"] }
+svd-parser = { version = "=0.14.10", features = ["expand"] }
+
+[dev-dependencies]
+cranelift-frontend = "0.125"
+
+[[test]]
+name = "aia"
+path = "../tests/aia.rs"
+
+[[test]]
+name = "aia_hypervisor"
+path = "../tests/aia_hypervisor.rs"
+
+[[test]]
+name = "aia_qemu"
+path = "../tests/aia_qemu.rs"
+
+[[test]]
+name = "atomic"
+path = "../tests/atomic.rs"
+
+[[test]]
+name = "devicetree_rest"
+path = "../tests/devicetree_rest.rs"
+
+[[test]]
+name = "dma_ranges"
+path = "../tests/dma_ranges.rs"
+
+[[test]]
+name = "dtb"
+path = "../tests/dtb.rs"
+
+[[test]]
+name = "intc"
+path = "../tests/intc.rs"
+
+[[test]]
+name = "lean"
+path = "../tests/lean.rs"
+
+[[test]]
+name = "rp2040"
+path = "../tests/rp2040.rs"
+
+[[test]]
+name = "runtime"
+path = "../tests/runtime.rs"
+
+[[test]]
+name = "stack"
+path = "../tests/stack.rs"
+
+[[test]]
+name = "svd"
+path = "../tests/svd.rs"
+
+[[test]]
+name = "zicbom"
+path = "../tests/zicbom.rs"
+
+[lints.rust]
+# cfg(vesper_port) is set only by the port-backed package's build script.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(vesper_port)"] }

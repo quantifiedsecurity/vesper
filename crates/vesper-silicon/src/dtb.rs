@@ -68,13 +68,26 @@ use crate::frames::{FrameAllocator, FrameError, PAGE_BYTES};
 use crate::irq::{Cpu, IsrCtx};
 use crate::ledger::Ledger;
 
+// The port-backed package's DeviceTree::parse (port wave P3a lane 7, #1042).
+#[cfg(vesper_port)]
+#[path = "dtb/port.rs"]
+mod port;
+
+#[cfg(not(vesper_port))]
 const FDT_MAGIC: u32 = 0xd00d_feed;
+#[cfg(not(vesper_port))]
 const FDT_BEGIN_NODE: u32 = 1;
+#[cfg(not(vesper_port))]
 const FDT_END_NODE: u32 = 2;
+#[cfg(not(vesper_port))]
 const FDT_PROP: u32 = 3;
+#[cfg(not(vesper_port))]
 const FDT_NOP: u32 = 4;
+#[cfg(not(vesper_port))]
 const FDT_END: u32 = 9;
+#[cfg(not(vesper_port))]
 const HEADER_BYTES: usize = 40;
+#[cfg(not(vesper_port))]
 /// A version-16 header lacks the trailing `size_dt_struct` field.
 const HEADER_V16_BYTES: usize = 36;
 
@@ -305,6 +318,7 @@ impl std::fmt::Display for DtbError {
 
 impl std::error::Error for DtbError {}
 
+#[cfg(not(vesper_port))]
 fn be32(b: &[u8], at: usize, what: &'static str) -> Result<u32, DtbError> {
     let s = b
         .get(at..at.checked_add(4).ok_or(DtbError::Truncated { what })?)
@@ -312,6 +326,7 @@ fn be32(b: &[u8], at: usize, what: &'static str) -> Result<u32, DtbError> {
     Ok(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
 }
 
+#[cfg(not(vesper_port))]
 fn be64(b: &[u8], at: usize, what: &'static str) -> Result<u64, DtbError> {
     let hi = be32(b, at, what)?;
     let lo = be32(
@@ -322,6 +337,7 @@ fn be64(b: &[u8], at: usize, what: &'static str) -> Result<u64, DtbError> {
     Ok((u64::from(hi) << 32) | u64::from(lo))
 }
 
+#[cfg(not(vesper_port))]
 /// NUL-terminated UTF-8 string starting at `at` in `b` (offsets in errors
 /// are relative to `base`).
 fn cstr(b: &[u8], at: usize, base: usize) -> Result<&str, DtbError> {
@@ -335,6 +351,7 @@ fn cstr(b: &[u8], at: usize, base: usize) -> Result<&str, DtbError> {
     std::str::from_utf8(&rest[..n]).map_err(|_| DtbError::NotUtf8 { offset: base + at })
 }
 
+#[cfg(not(vesper_port))]
 fn align4(n: usize) -> Option<usize> {
     n.checked_add(3).map(|v| v & !3)
 }
@@ -359,6 +376,20 @@ impl DeviceTree {
     /// different node-name encoding and are rejected. Bytes after
     /// `totalsize` are ignored.
     pub fn parse(blob: &[u8]) -> Result<Self, DtbError> {
+        #[cfg(vesper_port)]
+        {
+            port::parse(blob)
+        }
+        #[cfg(not(vesper_port))]
+        {
+            Self::parse_rust(blob)
+        }
+    }
+
+    /// The Rust build of [`DeviceTree::parse`] (the seed copy's, and the
+    /// default); the port-backed package parses in Vesper (vesper/src/dtb.ves).
+    #[cfg(not(vesper_port))]
+    fn parse_rust(blob: &[u8]) -> Result<Self, DtbError> {
         if blob.len() < HEADER_V16_BYTES {
             return Err(DtbError::Truncated { what: "header" });
         }

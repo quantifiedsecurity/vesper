@@ -1,8 +1,102 @@
 load("//tools/bazel:defs.bzl", "vesper_crate")
+load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_package", "vesper_port_object")
+
+# The port-backed package (seed-copy rule, docs/maintenance/porting-a-crate.md;
+# port wave P3a lane 7, #1042): build.rs links the object built here from the
+# Loom package in vesper/ and checks port/binding.rs against the generated
+# binding. The compiler and every other dependent link the Rust seed copy,
+# //crates/vesper-silicon/seed, until the port reaches performance parity
+# (docs/parallel-results/port-p3-silicon.md).
+vesper_package(
+    name = "port_package",
+    srcs = glob(["vesper/src/**/*.ves"]),
+    manifest = "vesper/Loom.toml",
+)
+
+vesper_port_object(
+    name = "silicon_vesper",
+    library = "silicon",
+    package = ":port_package",
+    target = VESPER_TARGET,
+)
+
+filegroup(
+    name = "silicon_vesper_binding",
+    srcs = [":silicon_vesper"],
+    output_group = "rust_binding",
+)
+
+# The divergent builds, one per ported module (the Cargo
+# `vesper-port-divergent` feature applies the same edits from build.rs, one
+# at a time with VESPER_SILICON_DIVERGENT): each must keep compiling, and
+# crates/vesper-silicon/port/check.sh asserts which test catches it.
+[
+    vesper_port_object(
+        name = "silicon_vesper_divergent_" + module,
+        edit_src = "vesper/src/%s.ves" % src,
+        edits = {old: new},
+        library = "silicon",
+        package = ":port_package",
+        target = VESPER_TARGET,
+    )
+    for module, src, old, new in [
+        (
+            "imsic",
+            "aia",
+            "if f.threshold == 0 || id < f.threshold {",
+            "if f.threshold == 0 || id <= f.threshold {",
+        ),
+        (
+            "aplic",
+            "aia",
+            "if !found || prio < bp {",
+            "if !found || prio <= bp {",
+        ),
+        (
+            "dtb",
+            "dtb",
+            "let name = wrapping_add(off_struct, i);",
+            "let name = wrapping_add(off_struct, wrapping_add(i, 1));",
+        ),
+    ]
+]
 
 vesper_crate(
+    build_script_data = [
+        ":silicon_vesper",
+        ":silicon_vesper_binding",
+    ],
+    build_script_env = {
+        # rules_rust already makes these execpaths absolute.
+        "VESPER_PORT_OBJECT": "$(execpath :silicon_vesper)",
+        "VESPER_PORT_GENERATED_BINDING": "$(execpath :silicon_vesper_binding)",
+    },
     # tests/lean.rs reads and elaborates ../../lean/SiliconFrames.lean; Lean
     # rejects symlinked runfiles, so that test runs in a copy of regular files.
     copy_test_cwd = ["test/lean"],
     extra_test_data = ["//:lean"],
+)
+
+# The seed package (seed/) builds these same Rust sources without the port.
+exports_files(glob([
+    "src/**/*.rs",
+    "tests/**/*.rs",
+]))
+
+filegroup(
+    name = "rust_srcs",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/vesper-silicon/seed:__pkg__"],
+)
+
+filegroup(
+    name = "test_common",
+    srcs = glob(["tests/common/**/*.rs"]),
+    visibility = ["//crates/vesper-silicon/seed:__pkg__"],
+)
+
+filegroup(
+    name = "fixtures",
+    srcs = glob(["fixtures/**"]),
+    visibility = ["//crates/vesper-silicon/seed:__pkg__"],
 )
