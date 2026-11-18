@@ -21,6 +21,100 @@ impl BinRange {
 /// 7,984 bytes: two 496-element u64 arrays, one u64 total, an exact u128
 /// sum and the u64 minimum and maximum (no heap).
 /// Exemplar IDs are caller-supplied opaque nonzero span IDs, not context owners.
+///
+/// The port build keeps the same two arrays (exemplar 0 means none) and the
+/// scalars in the port's `HistogramStats` mirror, with the sum as two words:
+/// 7,976 bytes. Vesper updates them in place.
+#[cfg(vesper_port)]
+#[derive(Debug)]
+pub struct FastLogHistogram {
+    buckets: [u64; HISTOGRAM_BINS],
+    exemplars: [u64; HISTOGRAM_BINS],
+    stats: crate::port::repr::HistogramStats,
+}
+#[cfg(vesper_port)]
+impl Default for FastLogHistogram {
+    fn default() -> Self {
+        Self {
+            buckets: [0; HISTOGRAM_BINS],
+            exemplars: [0; HISTOGRAM_BINS],
+            stats: crate::port::repr::HistogramStats {
+                total_count: 0,
+                sum_lo: 0,
+                sum_hi: 0,
+                min: u64::MAX,
+                max: 0,
+            },
+        }
+    }
+}
+#[cfg(vesper_port)]
+impl FastLogHistogram {
+    pub const FOOTPRINT_BYTES: usize = core::mem::size_of::<Self>();
+    pub fn bucket_index(value: u64) -> usize {
+        crate::port::no_overflow(crate::port::bucket_index(value))
+    }
+    pub fn bin_range(index: usize) -> Option<BinRange> {
+        crate::port::no_overflow(crate::port::bin_range(index))
+    }
+    /// All checks precede mutation: a failed record leaves counters/exemplars unchanged.
+    pub fn record_with_exemplar(
+        &mut self,
+        value: u64,
+        span_id: core::num::NonZeroU64,
+    ) -> Result<(), HistogramError> {
+        match crate::port::histogram_record(
+            &mut self.buckets,
+            &mut self.exemplars,
+            &mut self.stats,
+            value,
+            span_id.get(),
+        ) {
+            Ok(()) => Ok(()),
+            Err(crate::port::HistogramRecordError::HistogramError(e)) => Err(e),
+            Err(crate::port::HistogramRecordError::ArithOverflow(e)) => {
+                crate::port::no_overflow(Err(e))
+            }
+        }
+    }
+    /// Exact sum of all recorded values.
+    pub const fn sum(&self) -> u128 {
+        crate::port::join_u128(self.stats.sum_hi, self.stats.sum_lo)
+    }
+    /// Smallest recorded value, if any.
+    pub const fn min(&self) -> Option<u64> {
+        if self.stats.total_count == 0 {
+            None
+        } else {
+            Some(self.stats.min)
+        }
+    }
+    /// Largest recorded value, if any.
+    pub const fn max(&self) -> Option<u64> {
+        if self.stats.total_count == 0 {
+            None
+        } else {
+            Some(self.stats.max)
+        }
+    }
+    pub const fn total_count(&self) -> u64 {
+        self.stats.total_count
+    }
+    pub fn count(&self, index: usize) -> Option<u64> {
+        self.buckets.get(index).copied()
+    }
+    pub fn exemplar(&self, index: usize) -> Option<core::num::NonZeroU64> {
+        self.exemplars
+            .get(index)
+            .copied()
+            .and_then(core::num::NonZeroU64::new)
+    }
+}
+
+/// 7,984 bytes: two 496-element u64 arrays, one u64 total, an exact u128
+/// sum and the u64 minimum and maximum (no heap).
+/// Exemplar IDs are caller-supplied opaque nonzero span IDs, not context owners.
+#[cfg(not(vesper_port))]
 #[derive(Debug)]
 pub struct FastLogHistogram {
     buckets: [u64; HISTOGRAM_BINS],
@@ -30,6 +124,7 @@ pub struct FastLogHistogram {
     min: u64,
     max: u64,
 }
+#[cfg(not(vesper_port))]
 impl Default for FastLogHistogram {
     fn default() -> Self {
         Self {
@@ -42,20 +137,9 @@ impl Default for FastLogHistogram {
         }
     }
 }
+#[cfg(not(vesper_port))]
 impl FastLogHistogram {
     pub const FOOTPRINT_BYTES: usize = core::mem::size_of::<Self>();
-    /// The port-backed build forwards to the Vesper stub port
-    /// (`vesper/src/lib.ves`); the seed build keeps the Rust below.
-    #[cfg(vesper_port)]
-    pub fn bucket_index(value: u64) -> usize {
-        match crate::port_binding::bucket_index(value) {
-            Ok(index) => index,
-            // Every u64 has a bin: the port's checked arithmetic cannot
-            // overflow (the bin index is at most 495).
-            Err(_) => unreachable!("bucket_index overflowed for {value}"),
-        }
-    }
-    #[cfg(not(vesper_port))]
     pub fn bucket_index(value: u64) -> usize {
         if value < 16 {
             return value as usize;
@@ -136,7 +220,10 @@ impl FastLogHistogram {
     }
 }
 
-#[cfg(test)]
+// The Rust build's unit tests reach private fields; the port build's
+// counterpart is `port_tests` below, and the public-API half runs against
+// both builds in tests/histogram.rs.
+#[cfg(all(test, not(vesper_port)))]
 mod tests {
     use super::*;
     #[test]
@@ -179,6 +266,45 @@ mod tests {
         assert_eq!(h.count(0), Some(0));
         assert_eq!(h.exemplar(0), None);
         h.total_count = 0;
+        h.buckets[1] = u64::MAX;
+        assert_eq!(
+            h.record_with_exemplar(1, id),
+            Err(HistogramError::BinOverflow { index: 1 })
+        );
+        assert_eq!(h.total_count(), 0);
+        assert_eq!(h.exemplar(1), None);
+        // Failed records leave sum, min and max unchanged too.
+        assert_eq!(h.sum(), u128::from(u64::MAX));
+    }
+}
+
+// The translated `checked_counters_are_transactional` for the port build:
+// the same overflows, set up in the port's arrays and stats mirror.
+#[cfg(all(test, vesper_port))]
+mod port_tests {
+    use super::*;
+    #[test]
+    fn footprint_is_two_arrays_and_five_words() {
+        assert_eq!(FastLogHistogram::FOOTPRINT_BYTES, 7976);
+    }
+    #[test]
+    fn checked_counters_are_transactional() {
+        let id = core::num::NonZeroU64::new(7).unwrap();
+        let mut h = FastLogHistogram::default();
+        h.record_with_exemplar(u64::MAX, id).unwrap();
+        assert_eq!(h.exemplar(495), Some(id));
+        assert_eq!(
+            (h.sum(), h.min(), h.max()),
+            (u128::from(u64::MAX), Some(u64::MAX), Some(u64::MAX))
+        );
+        h.stats.total_count = u64::MAX;
+        assert_eq!(
+            h.record_with_exemplar(0, id),
+            Err(HistogramError::TotalOverflow)
+        );
+        assert_eq!(h.count(0), Some(0));
+        assert_eq!(h.exemplar(0), None);
+        h.stats.total_count = 0;
         h.buckets[1] = u64::MAX;
         assert_eq!(
             h.record_with_exemplar(1, id),

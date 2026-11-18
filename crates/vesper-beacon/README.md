@@ -80,10 +80,20 @@ dependencies, schema/serialization and logical export budgets stay in the adapte
 
 ## Seed copy and port
 
-Port wave P1 (#899) splits this crate into two packages built from the same
-sources. `vesper-beacon` is the port-backed build: `build.rs` links the Vesper
-package in `vesper/` (for now a stub that ports only
-`FastLogHistogram::bucket_index`; the full port is lane 4, #901). The compiler
-and every crate in its dependency closure link `vesper-beacon-seed`
-(`seed/`), the frozen Rust build, under the same library name. See "Crates the
-compiler links" in `docs/maintenance/porting-a-crate.md`.
+Frozen for port wave P1 lane 4 ([#901](https://github.com/robot-head/vesper/issues/901)):
+the Rust code takes bug fixes only while the Vesper port catches up.
+
+Port wave P1 (#899) split this crate into two packages built from the same
+sources. The compiler and every crate in its dependency closure link
+`vesper-beacon-seed` (`seed/`), the frozen Rust build, under the same library
+name. See "Crates the compiler links" in `docs/maintenance/porting-a-crate.md`.
+
+`vesper-beacon` builds the same Rust by default. Its `vesper-port` feature
+links the Vesper port in `vesper/` (lane 4, #901), and every public function
+forwards to it: both histograms, the traceparent parser and formatter, the
+span pool and the telemetry ring. The crate keeps all state in its own
+fixed-size arrays and lends them to Vesper in place (export ABI v3), so the
+port allocates nothing either. `vesper-beacon-arrow --features vesper-port`
+runs the adapter on the port. The port is not the default anywhere until it
+reaches performance parity with the Rust build; the measurements are in
+`docs/parallel-results/port-p1-beacon.md`.

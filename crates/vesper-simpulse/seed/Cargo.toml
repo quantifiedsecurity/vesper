@@ -1,0 +1,42 @@
+[package]
+name = "vesper-simpulse-seed"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+autoexamples = false
+autobenches = false
+build = false
+
+# The seed-copy rule (port wave P1 lane 2, #899): the compiler, and for now
+# every other dependent, links this package, the Rust build of ../src, under
+# the library name `vesper_simpulse`. Dependents use
+# `vesper-simpulse = { path = ".../seed", package = "vesper-simpulse-seed" }`.
+# The port-backed package `vesper-simpulse` (lane 5, #902) is exercised by
+# its own tests until it reaches performance parity. The Rust code takes bug
+# fixes only until self-hosting Stage 2.
+[lib]
+name = "vesper_simpulse"
+path = "../src/lib.rs"
+
+[[test]]
+name = "kernel"
+path = "../tests/kernel.rs"
+
+[[test]]
+name = "stress"
+path = "../tests/stress.rs"
+
+[[example]]
+name = "abba"
+path = "../examples/abba.rs"
+
+[dev-dependencies]
+vesper-bench = { path = "../../vesper-bench" }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.rust]
+# cfg(vesper_port) is set only by the port-backed package's build script.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(vesper_port)"] }

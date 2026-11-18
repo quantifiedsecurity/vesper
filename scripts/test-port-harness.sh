@@ -9,8 +9,9 @@
 #   build, and fail against a deliberately divergent Vesper build.
 # - vesper-port-build links a multi-file Loom package with a path dependency,
 #   and its divergent build must fail the tests.
-# - vesper-beacon (port-backed) and vesper-beacon-seed (the compiler's Rust
-#   copy) both pass Beacon's tests; vesper-beacon-arrow links the port; the
+# - vesper-beacon (Rust by default, its Vesper port under `vesper-port`)
+#   and vesper-beacon-seed (the compiler's Rust copy) pass Beacon's tests;
+#   vesper-beacon-arrow passes against both Beacon builds; the
 #   closure guard (vesper-port-harness tests/closure_guard.rs) checks that no
 #   port-backed package is in the compiler's dependency closure.
 #
@@ -81,6 +82,18 @@ divergent "package port" root_package_modules_are_linked dependency_modules_are_
     -p vesper-port-build --features divergent --test package
 cargo test --locked -p vesper-beacon -p vesper-beacon-seed
 cargo test --locked -p vesper-beacon-arrow --test beacon_build
+# Port wave P1 lane 4 (#901): Beacon against its Vesper port, the Arrow
+# adapter against the port, and one divergent edit per ported module.
+cargo test --locked -p vesper-beacon --features vesper-port
+cargo test --locked -p vesper-beacon-arrow --features vesper-port
+divergent "Beacon port (histogram.rs)" all_ranges_partition_u64_and_bound_error footprint_is_fixed \
+    -p vesper-beacon --features vesper-port-divergent --test histogram
+divergent "Beacon port (exponential.rs)" starts_at_the_finest_scale_and_downscales_to_fit \
+    bucket_index_is_exact_at_small_scales -p vesper-beacon --features vesper-port-divergent --test exponential
+divergent "Beacon port (traceparent.rs)" lengths_separators_lowercase_version_and_nonzero_are_strict \
+    drain_wraparound_partial_zero_and_fifo_ownership -p vesper-beacon --features vesper-port-divergent --test behavior
+divergent "Beacon port (spans.rs)" ids_never_wrap_or_repeat_and_imported_self_parent_is_skipped \
+    drain_wraparound_partial_zero_and_fifo_ownership -p vesper-beacon --features vesper-port-divergent --test behavior
 # Port wave P1 lane 14 (#911): vesper-prism against its Vesper port.
 sh crates/vesper-prism/test-port.sh
 # vesper-aura (port wave P1 lane 13, #910; the port is its only build since
@@ -158,4 +171,5 @@ protobuf protobuf signed_twos_complement_varints_are_canonical_in_singular_and_p
 der der typed_set_of_sorts_complete_encodings_retains_duplicates_and_rejects_untyped_set utf8_string_is_strict_borrowed_and_transactional
 ipc ipc independent_arrow_values_and_versions hostile_schema_and_union_discriminants
 CHECKS
+. crates/vesper-simpulse/port/check.sh  # port P1 lane 5 (#902): vesper-simpulse, both builds and the divergence check
 sh crates/vesper-serde/port/check.sh  # port P1 lane 19 (#916): vesper-serde, both builds and one divergence check per ported module
