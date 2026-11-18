@@ -9,8 +9,9 @@
 #   build, and fail against a deliberately divergent Vesper build.
 # - vesper-port-build links a multi-file Loom package with a path dependency,
 #   and its divergent build must fail the tests.
-# - vesper-beacon (port-backed) and vesper-beacon-seed (the compiler's Rust
-#   copy) both pass Beacon's tests; vesper-beacon-arrow links the port; the
+# - vesper-beacon (Rust by default, its Vesper port under `vesper-port`)
+#   and vesper-beacon-seed (the compiler's Rust copy) pass Beacon's tests;
+#   vesper-beacon-arrow passes against both Beacon builds; the
 #   closure guard (vesper-port-harness tests/closure_guard.rs) checks that no
 #   port-backed package is in the compiler's dependency closure.
 #
@@ -81,6 +82,18 @@ divergent "package port" root_package_modules_are_linked dependency_modules_are_
     -p vesper-port-build --features divergent --test package
 cargo test --locked -p vesper-beacon -p vesper-beacon-seed
 cargo test --locked -p vesper-beacon-arrow --test beacon_build
+# Port wave P1 lane 4 (#901): Beacon against its Vesper port, the Arrow
+# adapter against the port, and one divergent edit per ported module.
+cargo test --locked -p vesper-beacon --features vesper-port
+cargo test --locked -p vesper-beacon-arrow --features vesper-port
+divergent "Beacon port (histogram.rs)" all_ranges_partition_u64_and_bound_error footprint_is_fixed \
+    -p vesper-beacon --features vesper-port-divergent --test histogram
+divergent "Beacon port (exponential.rs)" starts_at_the_finest_scale_and_downscales_to_fit \
+    bucket_index_is_exact_at_small_scales -p vesper-beacon --features vesper-port-divergent --test exponential
+divergent "Beacon port (traceparent.rs)" lengths_separators_lowercase_version_and_nonzero_are_strict \
+    drain_wraparound_partial_zero_and_fifo_ownership -p vesper-beacon --features vesper-port-divergent --test behavior
+divergent "Beacon port (spans.rs)" ids_never_wrap_or_repeat_and_imported_self_parent_is_skipped \
+    drain_wraparound_partial_zero_and_fifo_ownership -p vesper-beacon --features vesper-port-divergent --test behavior
 # Port wave P1 lane 14 (#911): vesper-prism against its Vesper port.
 sh crates/vesper-prism/test-port.sh
 # vesper-aura (port wave P1 lane 13, #910; the port is its only build since
@@ -125,6 +138,8 @@ sh crates/vesper-ignis/port/check.sh  # port P1 lane 12 (#909): vesper-ignis, bo
 # crates/vesper-quarry/build.rs).
 cargo test --locked -p vesper-quarry --features vesper-port --test sql --test planner_spec --test vector --test vector_join --test port_memory
 for t in "sql outer_join_null_extension_and_filter_placement" "sql outer_join_pushdown_differential_for_many_predicates_and_null_inputs" "sql sql_null_three_valued_logic_exhaustive" "sql ddl_atomic_deterministic_and_stale_revision_or_content_rejected" "planner_spec front_end_transcript_matches_golden" "planner_spec planner_chooses_the_golden_access_paths"; do set -- $t; divergent "Quarry port ($2)" "$2" "$([ "$1" = sql ] && echo real_where_aliases_literals_and_typed_bindings || echo golden_results_equal_filtered_index_lookups)" -p vesper-quarry --features vesper-port-divergent --test "$1"; done
+# Port wave P1 lane 15 (#912): vesper-semver, both builds and the divergence check.
+sh crates/vesper-semver/port/test-port.sh
 # Port wave P1 lane 8 (#905): vesper-tensor and its Rust seed copy, and the
 # divergence check (one failing test per ported module).
 sh crates/vesper-tensor/port/test-port.sh

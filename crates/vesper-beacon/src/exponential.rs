@@ -25,6 +25,85 @@ pub const EXP_HISTOGRAM_MAX_SCALE: i32 = 20;
 /// Coarsest scale; at -10 every `u64` maps to bucket 0 or -1.
 pub const EXP_HISTOGRAM_MIN_SCALE: i32 = -10;
 
+/// The port build keeps the same counts array and the scalars in the port's
+/// `ExpState` mirror (the sum as two words); Vesper updates them in place.
+#[cfg(vesper_port)]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExponentialHistogram {
+    counts: [u64; EXP_HISTOGRAM_BUCKETS],
+    state: crate::port::repr::ExpState,
+}
+#[cfg(vesper_port)]
+impl Eq for ExponentialHistogram {}
+#[cfg(vesper_port)]
+impl Default for ExponentialHistogram {
+    fn default() -> Self {
+        use vesper_port_abi::Word;
+        Self {
+            counts: [0; EXP_HISTOGRAM_BUCKETS],
+            state: crate::port::repr::ExpState {
+                scale: Word::new(EXP_HISTOGRAM_MAX_SCALE),
+                offset: Word::new(0),
+                len: 0,
+                zero_count: 0,
+                total_count: 0,
+                sum_lo: 0,
+                sum_hi: 0,
+                min: u64::MAX,
+                max: 0,
+            },
+        }
+    }
+}
+
+/// Bucket index of `v >= 1` at `scale`.
+#[cfg(vesper_port)]
+pub fn exp_bucket_index(v: u64, scale: i32) -> i32 {
+    debug_assert!(v >= 1);
+    debug_assert!((EXP_HISTOGRAM_MIN_SCALE..=EXP_HISTOGRAM_MAX_SCALE).contains(&scale));
+    crate::port::no_overflow(crate::port::exp_bucket_index(v, scale))
+}
+
+#[cfg(vesper_port)]
+impl ExponentialHistogram {
+    pub const FOOTPRINT_BYTES: usize = core::mem::size_of::<Self>();
+    pub fn scale(&self) -> i32 {
+        self.state.scale.get()
+    }
+    /// Index of the first positive bucket in [`Self::positive_counts`].
+    pub fn offset(&self) -> i32 {
+        self.state.offset.get()
+    }
+    pub fn positive_counts(&self) -> &[u64] {
+        &self.counts[..self.state.len]
+    }
+    pub fn zero_count(&self) -> u64 {
+        self.state.zero_count
+    }
+    pub fn total_count(&self) -> u64 {
+        self.state.total_count
+    }
+    pub fn sum(&self) -> u128 {
+        crate::port::join_u128(self.state.sum_hi, self.state.sum_lo)
+    }
+    pub fn min(&self) -> Option<u64> {
+        (self.state.total_count != 0).then_some(self.state.min)
+    }
+    pub fn max(&self) -> Option<u64> {
+        (self.state.total_count != 0).then_some(self.state.max)
+    }
+    /// Records one observation. All checks precede mutation: on error the
+    /// histogram is unchanged.
+    pub fn record(&mut self, value: u64) -> Result<(), HistogramError> {
+        match crate::port::exp_record(&mut self.counts, &mut self.state, value) {
+            Ok(()) => Ok(()),
+            Err(crate::port::ExpRecordError::HistogramError(e)) => Err(e),
+            Err(crate::port::ExpRecordError::ArithOverflow(e)) => crate::port::no_overflow(Err(e)),
+        }
+    }
+}
+
+#[cfg(not(vesper_port))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExponentialHistogram {
     scale: i32,
@@ -38,6 +117,7 @@ pub struct ExponentialHistogram {
     min: u64,
     max: u64,
 }
+#[cfg(not(vesper_port))]
 impl Default for ExponentialHistogram {
     fn default() -> Self {
         Self {
@@ -56,6 +136,7 @@ impl Default for ExponentialHistogram {
 
 /// `floor(2^scale * log2(v))` for `v >= 1` and `0 < scale <= 20`, by the
 /// binary logarithm squaring method on a Q1.63 mantissa.
+#[cfg(not(vesper_port))]
 fn log2_fixed(v: u64, scale: i32) -> i64 {
     let k = 63 - v.leading_zeros() as i64;
     let mut x = u128::from(v) << (63 - k);
@@ -72,6 +153,7 @@ fn log2_fixed(v: u64, scale: i32) -> i64 {
 }
 
 /// Bucket index of `v >= 1` at `scale`.
+#[cfg(not(vesper_port))]
 pub fn exp_bucket_index(v: u64, scale: i32) -> i32 {
     debug_assert!(v >= 1);
     debug_assert!((EXP_HISTOGRAM_MIN_SCALE..=EXP_HISTOGRAM_MAX_SCALE).contains(&scale));
@@ -89,6 +171,7 @@ pub fn exp_bucket_index(v: u64, scale: i32) -> i32 {
     log2_fixed(v, scale) as i32
 }
 
+#[cfg(not(vesper_port))]
 impl ExponentialHistogram {
     pub const FOOTPRINT_BYTES: usize = core::mem::size_of::<Self>();
     pub fn scale(&self) -> i32 {
