@@ -1,4 +1,4 @@
-# Pulse pool depth (wave nine, lane 22), part 1
+# Pulse pool depth (wave nine, lane 22)
 
 > Retained work context for open issues, unmerged branches, or their dependencies.
 > The [manuscript](../manuscript/README.md) is the sole specification; use the
@@ -7,7 +7,9 @@
 Claim: #599. Base: `db62471` (main). Spec: the Pulse chapter of
 `docs/manuscript/content.typ` (worker shards, work-stealing `spawn` and
 core-pinned `spawn_local`). Exclusive paths: `crates/vesper-pulse/**`, this
-report. This is part 1 of the lane; part 2 is listed under "Remaining".
+report. Part 1 (PR #1058) built the deques, the long-lived pool and pinning;
+part 2 the driver items (pollable descriptor, sends, IOCP socket mode and
+offload cap).
 
 ## What was built
 
@@ -125,16 +127,64 @@ on 4 vCPUs now scale about 3.6x over one worker, against 2.9x before.
 * Rust ownership here is runtime evidence only. It is not an
   implementation of the Vesper source typing rules for portable fibers.
 
-## Remaining (part 2 and later)
+## Part 2: driver items
 
-* A pollable descriptor for each driver (the io_uring eventfd, the epoll
-  fd, the kqueue fd), so a GLib main context can wait on it (lane 23).
-* Splitting large socket sends, and restoring blocking mode on sockets the
-  IOCP driver gives back.
-* A cap on IOCP offload threads (today one per concurrent synchronous
-  request).
+### A pollable descriptor per driver
+
+`CompletionDriver::pollable_fd()` (Unix) returns a descriptor that turns
+readable when `poll` may have completions, so an outside event loop (a GLib
+main context, for lane 23) can wait on it and then call `poll(false)`:
+
+* epoll and kqueue return the epoll or kqueue instance itself.
+* io_uring creates an `eventfd` on the first call and registers it with the
+  ring (`IORING_REGISTER_EVENTFD`). `poll` resets the counter before it
+  harvests, so a completion posted later signals again. The first wait after
+  registration returns at once (a completion posted before registration
+  would not signal), which costs the loop one empty `poll(false)`. Pool
+  workers that never ask for the descriptor pay nothing.
+* `CompletionDriver::has_ready()` reports completions that finished at
+  submission (zero-length transfers, regular files on the readiness
+  drivers): they never make the descriptor readable, so the loop's `prepare`
+  step must check it.
+* IOCP has none: a completion port cannot be waited on with
+  `WaitForMultipleObjects`, and the default returns `ErrorKind::Unsupported`.
+
+Tests: `tests/pollable.rs` on every Unix driver (not readable before data,
+readable after the peer writes, quiet again once harvested; `has_ready` for
+a zero-length read).
+
+### Socket sends and blocking mode (IOCP)
+
+* A send is split into 256 KiB `send` calls and keeps going while the socket
+  takes them, so a huge buffer never asks Winsock to lock it all at once
+  (`WSAENOBUFS`). It completes with the bytes sent once the socket would
+  block, like a short `write(2)` on the other drivers.
+* Sockets come back in blocking mode. A process-wide count of in-flight
+  requests per socket (a socket may be used by several drivers at once) keeps
+  it non-blocking until the last request leaves the driver's table, then
+  clears `FIONBIO`. Winsock cannot report a socket's previous mode, so one the
+  caller had made non-blocking also comes back blocking.
+
+### Offload thread cap (IOCP)
+
+`IocpDriver::set_offload_limit(n)` (default `DEFAULT_OFFLOAD_LIMIT` = 64)
+caps the threads that wait on synchronous non-disk handles. When all are
+busy, the request is refused with `ErrorKind::WouldBlock` and handed back
+instead of starting a thread. The refusal is typed and immediate rather
+than queued: a queued read behind a pipe read that never finishes could
+wait forever.
+
+Tests (Windows CI only, since this container has no Wine):
+`sockets_come_back_in_blocking_mode`,
+`a_large_send_goes_out_in_pieces_and_completes_with_its_count` (3 MiB),
+`offload_threads_are_capped_and_refuse_with_would_block`.
+
+## Remaining
+
 * Per-worker registered buffers (io_uring fixed buffers) and fiber stack
-  slabs.
+  slabs. Registered buffers need `Request` to carry a buffer index instead of
+  an owned `Vec`; stack slabs belong with `vesper-fiber-abi`, which still
+  drives the single-threaded `Scheduler`.
 * Scoped workers for compiled Vesper (`@vesper-std/sync` `scope`/`spawn`,
   #1037) can now be built on `Pool::start` and `Spawner`. That work belongs
   to the atomics lane, not this one.
