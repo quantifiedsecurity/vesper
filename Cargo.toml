@@ -21,6 +21,7 @@ members = [
     "crates/vesper-ffi",
     "crates/vesper-forge",
     "crates/vesper-loom-calculus",
+    "crates/vesper-loom-calculus/seed",
     "crates/vesper-lean-syntax",
     "crates/vesper-simpulse",
     "crates/vesper-simpulse/seed",
@@ -40,6 +41,7 @@ members = [
     "crates/vesper-beacon/seed",
     "crates/vesper-beacon-arrow",
     "crates/vesper-serde",
+    "crates/vesper-serde/seed",
     "crates/vesper-quarry",
     "crates/vesper-tensor",
     "crates/vesper-tensor/seed",
@@ -70,6 +72,7 @@ members = [
     "crates/vesper-chrono",
     "crates/vesper-migrate",
     "crates/vesper-crucible",
+    "crates/vesper-crucible/seed",
     "crates/vesper-nexus",
     "crates/vesper-vault",
     "crates/vesper-kinetic",
@@ -107,6 +110,7 @@ default-members = [
     "crates/vesper-ffi",
     "crates/vesper-forge",
     "crates/vesper-loom-calculus",
+    "crates/vesper-loom-calculus/seed",
     "crates/vesper-lean-syntax",
     "crates/vesper-simpulse",
     "crates/vesper-simpulse/seed",
@@ -126,6 +130,7 @@ default-members = [
     "crates/vesper-beacon/seed",
     "crates/vesper-beacon-arrow",
     "crates/vesper-serde",
+    "crates/vesper-serde/seed",
     "crates/vesper-quarry",
     "crates/vesper-tensor",
     "crates/vesper-tensor/seed",
@@ -156,6 +161,7 @@ default-members = [
     "crates/vesper-chrono",
     "crates/vesper-migrate",
     "crates/vesper-crucible",
+    "crates/vesper-crucible/seed",
     "crates/vesper-nexus",
     "crates/vesper-vault",
     "crates/vesper-kinetic",
@@ -234,11 +240,12 @@ vesper-doc = { path = "crates/vesper-doc" }
 # The compiler links the frozen Rust seed copy, never the port-backed package
 # (seed-copy rule, docs/maintenance/porting-a-crate.md).
 vesper-beacon = { path = "crates/vesper-beacon/seed", package = "vesper-beacon-seed" }
-vesper-serde = { path = "crates/vesper-serde" }
+vesper-serde = { path = "crates/vesper-serde/seed", package = "vesper-serde-seed" }
 vesper-pulse = { path = "crates/vesper-pulse" }
 vesper-fiber-abi = { path = "crates/vesper-fiber-abi" }
 vesper-semver = { path = "crates/vesper-semver/seed", package = "vesper-semver-seed" }
-vesper-loom-calculus = { path = "crates/vesper-loom-calculus" }
+# The compiler links the frozen Rust seed copy of vesper-loom-calculus (#913).
+vesper-loom-calculus = { path = "crates/vesper-loom-calculus/seed", package = "vesper-loom-calculus-seed" }
 vesper-loom-solver = { path = "crates/vesper-loom-solver" }
 vesper-loom-trust = { path = "crates/vesper-loom-trust" }
 vesper-loom-admission = { path = "crates/vesper-loom-admission" }
@@ -249,7 +256,9 @@ vesper-pact-binding = { path = "crates/vesper-pact-binding" }
 # Integration B (#136): wave-five verifiers and tools wired into the CLI.
 vesper-aegis = { path = "crates/vesper-aegis" }
 vesper-chrono = { path = "crates/vesper-chrono" }
-vesper-crucible = { path = "crates/vesper-crucible" }
+# The compiler links the frozen Rust seed copy (seed-copy rule); the Vesper
+# port is the package crates/vesper-crucible (#915).
+vesper-crucible = { path = "crates/vesper-crucible/seed", package = "vesper-crucible-seed" }
 vesper-ebpf = { path = "crates/vesper-ebpf" }
 vesper-kinetic = { path = "crates/vesper-kinetic" }
 vesper-ffi = { path = "crates/vesper-ffi" }

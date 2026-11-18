@@ -139,6 +139,22 @@ binding changes:
 - **Aliasing.** An `inout` mirror and a borrowed slice of the same storage
   cannot reach one call: the wrapper takes `&mut T` and `&[T]`, and the
   borrow checker refuses the alias.
+- **`Option` and `Result` (`// @export abi 3 options`, #991).** With the
+  `options` word on the directive, an `Option[T]` or `Result[T, E]` of copy
+  payloads crosses as `vesper_port_abi::OptionMirror<C>` or
+  `ResultMirror<C, D>`: the tag word (`None`/`Ok` is 0, `Some`/`Err` is 1)
+  and the payload cell, which is the payload's mirror, a full word, a
+  `Word` or a `Words` (the same cells as struct fields). `in` and `inout`
+  parameters are `&OptionMirror<..>`/`&mut OptionMirror<..>`, lent in place,
+  and results are returned as the mirror, with no conversion. Build them
+  with `OptionMirror::some(v)`, `::none()` or `From<Option<_>>`, and read
+  them with `.as_ref()` or `.get()`. The option changes only the binding
+  (the object is the same), and it is opt-in so that committed v3 bindings
+  stay byte for byte. Struct fields of `Option`/`Result` type stay `Words`.
+- **Sequences held by a handle.** A `SeqRef<u8>` (or of another packed
+  scalar: `u32`, `u64`, `i64`, `usize`, `isize`, `f64`) is viewed in place
+  with `.as_slice()`, and `.to_vec()` copies it with one `memcpy` instead
+  of one read per element.
 
 To use v3, keep the mirror as the port's storage in the Vesper build, and
 the Rust value in the Rust build, behind the same API. The pilot's `gauge`
@@ -146,8 +162,13 @@ library (`src/gauge.rs`, `vesper/gauge.ves`, `tests/gauge.rs`) is the
 pattern: `Meter` holds `repr::Gauge` or `Gauge`, `Samples` holds
 `Vec<repr::Sample>` or `Vec<Sample>`, and the tests run against both builds.
 
-Directives are line comments that start with `// @export`: `abi 3`,
-`instance` and `vsys`. Anything else after `@export` is an error, so a typo cannot be ignored silently.
+Directives are line comments that start with `// @export`: `abi 3`
+(optionally `abi 3 options`), `instance` and `vsys`. Anything else after
+`@export` is an error, so a typo cannot be ignored silently. Write them in
+the package's root module (`src/lib.ves`). `abi` in another file of the
+package still applies, with a warning (ports placed it in the file that
+sorted first while directives were read from file 0); `instance` and `vsys`
+anywhere but the root module are an error (#991).
 
 What is exportable today:
 
@@ -327,9 +348,11 @@ act (`transport.send(..)`), Vesper returns the actions as a sequence of a
        `port/binding.rs` in `srcs`) and `rust_test` targets from
        `crates/vesper-port-pilot/BUILD.bazel`.
      Run `python3 tools/bazel/sync_build_files.py` for a new crate.
-   - macOS and Windows: append the crate's lines to
-     `scripts/test-port-harness.sh`. CI passes the prebuilt compiler in
-     `VESPER_PORT_COMPILER`.
+   - Cargo: append the crate's lines to the end of
+     `scripts/test-port-harness.sh`. The Linux job of the Platforms workflow
+     runs them, with the prebuilt compiler in `VESPER_PORT_COMPILER`. macOS
+     and Windows stop after the export ABI tier at the top of the script,
+     so a port's lines run there only if they test the export ABI itself.
    - Add the port's `vesper/` directory to the skip predicate in `fixtures()`
      in `tests/fixtures/self_host/driver.rs` while the self-hosted parser
      cannot parse `use` (#880).
@@ -370,7 +393,9 @@ CI asserts that the API tests fail on exactly the changed function and pass on
 the rest:
 
 - Bazel: `//crates/vesper-port-pilot:port_divergence_detected`.
-- macOS and Windows: `scripts/test-port-harness.sh`.
+- Cargo: `scripts/test-port-harness.sh` (the Linux Platforms job for
+  ports; macOS and Windows run its export ABI tier, which includes the
+  pilot's checks).
 
 Larger ports should add one such divergence check per module they port.
 
