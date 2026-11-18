@@ -470,13 +470,31 @@ pub(crate) fn audit(
     policy: &Policy,
     limits: &Limits,
 ) -> Result<AuditReport, Error> {
+    // An oversized input is never encoded: the Rust order of checks is
+    // reproduced here (limits, catalog, policy, roots, solution size), each
+    // port call seeing only inputs that fit the byte budget.
+    let sizes = [
+        input::check_size(catalog, limits),
+        input::check_size(policy, limits),
+        input::check_size(solution, limits),
+    ];
+    if let Some(oversized) = sizes.iter().position(Result::is_err) {
+        limits.validate()?;
+        if oversized > 0 {
+            validate_catalog(catalog, limits)?;
+        }
+        if oversized > 1 {
+            validate_policy(policy, limits)?;
+            if solution.roots.is_empty() {
+                return Err(Error::InvalidInput(
+                    "audit requires at least one declared root package".into(),
+                ));
+            }
+        }
+        return Err(Error::Limit("programmatic input bytes".into()));
+    }
     let mut enc = Enc::default();
-    enc.head(
-        limits,
-        input::check_size(catalog, limits).is_ok(),
-        input::check_size(policy, limits).is_ok(),
-        input::check_size(solution, limits).is_ok(),
-    );
+    enc.head(limits, true, true, true);
     enc.catalog(catalog);
     enc.policy(policy);
     enc.solution(solution);
