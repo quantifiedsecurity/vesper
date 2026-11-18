@@ -16,8 +16,10 @@ use self::{
 };
 use self::util::{
     add,
+    bytes_eq,
     dec,
     find_key,
+    fits,
     inc,
     insert_at,
     mnode,
@@ -26,7 +28,6 @@ use self::util::{
     op,
     position,
     remove_at,
-    seq_byte,
     seq_u64,
     sort_by_key,
     tnode,
@@ -87,30 +88,13 @@ pub fn copy_mounted(in src: Mounted, inout dst: Mounted) {
     dst.text.clear();
     dst.keys.clear();
     dst.sorted.clear();
-    for i in 0..src.nodes.len() {
-        dst.nodes.push(mnode(in src.nodes, i));
-    }
-    for i in 0..src.props.len() {
-        dst.props.push(mprop(in src.props, i));
-    }
-    for i in 0..src.subs.len() {
-        dst.subs.push(msub(in src.subs, i));
-    }
-    for i in 0..src.kids.len() {
-        dst.kids.push(seq_u64(in src.kids, i));
-    }
-    for i in 0..src.text.len() {
-        match src.text.try_get(i) {
-            Option::Some(b) => dst.text.push(b),
-            Option::None => (),
-        }
-    }
-    for i in 0..src.keys.len() {
-        dst.keys.push(seq_u64(in src.keys, i));
-    }
-    for i in 0..src.sorted.len() {
-        dst.sorted.push(seq_u64(in src.sorted, i));
-    }
+    dst.nodes.extend(in src.nodes.as_slice());
+    dst.props.extend(in src.props.as_slice());
+    dst.subs.extend(in src.subs.as_slice());
+    dst.kids.extend(in src.kids.as_slice());
+    dst.text.extend(in src.text.as_slice());
+    dst.keys.extend(in src.keys.as_slice());
+    dst.sorted.extend(in src.sorted.as_slice());
 }
 
 // Whether mounted property `a` of `old` holds the same value as `b` of `new`.
@@ -121,17 +105,13 @@ pub fn same_value(in old: Mounted, a: MProp, in new: Mounted, b: MProp) -> bool 
         a.payload == b.payload
     } else if a.tlen != b.tlen {
         false
+    } else if fits(a.tstart, a.tlen, old.text.len()) && fits(b.tstart, b.tlen, new.text.len()) {
+        bytes_eq(
+            in old.text[a.tstart..add(a.tstart, a.tlen)],
+            in new.text[b.tstart..add(b.tstart, b.tlen)]
+        )
     } else {
-        let mut i: u64 = 0;
-        loop {
-            if i >= a.tlen {
-                break true;
-            }
-            if seq_byte(in old.text, add(a.tstart, i)) != seq_byte(in new.text, add(b.tstart, i)) {
-                break false;
-            }
-            i = inc(i);
-        }
+        false
     }
 }
 
@@ -226,13 +206,8 @@ pub fn mount_next(in old: Mounted, inout p: Prepared, in text: Slice[u8]) {
                 }
             };
             let tstart = p.m.text.len();
-            if tp.tag == 0 {
-                for k in 0..tp.tlen {
-                    match text.try_get(add(tp.tstart, k)) {
-                        Option::Some(b) => p.m.text.push(b),
-                        Option::None => (),
-                    }
-                }
+            if tp.tag == 0 && fits(tp.tstart, tp.tlen, text.len()) {
+                p.m.text.extend(in text[tp.tstart..add(tp.tstart, tp.tlen)]);
             }
             p
                 .m

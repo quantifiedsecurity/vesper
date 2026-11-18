@@ -197,13 +197,8 @@ pub fn do_prepared_fault(in p: Prepared) -> Option[ViewFault] {
 }
 
 pub fn do_prepared_ops(in p: Prepared) -> ChunkSeq[Op] {
-    let mut out: ChunkSeq[Op] = ChunkSeq::new[Op]();
-    for i in 0..p.ops.len() {
-        match p.ops.try_get(i) {
-            Option::Some(o) => out.push(o),
-            Option::None => (),
-        }
-    }
+    let mut out: ChunkSeq[Op] = ChunkSeq::with_capacity[Op](p.ops.len());
+    out.extend(in p.ops.as_slice());
     out
 }
 
