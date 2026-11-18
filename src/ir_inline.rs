@@ -276,7 +276,7 @@ pub fn cost(world: &World, f: &FunctionIr) -> usize {
         Op::Data(_, fields) => fields.is_empty() && scalar(&i.ty),
         Op::Bind { pattern, value } => {
             matches!(pattern.kind, PatternKind::Bind(_) | PatternKind::Wild)
-                && f.values.get(value).is_some_and(|t| scalar(t))
+                && f.values.get(value).is_some_and(&scalar)
         }
         _ => false,
     };
