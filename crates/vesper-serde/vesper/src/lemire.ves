@@ -1,5 +1,3 @@
-// @export abi 3
-//
 // @vesper/serde: decimal to binary64 conversion for validated JSON numbers
 // (src/lemire.rs). Clinger's fast path, then Eisel-Lemire over the 128-bit
 // power-of-five table (pow5.ves). When Eisel-Lemire cannot decide, the

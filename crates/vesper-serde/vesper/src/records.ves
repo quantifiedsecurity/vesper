@@ -1,5 +1,3 @@
-// @export abi 3
-//
 // @vesper/serde: the record-level scalar paths over a validated tape:
 // `Node::as_u64`/`as_i64` (src/index.rs), the telemetry decode of
 // src/tiles.rs, the EventEnvelope schema check of src/event_columns.rs,

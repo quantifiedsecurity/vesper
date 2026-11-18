@@ -1,5 +1,3 @@
-// @export abi 3
-//
 // @vesper/serde: shortest round-trip binary64 to decimal text, as Rust's
 // `{}` (`Display`) formats an `f64`, which the encoder of src/encode.rs
 // writes. The digits come from Rust's own shortest algorithm

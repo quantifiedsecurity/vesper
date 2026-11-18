@@ -1,5 +1,3 @@
-// @export abi 3
-//
 // @vesper/serde: Grisu shortest digits, Rust's
 // `core::num::flt2dec::strategy::grisu::format_shortest_opt` (Grisu3 with
 // the cached powers of ten for alpha = -60, gamma = -32). It either returns
