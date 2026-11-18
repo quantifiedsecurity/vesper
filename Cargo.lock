@@ -6317,6 +6317,9 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "quinn-proto",
+ "vesper-bench-seed",
+ "vesper-port-abi",
+ "vesper-port-harness",
  "vesper-prism",
  "vesper-warp",
  "vesper-warp-shard",
