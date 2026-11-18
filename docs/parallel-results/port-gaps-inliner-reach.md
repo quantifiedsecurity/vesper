@@ -45,6 +45,12 @@ call), over Ignis, BBR, warp-wheel and Quarry:
      function that calls itself from a handled body is recursive. A handled
      callee is charged for its handler graphs, which native lowering emits
      at every copy. Both points came from the Codex review.
+   - A caller takes at most `Budget::caller_handles` (8) inlined handles,
+     counted transitively. Native lowering copies the enclosing scope's
+     bindings at every handle, so its cost grows with the number of handles
+     in one function. Without the cap, `tests/integer_widths.rs` took 307 s
+     instead of 35 s (and timed out on BuildBuddy): it calls a doubly
+     handled helper 49 times from one `main`. With the cap it takes 45 s.
 3. **Unbounded generic callees** inline as a copy typed with the call's type
    arguments (`World::calls` at the call's span). A copy stays a call when
    the native backend would look up a type in its body by source span with
@@ -128,4 +134,8 @@ those rewrites. Rust stays the default build of every port.
   `count_less[Edge]` grew from 181 to 755 instructions.
 - **Generic copies** that apply operators or nested generic calls stay calls
   until the native backend types those from the IR instead of by span.
+- **Handles in one function** cost native lowering more than linearly,
+  because each handle copies the enclosing bindings, which grow with every
+  inlined copy. The cap keeps that cost bounded. A native fix would let the
+  cap go.
 - **Recursive** functions (Quarry's parser and evaluator) stay calls.

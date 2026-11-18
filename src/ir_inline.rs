@@ -89,6 +89,11 @@ pub struct Budget {
     pub caller_growth: usize,
     /// Most instructions inlining may add to the whole program.
     pub program_growth: usize,
+    /// Most handles inlining may copy into one caller. The native backend
+    /// copies the enclosing scope's bindings at every handle, so a caller
+    /// with many inlined handles compiles slowly (`integer_widths` calls a
+    /// doubly handled helper dozens of times from one function).
+    pub caller_handles: usize,
 }
 
 impl Default for Budget {
@@ -98,6 +103,7 @@ impl Default for Budget {
             single_site_callee: 240,
             caller_growth: 2_000,
             program_growth: 40_000,
+            caller_handles: 8,
         }
     }
 }
@@ -110,6 +116,7 @@ impl Budget {
             single_site_callee: 0,
             caller_growth: 0,
             program_growth: 0,
+            caller_handles: 0,
         }
     }
 }
@@ -271,6 +278,30 @@ fn handler_graphs(f: &FunctionIr) -> Vec<String> {
         }
     }
     out
+}
+
+/// The handles in `f` and, transitively, in its handler graphs: what the
+/// native backend emits for each copy of `f`.
+fn handles(program: &Program, f: &FunctionIr) -> usize {
+    let own = |g: &FunctionIr| {
+        g.blocks
+            .iter()
+            .flat_map(|b| &b.instructions)
+            .filter(|i| matches!(i.op, Op::Handle { .. }))
+            .count()
+    };
+    let mut total = own(f);
+    let mut pending = handler_graphs(f);
+    let mut seen = BTreeSet::new();
+    while let Some(name) = pending.pop() {
+        if seen.insert(name.clone())
+            && let Some(g) = program.functions.get(&name)
+        {
+            total += own(g);
+            pending.extend(handler_graphs(g));
+        }
+    }
+    total
 }
 
 /// [`cost`] of `f` plus that of every handler graph it holds (transitively):
@@ -650,6 +681,7 @@ fn inline_into(
     report: &mut Report,
 ) {
     let mut added = 0usize;
+    let mut handles_added = 0usize;
     // Blocks spliced in from a callee were already processed bottom-up.
     let mut spliced = BTreeSet::new();
     let mut b = 0;
@@ -701,6 +733,7 @@ fn inline_into(
                 }
                 if added + cost > budget.caller_growth
                     || report.added + cost > budget.program_growth
+                    || handles_added + handles(program, target) > budget.caller_handles
                 {
                     return Err(Refusal::Growth);
                 }
@@ -721,6 +754,7 @@ fn inline_into(
             let first = splice(caller, b, i, &target, &bindings, *serial);
             spliced.extend(first..caller.blocks.len());
             added += cost;
+            handles_added += handles(program, &target);
             report.added += cost;
             report.sites += 1;
             *report.callees.entry(target.name.clone()).or_default() += 1;

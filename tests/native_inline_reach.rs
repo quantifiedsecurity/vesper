@@ -88,7 +88,13 @@ fn handled_callees_inline() {
         assert_eq!(calls(&program, "mix", callee), 0, "{callee}: {report:?}");
         assert!(!report.refused.contains_key(callee), "{report:?}");
     }
-    assert_eq!(calls(&program, "main", "mix"), 0, "{report:?}");
+    // Three copies of `mix` would put nine handles into `main`, over
+    // `Budget::caller_handles`.
+    assert!(calls(&program, "main", "mix") > 0, "{report:?}");
+    assert!(
+        report.refused["mix"].contains_key(&Refusal::Growth),
+        "{report:?}"
+    );
 }
 
 /// A handler that captures the callee's parameters and keeps state, and a
@@ -267,4 +273,25 @@ fn handled_bodies_count_against_the_budget() {
     let (report, program) = inlined(&source);
     assert_eq!(calls(&program, "main", "big"), 2, "{report:?}");
     assert_eq!(report.refused["big"], [(Refusal::Size, 2)].into());
+}
+
+/// `tests/integer_widths.rs` calls a doubly handled helper dozens of times
+/// from one function; copying every handle made the JIT 4x slower, so a
+/// caller takes at most `Budget::caller_handles` inlined handles.
+#[test]
+fn handled_copies_per_caller_are_capped() {
+    let calls_src = (0..20)
+        .map(|i| format!("t({i}, 3)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "fn op(a: u8, b: u8) -> u8 eff [Fail[ArithOverflow], Fail[RuntimeError]] {{ a / b }} \
+         fn t(a: u8, b: u8) -> u8 {{ handle Fail[RuntimeError] in {{ handle Fail[ArithOverflow] in {{ op(a, b) }} with {{ return v => v, raise(e, k) => 1, }} }} with {{ return v => v, raise(e, k) => 2, }} }} \
+         fn main() -> ({}) {{ ({calls_src},) }}",
+        vec!["u8"; 20].join(", ")
+    );
+    let (report, program) = inlined(&source);
+    let cap = Budget::default().caller_handles;
+    assert_eq!(report.callees["t"], cap / 2, "{report:?}");
+    assert_eq!(calls(&program, "main", "t"), 20 - cap / 2);
 }
