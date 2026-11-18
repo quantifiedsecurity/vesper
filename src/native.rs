@@ -3282,7 +3282,14 @@ impl<M: Module> Codegen<'_, '_, M> {
                                 &self.generic_vars,
                             )));
                         }
-                        self.seq_op(*op, &operands, &operand_types, &ty)?
+                        // A growing operation writes its new handle back to the
+                        // receiver's place (#1021).
+                        let receiver = args
+                            .first()
+                            .and_then(|a| a.place.as_ref())
+                            .filter(|_| op.has_receiver() && op.mutates())
+                            .map(|p| ir_place_expr(p, inst.span.clone()));
+                        self.seq_op(*op, &operands, &operand_types, &ty, receiver.as_ref())?
                     }
                     Op::Fip { op, args } => {
                         let operands = args
