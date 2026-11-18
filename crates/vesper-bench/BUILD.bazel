@@ -30,9 +30,10 @@ filegroup(
 )
 
 # Unlike vesper-beacon, the default crate's build script gets no port
-# object: crates in the compiler's closure (the other ports' seeds) take
-# this package as a dev-dependency, so a port object here would make the
-# compiler depend on itself. The port is built only by :port and its tests.
+# object and no harness (Cargo.toml makes it optional): crates in the
+# compiler's closure (the other ports' seeds) take this package as a
+# dev-dependency, so either would make the compiler depend on itself. The
+# port is built only by :port and its tests.
 vesper_crate(
     # The causal-profiling test measures wall-clock speedups of spinning
     # threads; sharing the CPU with other test actions distorts it.

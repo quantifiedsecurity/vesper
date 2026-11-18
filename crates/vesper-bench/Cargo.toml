@@ -19,7 +19,7 @@ build = "build.rs"
 # reaches parity with the Rust build (docs/parallel-results/port-p3-bench.md).
 
 [features]
-vesper-port = ["dep:vesper-port-abi"]
+vesper-port = ["dep:vesper-port-abi", "dep:vesper-port-harness"]
 # Deliberately wrong Vesper builds, one edit per ported module: the port
 # test runs must fail (scripts/test-port-harness.sh asserts which tests do).
 vesper-port-divergent = ["vesper-port"]
@@ -33,10 +33,11 @@ vesper-port-abi = { path = "../vesper-port-abi", optional = true }
 vesper-bench-rust = { path = "seed", package = "vesper-bench-seed" }
 
 [build-dependencies]
-# Not optional: a package whose build script runs the harness is
-# port-backed for the seed-copy guard (crates/vesper-port-harness/tests/
-# closure_guard.rs), whichever build it selects.
-vesper-port-harness = { path = "../vesper-port-harness" }
+# Optional (unlike vesper-beacon's): the other ports' seeds, which the
+# compiler links, take this package as a dev-dependency, and the harness
+# depends on the compiler, so an unconditional build-dependency is a
+# dependency cycle under Bazel.
+vesper-port-harness = { path = "../vesper-port-harness", optional = true }
 
 [lints.rust]
 # cfg(vesper_port) is set only by this package's build script.
