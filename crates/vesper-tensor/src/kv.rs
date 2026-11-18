@@ -854,6 +854,47 @@ impl KvPool {
     /// Borrowed view of one leased page: only its filled token slots, keys and
     /// values each laid out as `[token, head, width]` elements of the pool's
     /// format. The page's lease is validated against its current owner.
+    /// Scalar-kernel attention over the first `tokens` tokens of `sequence`
+    /// (`crate::attention`, which has checked the shapes): one port call
+    /// that reads every page through the same lease checks as
+    /// [`KvPool::read_page`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn attend(
+        &self,
+        sequence: &Sequence,
+        query: &[f32],
+        scores: &mut [f32],
+        out: &mut [f32],
+        query_heads: usize,
+        tokens: usize,
+        online: bool,
+    ) -> Result<(), crate::Error> {
+        self.owned(sequence).map_err(crate::Error::Kv)?;
+        let mut block = [0u32; TOKENS_PER_PAGE];
+        let mut page = [0u64; 3];
+        let status = crate::port::check(
+            crate::port::binding::attend(
+                &self.storage,
+                &self.pages,
+                &self.slots,
+                &self.leases,
+                &self.cfg,
+                sequence.key.slot as u64,
+                sequence.key.generation,
+                crate::port::bits(query),
+                crate::port::bits_mut(scores),
+                &mut block,
+                crate::port::bits_mut(out),
+                &mut page,
+                query_heads as u64,
+                tokens as u64,
+                online,
+                self.format == KvFormat::F32,
+            ),
+            |_| crate::Error::NonFinite,
+        )?;
+        code(status).map_err(crate::Error::Kv)
+    }
     pub fn read_page(&self, sequence: &Sequence, index: usize) -> Result<KvPage<'_>, KvError> {
         self.owned(sequence)?;
         let mut out = [0u64; 3];
