@@ -95,7 +95,7 @@ Decisions:
 | `stack.rs`, `prologue.rs`, `hazard.rs`, `atomic.rs` | Cranelift `ir` and machine code | stays Rust (lane plan) |
 | `mmio.rs` | `unsafe` volatile access | stays Rust |
 | `svd.rs` parsing | `svd-parser` | stays Rust; the model after parsing is a later part |
-| `intc.rs` | not ported yet; its interrupt handler table (`Box<dyn FnMut>`) stays Rust | a later part (the plan's command-list pattern) |
+| `intc.rs` | not ported yet; its interrupt handler table (`Box<dyn FnMut>`) stays Rust | a later part, one event at a time (see below) |
 | `dtb.rs` past `parse` | not ported yet | a later part |
 | `dma.rs`, `frames.rs`, `ccache.rs`, `ledger.rs`, `irq.rs`, `pac.rs` | not ported yet | later parts |
 | `seed/` | the compiler's copy | self-hosting Stage 2 |
@@ -198,8 +198,16 @@ Compiler and ABI gaps, each with a repro:
   and `Platform::from_tree` with its queries. Its errors carry node paths and
   formatted details, so the port will return codes and node indices and the
   wrapper will format them, as for the phandle errors here.
-- `intc.rs` (the PLIC, APLIC fabric, IMSIC and CLINT emulation), with the
-  handler table in a thin Rust adapter that runs the events the port returns.
+- `intc.rs` (the PLIC, APLIC fabric, IMSIC and CLINT emulation). Dispatch
+  must stay one event at a time, because handlers change controller state
+  (`ensure_external` runs a handler before it completes and claims the next
+  interrupt, and `install_local` rechecks the line after each callback): the
+  port returns the next event, the Rust adapter runs that handler and applies
+  its mutations through the port, then asks for the next event. If that costs
+  more than it saves, the dispatch loop stays Rust over the ported controller
+  state, which is what this part already does. The handler table stays Rust
+  either way. This part computes no dispatch list up front: `intc.rs` is
+  unchanged and calls the ported AIA models one operation at a time.
 - `dma.rs`, `frames.rs`, `ccache.rs`, the model half of `irq.rs`, `ledger.rs`.
 - The SVD register model and its queries (`svd.rs` after `svd-parser`), and
   `pac.rs` if its only `unsafe` is in emitted text.
