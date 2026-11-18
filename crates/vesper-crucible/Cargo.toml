@@ -6,7 +6,7 @@ description = "Vesper Crucible (design §29): choice-tape property testing, comp
 publish = false
 
 [dependencies]
-vesper-alloc = { path = "../vesper-alloc" }
+vesper-alloc = { path = "../vesper-alloc/seed", package = "vesper-alloc-seed" }
 vesper-simpulse = { path = "../vesper-simpulse" }
 
 [dev-dependencies]
