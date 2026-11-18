@@ -239,3 +239,32 @@ fn derived_cmp_inlines_into_a_generic_sort() {
     let cost = ir_inline::cost(&w, cmp);
     assert!(cost <= Budget::default().small_callee, "{cost}");
 }
+
+/// A function that calls itself from inside a handled body is recursive:
+/// the handled body is lowered inside it (Codex review on #1007).
+#[test]
+fn recursion_through_a_handler_stays_a_call() {
+    let source = "fn down(n: u64) -> u64 { if n == 0 { 0 } else { handle Fail[RuntimeError] in { wrapping_add(down(wrapping_sub(n, 1)), 10 / n) } with { return v => v, raise(e, k) => 0, } } } \
+        fn main() -> u64 { down(4) }";
+    // 10/1 + 10/2 + 10/3 + 10/4 = 10 + 5 + 3 + 2.
+    agree(source, "20");
+    let (report, program) = inlined(source);
+    assert_eq!(calls(&program, "main", "down"), 1, "{report:?}");
+    assert_eq!(report.refused["down"], [(Refusal::Recursive, 2)].into());
+}
+
+/// A handled callee is charged for its handler graphs, which the native
+/// backend emits at every copy (Codex review on #1007).
+#[test]
+fn handled_bodies_count_against_the_budget() {
+    let body = (0..60)
+        .map(|i| format!("s = wrapping_add(s, wrapping_add(a / b, {i}));"))
+        .collect::<String>();
+    let source = format!(
+        "fn big(a: u64, b: u64) -> u64 {{ handle Fail[RuntimeError] in {{ let mut s: u64 = 0; {body} s }} with {{ return v => v, raise(e, k) => 0, }} }} \
+         fn main() -> u64 {{ wrapping_add(big(10, 2), big(10, 5)) }}"
+    );
+    let (report, program) = inlined(&source);
+    assert_eq!(calls(&program, "main", "big"), 2, "{report:?}");
+    assert_eq!(report.refused["big"], [(Refusal::Size, 2)].into());
+}

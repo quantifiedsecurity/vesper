@@ -170,6 +170,16 @@ pub fn inline(world: &World, program: &mut Program, budget: &Budget) -> Report {
                 *sites.entry(callee.clone()).or_default() += 1;
             }
         }
+        // A handled body and its clauses are lowered inside the function
+        // that holds the handle, so a call in them is a call of that
+        // function: without these edges a function that calls itself from a
+        // handled body looks non-recursive, gets inlined into its own
+        // handler graph, and the native backend expands that graph forever.
+        for nested in handler_graphs(f) {
+            if let Some((key, _)) = program.functions.get_key_value(&nested) {
+                graph.add_edge(name.as_str(), key.as_str(), ());
+            }
+        }
     }
     // Tarjan's algorithm yields strongly connected components callees-first.
     let components = petgraph::algo::tarjan_scc(&graph);
@@ -243,6 +253,43 @@ pub fn inline(world: &World, program: &mut Program, budget: &Budget) -> Report {
         crate::ir::thread_tokens(program);
     }
     report
+}
+
+/// The shared graphs (`ir::nested_name`) the handles in `f` lower: each
+/// handled body and each clause.
+fn handler_graphs(f: &FunctionIr) -> Vec<String> {
+    let mut out = Vec::new();
+    for i in f.blocks.iter().flat_map(|b| &b.instructions) {
+        if let Op::Handle { expr, .. } = &i.op
+            && let ExprKind::Handle { body, ret, ops, .. } = &expr.kind
+        {
+            out.push(crate::ir::nested_name("handler_body", &body.span));
+            out.push(crate::ir::nested_name("handler_clause", &ret.body.span));
+            for op in ops {
+                out.push(crate::ir::nested_name("handler_clause", &op.body.span));
+            }
+        }
+    }
+    out
+}
+
+/// [`cost`] of `f` plus that of every handler graph it holds (transitively):
+/// the native backend emits those graphs at each handle, so each inlined
+/// copy of a handled callee duplicates them.
+fn cost_with_handlers(world: &World, program: &Program, f: &FunctionIr) -> usize {
+    let mut total = cost(world, f);
+    let mut pending = handler_graphs(f);
+    let mut seen = BTreeSet::new();
+    while let Some(name) = pending.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if let Some(g) = program.functions.get(&name) {
+            total += cost(world, g);
+            pending.extend(handler_graphs(g));
+        }
+    }
+    total
 }
 
 /// IR size: instructions plus one per block terminator.
@@ -646,7 +693,7 @@ fn inline_into(
                     None
                 };
                 let target = copy.as_ref().unwrap_or(original);
-                let cost = cost(world, target);
+                let cost = cost_with_handlers(world, program, target);
                 if cost > budget.small_callee
                     && (sites.get(callee) != Some(&1) || cost > budget.single_site_callee)
                 {
