@@ -109,6 +109,23 @@ pub fn paged_gqa_attention_with(
     if mode == AttentionMode::TwoPass && scores.len() < query_heads * tokens {
         return Err(Error::Shape("attention score scratch too small"));
     }
+    #[cfg(vesper_port)]
+    if kernel == Kernel::Scalar {
+        let used = if mode == AttentionMode::TwoPass {
+            query_heads * tokens
+        } else {
+            0
+        };
+        return pool.attend(
+            sequence,
+            query,
+            &mut scores[..used],
+            out,
+            query_heads,
+            tokens,
+            mode == AttentionMode::Online,
+        );
+    }
     let head_bytes = |t: usize, kv_head: usize| -> std::ops::Range<usize> {
         let base = (t * kv_stride + kv_head * head_dim) * width_bytes;
         base..base + head_dim * width_bytes

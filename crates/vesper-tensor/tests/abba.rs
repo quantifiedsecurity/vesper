@@ -1058,3 +1058,403 @@ fn abba_shape_plan() {
         run!(vesper_tensor),
     );
 }
+
+/// A tiny llama2.c checkpoint: header `shape`, then every weight run in
+/// order, with `nan_at` (a float index) replaced by NaN.
+fn tiny_checkpoint(shape: [i32; 7], nan_at: Option<usize>) -> Vec<u8> {
+    let [dim, hidden, layers, heads, kv_heads, vocab, seq_len] =
+        shape.map(|v| v.unsigned_abs() as usize);
+    let kv_dim = kv_heads * (dim / heads.max(1));
+    let head_dim = dim / heads.max(1);
+    let mut floats = vocab * dim
+        + layers * (2 * dim + 2 * dim * dim + 2 * kv_dim * dim + 3 * hidden * dim)
+        + dim
+        + seq_len * head_dim;
+    if shape[5] < 0 {
+        floats += vocab * dim;
+    }
+    let mut out = Vec::new();
+    for v in shape {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    let v = values(17, floats);
+    for (i, x) in v.into_iter().enumerate() {
+        let x = if Some(i) == nan_at { f32::NAN } else { x };
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out
+}
+
+macro_rules! read_checkpoint {
+    ($krate:ident, $bytes:expr) => {
+        match $krate::llama::Model::from_llama2c($bytes) {
+            Ok(m) => format!(
+                "{:?}",
+                (
+                    m.config(),
+                    m.layers(),
+                    m.rms_final(),
+                    m.embedding().to_f32(),
+                    m.classifier().to_f32()
+                )
+            ),
+            Err(e) => format!("{e:?}"),
+        }
+    };
+}
+
+macro_rules! read_tokenizer {
+    ($krate:ident, $bytes:expr, $vocab:expr) => {
+        match $krate::llama::Tokenizer::from_llama2c($bytes, $vocab) {
+            Ok(t) => {
+                let mut log = format!("{} {}", t.vocab(), t.max_token_length());
+                for i in 0..t.vocab() as u32 {
+                    log.push_str(&format!(
+                        " {:?}{:x}{:?}{:?}",
+                        t.piece(i),
+                        t.score(i).unwrap().to_bits(),
+                        t.decode(1, i),
+                        t.decode(5, i)
+                    ));
+                }
+                log
+            }
+            Err(e) => format!("{e:?}"),
+        }
+    };
+}
+
+#[test]
+fn both_builds_read_the_same_llama2c_files() {
+    let mut outcomes = std::collections::BTreeSet::new();
+    let mut compare = |bytes: &[u8]| {
+        let (r, v) = (
+            read_checkpoint!(seed, bytes),
+            read_checkpoint!(vesper_tensor, bytes),
+        );
+        assert_eq!(r, v, "checkpoint of {} bytes", bytes.len());
+        let kind = r.split('(').next().unwrap();
+        outcomes.insert(if kind.is_empty() { "Ok" } else { kind }.to_owned());
+    };
+    let base = [8, 12, 2, 4, 2, 10, 6];
+    let good = tiny_checkpoint(base, None);
+    compare(&good);
+    compare(&tiny_checkpoint([8, 12, 2, 4, 2, -10, 6], None));
+    for cut in 0..good.len() {
+        compare(&good[..cut]);
+    }
+    let mut long = good.clone();
+    long.push(0);
+    compare(&long);
+    let floats = (good.len() - 28) / 4;
+    for at in (0..floats).step_by(7) {
+        compare(&tiny_checkpoint(base, Some(at)));
+    }
+    for field in 0..7 {
+        for v in [0, -1, i32::MIN, 3, 5, 7, 64, 8193, 65537, 1 << 21, i32::MAX] {
+            let mut bytes = good.clone();
+            bytes[4 * field..4 * field + 4].copy_from_slice(&v.to_le_bytes());
+            compare(&bytes);
+            compare(&bytes[..28 + 4 * 400]);
+        }
+    }
+    for shape in [
+        [8, 12, 2, 3, 3, 10, 6],
+        [12, 12, 1, 4, 3, 10, 6],
+        [6, 12, 1, 2, 2, 10, 6],
+    ] {
+        compare(&tiny_checkpoint(shape, None));
+    }
+    compare(include_bytes!("../models/stories260K.bin"));
+    for e in ["Ok", "Malformed", "Limit", "Shape", "NonFinite"] {
+        assert!(
+            outcomes.contains(e),
+            "no checkpoint reached {e}: {outcomes:?}"
+        );
+    }
+
+    let mut outcomes = std::collections::BTreeSet::new();
+    let mut compare = |bytes: &[u8], vocab: usize| {
+        let (r, v) = (
+            read_tokenizer!(seed, bytes, vocab),
+            read_tokenizer!(vesper_tensor, bytes, vocab),
+        );
+        assert_eq!(r, v, "tokenizer of {} bytes", bytes.len());
+        outcomes.insert(r.split([' ', '(']).next().unwrap().to_owned());
+    };
+    compare(TOK512, 512);
+    for vocab in [0, 1, 511, 513, (1 << 20) + 1] {
+        compare(TOK512, vocab);
+    }
+    for cut in (0..TOK512.len()).step_by(13) {
+        compare(&TOK512[..cut], 512);
+    }
+    for at in (0..64).chain((64..TOK512.len()).step_by(29)) {
+        for b in [0u8, 0x80, 0xff, 0x7f] {
+            let mut bytes = TOK512.to_vec();
+            bytes[at] = b;
+            compare(&bytes, 512);
+        }
+    }
+    // Pieces the decoder treats specially.
+    let mut crafted = 64i32.to_le_bytes().to_vec();
+    let pieces: [&[u8]; 16] = [
+        b"<0x0A>", b"<0x+A>", b"<0x-A>", b"<0xG1>", b" <0x41>", b"<0x41", b"<0x07>", b"\x07", b" ",
+        b"  ", b" a", b"<0xff>", b"<0xFF>", b"\t", b"\x0b", b"<0x0B>",
+    ];
+    for p in pieces {
+        crafted.extend_from_slice(&1.5f32.to_le_bytes());
+        crafted.extend_from_slice(&(p.len() as i32).to_le_bytes());
+        crafted.extend_from_slice(p);
+    }
+    compare(&crafted, pieces.len());
+    for e in ["Malformed", "Limit", "NonFinite"] {
+        assert!(
+            outcomes.contains(e),
+            "no tokenizer reached {e}: {outcomes:?}"
+        );
+    }
+}
+
+/// Scalar-kernel paged attention: every query head, both schedules, both
+/// K/V formats, GQA ratios 1-4, causal limits and non-finite keys.
+macro_rules! attention_script {
+    ($krate:ident, $seed:expr) => {{
+        use $krate::attention::*;
+        use $krate::kv::*;
+        use $krate::simd::Kernel;
+        let seed: u64 = $seed;
+        let kv_heads = 1 + (seed % 3) as usize;
+        let group = 1 + (seed / 3 % 4) as usize;
+        let head_dim = [2, 4, 6, 16][(seed / 12 % 4) as usize];
+        let format = if seed % 2 == 0 {
+            KvFormat::F32
+        } else {
+            KvFormat::Bf16
+        };
+        let mut pool = KvPool::with_format(
+            KvConfig {
+                heads: kv_heads,
+                head_dim,
+                pages: 8,
+                max_sequences: 2,
+                max_tokens_per_sequence: 100,
+                max_bytes: 1 << 20,
+            },
+            format,
+        )
+        .unwrap();
+        let mut s = pool.begin().unwrap();
+        let tokens = 1 + (seed * 7 % 60) as usize;
+        let width = kv_heads * head_dim;
+        for p in 0..tokens {
+            let mut k = values(seed * 131 + p as u64, width);
+            let v = values(seed * 137 + p as u64, width);
+            if seed % 23 == 5 && p == tokens / 2 {
+                k[0] = f32::INFINITY;
+            }
+            match format {
+                KvFormat::F32 => pool.append_f32(&mut s, p, &k, &v).unwrap(),
+                KvFormat::Bf16 => {
+                    let bytes = |x: &[f32]| -> Vec<u8> {
+                        x.iter()
+                            .flat_map(|f| ((f.to_bits() >> 16) as u16).to_le_bytes())
+                            .collect()
+                    };
+                    let (kb, vb) = (bytes(&k), bytes(&v));
+                    let step = |bytes| Bf16Step {
+                        heads: kv_heads,
+                        head_dim,
+                        bytes,
+                    };
+                    pool.append(&mut s, p, step(&kb[..]), step(&vb[..]))
+                        .unwrap()
+                }
+            }
+        }
+        let query_heads = kv_heads * group;
+        let q = values(seed * 139, query_heads * head_dim);
+        let shape = AttentionShape {
+            query_heads,
+            kv_heads,
+            head_dim,
+        };
+        let mut log = Vec::new();
+        for mode in [AttentionMode::TwoPass, AttentionMode::Online] {
+            for visible in [
+                None,
+                Some(1),
+                Some(tokens / 2),
+                Some(tokens),
+                Some(tokens + 1),
+            ] {
+                let mut scores = vec![0.0f32; query_heads * tokens];
+                let mut out = vec![0.0f32; query_heads * head_dim];
+                let r = paged_gqa_attention_with(
+                    &pool,
+                    &s,
+                    shape,
+                    &q,
+                    &mut scores,
+                    &mut out,
+                    mode,
+                    Kernel::Scalar,
+                    visible,
+                );
+                log.push(format!(
+                    "{r:?} {:?}",
+                    out.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+                ));
+            }
+        }
+        let mut out = vec![0.0f32; query_heads * head_dim];
+        log.push(format!(
+            "{:?}",
+            paged_gqa_attention(
+                &pool,
+                &s,
+                shape,
+                &q,
+                &mut [],
+                &mut out,
+                AttentionMode::TwoPass
+            )
+        ));
+        pool.release(s).unwrap();
+        log.join("\n")
+    }};
+}
+
+#[test]
+fn both_builds_attend_the_same() {
+    let mut joined = String::new();
+    for seed in 0..96u64 {
+        let rust = attention_script!(seed, seed);
+        let port = attention_script!(vesper_tensor, seed);
+        assert_eq!(rust, port, "attention script {seed}");
+        joined.push_str(&rust);
+    }
+    for outcome in [
+        "Ok(())",
+        "Err(NonFinite)",
+        "Err(Shape(\"attention beyond the stored tokens\"))",
+    ] {
+        assert!(joined.contains(outcome), "no script reached {outcome}");
+    }
+}
+
+#[test]
+#[ignore = "benchmark; run in release with --ignored --nocapture"]
+fn abba_attention() {
+    macro_rules! run {
+        ($krate:ident, $mode:ident) => {{
+            use $krate::attention::*;
+            use $krate::kv::*;
+            use $krate::simd::Kernel;
+            let mut pool = KvPool::with_format(
+                KvConfig {
+                    heads: 4,
+                    head_dim: 64,
+                    pages: 32,
+                    max_sequences: 1,
+                    max_tokens_per_sequence: 512,
+                    max_bytes: 16 << 20,
+                },
+                KvFormat::F32,
+            )
+            .unwrap();
+            let mut s = pool.begin().unwrap();
+            for p in 0..512 {
+                let k = values(p as u64, 256);
+                pool.append_f32(&mut s, p, &k, &k).unwrap();
+            }
+            let q = values(99, 16 * 64);
+            let shape = AttentionShape {
+                query_heads: 16,
+                kv_heads: 4,
+                head_dim: 64,
+            };
+            let mut scores = vec![0.0f32; 16 * 512];
+            let mut out = vec![0.0f32; 16 * 64];
+            move || {
+                paged_gqa_attention_with(
+                    &pool,
+                    &s,
+                    shape,
+                    &q,
+                    &mut scores,
+                    &mut out,
+                    AttentionMode::$mode,
+                    Kernel::Scalar,
+                    None,
+                )
+                .unwrap();
+                checksum(&out)
+            }
+        }};
+    }
+    abba(
+        "attention, two-pass, 16 query / 4 K/V heads x 64, 512 tokens",
+        run!(seed, TwoPass),
+        run!(vesper_tensor, TwoPass),
+    );
+    abba(
+        "attention, online, 16 query / 4 K/V heads x 64, 512 tokens",
+        run!(seed, Online),
+        run!(vesper_tensor, Online),
+    );
+}
+
+#[test]
+#[ignore = "benchmark; run in release with --ignored --nocapture"]
+fn abba_llama2c_load() {
+    const MODEL: &[u8] = include_bytes!("../models/stories260K.bin");
+    abba(
+        "llama2.c load, stories260K and tok512",
+        || {
+            let m = seed::llama::Model::from_llama2c(MODEL).unwrap();
+            let t = seed::llama::Tokenizer::from_llama2c(TOK512, 512).unwrap();
+            m.rms_final()[0].to_bits() as u64 + t.vocab() as u64
+        },
+        || {
+            let m = vesper_tensor::llama::Model::from_llama2c(MODEL).unwrap();
+            let t = vesper_tensor::llama::Tokenizer::from_llama2c(TOK512, 512).unwrap();
+            m.rms_final()[0].to_bits() as u64 + t.vocab() as u64
+        },
+    );
+}
+
+macro_rules! open_weights {
+    ($krate:ident, $path:expr) => {
+        match $krate::mmap::Mapping::open($path) {
+            Ok(m) => format!("{} {:?}", m.is_mapped(), m.bytes()),
+            Err(e) => format!("{e:?}"),
+        }
+    };
+}
+
+#[test]
+fn both_builds_open_the_same_weight_files() {
+    let dir = std::env::temp_dir().join(format!("vesper-tensor-abba-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let empty = dir.join("empty.bin");
+    let small = dir.join("small.bin");
+    std::fs::write(&empty, b"").unwrap();
+    std::fs::write(&small, b"weights").unwrap();
+    let mut outcomes = Vec::new();
+    for path in [empty, small, dir.join("missing.bin"), dir.clone()] {
+        let rust = open_weights!(seed, &path);
+        assert_eq!(
+            rust,
+            open_weights!(vesper_tensor, &path),
+            "{}",
+            path.display()
+        );
+        outcomes.push(rust);
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(
+        &outcomes[..2],
+        ["false []", "true [119, 101, 105, 103, 104, 116, 115]"]
+    );
+}
