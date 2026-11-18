@@ -6349,9 +6349,13 @@ dependencies = [
 name = "vesper-resonance"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "cranelift-codegen 0.125.4",
  "cranelift-frontend 0.125.4",
  "rtrb",
+ "vesper-port-abi",
+ "vesper-port-harness",
+ "vesper-resonance-seed",
 ]
 
 [[package]]
