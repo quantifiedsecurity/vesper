@@ -739,6 +739,48 @@ pub fn m_aplic_set_active_here(inout a: Aplic, d: u64, src: u64, active: bool) {
     }
 }
 
+// Whether the source is active or delegated onward in the domain.
+fn live_h(in a: Aplic, h: AplicHdr, src: u64) -> bool {
+    if src == 0 || src > h.sources || !src_flag(in a.active_here, h, src) {
+        return false;
+    }
+    let cfg = src_word(in a.sourcecfg, h, src);
+    (cfg & 1024) != 0 || mode_of(cfg) != 0
+}
+
+// Child `c`, child index `ci` of domain `p`: each source is active in `c`
+// exactly when `p` delegates it to `ci` (m_aplic_set_active_here for every
+// source, with both headers read once). True when a source's liveness in
+// `c` changed.
+pub fn m_aplic_inherit(inout a: Aplic, p: u64, ci: u64, c: u64) -> bool {
+    let hp = m_aplic_hdr(in a, p);
+    let hc = m_aplic_hdr(in a, c);
+    let mut changed = false;
+    let mut s: u64 = 1;
+    loop {
+        if s > hc.sources {
+            break;
+        }
+        let here = match delegated_h(in a, hp, s) {
+            Option::Some(x) => x == ci,
+            Option::None => false,
+        };
+        if src_flag(in a.active_here, hc, s) != here {
+            let before = live_h(in a, hc, s);
+            set_src_flag(inout a.active_here, hc, s, here);
+            if !here {
+                set_src_word(inout a.sourcecfg, hc, s, 0);
+            }
+            settle(inout a, hc, s);
+            if before != live_h(in a, hc, s) {
+                changed = true;
+            }
+        }
+        s = wrapping_add(s, 1);
+    }
+    changed
+}
+
 pub fn m_aplic_set_wire(inout a: Aplic, d: u64, src: u64, high: bool) {
     let h = m_aplic_hdr(in a, d);
     if src == 0 || src > h.sources {

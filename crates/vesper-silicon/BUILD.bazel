@@ -53,6 +53,12 @@ filegroup(
             "if !found || prio <= bp {",
         ),
         (
+            "plic",
+            "intc",
+            "set_b(inout f.p_pending, at, false);",
+            "set_b(inout f.p_pending, at, true);",
+        ),
+        (
             "dtb",
             "dtb",
             "let name = wrapping_add(off_struct, i);",

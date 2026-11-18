@@ -33,6 +33,11 @@ const EDITS: &[(&str, &str)] = &[
     ),
     // aia.ves, APLIC: equal priorities go to the higher source number.
     ("if !found || prio < bp {", "if !found || prio <= bp {"),
+    // intc.ves, PLIC: a claim leaves its source pending.
+    (
+        "set_b(inout f.p_pending, at, false);",
+        "set_b(inout f.p_pending, at, true);",
+    ),
     // dtb.ves: node names start one byte late.
     (
         "let name = wrapping_add(off_struct, i);",

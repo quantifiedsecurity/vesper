@@ -9,7 +9,7 @@ use super::*;
 use crate::binding;
 use crate::dtb::MemRange;
 
-fn fault(f: binding::AiaFault) -> AiaError {
+pub(crate) fn fault(f: binding::AiaFault) -> AiaError {
     match f {
         binding::AiaFault::Unmapped(addr) => AiaError::Unmapped { addr },
         binding::AiaFault::Misaligned(addr) => AiaError::Misaligned { addr },
@@ -39,7 +39,7 @@ pub(super) fn cfg_to_port(c: &MsiAddrCfg) -> binding::repr::MsiCfg {
     })
 }
 
-fn cfg_from_port(c: &binding::MsiCfg) -> MsiAddrCfg {
+pub(crate) fn cfg_from_port(c: &binding::MsiCfg) -> MsiAddrCfg {
     // The port keeps each field within its register width.
     MsiAddrCfg {
         m_ppn: c.m_ppn,
