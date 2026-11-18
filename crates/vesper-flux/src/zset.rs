@@ -61,11 +61,16 @@ impl ZSet {
         }
         // The kernel takes rows of the right width; the first other row is
         // a schema error once the rows before it are added (its own charge
-        // comes first).
-        let good = entries
+        // comes first). Only the entries the work budget can reach are
+        // looked at or copied, as in the Rust loop: with every row before
+        // it of the right width, entry `reach - 1` cannot be paid for.
+        let reach = entries
+            .len()
+            .min((limits.max_work / (width + 1)).saturating_add(1));
+        let good = entries[..reach]
             .iter()
             .position(|(row, _)| row.len() != width)
-            .unwrap_or(entries.len());
+            .unwrap_or(reach);
         let mut cells = Vec::with_capacity(good * (width + 1));
         for (row, weight) in &entries[..good] {
             cells.extend_from_slice(row);
