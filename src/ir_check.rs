@@ -160,6 +160,7 @@ pub fn validate(world: &World, program: &ir::Program) -> Vec<Diagnostic> {
             diagnostics: vec![],
             origins: Origins::build(f),
             local_consumes: BTreeMap::new(),
+            reservable: reservable(f),
         };
         checker.function(f);
         diagnostics.extend(checker.diagnostics);
@@ -276,6 +277,31 @@ struct Flow<'a> {
     // A witness is local to one straight-line block visit, never propagated
     // through a join or guessed from the last static assignment/consumption.
     local_consumes: BTreeMap<ValueId, Span>,
+    /// The `inout` loans that a call takes as an argument ([`reservable`]).
+    reservable: BTreeSet<ValueId>,
+}
+/// The values that some call, sequence, tiled or `Box` operation of `f`
+/// takes as an `inout` argument. Only their loans are reserved before the
+/// call (two-phase borrows); an `inout` loan that no call consumes is
+/// active from the start.
+fn reservable(f: &FunctionIr) -> BTreeSet<ValueId> {
+    let mut out = BTreeSet::new();
+    for i in f.blocks.iter().flat_map(|b| &b.instructions) {
+        let args = match &i.op {
+            Op::Call { args, .. }
+            | Op::Indirect { args, .. }
+            | Op::Tiled { args, .. }
+            | Op::Seq { args, .. }
+            | Op::Fip { args, .. } => args,
+            _ => continue,
+        };
+        out.extend(
+            args.iter()
+                .filter(|a| a.pass == Pass::Inout)
+                .map(|a| a.value),
+        );
+    }
+    out
 }
 impl Flow<'_> {
     fn mode(&self, t: &Type) -> Mode {
@@ -376,11 +402,16 @@ impl Flow<'_> {
         }
         let ty = self.world.field(&slot.ty, &p.path).unwrap_or(Type::Infer);
         let exclusive = pass == Pass::Inout || (pass == Pass::Sink && self.mode(&ty) != Mode::Copy);
+        // Two-phase borrows (§4.3): an `inout` argument loan is only
+        // reserved until the call that consumes it activates it
+        // ([`Flow::activate`]), so while the call's arguments are evaluated
+        // it admits shared reads of its place and conflicts only with
+        // writes, moves and `inout` loans.
         for (id, value) in &s.values {
             if let Some((loan, mode)) = &value.loan
                 && !value.consumed
                 && loan.iter().any(|loan| self.graph.overlaps(p, loan))
-                && (exclusive || *mode == Pass::Inout)
+                && (exclusive || (*mode == Pass::Inout && !self.reservable.contains(id)))
             {
                 self.caused(
                     format!(
@@ -427,6 +458,55 @@ impl Flow<'_> {
                 .unwrap()
                 .moved
                 .insert(p.path.clone());
+        }
+    }
+    /// Activates the reserved `inout` loans among a call's `args`. A shared
+    /// read made while the arguments were evaluated has been consumed by its
+    /// own operation by then, unless it is itself an argument of this call,
+    /// as in `s.extend(in s[..])`: such a loan is still live when the callee
+    /// runs, so it may not overlap an activated `inout` loan. (An `inout`
+    /// loan taken after another is refused when it is taken, in `access`.)
+    fn activate(&mut self, s: &State, args: &[ir::Argument], span: &Span) {
+        for a in args {
+            let Some(ValueState {
+                loan: Some((places, Pass::Inout)),
+                consumed: false,
+                ..
+            }) = s.values.get(&a.value)
+            else {
+                continue;
+            };
+            for b in args {
+                let Some(ValueState {
+                    loan: Some((loans, Pass::In)),
+                    consumed: false,
+                    ..
+                }) = s.values.get(&b.value)
+                else {
+                    continue;
+                };
+                if let Some(q) = loans
+                    .iter()
+                    .find(|q| places.iter().any(|p| self.graph.overlaps(p, q)))
+                {
+                    self.caused(
+                        format!(
+                            "IR call activates inout loan '{}' while its argument loan '{}' is live",
+                            places
+                                .iter()
+                                .map(Place::display)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            q.display()
+                        ),
+                        span.clone(),
+                        self.origins
+                            .value(b.value)
+                            .map(|(span, _)| (span, "the overlapping argument loan is taken here")),
+                        "A reserved inout loan becomes exclusive when its call runs, so no argument of the same call may borrow its place.",
+                    );
+                }
+            }
         }
     }
     fn bind(&mut self, s: &mut State, p: &Pattern, t: &Type, origin: ValueId) {
@@ -640,6 +720,7 @@ impl Flow<'_> {
                 }
             }
             Op::Tiled { args, .. } | Op::Seq { args, .. } | Op::Fip { args, .. } => {
+                self.activate(s, args, &i.span);
                 for a in args {
                     if a.pass == Pass::Sink {
                         self.consume(s, a.value, &i.span);
@@ -668,6 +749,7 @@ impl Flow<'_> {
                 self.consume(s, *n, &i.span);
             }
             Op::Call { callee, args, .. } => {
+                self.activate(s, args, &i.span);
                 for a in args {
                     if a.pass == Pass::Sink {
                         self.consume(s, a.value, &i.span);
@@ -709,6 +791,7 @@ impl Flow<'_> {
                     }
                 });
                 self.consume(s, *callee, &i.span);
+                self.activate(s, args, &i.span);
                 for a in args {
                     if a.pass == Pass::Sink {
                         self.consume(s, a.value, &i.span);

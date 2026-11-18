@@ -116,7 +116,16 @@ impl Generator<'_> {
         if let SeqOp::Str(op) = op {
             return Err(crate::strings::lean_refusal(op));
         }
-        if matches!(op, SeqOp::CopyFrom { .. } | SeqOp::Fill | SeqOp::Wide(_)) || op.byte_scan() {
+        if matches!(
+            op,
+            SeqOp::CopyFrom { .. }
+                | SeqOp::CopyWithin { .. }
+                | SeqOp::Fill
+                | SeqOp::Wide(_)
+                | SeqOp::Swap
+                | SeqOp::Replace
+        ) || op.byte_scan()
+        {
             return Err(format!(
                 "the Lean model of sequences has no ChunkSeq::{} yet",
                 op.name()
@@ -231,6 +240,9 @@ impl Generator<'_> {
             | SeqOp::Hoisted(_)
             | SeqOp::BoundsGuard { .. }
             | SeqOp::CopyFrom { .. }
+            | SeqOp::CopyWithin { .. }
+            | SeqOp::Swap
+            | SeqOp::Replace
             | SeqOp::Fill
             | SeqOp::Wide(_)
             | SeqOp::SumBe16

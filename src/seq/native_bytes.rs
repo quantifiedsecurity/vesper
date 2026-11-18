@@ -32,7 +32,10 @@ impl<M: Module> Codegen<'_, '_, M> {
         if op.byte_scan() {
             return self.byte_scan_op(op, args, arg_types).map(Some);
         }
-        if !matches!(op, SeqOp::CopyFrom { .. } | SeqOp::Fill | SeqOp::Wide(_)) {
+        if !matches!(
+            op,
+            SeqOp::CopyFrom { .. } | SeqOp::CopyWithin { .. } | SeqOp::Fill | SeqOp::Wide(_)
+        ) {
             return Ok(None);
         }
         let arg = |i: usize| {
@@ -63,6 +66,23 @@ impl<M: Module> Codegen<'_, '_, M> {
                     let src = this.seq_elem_addr(sh, sstart, zero, stride);
                     let bytes = this.b.ins().imul_imm(n, stride);
                     this.seq_move(dst, src, bytes);
+                    Ok(())
+                })?
+            }
+            SeqOp::CopyWithin { total } => {
+                // `lo <= hi <= len` and `hi - lo` elements fit at `at`.
+                let (lo, hi, at) = (arg(1)?, arg(2)?, arg(3)?);
+                let ordered = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, lo, hi);
+                let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, hi, len);
+                let n = self.b.ins().isub(hi, lo);
+                let fits = self.seq_fits(len, at, n);
+                let source = self.b.ins().band(ordered, inside);
+                let valid = self.b.ins().band(source, fits);
+                self.seq_when(valid, total, |this| {
+                    let dst = this.seq_elem_addr(h, start, at, stride);
+                    let src = this.seq_elem_addr(h, start, lo, stride);
+                    let bytes = this.b.ins().imul_imm(n, stride);
+                    this.seq_move_overlapping(dst, src, bytes);
                     Ok(())
                 })?
             }
@@ -193,6 +213,43 @@ impl<M: Module> Codegen<'_, '_, M> {
             // source out of the destination, so a forward copy is exact.
             self.seq_copy(dst, src, bytes);
         }
+    }
+
+    /// Moves `bytes` bytes from `src` to `dst`, which may overlap
+    /// (`copy_within`): `memmove` where the C library is available, else a
+    /// byte loop that runs backwards when `dst` is above `src`.
+    fn seq_move_overlapping(&mut self, dst: ir::Value, src: ir::Value, bytes: ir::Value) {
+        if self.seq_has_libc() {
+            let config = self.m.target_config();
+            self.b.call_memmove(config, dst, src, bytes);
+            return;
+        }
+        let forward = self.b.create_block();
+        let backward = self.b.create_block();
+        let done = self.b.create_block();
+        let above = self.b.ins().icmp(IntCC::UnsignedGreaterThan, dst, src);
+        self.branch(above, backward, &[], forward, &[]);
+        self.b.switch_to_block(forward);
+        self.seq_copy(dst, src, bytes);
+        self.jump(done, &[]);
+        self.b.switch_to_block(backward);
+        let head = self.b.create_block();
+        let body = self.b.create_block();
+        self.b.append_block_param(head, types::I64);
+        self.jump(head, &[bytes.into()]);
+        self.b.switch_to_block(head);
+        let k = self.b.block_params(head)[0];
+        let zero = self.zero();
+        let more = self.b.ins().icmp(IntCC::UnsignedGreaterThan, k, zero);
+        self.branch(more, body, &[], done, &[]);
+        self.b.switch_to_block(body);
+        let k = self.b.ins().iadd_imm(k, -1);
+        let from = self.b.ins().iadd(src, k);
+        let byte = self.b.ins().uload8(types::I64, MemFlags::new(), from, 0);
+        let to = self.b.ins().iadd(dst, k);
+        self.b.ins().istore8(MemFlags::new(), byte, to, 0);
+        self.jump(head, &[k.into()]);
+        self.b.switch_to_block(done);
     }
 
     /// Whether byte scans use 128-bit vectors: optimized builds only (the
