@@ -5567,7 +5567,7 @@ dependencies = [
  "vesper-pact-binding",
  "vesper-pulse",
  "vesper-resonance",
- "vesper-semver",
+ "vesper-semver-seed",
  "vesper-serde",
  "vesper-silicon",
  "vesper-simd",
@@ -5655,6 +5655,8 @@ dependencies = [
 name = "vesper-beacon"
 version = "0.1.0"
 dependencies = [
+ "vesper-beacon-seed",
+ "vesper-bench",
  "vesper-port-abi",
  "vesper-port-harness",
 ]
@@ -5722,7 +5724,7 @@ dependencies = [
  "serde_json",
  "vesper-ffi",
  "vesper-fiber-abi",
- "vesper-simpulse",
+ "vesper-simpulse-seed",
 ]
 
 [[package]]
@@ -5751,7 +5753,7 @@ name = "vesper-crucible"
 version = "0.1.0"
 dependencies = [
  "vesper-alloc-seed",
- "vesper-simpulse",
+ "vesper-simpulse-seed",
 ]
 
 [[package]]
@@ -5772,7 +5774,7 @@ dependencies = [
  "serde_json",
  "vesper-core",
  "vesper-ffi",
- "vesper-simpulse",
+ "vesper-simpulse-seed",
  "vesper-syntax",
 ]
 
@@ -6134,7 +6136,7 @@ version = "0.1.0"
 dependencies = [
  "vesper-ffi",
  "vesper-fmt",
- "vesper-simpulse",
+ "vesper-simpulse-seed",
  "vesper-syntax",
  "wasmtime",
  "wit-parser",
@@ -6256,6 +6258,18 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "vesper-port-abi",
+ "vesper-port-harness",
+ "vesper-semver-seed",
+]
+
+[[package]]
+name = "vesper-semver-seed"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -6282,7 +6296,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "vesper",
- "vesper-simpulse",
+ "vesper-simpulse-seed",
  "vesper-warp-umem",
 ]
 
@@ -6306,6 +6320,18 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
+
+[[package]]
+name = "vesper-simpulse-seed"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vesper-bench",
 ]
 
 [[package]]
