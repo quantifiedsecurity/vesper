@@ -54,6 +54,35 @@ pub fn tree_new() -> Tree {
     }
 }
 
+// The node count to size a tree decoded from `w` for: every node is at
+// least five words, so the count is not trusted past the input.
+pub fn decode_cap(in w: Slice[u64]) -> u64 {
+    let n = get_u64(in w, 1);
+    if n < w.len() / 5 {
+        n
+    } else {
+        w.len() / 5
+    }
+}
+
+// An empty tree with room for `cap` nodes. (A new sequence assigned to a
+// field of an `inout` handle does not free the old one natively, so the
+// capacity is chosen when the tree is built.)
+pub fn tree_sized(cap: u64) -> Tree {
+    Tree {
+        root: 0,
+        nodes: ChunkSeq::with_capacity[TNode](cap),
+        props: ChunkSeq::with_capacity[TProp](cap),
+        subs: ChunkSeq::with_capacity[TSub](cap),
+        kids: ChunkSeq::with_capacity[u64](cap),
+        kidx: ChunkSeq::with_capacity[u64](cap),
+        keys: ChunkSeq::with_capacity[u64](cap),
+        sorted: ChunkSeq::with_capacity[u64](cap),
+        parent: ChunkSeq::with_capacity[u64](cap),
+        order: ChunkSeq::with_capacity[u64](cap)
+    }
+}
+
 // Decode the wrapper's words: `root, n`, then per node `key, kind, np, ns,
 // nc`, `np` properties of five words (property, tag, payload, text start,
 // text length), `ns` subscriptions of two words (event, handler) and `nc`

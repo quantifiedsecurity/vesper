@@ -135,6 +135,40 @@ pub fn prepared_empty(session: u64, base: u64, serial: u64) -> Prepared {
     }
 }
 
+// A prepared update for the validated `tree`, with the next mounted state
+// sized to the tree's shape.
+pub fn prepared_for(session: u64, base: u64, serial: u64, sink tree: Tree, text_len: u64) -> Prepared {
+    let n = tree.nodes.len();
+    let np = tree.props.len();
+    let ns = tree.subs.len();
+    let nk = tree.kids.len();
+    Prepared {
+        fault: Option::None,
+        session: session,
+        base: base,
+        next: base,
+        serial: serial,
+        ops: ChunkSeq::new[Op](),
+        tree: tree,
+        m: Mounted {
+            present: false,
+            nodes: ChunkSeq::with_capacity[MNode](n),
+            props: ChunkSeq::with_capacity[MProp](np),
+            subs: ChunkSeq::with_capacity[MSub](ns),
+            kids: ChunkSeq::with_capacity[u64](nk),
+            kidx: ChunkSeq::with_capacity[u64](nk),
+            text: ChunkSeq::with_capacity[u8](text_len),
+            keys: ChunkSeq::with_capacity[u64](n),
+            sorted: ChunkSeq::with_capacity[u64](n)
+        },
+        prev: ChunkSeq::with_capacity[u64](n),
+        succ: ChunkSeq::new[u64](),
+        cur: ChunkSeq::with_capacity[u64](nk),
+        cur_start: ChunkSeq::with_capacity[u64](n),
+        cur_len: ChunkSeq::with_capacity[u64](n)
+    }
+}
+
 // Ids::next: hand out the counter, failing once it would overflow.
 pub fn next_id(inout p: Prepared) -> Option[u64] {
     let n = p.serial;
@@ -165,20 +199,72 @@ pub fn exhausted(inout p: Prepared) {
 // slots and subscriptions keep their identities, everything else gets a
 // fresh one, in the order plan::build hands them out. `prev` maps each new
 // node to the old node it retains (or none).
-pub fn mount_next(in old: Mounted, inout p: Prepared, in text: Slice[u8]) {
-    // pos[ti]: the pre-order position of tree node `ti` (every node is in
-    // the order of a validated tree).
-    let mut pos: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](p.tree.nodes.len());
-    for i in 0..p.tree.nodes.len() {
+// Match old and new nodes by merging the two key orders: `old_of[ti]` is
+// the old node with tree node `ti`'s key and `new_of[oi]` the tree node
+// with old node `oi`'s key (none when absent). Keys are unique on both
+// sides.
+pub fn match_keys(
+    in old: Mounted,
+    in t: Tree,
+    inout old_of: ChunkSeq[u64],
+    inout new_of: ChunkSeq[u64]
+) {
+    for i in 0..t.nodes.len() {
+        old_of.push(none_id());
+    }
+    for i in 0..old.nodes.len() {
+        new_of.push(none_id());
+    }
+    if !old.present {
+        return;
+    }
+    let na = old.sorted.len();
+    let nb = t.sorted.len();
+    let mut a: u64 = 0;
+    let mut b: u64 = 0;
+    loop {
+        if a >= na || b >= nb {
+            break;
+        }
+        let oi = seq_u64(in old.sorted, a);
+        let ti = seq_u64(in t.sorted, b);
+        let ka = seq_u64(in old.keys, oi);
+        let kb = seq_u64(in t.keys, ti);
+        if ka < kb {
+            a = inc(a);
+        } else if kb < ka {
+            b = inc(b);
+        } else {
+            old_of.try_set(ti, oi);
+            new_of.try_set(oi, ti);
+            a = inc(a);
+            b = inc(b);
+        }
+    }
+}
+
+// pos[ti]: the pre-order position of tree node `ti` (every node of a
+// validated tree is in its order).
+pub fn positions(in t: Tree, inout pos: ChunkSeq[u64]) {
+    for i in 0..t.nodes.len() {
         pos.push(none_id());
     }
-    for oi in 0..p.tree.order.len() {
-        pos.try_set(seq_u64(in p.tree.order, oi), oi);
+    for oi in 0..t.order.len() {
+        pos.try_set(seq_u64(in t.order, oi), oi);
     }
+}
+
+pub fn mount_next(
+    in old: Mounted,
+    inout p: Prepared,
+    in text: Slice[u8],
+    in old_of: ChunkSeq[u64],
+    in pos: ChunkSeq[u64]
+) {
     for oi in 0..p.tree.order.len() {
         let ti = seq_u64(in p.tree.order, oi);
         let tn = tnode(in p.tree.nodes, ti);
-        let found = mounted_find(in old, tn.key);
+        let found = seq_u64(in old_of, ti);
         let retained = found != none_id() && mnode(in old.nodes, found).kind == tn.kind;
         let prev = if retained {
             found
@@ -499,8 +585,13 @@ pub fn attach(inout p: Prepared, max: u64) -> bool {
 // plan::build: the sparse patch plan from `old` to the validated tree in
 // `p.tree` (or to nothing), in the same safe application order.
 pub fn plan(in old: Mounted, inout p: Prepared, has_tree: bool, in text: Slice[u8], max: u64) {
+    let mut old_of: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut new_of: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut pos: ChunkSeq[u64] = ChunkSeq::new[u64]();
     if has_tree {
-        mount_next(in old, inout p, in text);
+        match_keys(in old, in p.tree, inout old_of, inout new_of);
+        positions(in p.tree, inout pos);
+        mount_next(in old, inout p, in text, in old_of, in pos);
         match p.fault {
             Option::Some(_) => {
                 return;
@@ -512,7 +603,12 @@ pub fn plan(in old: Mounted, inout p: Prepared, has_tree: bool, in text: Slice[u
     let mut found: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](old.nodes.len());
     for oi in 0..old.nodes.len() {
         let node = mnode(in old.nodes, oi);
-        let nj = mounted_find(in p.m, node.key);
+        let ti = seq_u64(in new_of, oi);
+        let nj = if ti == none_id() {
+            none_id()
+        } else {
+            seq_u64(in pos, ti)
+        };
         found.push(nj);
         let same = nj != none_id() && mnode(in p.m.nodes, nj).kind == node.kind;
         p

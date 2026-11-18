@@ -41,11 +41,17 @@ use self::util::{
 };
 use self::view::{
     decode,
+    decode_cap,
     tree_new,
+    tree_sized,
     validate
 };
 
 pub fn query_new() -> Query {
+    query_with(tree_new())
+}
+
+pub fn query_with(sink tree: Tree) -> Query {
     Query {
         fault: Option::None,
         code: 0,
@@ -58,7 +64,7 @@ pub fn query_new() -> Query {
         interactive: 0,
         items: ChunkSeq::new[u64](),
         values: ChunkSeq::new[u64](),
-        tree: tree_new()
+        tree: tree
     }
 }
 
@@ -330,7 +336,7 @@ pub fn tree_label(in t: Tree, n: TNode, in text: Slice[u8]) -> bool {
 // audit_view_tree: validate, then audit in pre-order with the visibility a
 // node inherits from its parent. Targets are tree keys.
 pub fn do_audit_tree(in words: Slice[u64], in text: Slice[u8], in limits: Slice[u64]) -> Query {
-    let mut q = query_new();
+    let mut q = query_with(tree_sized(decode_cap(in words)));
     decode(inout q.tree, in words);
     match validate(inout q.tree, limits_from(in limits), in text) {
         Option::Some(f) => {
@@ -390,7 +396,7 @@ pub fn kind_slot_property(kind: u64, i: u64) -> u64 {
 // layout flags), and per slot into `values` (property, input node index,
 // 1 when the node sets it).
 pub fn do_encode_tree(in words: Slice[u64], in text: Slice[u8], in limits: Slice[u64]) -> Query {
-    let mut q = query_new();
+    let mut q = query_with(tree_sized(decode_cap(in words)));
     decode(inout q.tree, in words);
     match validate(inout q.tree, limits_from(in limits), in text) {
         Option::Some(f) => {
