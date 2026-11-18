@@ -6,7 +6,8 @@
 //! paired totals with vesper-bench. Run `crates/vesper-ignis/bench-abba.sh`.
 //!
 //! `abba measure <ops>` warms each workload up and prints its total
-//! nanoseconds over `<ops>` operations. `abba digest` prints a hash of each
+//! nanoseconds over `<ops>` operations; `abba profile <workload> <passes>
+//! <ops>` runs one workload alone. `abba digest` prints a hash of each
 //! graph's plan and lowering, which must be equal in the two builds. `abba compare <rust> <port> <epochs>
 //! <ops>` drives the two builds.
 //!
@@ -191,6 +192,11 @@ fn main() {
                 println!("{name} {passes} {}", measure(name, passes, n));
             }
         }
+        ["profile", name, passes, ops] => {
+            // One workload alone, for callgrind or perf.
+            let ns = measure(name, passes.parse().unwrap(), ops.parse().unwrap());
+            println!("{name} {passes} {ns}");
+        }
         ["digest"] => {
             for passes in [64, 256] {
                 let g = graph(passes);
@@ -212,7 +218,7 @@ fn main() {
             compare(rust, port, epochs.parse().unwrap(), ops.parse().unwrap())
         }
         _ => {
-            eprintln!("usage: abba measure <ops> | abba digest | abba compare <rust> <port> <epochs> <ops>");
+            eprintln!("usage: abba measure <ops> | abba profile <workload> <passes> <ops> | abba digest | abba compare <rust> <port> <epochs> <ops>");
             std::process::exit(2);
         }
     }

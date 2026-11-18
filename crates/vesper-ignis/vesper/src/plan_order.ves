@@ -518,8 +518,33 @@ fn hazard_edges(in g: Graph) -> ChunkSeq[Edge] {
             fill.try_set(r, wrapping_add(k, 1));
         }
     }
+    // `next_write[k]`: the first position at or after `k` in its
+    // resource's run that holds a write (the run's end when none). A buffer
+    // read has hazards only with later writes, so its walk jumps there.
+    let mut next_write: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](nu);
+    for u in 0..nu {
+        next_write.push(0);
+    }
+    for r in 0..nr {
+        let lo = get64(in start, r);
+        let hi = get64(in start, wrapping_add(r, 1));
+        let mut nw = hi;
+        let mut k = hi;
+        loop {
+            if k <= lo {
+                break;
+            }
+            k = wrapping_sub(k, 1);
+            let u = get64(in list, k);
+            if access_is_write(get_use(in g.uses, u).access) {
+                nw = k;
+            }
+            next_write.try_set(k, nw);
+        }
+    }
     let mut edges: ChunkSeq[Edge] = ChunkSeq::new[Edge]();
     let mut group: ChunkSeq[Edge] = ChunkSeq::new[Edge]();
+    let mut jump: ChunkSeq[bool] = ChunkSeq::new[bool]();
     let mut cur: ChunkSeq[u64] = ChunkSeq::new[u64]();
     let mut end: ChunkSeq[u64] = ChunkSeq::new[u64]();
     for i in 0..n {
@@ -527,9 +552,11 @@ fn hazard_edges(in g: Graph) -> ChunkSeq[Edge] {
         let mine = wrapping_u32(i);
         cur.clear();
         end.clear();
+        jump.clear();
         for x in 0..pi.use_count {
             let u = wrapping_add(pi.first_use, x);
-            let r = widen_u64(get_use(in g.uses, u).resource);
+            let a = get_use(in g.uses, u);
+            let r = widen_u64(a.resource);
             let stop = get64(in start, wrapping_add(r, 1));
             let mut k = wrapping_add(get64(in slot, u), 1);
             loop {
@@ -538,8 +565,13 @@ fn hazard_edges(in g: Graph) -> ChunkSeq[Edge] {
                 }
                 k = wrapping_add(k, 1);
             }
+            let skip_reads = a.bytes && !access_is_write(a.access);
+            if skip_reads && k < stop {
+                k = get64(in next_write, k);
+            }
             cur.push(k);
             end.push(stop);
+            jump.push(skip_reads);
         }
         loop {
             let mut j = none32();
@@ -570,6 +602,9 @@ fn hazard_edges(in g: Graph) -> ChunkSeq[Edge] {
                     };
                     push_hazard(inout group, i, widen_u64(j), a, b);
                     k = wrapping_add(k, 1);
+                }
+                if k < stop && getb(in jump, x) {
+                    k = get64(in next_write, k);
                 }
                 cur.try_set(x, k);
             }
