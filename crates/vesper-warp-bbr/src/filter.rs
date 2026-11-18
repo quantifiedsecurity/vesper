@@ -1,5 +1,10 @@
 //! Windowed max filters and the probe-wait PRNG.
 
+// Under export ABI v3 a filter crosses as its Vesper-layout mirror; the
+// filters inside `Bbrv3` are lent in place with the controller.
+#[cfg(feature = "vesper-port")]
+use crate::port::repr::{CycleMax as CycleMirror, WindowedMax as Mirror};
+
 /// Kathleen Nichols' windowed running maximum (three samples), as in Linux
 /// `lib/minmax.c`. Time is a caller-chosen virtual clock (here: packet-timed
 /// round count). Samples older than `window` time units expire.
@@ -93,12 +98,15 @@ impl WindowedMax {
     /// A filter holding `value` at `time`.
     #[must_use]
     pub fn new(time: u64, value: u64) -> Self {
-        crate::port::windowed_max_new(time, value)
+        crate::port::windowed_max_new(time, value).to_value()
     }
 
     /// Add a sample and return the windowed maximum.
     pub fn update(&mut self, window: u64, time: u64, value: u64) -> u64 {
-        crate::port::windowed_max_update(self, window, time, value)
+        let mut m = Mirror::from_value(self);
+        let max = crate::port::windowed_max_update(&mut m, window, time, value);
+        *self = m.to_value();
+        max
     }
 }
 
@@ -144,17 +152,23 @@ impl CycleMax {
     /// Current maximum over both slots.
     #[must_use]
     pub fn get(&self) -> u64 {
-        crate::port::cycle_max_get(*self)
+        crate::port::cycle_max_get(&CycleMirror::from_value(self))
     }
 
     /// Record a sample in the current cycle.
     pub fn update(&mut self, value: u64) -> u64 {
-        crate::port::cycle_max_update(self, value)
+        let mut m = CycleMirror::from_value(self);
+        let max = crate::port::cycle_max_update(&mut m, value);
+        *self = m.to_value();
+        max
     }
 
     /// Start a new cycle: the current slot becomes the previous one.
     pub fn advance(&mut self) -> u64 {
-        crate::port::cycle_max_advance(self)
+        let mut m = CycleMirror::from_value(self);
+        let max = crate::port::cycle_max_advance(&mut m);
+        *self = m.to_value();
+        max
     }
 }
 

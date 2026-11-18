@@ -28,7 +28,7 @@ fn main() {
         std::fs::write(&source, unit).unwrap_or_else(|e| panic!("{}: {e}", source.display()));
         let port = vesper_port_harness::Port::new("bbr", &source)
             .binding("port/binding.rs")
-            .rust_types("crate");
+            .rust_types("crate::port_types");
         #[cfg(feature = "vesper-port-divergent")]
         let port = DIVERGENT_EDITS
             .iter()

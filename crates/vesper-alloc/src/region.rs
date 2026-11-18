@@ -9,19 +9,32 @@
 //! table. A handle names `(region id, slot index, serial)`. Serials are never
 //! reused by a region, so a handle to rewound or reset memory is rejected even
 //! after its slot index and its bytes are reused by a newer allocation.
+//!
+//! In the port-backed build (`cfg(vesper_port)`) the bookkeeping, every
+//! decision above, is the Vesper port in `vesper/src/lib.ves`, reached
+//! through `port.rs`; this file keeps the shared types and the Rust build.
 use crate::backing::{ChunkBacking, SystemBacking};
-use crate::error::{
-    AllocError, ConfigError, HandleError, RegionError, RewindError, ValueAllocError,
-};
+#[cfg(not(vesper_port))]
+use crate::error::AllocError;
+use crate::error::{ConfigError, HandleError, RegionError};
+#[cfg(not(vesper_port))]
+use crate::error::{RewindError, ValueAllocError};
 use std::alloc::Layout;
 use std::fmt;
 use std::marker::PhantomData;
+#[cfg(not(vesper_port))]
 use std::mem;
-use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ptr;
+#[cfg(not(vesper_port))]
+use std::ptr::NonNull;
+use std::sync::atomic::AtomicU64;
+#[cfg(not(vesper_port))]
+use std::sync::atomic::Ordering;
 
 mod arena;
 mod flat;
+#[cfg(vesper_port)]
+mod port;
 mod string;
 mod tiled;
 mod vec;
@@ -260,6 +273,7 @@ impl Watermark {
     }
 }
 
+#[cfg(not(vesper_port))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlotKind {
     Bytes,
@@ -270,6 +284,7 @@ enum SlotKind {
     Frozen,
 }
 
+#[cfg(not(vesper_port))]
 /// Element metadata of an `Elements`/`Frozen` slot. The region, not the
 /// handle, records how many leading elements are initialized, so rewind,
 /// reset and region drop finalize exactly those even if every handle was
@@ -287,6 +302,7 @@ struct Elems {
     linear: bool,
 }
 
+#[cfg(not(vesper_port))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlotState {
     Live,
@@ -294,6 +310,7 @@ enum SlotState {
     Released,
 }
 
+#[cfg(not(vesper_port))]
 struct Slot {
     serial: u64,
     chunk: usize,
@@ -311,12 +328,14 @@ struct Slot {
     elems: Option<Elems>,
 }
 
+#[cfg(not(vesper_port))]
 struct Chunk {
     base: NonNull<u8>,
     layout: Layout,
     cursor: usize,
 }
 
+#[cfg(not(vesper_port))]
 impl Chunk {
     fn capacity(&self) -> usize {
         self.layout.size()
@@ -333,6 +352,7 @@ impl Chunk {
     }
 }
 
+#[cfg(not(vesper_port))]
 struct MarkRecord {
     serial: u64,
     slot_len: usize,
@@ -340,6 +360,7 @@ struct MarkRecord {
     cursor: usize,
 }
 
+#[cfg(not(vesper_port))]
 #[derive(Clone, Copy)]
 struct Placement {
     chunk: usize,
@@ -347,6 +368,7 @@ struct Placement {
     start: usize,
 }
 
+#[cfg(not(vesper_port))]
 /// A bounded region. It is uniquely owned, has no `Clone` implementation, and
 /// is not `Send`/`Sync`: a region is confined to the shard that created it.
 pub struct Region<B: ChunkBacking = SystemBacking> {
@@ -361,6 +383,24 @@ pub struct Region<B: ChunkBacking = SystemBacking> {
     marks: Vec<MarkRecord>,
     live_linear: usize,
     epoch: u64,
+}
+
+/// A bounded region (port-backed build). The Vesper `Book` holds the chunk
+/// table, the allocation table and the watermarks; this struct holds the
+/// backing that supplies the chunk memory and the queue of destructor and
+/// chunk-release work the book hands back (see `port.rs`).
+#[cfg(vesper_port)]
+pub struct Region<B: ChunkBacking = SystemBacking> {
+    id: RegionId,
+    config: RegionConfig,
+    backing: B,
+    book: crate::port_binding::Book,
+    /// Work taken from the book and not yet done, oldest first. A panicking
+    /// destructor leaves the rest here; `Drop` finishes it.
+    pending: std::collections::VecDeque<crate::port_binding::Action>,
+    /// Confined to the creating shard, like the Rust build (which holds raw
+    /// chunk pointers).
+    _local: PhantomData<*mut u8>,
 }
 
 impl Region<SystemBacking> {
@@ -380,12 +420,13 @@ impl Region<SystemBacking> {
     }
 }
 
-unsafe fn drop_value<T>(ptr: *mut u8) {
+pub(crate) unsafe fn drop_value<T>(ptr: *mut u8) {
     // SAFETY: the region registers this finalizer only for a live, initialized,
     // suitably aligned `T` at `ptr`, and clears it when the value is moved out.
     unsafe { ptr::drop_in_place(ptr.cast::<T>()) }
 }
 
+#[cfg(not(vesper_port))]
 impl<B: ChunkBacking> Region<B> {
     pub fn with_backing(config: RegionConfig, backing: B) -> Result<Self, ConfigError> {
         config.validate()?;
@@ -1145,6 +1186,7 @@ impl<B: ChunkBacking> Region<B> {
     }
 }
 
+#[cfg(not(vesper_port))]
 impl<B: ChunkBacking> Drop for Region<B> {
     fn drop(&mut self) {
         /// Runs on normal exit and while unwinding from a panicking finalizer:

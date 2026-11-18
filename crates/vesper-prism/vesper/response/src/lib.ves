@@ -79,21 +79,20 @@ fn lower(b: u8) -> u8 {
     }
 }
 
-// Whether `b` is one of the bytes of `set`.
-fn in_set(b: u8, in set: Str) -> bool {
-    for i in 0..set.len() {
-        match set.try_byte_at(i) {
-            Option::Some(c) => if c == b {
-                return true;
-            },
-            Option::None => (),
-        }
-    }
-    false
-}
-
+// The RFC 9110 `tchar` bytes (ALPHA, DIGIT and !#$%&'*+-.^_`|~) as two
+// 64-bit masks. A mask test calls nothing and stays small enough to inline;
+// a comparison chain does not. `rotate_right` is the total shift.
 fn token(b: u8) -> bool {
-    is_alnum(b) || in_set(b, "!#$%&'*+-.^_`|~")
+    let i = widen_u64(b);
+    let low: u64 = 288068722172624896;
+    let high: u64 = 6341068274398134270;
+    if i < 64 {
+        (rotate_right(low, i) & 1) == 1
+    } else if i < 128 {
+        (rotate_right(high, wrapping_sub(i, 64)) & 1) == 1
+    } else {
+        false
+    }
 }
 
 fn eq_fold(in s: Slice[u8], in lit: Str) -> bool {
@@ -105,7 +104,11 @@ fn eq_fold(in s: Slice[u8], in lit: Str) -> bool {
             Option::Some(b) => b,
             Option::None => 0,
         };
-        if lower(byte(in s, i)) != want {
+        let have = match s.try_get(i) {
+            Option::Some(b) => b,
+            Option::None => 0,
+        };
+        if lower(have) != want {
             return false;
         }
     }
@@ -152,12 +155,7 @@ fn policy_length(close: bool) -> u64 {
 }
 
 fn push_text(inout out: ChunkSeq[u8], in text: Str) {
-    for i in 0..text.len() {
-        match text.try_byte_at(i) {
-            Option::Some(b) => out.push(b),
-            Option::None => (),
-        }
-    }
+    out.extend(in text.as_bytes());
 }
 
 fn push_decimal(inout out: ChunkSeq[u8], value: u64) {
@@ -354,28 +352,35 @@ pub fn response_plan_header(inout p: ResponsePlan, in name: Slice[u8], in value:
         return Option::Some(ResponseError::InvalidHeaderName);
     }
     for i in 0..name.len() {
-        if !token(byte(in name, i)) {
+        let b = match name.try_get(i) {
+            Option::Some(b) => b,
+            Option::None => 0,
+        };
+        if !token(b) {
             return Option::Some(ResponseError::InvalidHeaderName);
         }
     }
     for i in 0..value.len() {
-        let b = byte(in value, i);
+        let b = match value.try_get(i) {
+            Option::Some(b) => b,
+            Option::None => 0,
+        };
         if b < 32 || b == 127 {
             return Option::Some(ResponseError::InvalidHeaderValue);
         }
     }
-    if eq_fold(in name, "transfer-encoding")
-        || eq_fold(in name, "trailer")
-        || eq_fold(in name, "te") {
+    if (name.len() == 17 && eq_fold(in name, "transfer-encoding"))
+        || (name.len() == 7 && eq_fold(in name, "trailer"))
+        || (name.len() == 2 && eq_fold(in name, "te")) {
         return Option::Some(ResponseError::UnsupportedTransferCoding);
     }
-    if eq_fold(in name, "upgrade") {
+    if name.len() == 7 && eq_fold(in name, "upgrade") {
         return Option::Some(ResponseError::UnsupportedUpgrade);
     }
-    if eq_fold(in name, "content-length")
-        || eq_fold(in name, "connection")
-        || eq_fold(in name, "keep-alive")
-        || eq_fold(in name, "proxy-connection") {
+    if (name.len() == 14 && eq_fold(in name, "content-length"))
+        || (name.len() == 10 && eq_fold(in name, "connection"))
+        || (name.len() == 10 && eq_fold(in name, "keep-alive"))
+        || (name.len() == 16 && eq_fold(in name, "proxy-connection")) {
         return Option::Some(ResponseError::ReservedHeader);
     }
     let field = match add(name.len(), value.len()) {
@@ -400,12 +405,13 @@ pub fn response_plan_header(inout p: ResponsePlan, in name: Slice[u8], in value:
         Option::None => (),
     }
     for i in 0..name.len() {
-        p.names.push(lower(byte(in name, i)));
+        match name.try_get(i) {
+            Option::Some(b) => p.names.push(lower(b)),
+            Option::None => (),
+        }
     }
     p.name_ends.push(p.names.len());
-    for i in 0..value.len() {
-        p.values.push(byte(in value, i));
-    }
+    p.values.extend(in value);
     p.value_ends.push(p.values.len());
     p.head_length = head_length;
     p.header_count = header_count;
@@ -415,13 +421,6 @@ pub fn response_plan_header(inout p: ResponsePlan, in name: Slice[u8], in value:
 fn at(in s: ChunkSeq[u64], i: u64) -> u64 {
     match s.try_get(i) {
         Option::Some(v) => v,
-        Option::None => 0,
-    }
-}
-
-fn byte_of(in s: ChunkSeq[u8], i: u64) -> u8 {
-    match s.try_get(i) {
-        Option::Some(b) => b,
         Option::None => 0,
     }
 }
@@ -459,13 +458,9 @@ pub fn response_plan_finish(in p: ResponsePlan, in body: Slice[u8])
     for f in 0..p.name_ends.len() {
         let name_end = at(in p.name_ends, f);
         let value_end = at(in p.value_ends, f);
-        for i in name_at..name_end {
-            out.push(byte_of(in p.names, i));
-        }
+        out.extend(in p.names[name_at..name_end]);
         push_text(inout out, ": ");
-        for i in value_at..value_end {
-            out.push(byte_of(in p.values, i));
-        }
+        out.extend(in p.values[value_at..value_end]);
         push_text(inout out, "\r\n");
         name_at = name_end;
         value_at = value_end;

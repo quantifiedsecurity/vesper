@@ -614,18 +614,18 @@ with_flags: ok, 43 rows
 word: ok, 47 rows
 
 == checker ==
-functions: 298
-without own refusal: 298
-compiling with all callees: 298
+functions: 297
+without own refusal: 297
+compiling with all callees: 297
 refusals: 0
 by detail:
 
-$handler_body_128420_129176: ok, 60 rows
-$handler_body_128451_128733: ok, 72 rows
-$handler_body_128492_128600: ok, 82 rows
-$handler_body_128537_128586: ok, 39 rows
-$handler_body_131049_131145: ok, 41 rows
-$handler_body_131080_131100: ok, 35 rows
+$handler_body_128386_129142: ok, 60 rows
+$handler_body_128417_128699: ok, 72 rows
+$handler_body_128458_128566: ok, 82 rows
+$handler_body_128503_128552: ok, 39 rows
+$handler_body_131015_131111: ok, 41 rows
+$handler_body_131046_131066: ok, 35 rows
 $handler_body_45683_45911: ok, 60 rows
 $handler_body_45714_45807: ok, 80 rows
 $handler_body_45753_45797: ok, 37 rows
@@ -635,16 +635,16 @@ $handler_body_46145_46191: ok, 37 rows
 $handler_body_51665_51693: ok, 398 rows
 $handler_body_55952_55973: ok, 24 rows
 $handler_body_56183_56204: ok, 24 rows
-$handler_clause_128640_128645: ok, 7 rows
-$handler_clause_128687_128708: ok, 48 rows
-$handler_clause_128769_128774: ok, 7 rows
-$handler_clause_128812_129159: ok, 155 rows
-$handler_clause_129208_129213: ok, 7 rows
-$handler_clause_129247_129269: ok, 18 rows
-$handler_clause_131120_131121: ok, 7 rows
-$handler_clause_131138_131140: ok, 7 rows
-$handler_clause_131165_131166: ok, 7 rows
-$handler_clause_131183_131185: ok, 6 rows
+$handler_clause_128606_128611: ok, 7 rows
+$handler_clause_128653_128674: ok, 48 rows
+$handler_clause_128735_128740: ok, 7 rows
+$handler_clause_128778_129125: ok, 155 rows
+$handler_clause_129174_129179: ok, 7 rows
+$handler_clause_129213_129235: ok, 18 rows
+$handler_clause_131086_131087: ok, 7 rows
+$handler_clause_131104_131106: ok, 7 rows
+$handler_clause_131131_131132: ok, 7 rows
+$handler_clause_131149_131151: ok, 6 rows
 $handler_clause_45843_45848: ok, 7 rows
 $handler_clause_45882_45894: ok, 33 rows
 $handler_clause_45943_45948: ok, 7 rows
@@ -673,8 +673,7 @@ binary: ok, 468 rows
 binary_rest: ok, 334 rows
 block: ok, 222 rows
 bump: ok, 134 rows
-c_abort_frame: ok, 1117 rows
-c_abort_loans: ok, 609 rows
+c_abort_frame: ok, 1104 rows
 c_arg_count: ok, 68 rows
 c_arg_count_tail: ok, 200 rows
 c_arg_overlap: ok, 629 rows
@@ -757,11 +756,11 @@ c_pattern_end: ok, 192 rows
 c_pattern_fields: ok, 2656 rows
 c_payload_irrefutable: ok, 254 rows
 c_place_shape: ok, 147 rows
-c_postfix: ok, 3539 rows
+c_postfix: ok, 3343 rows
 c_power: ok, 44 rows
 c_primary: ok, 2366 rows
 c_push: ok, 4738 rows
-c_require_row: ok, 1373 rows
+c_require_row: ok, 857 rows
 c_reserved_decl: ok, 431 rows
 c_result: ok, 424 rows
 c_row_end: ok, 300 rows
