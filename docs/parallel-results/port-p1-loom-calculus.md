@@ -155,7 +155,7 @@ Each package has two features and a native requirement, and its ceilings
 cover its whole closure, so the graph validates. One pass runs
 `validate_solution` on the graph and `check_upgrade` against the same graph
 with versions bumped. Both arms are release builds, the Rust seed
-(`-p vesper-loom-calculus-seed`) against the port (`-p vesper-loom-calculus`),
+(`-p vesper-loom-calculus-seed --example abba_rust`) against the port (`-p vesper-loom-calculus`),
 run as separate processes in A B B A order. There are 9 epochs of
 2 × 20 passes per arm, analysed with `vesper_bench::analyze_pairs`. The host
 was the 4-vCPU cloud container (Intel Xeon at 2.10 GHz), and the Vesper

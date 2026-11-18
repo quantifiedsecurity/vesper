@@ -32,7 +32,7 @@ name = "differential"
 path = "../tests/differential.rs"
 
 [[example]]
-name = "abba"
+name = "abba_rust"
 path = "../examples/abba.rs"
 
 [dependencies]

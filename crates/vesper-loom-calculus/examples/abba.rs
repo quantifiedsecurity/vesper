@@ -4,8 +4,8 @@
 //! One binary holds one build, so the arms are two binaries:
 //!
 //! ```sh
-//! cargo build --release -p vesper-loom-calculus-seed --example abba
-//! cp target/release/examples/abba /tmp/rust_arm
+//! cargo build --release -p vesper-loom-calculus-seed --example abba_rust
+//! cp target/release/examples/abba_rust /tmp/rust_arm
 //! cargo build --release -p vesper-loom-calculus --example abba
 //! cp target/release/examples/abba /tmp/port_arm
 //! /tmp/rust_arm driver /tmp/rust_arm /tmp/port_arm
