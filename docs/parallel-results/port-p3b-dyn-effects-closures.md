@@ -31,7 +31,11 @@ called through every object form. Part 2 adds function objects (`in dyn Fn`,
   backend already uses for closures (a switch over the statically known
   targets of a function value). The receiver may be an `in`/`inout`/`sink`
   `dyn` parameter, a boxed local or field, or a boxed sequence element; a
-  `sink self` method on a boxed receiver frees the block after the call.
+  `sink self` method on a boxed receiver moves the value to the stack and
+  frees the block before the call, so a handler that never resumes leaks
+  nothing. The switch covers only vtables whose slot functions the program
+  compiles (a vtable built only in unreachable code is skipped). Both points
+  were review findings on #1080, fixed in #1084.
   Slots whose methods perform only `Fail`, capability or `Ffi[Lib]` effects
   keep the compiled slot function and the indirect call.
 - **Evaluator** (`src/runtime.rs`): no change needed. It dispatches through
