@@ -58,9 +58,6 @@ pub fn query_new() -> Query {
         interactive: 0,
         items: ChunkSeq::new[u64](),
         values: ChunkSeq::new[u64](),
-        stack: ChunkSeq::new[u64](),
-        flags: ChunkSeq::new[bool](),
-        seen: ChunkSeq::new[bool](),
         tree: tree_new()
     }
 }
@@ -95,22 +92,22 @@ pub fn focus_order(in rec: Recorder, inout q: Query) {
     if !s {
         return;
     }
-    q.seen.clear();
+    let mut seen: ChunkSeq[bool] = ChunkSeq::with_capacity[bool](rec.st.widgets.len());
     for i in 0..rec.st.widgets.len() {
-        q.seen.push(false);
+        seen.push(false);
     }
-    q.stack.clear();
-    q.stack.push(rec.st.root);
+    let mut stack: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    stack.push(rec.st.root);
     loop {
-        let top = q.stack.len();
+        let top = stack.len();
         if top == 0 {
             break;
         }
-        let id = seq_u64(in q.stack, dec(top));
-        q.stack.truncate(dec(top));
+        let id = seq_u64(in stack, dec(top));
+        stack.truncate(dec(top));
         let i = widget_index(in rec.st, id);
-        if i != none_id() && !seq_bool(in q.seen, i) {
-            q.seen.try_set(i, true);
+        if i != none_id() && !seq_bool(in seen, i) {
+            seen.try_set(i, true);
             if !flag_off(in rec.st, id, 3) && !flag_off(in rec.st, id, 2) {
                 let kind = rwidget(in rec.st.widgets, i).kind;
                 if kind == 2 || kind == 3 {
@@ -123,7 +120,7 @@ pub fn focus_order(in rec: Recorder, inout q: Query) {
                         break;
                     }
                     j = dec(j);
-                    q.stack.push(redge(in rec.st.edges, child_edge(in rec.st, id, j)).child);
+                    stack.push(redge(in rec.st.edges, child_edge(in rec.st, id, j)).child);
                 }
             }
         }
@@ -238,27 +235,27 @@ pub fn audit_one(
 pub fn do_sim_audit(in rec: Recorder) -> Query {
     let mut q = query_new();
     q.inspected = rec.st.nwidgets;
-    q.seen.clear();
+    let mut seen: ChunkSeq[bool] = ChunkSeq::with_capacity[bool](rec.st.widgets.len());
     for i in 0..rec.st.widgets.len() {
-        q.seen.push(false);
+        seen.push(false);
     }
     if rec.st.has_root {
-        q.stack.clear();
-        q.flags.clear();
-        q.stack.push(rec.st.root);
-        q.flags.push(true);
+        let mut stack: ChunkSeq[u64] = ChunkSeq::new[u64]();
+        let mut flags: ChunkSeq[bool] = ChunkSeq::new[bool]();
+        stack.push(rec.st.root);
+        flags.push(true);
         loop {
-            let top = q.stack.len();
+            let top = stack.len();
             if top == 0 {
                 break;
             }
-            let id = seq_u64(in q.stack, dec(top));
-            let parent_visible = seq_bool(in q.flags, dec(top));
-            q.stack.truncate(dec(top));
-            q.flags.truncate(dec(top));
+            let id = seq_u64(in stack, dec(top));
+            let parent_visible = seq_bool(in flags, dec(top));
+            stack.truncate(dec(top));
+            flags.truncate(dec(top));
             let i = widget_index(in rec.st, id);
-            if i != none_id() && !seq_bool(in q.seen, i) {
-                q.seen.try_set(i, true);
+            if i != none_id() && !seq_bool(in seen, i) {
+                seen.try_set(i, true);
                 let visible = parent_visible && !flag_off(in rec.st, id, 3);
                 let w = rwidget(in rec.st.widgets, i);
                 audit_one(
@@ -276,8 +273,8 @@ pub fn do_sim_audit(in rec: Recorder) -> Query {
                         break;
                     }
                     j = dec(j);
-                    q.stack.push(redge(in rec.st.edges, child_edge(in rec.st, id, j)).child);
-                    q.flags.push(visible);
+                    stack.push(redge(in rec.st.edges, child_edge(in rec.st, id, j)).child);
+                    flags.push(visible);
                 }
             }
         }
@@ -285,7 +282,7 @@ pub fn do_sim_audit(in rec: Recorder) -> Query {
     // Include widgets the walk missed in malformed snapshots so the audit
     // is total.
     for i in 0..rec.st.widgets.len() {
-        if seq_bool(in rec.st.wlive, i) && !seq_bool(in q.seen, i) {
+        if seq_bool(in rec.st.wlive, i) && !seq_bool(in seen, i) {
             let w = rwidget(in rec.st.widgets, i);
             audit_one(
                 inout q,
@@ -344,9 +341,9 @@ pub fn do_audit_tree(in words: Slice[u64], in text: Slice[u8], in limits: Slice[
     }
     let n = q.tree.nodes.len();
     q.inspected = q.tree.order.len();
-    q.flags.clear();
+    let mut flags: ChunkSeq[bool] = ChunkSeq::with_capacity[bool](n);
     for i in 0..n {
-        q.flags.push(true);
+        flags.push(true);
     }
     for oi in 0..q.tree.order.len() {
         let ti = seq_u64(in q.tree.order, oi);
@@ -355,10 +352,10 @@ pub fn do_audit_tree(in words: Slice[u64], in text: Slice[u8], in limits: Slice[
         let parent_visible = if parent == none_id() {
             true
         } else {
-            seq_bool(in q.flags, parent)
+            seq_bool(in flags, parent)
         };
         let visible = parent_visible && !tree_flag_off(in q.tree, node, 3);
-        q.flags.try_set(ti, visible);
+        flags.try_set(ti, visible);
         let labelled = tree_label(in q.tree, node, in text);
         audit_one(inout q, node.kind, visible, labelled, node.scount != 0, node.key);
     }

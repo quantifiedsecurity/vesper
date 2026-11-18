@@ -370,10 +370,7 @@ pub fn do_recorder_new(in limits: Slice[u64]) -> Recorder {
         st: rstate_new(),
         stage: rstate_new(),
         has_reject: false,
-        reject: 0,
-        seen: ChunkSeq::new[bool](),
-        stack: ChunkSeq::new[u64](),
-        depths: ChunkSeq::new[u64]()
+        reject: 0
     }
 }
 
@@ -384,10 +381,7 @@ pub fn do_recorder_clone(in rec: Recorder) -> Recorder {
         st: rstate_new(),
         stage: rstate_new(),
         has_reject: false,
-        reject: 0,
-        seen: ChunkSeq::new[bool](),
-        stack: ChunkSeq::new[u64](),
-        depths: ChunkSeq::new[u64]()
+        reject: 0
     };
     copy_recorder(in rec, inout out);
     out

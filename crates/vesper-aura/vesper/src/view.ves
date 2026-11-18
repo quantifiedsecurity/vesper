@@ -48,12 +48,8 @@ pub fn tree_new() -> Tree {
         kids: ChunkSeq::new[u64](),
         keys: ChunkSeq::new[u64](),
         sorted: ChunkSeq::new[u64](),
-        tmp: ChunkSeq::new[u64](),
         parent: ChunkSeq::new[u64](),
-        order: ChunkSeq::new[u64](),
-        seen: ChunkSeq::new[bool](),
-        stack: ChunkSeq::new[u64](),
-        depths: ChunkSeq::new[u64]()
+        order: ChunkSeq::new[u64]()
     }
 }
 
@@ -115,7 +111,6 @@ pub fn decode(inout t: Tree, in w: Slice[u64]) {
         t.keys.push(key);
         t.sorted.push(i);
         t.parent.push(none_id());
-        t.seen.push(false);
     }
 }
 
@@ -133,18 +128,16 @@ pub fn validate(inout t: Tree, lim: Lim, in text: Slice[u8]) -> Option[ViewFault
     if n > lim.nodes {
         return Option::Some(ViewFault::Budget(b_nodes()));
     }
-    sort_by_key(in t.keys, inout t.sorted, inout t.tmp);
+    let mut dup: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](n);
+    sort_by_key(in t.keys, inout t.sorted, inout dup);
     // dup[i]: an earlier node has the same key (the sort is stable).
-    t.tmp.clear();
-    for i in 0..n {
-        t.tmp.push(0);
-    }
+    dup.fill(0);
     for r in 0..n {
         if r > 0 {
             let i = seq_u64(in t.sorted, r);
             let j = seq_u64(in t.sorted, dec(r));
             if seq_u64(in t.keys, i) == seq_u64(in t.keys, j) {
-                t.tmp.try_set(i, 1);
+                dup.try_set(i, 1);
             }
         }
     }
@@ -161,7 +154,7 @@ pub fn validate(inout t: Tree, lim: Lim, in text: Slice[u8]) -> Option[ViewFault
         if teardown > lim.patches {
             return Option::Some(ViewFault::Budget(b_teardown()));
         }
-        if seq_u64(in t.tmp, i) == 1 {
+        if seq_u64(in dup, i) == 1 {
             return Option::Some(ViewFault::DuplicateKey(node.key));
         }
         if node.ccount > lim.children {
@@ -237,27 +230,31 @@ pub fn validate(inout t: Tree, lim: Lim, in text: Slice[u8]) -> Option[ViewFault
     if seq_u64(in t.parent, root) != none_id() {
         return Option::Some(ViewFault::RootHasParent);
     }
-    t.stack.clear();
-    t.depths.clear();
-    t.stack.push(root);
-    t.depths.push(1);
+    let mut seen_at: ChunkSeq[bool] = ChunkSeq::with_capacity[bool](n);
+    for i in 0..n {
+        seen_at.push(false);
+    }
+    let mut stack: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut depths: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    stack.push(root);
+    depths.push(1);
     let mut seen: u64 = 0;
     loop {
-        let top = t.stack.len();
+        let top = stack.len();
         if top == 0 {
             break;
         }
-        let i = seq_u64(in t.stack, dec(top));
-        let depth = seq_u64(in t.depths, dec(top));
-        t.stack.truncate(dec(top));
-        t.depths.truncate(dec(top));
+        let i = seq_u64(in stack, dec(top));
+        let depth = seq_u64(in depths, dec(top));
+        stack.truncate(dec(top));
+        depths.truncate(dec(top));
         if depth > lim.depth {
             return Option::Some(ViewFault::Budget(b_depth()));
         }
-        if seq_bool(in t.seen, i) {
+        if seq_bool(in seen_at, i) {
             return Option::Some(ViewFault::CycleOrDisconnected);
         }
-        t.seen.try_set(i, true);
+        seen_at.try_set(i, true);
         seen = inc(seen);
         t.order.push(i);
         let node = tnode(in t.nodes, i);
@@ -269,8 +266,8 @@ pub fn validate(inout t: Tree, lim: Lim, in text: Slice[u8]) -> Option[ViewFault
             j = dec(j);
             let child = seq_u64(in t.kids, add(node.cstart, j));
             let c = tree_find(in t, child);
-            t.stack.push(c);
-            t.depths.push(inc(depth));
+            stack.push(c);
+            depths.push(inc(depth));
         }
     }
     if seen != n {

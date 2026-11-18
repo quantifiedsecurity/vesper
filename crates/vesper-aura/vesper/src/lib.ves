@@ -178,7 +178,8 @@ pub copy struct TSub {
 
 // A decoded and validated input tree. `sorted` lists node indices by key,
 // `parent` holds each node's parent index (or none), `order` is the
-// depth-first pre-order from the root.
+// depth-first pre-order from the root. Scratch space is local to the
+// functions that use it (native code frees a dropped local sequence).
 pub struct Tree {
     root: u64,
     nodes: ChunkSeq[TNode],
@@ -187,12 +188,8 @@ pub struct Tree {
     kids: ChunkSeq[u64],
     keys: ChunkSeq[u64],
     sorted: ChunkSeq[u64],
-    tmp: ChunkSeq[u64],
     parent: ChunkSeq[u64],
-    order: ChunkSeq[u64],
-    seen: ChunkSeq[bool],
-    stack: ChunkSeq[u64],
-    depths: ChunkSeq[u64]
+    order: ChunkSeq[u64]
 }
 
 // A mounted node, in pre-order. `src` is its index in the input tree that
@@ -234,8 +231,7 @@ pub struct Mounted {
     kids: ChunkSeq[u64],
     text: ChunkSeq[u8],
     keys: ChunkSeq[u64],
-    sorted: ChunkSeq[u64],
-    tmp: ChunkSeq[u64]
+    sorted: ChunkSeq[u64]
 }
 
 // A prepared update: the plan, the next mounted state, and the scratch
@@ -253,8 +249,7 @@ pub struct Prepared {
     succ: ChunkSeq[u64],
     cur: ChunkSeq[u64],
     cur_start: ChunkSeq[u64],
-    cur_len: ChunkSeq[u64],
-    work: ChunkSeq[u64]
+    cur_len: ChunkSeq[u64]
 }
 
 // session::Session without its Rust backend and thread: identities,
@@ -335,10 +330,7 @@ pub struct Recorder {
     st: RState,
     stage: RState,
     has_reject: bool,
-    reject: u64,
-    seen: ChunkSeq[bool],
-    stack: ChunkSeq[u64],
-    depths: ChunkSeq[u64]
+    reject: u64
 }
 
 // The answer of a SimAura query, with its scratch space. `items` holds the
@@ -357,9 +349,6 @@ pub struct Query {
     interactive: u64,
     items: ChunkSeq[u64],
     values: ChunkSeq[u64],
-    stack: ChunkSeq[u64],
-    flags: ChunkSeq[bool],
-    seen: ChunkSeq[bool],
     tree: Tree
 }
 

@@ -47,8 +47,7 @@ pub fn mounted_new() -> Mounted {
         kids: ChunkSeq::new[u64](),
         text: ChunkSeq::new[u8](),
         keys: ChunkSeq::new[u64](),
-        sorted: ChunkSeq::new[u64](),
-        tmp: ChunkSeq::new[u64]()
+        sorted: ChunkSeq::new[u64]()
     }
 }
 
@@ -150,8 +149,7 @@ pub fn prepared_empty(session: u64, base: u64, serial: u64) -> Prepared {
         succ: ChunkSeq::new[u64](),
         cur: ChunkSeq::new[u64](),
         cur_start: ChunkSeq::new[u64](),
-        cur_len: ChunkSeq::new[u64](),
-        work: ChunkSeq::new[u64]()
+        cur_len: ChunkSeq::new[u64]()
     }
 }
 
@@ -313,7 +311,8 @@ pub fn mount_next(in old: Mounted, inout p: Prepared, in text: Slice[u8]) {
         p.cur_len.push(0);
     }
     p.m.present = true;
-    sort_by_key(in p.m.keys, inout p.m.sorted, inout p.m.tmp);
+    let mut tmp: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    sort_by_key(in p.m.keys, inout p.m.sorted, inout tmp);
 }
 
 // Whether `key` has a parent in the new tree and that parent is `parent_key`
@@ -336,12 +335,13 @@ pub fn old_retained(in p: Prepared, oi: u64) -> bool {
 // Detach every edge not retained under the same parent, child-last per
 // node; keep the rest per new node in `cur`.
 pub fn detach(in old: Mounted, inout p: Prepared, max: u64) -> bool {
+    let mut work: ChunkSeq[u64] = ChunkSeq::new[u64]();
     for oi in 0..old.nodes.len() {
         let node = mnode(in old.nodes, oi);
         let keep_node = old_retained(in p, oi);
-        p.work.clear();
+        work.clear();
         for j in 0..node.ccount {
-            p.work.push(seq_u64(in old.kids, add(node.cstart, j)));
+            work.push(seq_u64(in old.kids, add(node.cstart, j)));
         }
         let mut i = node.ccount;
         loop {
@@ -349,7 +349,7 @@ pub fn detach(in old: Mounted, inout p: Prepared, max: u64) -> bool {
                 break;
             }
             i = dec(i);
-            let child = seq_u64(in p.work, i);
+            let child = seq_u64(in work, i);
             let ci = mounted_find(in old, child);
             let keep = keep_node
                 && old_retained(in p, ci)
@@ -358,15 +358,15 @@ pub fn detach(in old: Mounted, inout p: Prepared, max: u64) -> bool {
                 if !emit(inout p, max, op(8, node.id, mnode(in old.nodes, ci).id, i, 0)) {
                     return false;
                 }
-                remove_at(inout p.work, i);
+                remove_at(inout work, i);
             }
         }
         if keep_node {
             let nj = seq_u64(in p.succ, oi);
             p.cur_start.try_set(nj, p.cur.len());
-            p.cur_len.try_set(nj, p.work.len());
-            for j in 0..p.work.len() {
-                p.cur.push(seq_u64(in p.work, j));
+            p.cur_len.try_set(nj, work.len());
+            for j in 0..work.len() {
+                p.cur.push(seq_u64(in work, j));
             }
         }
     }
@@ -469,30 +469,31 @@ pub fn create(in old: Mounted, inout p: Prepared, max: u64) -> bool {
 
 // Attach and reorder children: moves for retained edges, inserts for new.
 pub fn attach(inout p: Prepared, max: u64) -> bool {
+    let mut work: ChunkSeq[u64] = ChunkSeq::new[u64]();
     for nj in 0..p.m.nodes.len() {
         let node = mnode(in p.m.nodes, nj);
-        p.work.clear();
+        work.clear();
         let start = seq_u64(in p.cur_start, nj);
         for j in 0..seq_u64(in p.cur_len, nj) {
-            p.work.push(seq_u64(in p.cur, add(start, j)));
+            work.push(seq_u64(in p.cur, add(start, j)));
         }
         for index in 0..node.ccount {
             let child = seq_u64(in p.m.kids, add(node.cstart, index));
-            let here = index < p.work.len() && seq_u64(in p.work, index) == child;
+            let here = index < work.len() && seq_u64(in work, index) == child;
             if !here {
                 let child_id = mnode(in p.m.nodes, mounted_find(in p.m, child)).id;
-                let from = position(in p.work, child);
+                let from = position(in work, child);
                 if from != none_id() {
                     if !emit(inout p, max, op(10, node.id, child_id, from, index)) {
                         return false;
                     }
-                    remove_at(inout p.work, from);
-                    insert_at(inout p.work, index, child);
+                    remove_at(inout work, from);
+                    insert_at(inout work, index, child);
                 } else {
                     if !emit(inout p, max, op(9, node.id, child_id, index, 0)) {
                         return false;
                     }
-                    insert_at(inout p.work, index, child);
+                    insert_at(inout work, index, child);
                 }
             }
         }

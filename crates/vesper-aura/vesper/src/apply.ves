@@ -1,3 +1,6 @@
+// The export directive is read from file 0 of the package, which is this
+// file: files load in name order, so lib.ves is not file 0.
+// @export abi 3
 // recording.rs: applying a transaction and the final checks.
 use self::codes::{
     b_depth,
@@ -199,35 +202,35 @@ pub fn validate_final(inout rec: Recorder) -> Option[BackendFault] {
             }
         }
     }
-    rec.seen.clear();
+    let mut seen_at: ChunkSeq[bool] = ChunkSeq::with_capacity[bool](rec.stage.widgets.len());
     for i in 0..rec.stage.widgets.len() {
-        rec.seen.push(false);
+        seen_at.push(false);
     }
-    rec.stack.clear();
-    rec.depths.clear();
-    rec.stack.push(rec.stage.root);
-    rec.depths.push(1);
+    let mut stack: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut depths: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    stack.push(rec.stage.root);
+    depths.push(1);
     let mut seen: u64 = 0;
     loop {
-        let top = rec.stack.len();
+        let top = stack.len();
         if top == 0 {
             break;
         }
-        let widget = seq_u64(in rec.stack, dec(top));
-        let depth = seq_u64(in rec.depths, dec(top));
-        rec.stack.truncate(dec(top));
-        rec.depths.truncate(dec(top));
+        let widget = seq_u64(in stack, dec(top));
+        let depth = seq_u64(in depths, dec(top));
+        stack.truncate(dec(top));
+        depths.truncate(dec(top));
         if depth > lim.depth {
             return budget(b_depth());
         }
         let i = widget_index(in rec.stage, widget);
-        if i != none_id() && seq_bool(in rec.seen, i) {
+        if i != none_id() && seq_bool(in seen_at, i) {
             return invalid(i_cycle());
         }
         if i == none_id() {
             return stale_widget();
         }
-        rec.seen.try_set(i, true);
+        seen_at.try_set(i, true);
         seen = inc(seen);
         for e in 0..rec.stage.edges.len() {
             let edge = redge(in rec.stage.edges, e);
@@ -240,8 +243,8 @@ pub fn validate_final(inout rec: Recorder) -> Option[BackendFault] {
                 if !cw.has_parent || cw.parent != widget {
                     return invalid(i_broken_parent());
                 }
-                rec.stack.push(edge.child);
-                rec.depths.push(inc(depth));
+                stack.push(edge.child);
+                depths.push(inc(depth));
             }
         }
     }
