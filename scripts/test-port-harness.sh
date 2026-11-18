@@ -125,4 +125,15 @@ sh crates/vesper-ignis/port/check.sh  # port P1 lane 12 (#909): vesper-ignis, bo
 # crates/vesper-quarry/build.rs).
 cargo test --locked -p vesper-quarry --features vesper-port --test sql --test planner_spec --test vector --test vector_join --test port_memory
 for t in "sql outer_join_null_extension_and_filter_placement" "sql outer_join_pushdown_differential_for_many_predicates_and_null_inputs" "sql sql_null_three_valued_logic_exhaustive" "sql ddl_atomic_deterministic_and_stale_revision_or_content_rejected" "planner_spec front_end_transcript_matches_golden" "planner_spec planner_chooses_the_golden_access_paths"; do set -- $t; divergent "Quarry port ($2)" "$2" "$([ "$1" = sql ] && echo real_where_aliases_literals_and_typed_bindings || echo golden_results_equal_filtered_index_lookups)" -p vesper-quarry --features vesper-port-divergent --test "$1"; done
+# Port wave P1 lane 6 (#903): vesper-alloc (the Vesper port of the region
+# bookkeeping) and vesper-alloc-seed (the Rust copy every dependent links)
+# both pass the crate's tests; one divergent edit per ported area fails that
+# area's test (EDITS in crates/vesper-alloc/build.rs).
+cargo test --locked -p vesper-alloc -p vesper-alloc-seed
+divergent "Strata port (placement)" rewind_reuses_bytes_and_keeps_spare_chunks size_arithmetic_is_checked \
+    -p vesper-alloc --features vesper-port-divergent --test region
+divergent "Strata port (watermarks)" rewinding_an_outer_watermark_invalidates_inner_ones size_arithmetic_is_checked \
+    -p vesper-alloc --features vesper-port-divergent --test region
+divergent "Strata port (vectors)" linear_elements_block_discard_until_drained capacity_arithmetic_is_checked \
+    -p vesper-alloc --features vesper-port-divergent --test collections
 sh crates/vesper-serde/port/check.sh  # port P1 lane 19 (#916): vesper-serde, both builds and one divergence check per ported module

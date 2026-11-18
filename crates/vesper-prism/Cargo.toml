@@ -19,3 +19,6 @@ vesper-port-abi = { path = "../vesper-port-abi" }
 
 [build-dependencies]
 vesper-port-harness = { path = "../vesper-port-harness", optional = true }
+
+[dev-dependencies]
+vesper-bench = { path = "../vesper-bench" }

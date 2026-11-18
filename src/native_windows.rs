@@ -345,7 +345,7 @@ fn write_unwind_tables(
 
 /// Compile `entry` to a Windows x64 COFF object with unwind tables. `isa`
 /// must be the object ISA for an `x86_64-*-windows-msvc` triple
-/// ([`super::object_isa_for`]); the observer and instrument hooks behave
+/// ([`super::object_isa_optimized`]); the observer and instrument hooks behave
 /// exactly as in [`super::object_instrumented`].
 pub(super) fn object(
     world: &World,

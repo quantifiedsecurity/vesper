@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use vesper_alloc::CacheBTree;
 
 fn fixture_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/strata")
+    crate_dir().join("tests/fixtures/strata")
 }
 
 struct Rng(u64);
@@ -316,5 +316,15 @@ fn chunk_seq_traces_reach_chunk_and_level_boundaries() {
     assert!(max_len > 32 * 32, "deep trace peaks at {max_len}");
     for op in ["freeze", "thaw", "snap", "set", "pop"] {
         assert!(deep.lines().any(|l| l.starts_with(op)), "no {op} in trace");
+    }
+}
+
+/// The crate directory: the seed package (seed/) runs these same tests.
+fn crate_dir() -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if dir.ends_with("seed") {
+        dir.parent().expect("seed/ has a parent").to_path_buf()
+    } else {
+        dir
     }
 }
