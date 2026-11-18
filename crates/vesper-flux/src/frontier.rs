@@ -21,24 +21,9 @@ pub struct TicketError {
     pub error: Error,
     pub ticket: FrontierTicket,
 }
-#[cfg(not(feature = "vesper-port"))]
-#[derive(Debug)]
-struct Slot {
-    generation: u64,
-    hold: Option<i64>,
-}
-#[cfg(not(feature = "vesper-port"))]
-#[derive(Debug)]
-pub struct Frontier {
-    origin: u64,
-    slots: Vec<Slot>,
-    capacity: usize,
-    watermark: i64,
-}
-/// The Vesper build keeps the hold table as three columns the port's
+/// The hold table is as three columns the port's
 /// `frontier_*` functions update in place: slot i is `gens[i]`, `holds[i]`
 /// and `live[i]` (1 while the slot holds `holds[i]`).
-#[cfg(feature = "vesper-port")]
 #[derive(Debug)]
 pub struct Frontier {
     origin: u64,
@@ -49,16 +34,6 @@ pub struct Frontier {
     watermark: i64,
 }
 impl Frontier {
-    #[cfg(not(feature = "vesper-port"))]
-    pub fn new(initial: i64, capacity: usize) -> Result<Self, Error> {
-        Ok(Self {
-            origin: identity()?,
-            slots: Vec::new(),
-            capacity,
-            watermark: initial,
-        })
-    }
-    #[cfg(feature = "vesper-port")]
     pub fn new(initial: i64, capacity: usize) -> Result<Self, Error> {
         Ok(Self {
             origin: identity()?,
@@ -74,46 +49,6 @@ impl Frontier {
     pub fn watermark(&self) -> i64 {
         self.watermark
     }
-    #[cfg(not(feature = "vesper-port"))]
-    pub fn live_holds(&self) -> usize {
-        self.slots.iter().filter(|s| s.hold.is_some()).count()
-    }
-    #[cfg(not(feature = "vesper-port"))]
-    pub fn acquire(&mut self, timestamp: i64) -> Result<FrontierTicket, Error> {
-        if timestamp < self.watermark {
-            return Err(Error::WatermarkRegression);
-        }
-        let index = if let Some(i) = self
-            .slots
-            .iter()
-            .position(|s| s.hold.is_none() && s.generation < u64::MAX)
-        {
-            i
-        } else {
-            if self.slots.len() >= self.capacity {
-                return Err(Error::Limit("frontier holds"));
-            }
-            self.slots.push(Slot {
-                generation: 0,
-                hold: None,
-            });
-            self.slots.len() - 1
-        };
-        let slot = &mut self.slots[index];
-        slot.generation = slot
-            .generation
-            .checked_add(1)
-            .ok_or(Error::IdentityExhausted)?;
-        slot.hold = Some(timestamp);
-        let ticket = FrontierTicket {
-            origin: self.origin,
-            slot: index,
-            generation: slot.generation,
-            timestamp,
-        };
-        self.publish();
-        Ok(ticket)
-    }
     /// Adds a separately owned equal hold. Backpressure returns the original owner.
     pub fn fork(
         &mut self,
@@ -127,64 +62,8 @@ impl Frontier {
             Err(error) => Err(TicketError { error, ticket }),
         }
     }
-    #[cfg(not(feature = "vesper-port"))]
-    fn validate(&self, ticket: &FrontierTicket) -> Result<(), Error> {
-        if ticket.origin != self.origin {
-            return Err(Error::ForeignTicket);
-        }
-        let slot = self.slots.get(ticket.slot).ok_or(Error::StaleTicket)?;
-        if slot.generation != ticket.generation || slot.hold != Some(ticket.timestamp) {
-            return Err(Error::StaleTicket);
-        }
-        Ok(())
-    }
-    #[cfg(not(feature = "vesper-port"))]
-    pub fn advance(
-        &mut self,
-        mut ticket: FrontierTicket,
-        next: i64,
-    ) -> Result<FrontierTicket, TicketError> {
-        let check = self.validate(&ticket).and_then(|()| {
-            if next < ticket.timestamp {
-                Err(Error::WatermarkRegression)
-            } else {
-                self.slots[ticket.slot]
-                    .generation
-                    .checked_add(1)
-                    .ok_or(Error::IdentityExhausted)
-            }
-        });
-        match check {
-            Err(error) => Err(TicketError { error, ticket }),
-            Ok(generation) => {
-                let slot = &mut self.slots[ticket.slot];
-                slot.generation = generation;
-                slot.hold = Some(next);
-                ticket.generation = generation;
-                ticket.timestamp = next;
-                self.publish();
-                Ok(ticket)
-            }
-        }
-    }
-    #[cfg(not(feature = "vesper-port"))]
-    pub fn retire(&mut self, ticket: FrontierTicket) -> Result<(), TicketError> {
-        if let Err(error) = self.validate(&ticket) {
-            return Err(TicketError { error, ticket });
-        }
-        self.slots[ticket.slot].hold = None;
-        self.publish();
-        Ok(())
-    }
-    #[cfg(not(feature = "vesper-port"))]
-    fn publish(&mut self) {
-        if let Some(min) = self.slots.iter().filter_map(|s| s.hold).min() {
-            self.watermark = min;
-        }
-    }
 }
 
-#[cfg(feature = "vesper-port")]
 impl Frontier {
     pub fn live_holds(&self) -> usize {
         crate::port::binding::frontier_live_holds(&self.live) as usize
@@ -296,14 +175,7 @@ mod tests {
         assert_eq!(err.error, Error::StaleTicket);
         assert_eq!(f.watermark(), 2);
         assert_eq!(f.live_holds(), 1);
-        #[cfg(not(feature = "vesper-port"))]
-        {
-            f.slots[t.slot].generation = u64::MAX;
-        }
-        #[cfg(feature = "vesper-port")]
-        {
-            f.gens[t.slot] = u64::MAX;
-        }
+        f.gens[t.slot] = u64::MAX;
         t.generation = u64::MAX;
         let err = f.advance(t, 3).unwrap_err();
         assert_eq!(err.error, Error::IdentityExhausted);

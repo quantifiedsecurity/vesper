@@ -16,18 +16,21 @@ crate already exercises the port.
 
 `vesper-flux` is outside the compiler closure (`cargo tree -i vesper-flux -e
 normal,build` does not reach `vesper`) and has no dependents in the
-workspace, so it needs no seed. The port is the crate's own non-default
-`vesper-port` Cargo feature, as in `crates/vesper-warp-tcp`:
+workspace, so it needs no seed. The port first landed as a non-default
+`vesper-port` feature next to the Rust build. Because it is faster on every
+workload measured below, the owner made it the default and asked for the
+ported Rust code to be deleted (2026-11-18), as with `vesper-aura`:
 
 | Build | How | Status |
 |---|---|---|
-| Rust | default features | the default, unchanged in behavior |
-| Vesper | `--features vesper-port`: `build.rs` compiles the Loom package `vesper/` (library `flux`) and checks `port/binding.rs` | non-default |
+| Vesper | always: `build.rs` compiles the Loom package `vesper/` (library `flux`) and checks `port/binding.rs` | the only build of the kernels |
 | Divergent | `--features vesper-port-divergent` (one kernel at a time with `VESPER_FLUX_DIVERGE=<kernel>`) | CI only |
 
-Under the owner's rule, Rust stays the default and no Rust code is deleted,
-even though the port is faster on every workload measured below. Switching
-the default is the owner's decision.
+The Rust `BTreeMap` Z-set, its consolidation, sum, filter, map and join
+loops and the Rust frontier slot table are deleted. `ZSet` is now the flat
+cells the kernels read and write. `Accumulator` stays in Rust for the
+modules not ported yet (CDC, Kafka, durable state), which build their sets
+with it; those modules stay Rust until their own parts are ported.
 
 ## API inventory (re-measured before porting)
 
@@ -135,24 +138,27 @@ unchanged on both builds.
   differential test fails while another passes; Bazel builds every divergent
   object.
 
-## Tests on both builds
+## Tests
 
-All run locally on Linux x86_64 against both builds (Rust default, then
-`--features vesper-port`): `checkpoints` (12), `cluster` (6), `dbsp` (10),
+All ran locally on Linux x86_64 against both builds before the Rust kernels
+were deleted, and again on the Vesper build afterwards: `checkpoints` (12), `cluster` (6), `dbsp` (10),
 `durable` (9), `kernels` (3), `lean_model` (2), `live_rescale` (12),
 `platform_recovery` (3), `recovery` (8), `rescale` (4), `sources_sinks` (5),
 the library's in-module tests (9) and the examples. `kafka` (11) needs a broker
-(`VESPER_KAFKA_HOME`) and skips without one in both builds; its Rust edges
+(`VESPER_KAFKA_HOME`) and skips without one; its Rust edges
 run over the ported kernels when `.github/workflows/flux-kafka.yml` runs it.
 
-CI: Bazel builds the port and the divergent objects and runs ten test files
-against the port (`//crates/vesper-flux:port_*_test`); the Linux "Vesper
-ports" shard 3 runs `port/check.sh`; macOS and Windows build the Rust default.
+`tests/kernels.rs` checks digests of every kernel's output against goldens
+recorded from the deleted Rust build, so the Rust behavior stays pinned.
+
+CI: Bazel builds the port and the divergent objects and runs every test file
+on the port; the Linux "Vesper ports" shard 3 runs `port/check.sh`; macOS and
+Windows build the crate, which now compiles the port there too.
 
 ## Performance
 
-`crates/vesper-flux/scripts/bench.sh` builds `examples/abba.rs` both ways
-(release) and drives each workload with `vesper-bench`'s ABBA runner (12
+Measured before the Rust kernels were deleted: a script built
+`examples/abba.rs` both ways (release) and drives each workload with `vesper-bench`'s ABBA runner (12
 measured epochs x A/B/B/A x 4 requests, each arm a worker process); both
 builds' digests agree on every batch. Linux x86_64 cloud VM, 4 vCPUs,
 2026-11-18; wall clock on these hosts varies by up to 30%, so callgrind

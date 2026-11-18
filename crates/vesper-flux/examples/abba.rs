@@ -12,16 +12,16 @@
 //!   for [`RESUME_TICKS`] ticks, checkpointed half way, restored into a
 //!   fresh executor and finished there; the final checkpoint is digested.
 //!
-//! The two builds are one crate compiled with and without `vesper-port`, so
-//! they cannot share a process. Each arm is a worker process (this example
-//! built one way or the other) that runs one batch of the workload per
-//! request on stdin; the driver times each request with `vesper-bench`'s
-//! `run_abba`, so both arms carry the same pipe round trip. Every batch
-//! returns a digest of its results, and the driver checks that both builds
-//! agree.
+//! The two arms are two builds of this example, in separate worker
+//! processes: before #1069 replaced the Rust kernels they were the Rust
+//! build and the `vesper-port` build (docs/parallel-results/port-p3b-flux.md);
+//! now build it at two revisions to compare them. Each worker runs one batch
+//! of the workload per request on stdin; the driver times each request with
+//! `vesper-bench`'s `run_abba`, so both arms carry the same pipe round trip.
+//! Every batch returns a digest of its results, and the driver checks that
+//! both builds agree.
 //!
 //! ```text
-//! crates/vesper-flux/scripts/bench.sh        # builds both, runs both workloads
 //! abba worker <join|example|resume>                  # one arm
 //! abba drive <join|example|resume> <rust-worker> <vesper-worker>
 //! ```

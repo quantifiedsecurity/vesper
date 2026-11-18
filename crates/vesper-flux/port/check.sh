@@ -1,12 +1,12 @@
 #!/bin/sh
 # Port wave P3b lane 7 (#1069), sourced by scripts/test-port-harness.sh
-# (which defines `divergent`): every vesper-flux test file passes against
-# the Vesper build (tests/kafka.rs skips without a broker, as in the Rust
-# build), and each divergent kernel (DIVERGENT in crates/vesper-flux/build.rs,
+# (which defines `divergent`): every vesper-flux test file passes (the Z-set
+# kernels and the frontier are the Vesper port; tests/kafka.rs skips without
+# a broker), and each divergent kernel (DIVERGENT in crates/vesper-flux/build.rs,
 # applied one at a time) fails the differential test of its kernel while
 # another test of the same binary still passes.
 set -eu
-cargo test --locked -p vesper-flux --features vesper-port
+cargo test --locked -p vesper-flux
 while read -r kernel failing passing; do
     export VESPER_FLUX_DIVERGE="$kernel"
     divergent "Flux port ($kernel)" "$failing" "$passing" \

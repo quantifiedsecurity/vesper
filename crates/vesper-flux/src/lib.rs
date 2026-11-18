@@ -8,14 +8,12 @@
 //! Errors are transactional; tick input is borrowed and all prior integrals survive.
 //! Representable accepted computations obey integer arithmetic. Intermediate budget
 //! or range failures can reject a computation whose final mathematical result fits.
-#![cfg_attr(not(feature = "vesper-port"), forbid(unsafe_code))]
-#![cfg_attr(feature = "vesper-port", deny(unsafe_code))]
+#![deny(unsafe_code)]
 
 mod circuit;
 mod frontier;
-/// The Vesper build's adapters (`vesper-port`): the Z-set kernels and the
-/// frontier run in the Vesper library `flux` (vesper/).
-#[cfg(feature = "vesper-port")]
+/// The adapters to the Vesper library `flux` (vesper/), where the Z-set
+/// kernels and the frontier run.
 mod port;
 mod zset;
 

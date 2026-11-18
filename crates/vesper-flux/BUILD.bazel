@@ -1,28 +1,10 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
-load("@rules_rs//rs/private:all_crate_deps.bzl", "all_crate_deps")
-load("@vesper_cargo//:packages.bzl", "PACKAGES")
 load("//tools/bazel:defs.bzl", "vesper_crate")
 load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_package", "vesper_port_object")
 
-# The Rust build (default features), with its tests.
-vesper_crate(
-    # tests/lean_model.rs kernel-checks lean/FluxDbsp.lean; Lean rejects
-    # symlinked runfiles outside --root, so it runs in a regular copy.
-    copy_test_cwd = ["test/lean_model"],
-    extra_test_data = ["//:lean"],
-    # Fault injection at every scheduler step of several protocols.
-    # tests/kafka.rs needs a broker (VESPER_KAFKA_HOME); without one it
-    # skips, and .github/workflows/flux-kafka.yml runs it against Kafka.
-    test_timeouts = {
-        "test/live_rescale": "long",
-        "test/recovery": "long",
-    },
-)
-
-# The Vesper build (port wave P3b lane 7, #1069): the Z-set kernels and the
-# frontier in the Loom package vesper/, linked through the committed binding
-# port/binding.rs. The Rust build stays the default until the port matches
-# it; the test files run unchanged against both.
+# The Z-set kernels and the frontier are the Vesper port (port wave P3b lane
+# 7, #1069): build.rs links the object built here from the Loom package in
+# vesper/ and checks port/binding.rs against the generated binding, as for
+# vesper-aura. Every test file runs against it.
 vesper_package(
     name = "port_package",
     srcs = glob(["vesper/src/**/*.ves"]),
@@ -36,10 +18,39 @@ vesper_port_object(
     target = VESPER_TARGET,
 )
 
+filegroup(
+    name = "flux_vesper_binding",
+    srcs = [":flux_vesper"],
+    output_group = "rust_binding",
+)
+
+vesper_crate(
+    build_script_data = [
+        ":flux_vesper",
+        ":flux_vesper_binding",
+    ],
+    build_script_env = {
+        # rules_rust already makes these execpaths absolute.
+        "VESPER_PORT_OBJECT": "$(execpath :flux_vesper)",
+        "VESPER_PORT_GENERATED_BINDING": "$(execpath :flux_vesper_binding)",
+    },
+    # tests/lean_model.rs kernel-checks lean/FluxDbsp.lean; Lean rejects
+    # symlinked runfiles outside --root, so it runs in a regular copy.
+    copy_test_cwd = ["test/lean_model"],
+    extra_test_data = ["//:lean"],
+    # Fault injection at every scheduler step of several protocols.
+    # tests/kafka.rs needs a broker (VESPER_KAFKA_HOME); without one it
+    # skips, and .github/workflows/flux-kafka.yml runs it against Kafka.
+    test_timeouts = {
+        "test/live_rescale": "long",
+        "test/recovery": "long",
+    },
+)
+
 # The divergent builds, one per ported kernel (the Cargo
 # `vesper-port-divergent` feature applies the same edits from build.rs, one
 # at a time with VESPER_FLUX_DIVERGE): each must keep compiling, and
-# scripts/test-port-harness.sh asserts that tests/kernels.rs catches it.
+# port/check.sh asserts that tests/kernels.rs catches it.
 [
     vesper_port_object(
         name = "flux_vesper_divergent_" + kernel,
@@ -55,56 +66,5 @@ vesper_port_object(
         ("consolidate", "        if !acc_is_zero(acc) {\n            if !acc_fits(acc) {\n                overflow = true;\n            }\n            push_row(inout out, in cells, fat, width);", "        if true {\n            if !acc_fits(acc) {\n                overflow = true;\n            }\n            push_row(inout out, in cells, fat, width);"),
         ("join", "    if product > max_product {\n", "    if product >= max_product {\n"),
         ("frontier", "    let mut min = watermark;\n", "    let mut min: i64 = 0;\n"),
-    ]
-]
-
-_CRATE_DATA = PACKAGES["crates/vesper-flux"].crate_data()
-
-rust_library(
-    name = "port",
-    srcs = glob(["src/**/*.rs"]) + ["port/binding.rs"],
-    crate_features = ["vesper-port"],
-    crate_name = "vesper_flux",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    deps = ["//crates/vesper-port-abi"] + all_crate_deps(
-        _CRATE_DATA,
-        normal = True,
-        platforms = _CRATE_DATA["platforms"],
-    ),
-)
-
-# The test files that need no broker or Lean, against the port. The rest
-# run against the port in Cargo, in the Linux "Vesper ports" job
-# (scripts/test-port-harness.sh).
-[
-    rust_test(
-        name = "port_%s_test" % test,
-        srcs = ["tests/%s.rs" % test],
-        compile_data = [":flux_vesper"],
-        crate_features = ["vesper-port"],
-        crate_name = test,
-        crate_root = "tests/%s.rs" % test,
-        edition = "2024",
-        rustc_flags = ["-Clink-arg=$(location :flux_vesper)"],
-        timeout = "long" if test in ["live_rescale", "recovery"] else "moderate",
-        deps = [":port"] + all_crate_deps(
-            _CRATE_DATA,
-            normal = True,
-            normal_dev = True,
-            platforms = _CRATE_DATA["platforms"],
-        ),
-    )
-    for test in [
-        "checkpoints",
-        "cluster",
-        "dbsp",
-        "durable",
-        "kernels",
-        "live_rescale",
-        "platform_recovery",
-        "recovery",
-        "rescale",
-        "sources_sinks",
     ]
 ]

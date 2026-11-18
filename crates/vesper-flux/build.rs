@@ -1,9 +1,8 @@
-//! Under `vesper-port`, compile the Vesper library `flux` (the Loom package
-//! in vesper/) into a static library and check the committed binding (see
+//! Compile the Vesper library `flux` (the Loom package in vesper/) into a
+//! static library and check the committed binding (see
 //! docs/maintenance/porting-a-crate.md).
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    #[cfg(feature = "vesper-port")]
     {
         let port = vesper_port_harness::Port::new("flux", "vesper").binding("port/binding.rs");
         // The divergence check: one deliberate change per ported kernel,

@@ -4,19 +4,10 @@ use std::collections::BTreeMap;
 pub type Row = Vec<i64>;
 
 /// Canonical nonzero weights; private representation prevents malformed batches.
-#[cfg(not(feature = "vesper-port"))]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ZSet {
-    pub(crate) width: usize,
-    pub(crate) rows: BTreeMap<Row, i64>,
-}
-/// Canonical nonzero weights; private representation prevents malformed batches.
 ///
-/// The Vesper build keeps a set as the flat cells the port's kernels read and
-/// write in place: each row's `width` columns, then its weight, rows strictly
+/// A set is the flat cells the Vesper kernels read and write in place: each row's `width` columns, then its weight, rows strictly
 /// ascending. [`ZSet::entries`] lends rows as `&Row`, so it builds them once,
 /// on first use.
-#[cfg(feature = "vesper-port")]
 pub struct ZSet {
     pub(crate) width: usize,
     pub(crate) cells: Vec<i64>,
@@ -30,24 +21,6 @@ impl ZSet {
         Ok(Self::from_rows(width, BTreeMap::new()))
     }
     /// Borrows the raw owner, including on overflow/limit/schema errors.
-    #[cfg(not(feature = "vesper-port"))]
-    pub fn consolidate(
-        width: usize,
-        entries: &[(Row, i64)],
-        limits: Limits,
-    ) -> Result<Self, Error> {
-        if entries.len() > limits.max_input_entries {
-            return Err(Error::Limit("input entries"));
-        }
-        let mut acc = Accumulator::new(width, limits)?;
-        let mut budget = Budget::new(limits);
-        for (row, weight) in entries {
-            acc.add(row, i128::from(*weight), &mut budget)?;
-        }
-        acc.finish()
-    }
-    /// Borrows the raw owner, including on overflow/limit/schema errors.
-    #[cfg(feature = "vesper-port")]
     pub fn consolidate(
         width: usize,
         entries: &[(Row, i64)],
@@ -96,27 +69,12 @@ impl ZSet {
     pub fn width(&self) -> usize {
         self.width
     }
-    #[cfg(not(feature = "vesper-port"))]
-    pub fn len(&self) -> usize {
-        self.rows.len()
-    }
-    #[cfg(feature = "vesper-port")]
     pub fn len(&self) -> usize {
         self.cells.len() / (self.width + 1)
     }
-    #[cfg(not(feature = "vesper-port"))]
-    pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
-    }
-    #[cfg(feature = "vesper-port")]
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
-    #[cfg(not(feature = "vesper-port"))]
-    pub fn entries(&self) -> impl Iterator<Item = (&Row, i64)> {
-        self.rows.iter().map(|(r, w)| (r, *w))
-    }
-    #[cfg(feature = "vesper-port")]
     pub fn entries(&self) -> impl Iterator<Item = (&Row, i64)> {
         let rows = self
             .rows
@@ -127,12 +85,6 @@ impl ZSet {
         union(&[self, other], limits, &mut Budget::new(limits))
     }
     /// A set from rows already canonical (every weight nonzero).
-    #[cfg(not(feature = "vesper-port"))]
-    pub(crate) fn from_rows(width: usize, rows: BTreeMap<Row, i64>) -> Self {
-        Self { width, rows }
-    }
-    /// A set from rows already canonical (every weight nonzero).
-    #[cfg(feature = "vesper-port")]
     pub(crate) fn from_rows(width: usize, rows: BTreeMap<Row, i64>) -> Self {
         let mut cells = Vec::with_capacity(rows.len() * (width + 1));
         for (row, weight) in rows {
@@ -142,7 +94,6 @@ impl ZSet {
         Self::from_cells(width, cells)
     }
     /// A set from the canonical cells a kernel returned.
-    #[cfg(feature = "vesper-port")]
     pub(crate) fn from_cells(width: usize, cells: Vec<i64>) -> Self {
         Self {
             width,
@@ -151,12 +102,6 @@ impl ZSet {
         }
     }
     /// Rows and weights in ascending row order, rows borrowed as slices.
-    #[cfg(not(feature = "vesper-port"))]
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&[i64], i64)> {
-        self.rows.iter().map(|(r, w)| (r.as_slice(), *w))
-    }
-    /// Rows and weights in ascending row order, rows borrowed as slices.
-    #[cfg(feature = "vesper-port")]
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&[i64], i64)> {
         let width = self.width;
         self.cells
@@ -168,22 +113,18 @@ impl ZSet {
         self.iter().map(|(r, _)| r)
     }
 }
-#[cfg(feature = "vesper-port")]
 impl Clone for ZSet {
     fn clone(&self) -> Self {
         Self::from_cells(self.width, self.cells.clone())
     }
 }
-#[cfg(feature = "vesper-port")]
 impl PartialEq for ZSet {
     fn eq(&self, other: &Self) -> bool {
         self.width == other.width && self.cells == other.cells
     }
 }
-#[cfg(feature = "vesper-port")]
 impl Eq for ZSet {}
 /// Prints what the Rust build's derived `Debug` prints.
-#[cfg(feature = "vesper-port")]
 impl std::fmt::Debug for ZSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         struct Rows<'a>(&'a ZSet);
@@ -247,23 +188,8 @@ impl Accumulator {
         Ok(ZSet::from_rows(self.width, rows))
     }
 }
-#[cfg(not(feature = "vesper-port"))]
-pub(crate) fn union(sets: &[&ZSet], limits: Limits, budget: &mut Budget) -> Result<ZSet, Error> {
-    let width = sets.first().ok_or(Error::Schema)?.width;
-    let mut acc = Accumulator::new(width, limits)?;
-    for set in sets {
-        if set.width != width {
-            return Err(Error::Schema);
-        }
-        for (row, w) in set.entries() {
-            acc.add(row, i128::from(w), budget)?;
-        }
-    }
-    acc.finish()
-}
 /// Up to three sets per kernel call; a set of another width is a schema
 /// error after the sets before it are added.
-#[cfg(feature = "vesper-port")]
 pub(crate) fn union(sets: &[&ZSet], limits: Limits, budget: &mut Budget) -> Result<ZSet, Error> {
     let width = sets.first().ok_or(Error::Schema)?.width;
     let good = sets
