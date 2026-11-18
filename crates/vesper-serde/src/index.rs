@@ -208,8 +208,8 @@ impl<'a> IndexedJson<'a> {
 /// from unvalidated bytes. Copying the view keeps input and index borrowed.
 #[derive(Clone, Copy, Debug)]
 pub struct Node<'d, 'a> {
-    doc: &'d IndexedJson<'a>,
-    index: usize,
+    pub(crate) doc: &'d IndexedJson<'a>,
+    pub(crate) index: usize,
 }
 impl<'d, 'a> Node<'d, 'a> {
     fn token(self) -> Token {
@@ -242,6 +242,17 @@ impl<'d, 'a> Node<'d, 'a> {
         })
     }
     pub fn as_u64(self) -> Result<u64, Error> {
+        #[cfg(vesper_port)]
+        {
+            crate::port::node_u64(self.doc, self.index)
+        }
+        #[cfg(not(vesper_port))]
+        {
+            self.rust_as_u64()
+        }
+    }
+    #[cfg(not(vesper_port))]
+    fn rust_as_u64(self) -> Result<u64, Error> {
         if self.kind() != Kind::Number {
             return Err(Error::new(ErrorKind::Type, self.token().start));
         }
@@ -250,6 +261,17 @@ impl<'d, 'a> Node<'d, 'a> {
             .map_err(|_| Error::new(ErrorKind::Number, self.token().start))
     }
     pub fn as_i64(self) -> Result<i64, Error> {
+        #[cfg(vesper_port)]
+        {
+            crate::port::node_i64(self.doc, self.index)
+        }
+        #[cfg(not(vesper_port))]
+        {
+            self.rust_as_i64()
+        }
+    }
+    #[cfg(not(vesper_port))]
+    fn rust_as_i64(self) -> Result<i64, Error> {
         if self.kind() != Kind::Number {
             return Err(Error::new(ErrorKind::Type, self.token().start));
         }
