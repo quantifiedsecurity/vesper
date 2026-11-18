@@ -4,7 +4,7 @@
 //! that may read past the scanned bytes, but never across a 4 KiB boundary,
 //! and masks the result to the scanned lanes. Each scan is checked against
 //! a Rust model at every start in a buffer longer than a page (so some views
-//! end next to a page boundary, which takes the scalar path) and every
+//! start in the last 15 bytes of a page, which take the scalar path) and every
 //! length 0..=17, with the bytes just past each view set to values that would
 //! change the result if they were not masked off. The evaluator runs a
 //! shorter sweep; the JIT with and without `optimize`, and an AOT executable,
