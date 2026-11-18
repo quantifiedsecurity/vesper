@@ -579,6 +579,19 @@ impl<M: Module> Codegen<'_, '_, M> {
         Ok(())
     }
 
+    /// Stores `len` as the length of `h` when `changed` holds. A length
+    /// that stays the same is not stored, so the shared empty header, which
+    /// threads use at once, is never written (#1021).
+    pub(super) fn seq_set_len_if(&mut self, h: ir::Value, changed: ir::Value, len: ir::Value) {
+        let store = self.b.create_block();
+        let done = self.b.create_block();
+        self.branch(changed, store, &[], done, &[]);
+        self.b.switch_to_block(store);
+        self.seq_set_word(h, LEN, len);
+        self.jump(done, &[]);
+        self.b.switch_to_block(done);
+    }
+
     /// Stores a grown sequence handle into its place: a local (register or
     /// `inout` pointer), or a field path through memory.
     fn seq_write_back(&mut self, place: &Expr, handle: ir::Value) -> Result<(), String> {
@@ -773,7 +786,8 @@ impl<M: Module> Codegen<'_, '_, M> {
                 let zero = self.zero();
                 let len = self.seq_word(h, LEN);
                 self.seq_drop_range(h, zero, len, stride, &elem)?;
-                self.seq_set_word(h, LEN, zero);
+                let some = self.b.ins().icmp_imm(IntCC::NotEqual, len, 0);
+                self.seq_set_len_if(h, some, zero);
                 zero
             }
             SeqOp::Truncate => {
@@ -784,7 +798,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                 let next = self.b.ins().select(shorter, n, len);
                 let removed = self.b.ins().isub(len, next);
                 self.seq_drop_range(h, next, removed, stride, &elem)?;
-                self.seq_set_word(h, LEN, next);
+                self.seq_set_len_if(h, shorter, next);
                 self.zero()
             }
             SeqOp::Reserve => {
@@ -809,7 +823,8 @@ impl<M: Module> Codegen<'_, '_, M> {
                     let src = this.seq_elem_addr(sh, sstart, zero, stride);
                     let bytes = this.b.ins().imul_imm(slen, stride);
                     this.seq_move(dst, src, bytes);
-                    this.seq_set_word(h, LEN, needed);
+                    let some = this.b.ins().icmp_imm(IntCC::NotEqual, slen, 0);
+                    this.seq_set_len_if(h, some, needed);
                     Ok(())
                 })?;
                 self.zero()

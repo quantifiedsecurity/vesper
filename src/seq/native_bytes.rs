@@ -372,7 +372,8 @@ impl<M: Module> Codegen<'_, '_, M> {
                 let dst = self.seq_elem_addr(h, zero, len, 1);
                 let src = self.seq_elem_addr(sh, sstart, zero, 1);
                 self.lowercase_copy(dst, src, slen, simd);
-                self.seq_set_word(h, LEN, needed);
+                let some = self.b.ins().icmp_imm(IntCC::NotEqual, slen, 0);
+                self.seq_set_len_if(h, some, needed);
                 zero
             }
             _ => unreachable!("only byte scans reach here"),

@@ -7,7 +7,7 @@ no compiler source). Prompt: `docs/agent-prompts/port-speed/01-empty-seqs.md`.
 
 A shared static empty header, chosen over a header stored in its owner.
 
-- `ChunkSeq::new` and `with_capacity(0)` return the address of one writable
+- `ChunkSeq::new` and `with_capacity(0)` return the address of one read-only
   header `{0, 0, null}`: the local data symbol `vesper_seq_empty` in an AOT
   object, a static in the JIT runtime (`native_runtime::empty_header()`).
   Nothing is allocated, as with Rust's `Vec::new`.
@@ -19,9 +19,11 @@ A shared static empty header, chosen over a header stored in its owner.
 - The empty header is recognized by its address, not its contents. A real
   header can also hold `{0, 0, null}`: `vesper_seq_new(0, 1)` is the scratch
   header of `with_string_mut`, which must still be freed.
-- Generated code may store a zero length into the empty header (`clear`,
-  `truncate`, `extend` with an empty slice) and nothing else. That is why it
-  is writable.
+- Nothing writes the empty header, so threads share it without a race and
+  it lives in read-only data, where a stray store faults at once. `clear`,
+  `truncate`, `extend` and `extend_ascii_lowercase` skip a length store that
+  changes nothing (Codex review: these stores were plain writes of 0 into
+  memory other threads read).
 
 ## What changed
 

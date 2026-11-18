@@ -27,7 +27,7 @@
 //! overflows) ends the process with a message, as an executable exits with
 //! status [`crate::seq::FAULT_STATUS`]: generated code has no way to continue
 //! without the buffer it asked for.
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ffi::c_void;
 
@@ -43,20 +43,14 @@ pub const NEW_INLINE_BYTES: i64 = 32;
 pub const BUFFER_PREFIX: i64 = 8;
 
 /// The shared empty header `{0, 0, null}` of every JIT sequence that has
-/// never grown (#1021). Generated code may store a zero length into it and
-/// nothing else, so it is writable but always reads as empty.
-#[repr(C, align(8))]
-struct EmptyHeader(UnsafeCell<[u64; 3]>);
-
-// SAFETY: the only writes are generated code's stores of the value already
-// there (length 0), and Rust code only takes its address.
-unsafe impl Sync for EmptyHeader {}
-
-static EMPTY: EmptyHeader = EmptyHeader(UnsafeCell::new([0; 3]));
+/// never grown (#1021). Generated code only reads it: a length store is
+/// skipped when the length does not change, and growth replaces it. It is
+/// immutable, so a stray store would fault at once.
+static EMPTY: [u64; 3] = [0; 3];
 
 /// The address of the shared empty header, which `ChunkSeq::new` returns.
 pub fn empty_header() -> u64 {
-    EMPTY.0.get() as u64
+    EMPTY.as_ptr() as u64
 }
 
 const LEN: usize = 0;

@@ -24,9 +24,10 @@
 //! frees.
 //!
 //! An empty sequence (`ChunkSeq::new`, `with_capacity(0)`) is the address
-//! of one shared, writable header [`EMPTY_HEADER`] `{0, 0, null}` and
-//! allocates nothing (#1021). Generated code may store a zero length into it
-//! (`clear`, `truncate`), never anything else. `vesper_seq_grow` returns the
+//! of one shared header [`EMPTY_HEADER`] `{0, 0, null}` and allocates
+//! nothing (#1021). Generated code only reads it, so threads may share it:
+//! `clear`, `truncate` and `extend` skip a length store that changes
+//! nothing. `vesper_seq_grow` returns the
 //! header to use afterwards: growing the empty header makes a fresh one
 //! (as `vesper_seq_make` does), which generated code writes back to the
 //! sequence's place; any other header or `String` value grows in place and
@@ -102,10 +103,11 @@ pub fn define<M: Module>(m: &mut M) -> Result<(), String> {
     zero_word.set_align(8);
     m.define_data(live, &zero_word).map_err(e)?;
     let empty = m
-        .declare_data(EMPTY_HEADER, Linkage::Local, true, false)
+        .declare_data(EMPTY_HEADER, Linkage::Local, false, false)
         .map_err(e)?;
+    // Read-only: a store into the shared header would fault at once.
     let mut empty_header = DataDescription::new();
-    empty_header.define_zeroinit(crate::seq::HEADER_BYTES as usize);
+    empty_header.define(vec![0u8; crate::seq::HEADER_BYTES as usize].into_boxed_slice());
     empty_header.set_align(8);
     m.define_data(empty, &empty_header).map_err(e)?;
     let empty_address = |b: &mut FunctionBuilder, m: &mut M| {
