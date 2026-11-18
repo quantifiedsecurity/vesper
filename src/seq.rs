@@ -34,7 +34,9 @@
 //! once ([`SeqOp::CopyFrom`], [`SeqOp::Fill`], [`SeqOp::Wide`]); native code
 //! lowers them in `src/seq/native_bytes.rs`. The byte scans `sum_be16`, `eq`
 //! and `find_byte` ([`SeqOp::SumBe16`], [`SeqOp::BytesEq`],
-//! [`SeqOp::FindByte`]) are total; optimized native code runs them 16 bytes
+//! [`SeqOp::FindByte`]) and the class and case scans `find_either`,
+//! `find_not_in`, `eq_ignore_ascii_case` and `extend_ascii_lowercase` (port
+//! gaps lane 4, #987) are total; optimized native code runs them 16 bytes
 //! at a time (`src/seq/native_bytes.rs`). An interval `s[a..b]` is evaluated while its sibling loans are
 //! live, so an interval outside `0 <= a <= b <= len` is a run-time fault
 //! like a `TiledSeq` bounds fault: the evaluator and the JIT report an error
@@ -129,6 +131,36 @@ pub enum SeqOp {
     /// `s.find_byte(b)` on a byte sequence or slice: the index of the first
     /// byte equal to `b`, as an `Option[u64]`. Total.
     FindByte,
+    /// `s.copy_within(lo, hi, at)` (`try_copy_within` when `total`): moves
+    /// the elements of `s[lo..hi]` to `s[at..at + (hi - lo)]` with one bounds
+    /// check, as `memmove` does, so the two intervals may overlap. The
+    /// checked form raises `IndexOutOfBounds` and the total one yields
+    /// `false` when an interval does not fit; neither writes anything then.
+    CopyWithin { total: bool },
+    /// `swap(inout a, inout b)`: exchanges the values of two disjoint places
+    /// of one type, which need not be copy. Not a sequence operation: like
+    /// [`SeqOp::Str`], this place primitive shares `Op::Seq`. Total.
+    Swap,
+    /// `replace(inout a, v)`: stores `v` in the place `a` and yields the
+    /// value `a` held, which need not be copy. A place primitive like
+    /// [`SeqOp::Swap`]. Total.
+    Replace,
+    /// `s.find_either(a, b)` on a byte sequence or slice: the index of the
+    /// first byte equal to `a` or to `b`, as an `Option[u64]`. Total.
+    FindEither,
+    /// `s.find_not_in(lo, hi, high)` on a byte sequence or slice: the index
+    /// of the first byte outside a byte class, as an `Option[u64]`. A byte
+    /// `x < 64` is in the class when bit `x` of `lo` is set, a byte
+    /// `64 <= x < 128` when bit `x - 64` of `hi` is set, and a byte
+    /// `x >= 128` when `high` holds. Total.
+    FindNotIn,
+    /// `s.eq_ignore_ascii_case(in other)` on a byte sequence or slice:
+    /// whether `other` has the same length and the same bytes once ASCII
+    /// `A..=Z` are mapped to `a..=z`. Total.
+    EqIgnoreAsciiCase,
+    /// `s.extend_ascii_lowercase(in src)` on a `ChunkSeq[u8]`: appends the
+    /// bytes of `src` with ASCII `A..=Z` mapped to `a..=z`. Total.
+    ExtendAsciiLowercase,
 }
 
 /// `read_u16_le`, `try_write_u64_be` and the other fixed-width accesses of a
@@ -239,10 +271,20 @@ impl Access {
 }
 
 impl SeqOp {
-    /// Whether the operation is a byte scan: `sum_be16`, `eq` or
-    /// `find_byte`, which need a `u8` element type.
+    /// Whether the operation is a byte scan: `sum_be16`, `eq`, `find_byte`,
+    /// `find_either`, `find_not_in`, `eq_ignore_ascii_case` or
+    /// `extend_ascii_lowercase`, which need a `u8` element type.
     pub fn byte_scan(self) -> bool {
-        matches!(self, Self::SumBe16 | Self::BytesEq | Self::FindByte)
+        matches!(
+            self,
+            Self::SumBe16
+                | Self::BytesEq
+                | Self::FindByte
+                | Self::FindEither
+                | Self::FindNotIn
+                | Self::EqIgnoreAsciiCase
+                | Self::ExtendAsciiLowercase
+        )
     }
     /// Whether the operation may raise `Fail[RuntimeError]`.
     pub fn fallible(self) -> bool {
@@ -257,6 +299,7 @@ impl SeqOp {
                 | Self::SliceGet
                 | Self::SliceSet
                 | Self::CopyFrom { total: false }
+                | Self::CopyWithin { total: false }
                 | Self::Wide(Wide { total: false, .. })
         )
     }
@@ -274,10 +317,17 @@ impl SeqOp {
                 | Self::Clear
                 | Self::Truncate
                 | Self::Extend
+                | Self::ExtendAsciiLowercase
                 | Self::CopyFrom { .. }
+                | Self::CopyWithin { .. }
                 | Self::Fill
                 | Self::Wide(Wide { write: true, .. })
         )
+    }
+    /// Whether the operation is a place primitive (`swap`, `replace`) whose
+    /// `inout` operands are places of any type rather than a sequence.
+    pub fn place_primitive(self) -> bool {
+        matches!(self, Self::Swap | Self::Replace)
     }
     /// How the operation borrows its receiver.
     pub fn receiver_pass(self) -> Pass {
@@ -291,7 +341,7 @@ impl SeqOp {
     pub fn has_receiver(self) -> bool {
         !matches!(
             self,
-            Self::New | Self::WithCapacity | Self::BoundsGuard { .. }
+            Self::New | Self::WithCapacity | Self::BoundsGuard { .. } | Self::Swap | Self::Replace
         )
     }
     pub fn name(self) -> &'static str {
@@ -321,6 +371,14 @@ impl SeqOp {
             Self::SumBe16 => "sum_be16",
             Self::BytesEq => "eq",
             Self::FindByte => "find_byte",
+            Self::CopyWithin { total: false } => "copy_within",
+            Self::CopyWithin { total: true } => "try_copy_within",
+            Self::Swap => "swap",
+            Self::Replace => "replace",
+            Self::FindEither => "find_either",
+            Self::FindNotIn => "find_not_in",
+            Self::EqIgnoreAsciiCase => "eq_ignore_ascii_case",
+            Self::ExtendAsciiLowercase => "extend_ascii_lowercase",
         }
     }
 }
@@ -493,6 +551,7 @@ pub fn fip_allocation(world: &World, callee: &Expr) -> Option<&'static str> {
             | SeqOp::WithCapacity
             | SeqOp::Push
             | SeqOp::Extend
+            | SeqOp::ExtendAsciiLowercase
             | SeqOp::Str(
                 crate::strings::StrOp::PushStr
                     | crate::strings::StrOp::PushChar
@@ -507,10 +566,15 @@ fn shared_method(method: &str) -> Option<SeqOp> {
     Some(match method {
         "copy_from" => SeqOp::CopyFrom { total: false },
         "try_copy_from" => SeqOp::CopyFrom { total: true },
+        "copy_within" => SeqOp::CopyWithin { total: false },
+        "try_copy_within" => SeqOp::CopyWithin { total: true },
         "fill" => SeqOp::Fill,
         "sum_be16" => SeqOp::SumBe16,
         "eq" => SeqOp::BytesEq,
         "find_byte" => SeqOp::FindByte,
+        "find_either" => SeqOp::FindEither,
+        "find_not_in" => SeqOp::FindNotIn,
+        "eq_ignore_ascii_case" => SeqOp::EqIgnoreAsciiCase,
         _ => SeqOp::Wide(Wide::parse(method)?),
     })
 }
@@ -533,6 +597,7 @@ pub fn resolve(callee_name: &str, receiver_ty: Option<&Type>) -> Option<SeqOp> {
                 "clear" => SeqOp::Clear,
                 "truncate" => SeqOp::Truncate,
                 "extend" | "extend_from_slice" => SeqOp::Extend,
+                "extend_ascii_lowercase" => SeqOp::ExtendAsciiLowercase,
                 "as_slice" | "as_slice_mut" => SeqOp::AsSlice,
                 _ => return shared_method(method),
             });
@@ -548,6 +613,13 @@ pub fn resolve(callee_name: &str, receiver_ty: Option<&Type>) -> Option<SeqOp> {
             });
         }
         return None;
+    }
+    // The place primitives are free functions; a function of the same name
+    // shadows them (callers resolve declared functions first).
+    match callee_name {
+        "swap" => return Some(SeqOp::Swap),
+        "replace" => return Some(SeqOp::Replace),
+        _ => {}
     }
     match callee_name.strip_prefix("ChunkSeq::")? {
         "new" => Some(SeqOp::New),

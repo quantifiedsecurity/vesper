@@ -11,7 +11,9 @@
 use crate::next_owner;
 
 pub const TOKENS_PER_PAGE: usize = 16;
+#[cfg_attr(vesper_port, allow(dead_code))]
 const MAX_STORAGE: usize = 64 * 1024 * 1024;
+#[cfg_attr(vesper_port, allow(dead_code))]
 const MAX_PAGE_REFERENCES: usize = 65_536;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,15 +124,18 @@ impl std::fmt::Display for ReleaseFailure {
 impl std::error::Error for ReleaseFailure {}
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(vesper_port, allow(dead_code))]
 struct Lease {
     page: usize,
     generation: u64,
 }
+#[cfg(not(vesper_port))]
 #[derive(Debug)]
 struct Page {
     owner: Option<Key>,
     generation: u64,
 }
+#[cfg(not(vesper_port))]
 #[derive(Debug)]
 struct Slot {
     generation: u64,
@@ -147,6 +152,7 @@ pub struct KvStats {
     pub payload_bytes: usize,
 }
 
+#[cfg(not(vesper_port))]
 #[derive(Debug)]
 pub struct KvPool {
     identity: u64,
@@ -159,6 +165,27 @@ pub struct KvPool {
     slots: Vec<Slot>,
 }
 
+/// The port-backed pool: the same storage, with flat tables that
+/// `vesper/src/pool.ves` keeps (four words per page, five per slot, and
+/// `2 * refs` lease words per slot; `cfg` is the layout it reads).
+#[cfg(vesper_port)]
+#[derive(Debug)]
+pub struct KvPool {
+    identity: u64,
+    config: KvConfig,
+    format: KvFormat,
+    token_bytes: usize,
+    /// Read by the unit tests; the port reads `cfg[6]`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    page_bytes: usize,
+    storage: Vec<u8>,
+    pages: Vec<u64>,
+    slots: Vec<u64>,
+    leases: Vec<u64>,
+    cfg: [u64; 8],
+}
+
+#[cfg_attr(vesper_port, allow(dead_code))]
 fn reserved<T>(count: usize) -> Result<Vec<T>, KvError> {
     let mut result = Vec::new();
     result
@@ -166,6 +193,7 @@ fn reserved<T>(count: usize) -> Result<Vec<T>, KvError> {
         .map_err(|_| KvError::AllocationFailed)?;
     Ok(result)
 }
+#[cfg(not(vesper_port))]
 impl KvPool {
     /// Allocates payload and bounded sequence tables once. Append/read/rollback/
     /// release allocate no additional backing storage.
@@ -566,6 +594,415 @@ impl KvPool {
     }
 }
 
+/// A code of `vesper/src/pool.ves` as a result.
+#[cfg(vesper_port)]
+fn code(c: u64) -> Result<(), KvError> {
+    Err(match c {
+        0 => return Ok(()),
+        1 => KvError::Overflow,
+        2 => KvError::Position,
+        3 => KvError::TokenLimit,
+        4 => KvError::StaleGeneration,
+        5 => KvError::OutOfPages,
+        6 => KvError::GenerationExhausted,
+        7 => KvError::SequenceLimit,
+        8 => KvError::StaleCheckpoint,
+        9 => KvError::Shape,
+        10 => KvError::Format,
+        11 => KvError::InvalidConfig,
+        12 => KvError::Budget,
+        _ => KvError::ForeignOwner,
+    })
+}
+
+#[cfg(vesper_port)]
+fn port<E: crate::port::IntoFailure>(r: Result<u64, E>) -> Result<(), KvError> {
+    code(crate::port::must(r))
+}
+
+// FP32 steps are lent as their native bytes, which are the little-endian
+// bytes the Rust build stores only on a little-endian target.
+#[cfg(vesper_port)]
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "the K/V port stores native f32 bytes"
+);
+
+#[cfg(vesper_port)]
+impl KvPool {
+    /// Allocates payload and bounded sequence tables once. Append/read/rollback/
+    /// release allocate no additional backing storage.
+    pub fn new(config: KvConfig) -> Result<Self, KvError> {
+        Self::with_format(config, KvFormat::Bf16)
+    }
+    /// As [`KvPool::new`], storing elements in `format`. The byte budget counts
+    /// the format's element size.
+    pub fn with_format(config: KvConfig, format: KvFormat) -> Result<Self, KvError> {
+        let words = [
+            config.heads,
+            config.head_dim,
+            config.pages,
+            config.max_sequences,
+            config.max_tokens_per_sequence,
+            config.max_bytes,
+            format.element_bytes(),
+        ]
+        .map(|v| v as u64);
+        let mut layout = [0u64; 4];
+        port(crate::port::binding::kv_layout(&words, &mut layout))?;
+        let [token_bytes, page_bytes, bytes, refs] = layout.map(|v| v as usize);
+        let identity = next_owner().map_err(|_| KvError::GenerationExhausted)?;
+        let zeroed = |n: usize| {
+            let mut v: Vec<u64> = reserved(n)?;
+            v.resize(n, 0);
+            Ok::<_, KvError>(v)
+        };
+        let mut storage = reserved(bytes)?;
+        storage.resize(bytes, 0);
+        let pages = zeroed(4 * config.pages)?;
+        let slots = zeroed(5 * config.max_sequences)?;
+        let leases = zeroed(2 * refs * config.max_sequences)?;
+        let cfg = [
+            config.heads,
+            config.head_dim,
+            config.pages,
+            config.max_sequences,
+            config.max_tokens_per_sequence,
+            token_bytes,
+            page_bytes,
+            refs,
+        ]
+        .map(|v| v as u64);
+        Ok(Self {
+            identity,
+            config,
+            format,
+            token_bytes,
+            page_bytes,
+            storage,
+            pages,
+            slots,
+            leases,
+            cfg,
+        })
+    }
+    pub fn config(&self) -> KvConfig {
+        self.config
+    }
+    pub fn format(&self) -> KvFormat {
+        self.format
+    }
+    pub fn stats(&self) -> KvStats {
+        let mut out = [0u64; 2];
+        crate::port::must(crate::port::binding::kv_stats(
+            &self.pages,
+            &self.slots,
+            &mut out,
+        ));
+        let allocated_pages = out[1] as usize;
+        KvStats {
+            active_sequences: out[0] as usize,
+            allocated_pages,
+            free_pages: self.config.pages - allocated_pages,
+            payload_bytes: self.storage.len(),
+        }
+    }
+    pub fn begin(&mut self) -> Result<Sequence, KvError> {
+        let mut out = [0u64; 2];
+        port(crate::port::binding::kv_begin(&mut self.slots, &mut out))?;
+        Ok(Sequence {
+            pool: self.identity,
+            key: Key {
+                slot: out[0] as usize,
+                generation: out[1],
+            },
+        })
+    }
+    /// The pool identity check, which stays in Rust.
+    fn owned(&self, sequence: &Sequence) -> Result<(), KvError> {
+        if sequence.pool != self.identity {
+            return Err(KvError::ForeignOwner);
+        }
+        Ok(())
+    }
+    fn counts(&self, sequence: &Sequence) -> Result<[u64; 2], KvError> {
+        self.owned(sequence)?;
+        let mut out = [0u64; 2];
+        port(crate::port::binding::kv_len(
+            &self.slots,
+            sequence.key.slot as u64,
+            sequence.key.generation,
+            &mut out,
+        ))?;
+        Ok(out)
+    }
+    pub fn len(&self, sequence: &Sequence) -> Result<usize, KvError> {
+        Ok(self.counts(sequence)?[0] as usize)
+    }
+    pub fn is_empty(&self, sequence: &Sequence) -> Result<bool, KvError> {
+        Ok(self.len(sequence)? == 0)
+    }
+    fn append_bytes(
+        &mut self,
+        sequence: &Sequence,
+        position: usize,
+        format_ok: bool,
+        shape_ok: bool,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(), KvError> {
+        self.owned(sequence)?;
+        port(crate::port::binding::kv_append(
+            &mut self.storage,
+            &mut self.pages,
+            &mut self.slots,
+            &mut self.leases,
+            &self.cfg,
+            sequence.key.slot as u64,
+            sequence.key.generation,
+            position as u64,
+            format_ok,
+            shape_ok,
+            key,
+            value,
+        ))
+    }
+    /// `position` must equal the current length. Both complete K/V steps are
+    /// validated before allocation or mutation; errors retain the sequence.
+    pub fn append(
+        &mut self,
+        sequence: &mut Sequence,
+        position: usize,
+        key: Bf16Step<'_>,
+        value: Bf16Step<'_>,
+    ) -> Result<(), KvError> {
+        let shape_ok = [key, value]
+            .iter()
+            .all(|s| s.heads == self.config.heads && s.head_dim == self.config.head_dim);
+        let format_ok = self.format == KvFormat::Bf16;
+        self.append_bytes(
+            sequence,
+            position,
+            format_ok,
+            shape_ok,
+            key.bytes,
+            value.bytes,
+        )
+    }
+    /// Appends one `[heads, head_dim]` FP32 key/value step to an
+    /// [`KvFormat::F32`] pool. Values are stored bit-exactly (including NaN
+    /// payloads); the same validation and no-allocation rules as
+    /// [`KvPool::append`] apply.
+    pub fn append_f32(
+        &mut self,
+        sequence: &mut Sequence,
+        position: usize,
+        key: &[f32],
+        value: &[f32],
+    ) -> Result<(), KvError> {
+        let format_ok = self.format == KvFormat::F32;
+        self.append_bytes(
+            sequence,
+            position,
+            format_ok,
+            true,
+            bytemuck::cast_slice(key),
+            bytemuck::cast_slice(value),
+        )
+    }
+    pub fn read(&self, sequence: &Sequence, position: usize) -> Result<KvToken<'_>, KvError> {
+        self.owned(sequence)?;
+        let mut out = [0u64; 1];
+        port(crate::port::binding::kv_read(
+            &self.pages,
+            &self.slots,
+            &self.leases,
+            &self.cfg,
+            sequence.key.slot as u64,
+            sequence.key.generation,
+            position as u64,
+            &mut out,
+        ))?;
+        let start = out[0] as usize;
+        let value = start + TOKENS_PER_PAGE * self.token_bytes;
+        Ok(KvToken {
+            key: &self.storage[start..start + self.token_bytes],
+            value: &self.storage[value..value + self.token_bytes],
+        })
+    }
+    pub fn read_head(
+        &self,
+        sequence: &Sequence,
+        position: usize,
+        head: usize,
+    ) -> Result<KvToken<'_>, KvError> {
+        if head >= self.config.heads {
+            return Err(KvError::Shape);
+        }
+        let token = self.read(sequence, position)?;
+        let bytes = self.config.head_dim * self.format.element_bytes();
+        let start = head * bytes;
+        Ok(KvToken {
+            key: &token.key[start..start + bytes],
+            value: &token.value[start..start + bytes],
+        })
+    }
+    /// Number of pages currently leased by `sequence`.
+    pub fn page_count(&self, sequence: &Sequence) -> Result<usize, KvError> {
+        Ok(self.counts(sequence)?[1] as usize)
+    }
+    /// Borrowed view of one leased page: only its filled token slots, keys and
+    /// values each laid out as `[token, head, width]` elements of the pool's
+    /// format. The page's lease is validated against its current owner.
+    pub fn read_page(&self, sequence: &Sequence, index: usize) -> Result<KvPage<'_>, KvError> {
+        self.owned(sequence)?;
+        let mut out = [0u64; 3];
+        port(crate::port::binding::kv_read_page(
+            &self.pages,
+            &self.slots,
+            &self.leases,
+            &self.cfg,
+            sequence.key.slot as u64,
+            sequence.key.generation,
+            index as u64,
+            &mut out,
+        ))?;
+        let [first, tokens, start] = out.map(|v| v as usize);
+        let plane = TOKENS_PER_PAGE * self.token_bytes;
+        let used = tokens * self.token_bytes;
+        Ok(KvPage {
+            first_position: first,
+            tokens,
+            keys: &self.storage[start..start + used],
+            values: &self.storage[start + plane..start + plane + used],
+        })
+    }
+    pub fn checkpoint(&self, sequence: &Sequence) -> Result<Checkpoint, KvError> {
+        self.owned(sequence)?;
+        let mut out = [0u64; 2];
+        port(crate::port::binding::kv_checkpoint(
+            &self.slots,
+            sequence.key.slot as u64,
+            sequence.key.generation,
+            &mut out,
+        ))?;
+        Ok(Checkpoint {
+            pool: self.identity,
+            key: sequence.key,
+            epoch: out[0],
+            tokens: out[1] as usize,
+        })
+    }
+    /// Roll back to an epoch-bound checkpoint. Clears every removed token's
+    /// bytes (including the retained page tail) and frees/zeros complete pages.
+    /// A failed rollback leaves both owner and all stored bytes unchanged.
+    pub fn rollback(
+        &mut self,
+        sequence: &mut Sequence,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), KvError> {
+        self.owned(sequence)?;
+        let same_owner = checkpoint.pool == self.identity && checkpoint.key == sequence.key;
+        port(crate::port::binding::kv_rollback(
+            &mut self.storage,
+            &mut self.pages,
+            &mut self.slots,
+            &self.leases,
+            &self.cfg,
+            sequence.key.slot as u64,
+            sequence.key.generation,
+            same_owner,
+            checkpoint.epoch,
+            checkpoint.tokens as u64,
+        ))
+    }
+    /// Rolls `sequence` back to its first `tokens` tokens, as [`Self::rollback`]
+    /// to a checkpoint taken at that length would (bytes cleared, whole pages
+    /// freed, outstanding checkpoints invalidated). `tokens` above the current
+    /// length is a [`KvError::StaleCheckpoint`].
+    pub fn truncate(&mut self, sequence: &mut Sequence, tokens: usize) -> Result<(), KvError> {
+        let mut checkpoint = self.checkpoint(sequence)?;
+        if tokens > checkpoint.tokens {
+            return Err(KvError::StaleCheckpoint);
+        }
+        checkpoint.tokens = tokens;
+        self.rollback(sequence, &checkpoint)
+    }
+    /// Consumes the sequence only on success; foreign/stale owners are returned
+    /// in `ReleaseFailure`. Release is also the explicit cancellation operation.
+    pub fn release(&mut self, sequence: Sequence) -> Result<(), ReleaseFailure> {
+        let r = self.owned(&sequence).and_then(|()| {
+            port(crate::port::binding::kv_release(
+                &mut self.storage,
+                &mut self.pages,
+                &mut self.slots,
+                &self.leases,
+                &self.cfg,
+                sequence.key.slot as u64,
+                sequence.key.generation,
+            ))
+        });
+        r.map_err(|error| ReleaseFailure { error, sequence })
+    }
+}
+
+/// Table access for the unit tests, in both builds.
+#[cfg(test)]
+impl KvPool {
+    #[cfg(not(vesper_port))]
+    fn test_lease(&self, slot: usize, index: usize) -> Lease {
+        self.slots[slot].pages[index]
+    }
+    #[cfg(not(vesper_port))]
+    fn test_page_free(&self, page: usize) -> bool {
+        self.pages[page].owner.is_none()
+    }
+    #[cfg(not(vesper_port))]
+    fn test_page_generation(&self, page: usize) -> u64 {
+        self.pages[page].generation
+    }
+    #[cfg(not(vesper_port))]
+    fn test_set_page_generation(&mut self, page: usize, generation: u64) {
+        self.pages[page].generation = generation;
+    }
+    #[cfg(not(vesper_port))]
+    fn test_set_epoch(&mut self, slot: usize, epoch: u64) {
+        self.slots[slot].epoch = epoch;
+    }
+    #[cfg(not(vesper_port))]
+    fn test_set_generation(&mut self, slot: usize, generation: u64) {
+        self.slots[slot].generation = generation;
+    }
+    #[cfg(vesper_port)]
+    fn test_lease(&self, slot: usize, index: usize) -> Lease {
+        let at = 2 * self.cfg[7] as usize * slot + 2 * index;
+        Lease {
+            page: self.leases[at] as usize,
+            generation: self.leases[at + 1],
+        }
+    }
+    #[cfg(vesper_port)]
+    fn test_page_free(&self, page: usize) -> bool {
+        self.pages[4 * page] == 0
+    }
+    #[cfg(vesper_port)]
+    fn test_page_generation(&self, page: usize) -> u64 {
+        self.pages[4 * page + 3]
+    }
+    #[cfg(vesper_port)]
+    fn test_set_page_generation(&mut self, page: usize, generation: u64) {
+        self.pages[4 * page + 3] = generation;
+    }
+    #[cfg(vesper_port)]
+    fn test_set_epoch(&mut self, slot: usize, epoch: u64) {
+        self.slots[5 * slot + 2] = epoch;
+    }
+    #[cfg(vesper_port)]
+    fn test_set_generation(&mut self, slot: usize, generation: u64) {
+        self.slots[5 * slot] = generation;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,13 +1035,13 @@ mod tests {
             add(&mut pool, &mut seq, i).unwrap();
         }
         pool.rollback(&mut seq, &mark).unwrap();
-        let lease = pool.slots[0].pages[0];
+        let lease = pool.test_lease(0, 0);
         let start = lease.page * pool.page_bytes;
         assert_eq!(&pool.storage[start..start + 2], &[0xff, 0x7f]);
         assert!(pool.storage[start + 2..start + 32].iter().all(|b| *b == 0));
         assert!(pool.storage[start + 34..start + 64].iter().all(|b| *b == 0));
-        for (i, page) in pool.pages.iter().enumerate() {
-            if page.owner.is_none() {
+        for i in 0..pool.config.pages {
+            if pool.test_page_free(i) {
                 assert!(pool.storage[i * 64..i * 64 + 64].iter().all(|b| *b == 0));
             }
         }
@@ -618,8 +1055,10 @@ mod tests {
         for i in 0..16 {
             add(&mut pool, &mut seq, i).unwrap();
         }
-        let free = pool.pages.iter().position(|p| p.owner.is_none()).unwrap();
-        pool.pages[free].generation = u64::MAX;
+        let free = (0..pool.config.pages)
+            .position(|p| pool.test_page_free(p))
+            .unwrap();
+        pool.test_set_page_generation(free, u64::MAX);
         let before = pool.storage.clone();
         let stats = pool.stats();
         assert_eq!(
@@ -630,7 +1069,7 @@ mod tests {
         assert_eq!(pool.stats(), stats);
         assert_eq!(pool.len(&seq), Ok(16));
         let checkpoint = pool.checkpoint(&seq).unwrap();
-        pool.slots[0].epoch = u64::MAX;
+        pool.test_set_epoch(0, u64::MAX);
         let exhausted = Checkpoint {
             epoch: u64::MAX,
             ..checkpoint
@@ -656,7 +1095,7 @@ mod tests {
         assert_eq!(failed.error, KvError::StaleGeneration);
         assert_eq!(pool.storage, before);
         pool.release(seq).unwrap();
-        pool.slots[0].generation = u64::MAX;
+        pool.test_set_generation(0, u64::MAX);
         let stats = pool.stats();
         assert_eq!(pool.begin().unwrap_err(), KvError::GenerationExhausted);
         assert_eq!(pool.stats(), stats);
@@ -667,8 +1106,9 @@ mod tests {
         let mut seq = pool.begin().unwrap();
         add(&mut pool, &mut seq, 0).unwrap();
         let mark = pool.checkpoint(&seq).unwrap();
-        let lease = pool.slots[0].pages[0];
-        pool.pages[lease.page].generation += 1;
+        let lease = pool.test_lease(0, 0);
+        let bumped = pool.test_page_generation(lease.page) + 1;
+        pool.test_set_page_generation(lease.page, bumped);
         let before = pool.storage.clone();
         assert_eq!(pool.read(&seq, 0).unwrap_err(), KvError::StaleGeneration);
         assert_eq!(add(&mut pool, &mut seq, 1), Err(KvError::StaleGeneration));
@@ -679,7 +1119,7 @@ mod tests {
         let failed = pool.release(seq).unwrap_err();
         assert_eq!(failed.error, KvError::StaleGeneration);
         assert_eq!(pool.storage, before);
-        pool.pages[lease.page].generation = lease.generation;
+        pool.test_set_page_generation(lease.page, lease.generation);
         pool.release(failed.sequence).unwrap();
     }
 }

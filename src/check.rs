@@ -554,6 +554,7 @@ pub(crate) fn check_core(
             caps: vec![],
             cap_aliases: BTreeMap::new(),
             loans: vec![],
+            reserved_receivers: BTreeSet::new(),
             handler_frames: vec![],
             slice_args: BTreeMap::new(),
             effect_inference: vec![],
@@ -651,6 +652,10 @@ struct Checker<'a> {
     caps: Vec<Effect>,
     cap_aliases: BTreeMap<String, String>,
     loans: Vec<(Place, Pass, Span)>,
+    /// Origin spans of the `inout` receiver loans in `loans`: two-phase
+    /// borrows (§4) reserve them while the call's other arguments are
+    /// evaluated, so those arguments may read the receiver's place.
+    reserved_receivers: BTreeSet<(usize, usize)>,
     /// Lexical handlers being checked: the capability index each installs,
     /// the declaration span of every binding declared outside it, and the
     /// outer linear bindings that were live at an abortable checkpoint this
@@ -957,6 +962,7 @@ impl Checker<'_> {
             })
             .collect();
         self.loans.clear();
+        self.reserved_receivers.clear();
         self.valid_type(&f.result, &f.generics, f.span.clone());
         let mut env = Env::default();
         for p in &f.params {
@@ -1178,7 +1184,11 @@ impl Checker<'_> {
             Type::Infer
         });
         for (loan, mode, origin) in self.loans.clone() {
-            let exclusive = mode != Pass::In
+            let reserved = mode == Pass::Inout
+                && self
+                    .reserved_receivers
+                    .contains(&(origin.start, origin.end));
+            let exclusive = (mode != Pass::In && !reserved)
                 || matches!(usage, Usage::Borrow(Pass::Inout))
                 || (matches!(usage, Usage::Own) && self.mode(&ty) != Mode::Copy);
             if exclusive && loan.overlaps(p) {
@@ -1207,7 +1217,7 @@ impl Checker<'_> {
                         span.clone(),
                     );
                     self.related(b.span.clone(), "borrowed parameter declared here");
-                    self.help("Borrowed parameters do not transfer ownership of non-copy values.");
+                    self.help("Borrowed parameters do not transfer ownership of non-copy values; exchange the value in place with swap(inout a, inout b) or replace(inout a, v).");
                 }
                 if !p.path.is_empty() && self.mode(&b.ty) == Mode::Linear {
                     transfer_allowed = false;
@@ -2695,7 +2705,12 @@ impl Checker<'_> {
                 .collect::<Vec<_>>(),
             env,
         );
-        for ((expr, explicit), param) in actuals.into_iter().zip(&f.params) {
+        let has_receiver = receiver.is_some();
+        for (index, ((expr, explicit), param)) in actuals.into_iter().zip(&f.params).enumerate() {
+            if index == 0 && has_receiver && param.pass == Pass::Inout {
+                self.reserved_receivers
+                    .insert((expr.span.start, expr.span.end));
+            }
             if let Some(pass) = explicit
                 && pass != param.pass
             {

@@ -141,8 +141,9 @@ impl Checker<'_> {
                     self.expect_type(&Type::named(STR_TYPE), &t, a.expr.span.clone());
                 }
                 let source = Place::from_expr(&a.expr).or_else(|| self.seq_view_place(&a.expr));
+                // Distinct field paths are disjoint, as for call arguments.
                 if let (Some(src), Some(dst)) = (source, Place::from_expr(base))
-                    && src.root == dst.root
+                    && src.overlaps(&dst)
                 {
                     self.error(
                         "E0301",

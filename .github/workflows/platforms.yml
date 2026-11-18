@@ -184,7 +184,9 @@ jobs:
     if: ${{ always() && !cancelled() }}
     name: Vesper ports (Linux)${{ needs.plan.outputs.profile == 'full' && ' (full)' || '' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Every port's both-builds tests and divergent builds run serially
+    # here; with serde (#916) last, the harness takes over 60 minutes.
+    timeout-minutes: 90
     steps:
       - name: Require successful profile planning
         env:

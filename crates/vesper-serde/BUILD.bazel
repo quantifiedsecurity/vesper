@@ -64,7 +64,27 @@ vesper_port_object(
 vesper_port_object(
     name = "serde_vesper_divergent_encode",
     edit_src = "vesper/src/dragon.ves",
-    edits = {"text.push(45);": "text.push(43);"},
+    edits = {"out.try_set(p, 45);": "out.try_set(p, 43);"},
+    library = "serde",
+    rust_types = "crate::port_types",
+    package = ":port_package",
+    target = VESPER_TARGET,
+)
+
+vesper_port_object(
+    name = "serde_vesper_divergent_grisu",
+    edit_src = "vesper/src/grisu.ves",
+    edits = {"digits = wrapping_sub(digits, 1);": "digits = wrapping_add(digits, 0);"},
+    library = "serde",
+    rust_types = "crate::port_types",
+    package = ":port_package",
+    target = VESPER_TARGET,
+)
+
+vesper_port_object(
+    name = "serde_vesper_divergent_dragon",
+    edit_src = "vesper/src/dragon.ves",
+    edits = {"        if round {": "        if !round {"},
     library = "serde",
     rust_types = "crate::port_types",
     package = ":port_package",

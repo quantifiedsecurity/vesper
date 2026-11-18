@@ -583,3 +583,478 @@ fn abba_gguf_header() {
         },
     );
 }
+
+macro_rules! kv_script {
+    ($krate:ident, $ops:expr, $format:expr) => {{
+        use $krate::kv::*;
+        let format = if $format {
+            KvFormat::F32
+        } else {
+            KvFormat::Bf16
+        };
+        let mut pool = KvPool::with_format(
+            KvConfig {
+                heads: 2,
+                head_dim: 2,
+                pages: 4,
+                max_sequences: 3,
+                max_tokens_per_sequence: 20,
+                max_bytes: 1 << 16,
+            },
+            format,
+        )
+        .unwrap();
+        let mut log = Vec::new();
+        let mut live: Vec<Option<Sequence>> = vec![None, None, None];
+        let mut marks: Vec<Checkpoint> = Vec::new();
+        for &(op, which, arg) in $ops {
+            let which = which % 3;
+            let entry = match op % 8 {
+                0 => match pool.begin() {
+                    Ok(s) => {
+                        let old = live[which].replace(s);
+                        if let Some(old) = old {
+                            format!("{:?}", pool.release(old).map_err(|f| f.error))
+                        } else {
+                            "begin".into()
+                        }
+                    }
+                    Err(e) => format!("{e:?}"),
+                },
+                1..=3 => match live[which].as_mut() {
+                    Some(s) => {
+                        let position = if arg % 7 == 0 {
+                            arg % 50
+                        } else {
+                            pool.len(s).unwrap()
+                        };
+                        let fill = (arg % 251) as u8;
+                        let r = if $format {
+                            let v = [f32::from_bits(arg as u32 | 1); 4];
+                            pool.append_f32(s, position, &v, &v)
+                        } else {
+                            let bytes = [fill; 8];
+                            let step = Bf16Step {
+                                heads: 2,
+                                head_dim: if arg % 13 == 0 { 3 } else { 2 },
+                                bytes: &bytes,
+                            };
+                            pool.append(s, position, step, step)
+                        };
+                        format!("{r:?}")
+                    }
+                    None => "none".into(),
+                },
+                4 => match live[which].as_ref() {
+                    Some(s) => {
+                        let len = pool.len(s).unwrap();
+                        let mut out = format!("len {len} pages {:?}", pool.page_count(s));
+                        for p in 0..len + 1 {
+                            out.push_str(&format!(
+                                " {:?}",
+                                pool.read(s, p).map(|t| (t.key.to_vec(), t.value.to_vec()))
+                            ));
+                        }
+                        for i in 0..pool.page_count(s).unwrap() + 1 {
+                            out.push_str(&format!(
+                                " {:?}",
+                                pool.read_page(s, i).map(|p| (
+                                    p.first_position,
+                                    p.tokens,
+                                    p.keys.to_vec()
+                                ))
+                            ));
+                        }
+                        out.push_str(&format!(
+                            " {:?}",
+                            pool.read_head(s, 0, arg % 3).map(|t| t.key.to_vec())
+                        ));
+                        out
+                    }
+                    None => "none".into(),
+                },
+                5 => match live[which].as_ref() {
+                    Some(s) => match pool.checkpoint(s) {
+                        Ok(c) => {
+                            marks.push(c);
+                            "mark".into()
+                        }
+                        Err(e) => format!("{e:?}"),
+                    },
+                    None => "none".into(),
+                },
+                6 => match (live[which].as_mut(), marks.len()) {
+                    (Some(s), n) if n > 0 => {
+                        let m = &marks[arg % n];
+                        format!("{:?}", pool.rollback(s, m))
+                    }
+                    (Some(s), _) => format!("{:?}", pool.truncate(s, arg % 20)),
+                    _ => "none".into(),
+                },
+                _ => match live[which].take() {
+                    Some(s) => match pool.release(s) {
+                        Ok(()) => "released".into(),
+                        Err(f) => {
+                            live[which] = Some(f.sequence);
+                            format!("{:?}", f.error)
+                        }
+                    },
+                    None => "none".into(),
+                },
+            };
+            log.push(format!("{entry} {:?}", pool.stats()));
+        }
+        log
+    }};
+}
+
+#[test]
+fn both_builds_run_the_same_kv_scripts() {
+    let mut x = 17u64;
+    let mut seen = Vec::new();
+    for script in 0..60 {
+        // Each script starts by filling two sequences past their token limit
+        // and the pool's pages, then appending to a third.
+        let fill = [0, 1, 2].into_iter().flat_map(|which| {
+            std::iter::once((0, which, 1)).chain(std::iter::repeat_n((1, which, 1), 22))
+        });
+        let ops: Vec<(usize, usize, usize)> = fill
+            .chain((0..300).map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (
+                    (x >> 40) as usize % 8,
+                    (x >> 20) as usize % 3,
+                    (x >> 4) as usize % 1000,
+                )
+            }))
+            .collect();
+        let f32_pool = script % 2 == 1;
+        let rust = kv_script!(seed, &ops, f32_pool);
+        assert_eq!(
+            rust,
+            kv_script!(vesper_tensor, &ops, f32_pool),
+            "script {script}"
+        );
+        seen.extend(rust);
+    }
+    // The scripts reach every outcome they can.
+    let all = seen.join("\n");
+    for outcome in [
+        "Ok(())",
+        "released",
+        "mark",
+        "Position",
+        "TokenLimit",
+        "OutOfPages",
+        "SequenceLimit",
+        "StaleCheckpoint",
+        "Shape",
+        "Ok((",
+    ] {
+        assert!(all.contains(outcome), "no {outcome}");
+    }
+    // Configuration checks.
+    for (heads, head_dim, pages, sequences, tokens, bytes) in [
+        (0, 1, 1, 1, 1, 64),
+        (1, 1, 4097, 1, 1, 1 << 20),
+        (usize::MAX, 2, 1, 1, 1, 64),
+        (64, 64, 64, 1, 16, 1 << 20),
+        (1, 1, 2, 1, 33, 1 << 10),
+        (1, 1, 4096, 1024, 65_536, 1 << 26),
+        (1, 1, 2, 2, 32, 128),
+    ] {
+        let config = |k: &str| {
+            format!(
+                "{k} {:?}",
+                (heads, head_dim, pages, sequences, tokens, bytes)
+            )
+        };
+        let r = seed::kv::KvPool::new(seed::kv::KvConfig {
+            heads,
+            head_dim,
+            pages,
+            max_sequences: sequences,
+            max_tokens_per_sequence: tokens,
+            max_bytes: bytes,
+        })
+        .map(|p| p.stats());
+        let v = vesper_tensor::kv::KvPool::new(vesper_tensor::kv::KvConfig {
+            heads,
+            head_dim,
+            pages,
+            max_sequences: sequences,
+            max_tokens_per_sequence: tokens,
+            max_bytes: bytes,
+        })
+        .map(|p| p.stats());
+        assert_eq!(
+            format!("{:?}", r),
+            format!("{:?}", v),
+            "{}",
+            config("config")
+        );
+    }
+}
+
+#[test]
+#[ignore = "benchmark; run in release with --ignored --nocapture"]
+fn abba_kv_append_read() {
+    macro_rules! run {
+        ($krate:ident) => {{
+            use $krate::kv::*;
+            let mut pool = KvPool::with_format(
+                KvConfig {
+                    heads: 8,
+                    head_dim: 64,
+                    pages: 64,
+                    max_sequences: 1,
+                    max_tokens_per_sequence: 1024,
+                    max_bytes: 64 << 20,
+                },
+                KvFormat::F32,
+            )
+            .unwrap();
+            let step = values(9, 8 * 64);
+            move || {
+                let mut s = pool.begin().unwrap();
+                let mut sum = 0u64;
+                for p in 0..1024 {
+                    pool.append_f32(&mut s, p, &step, &step).unwrap();
+                    sum += u64::from(pool.read(&s, p).unwrap().key[0]);
+                }
+                for i in 0..pool.page_count(&s).unwrap() {
+                    sum += pool.read_page(&s, i).unwrap().tokens as u64;
+                }
+                pool.truncate(&mut s, 100).unwrap();
+                pool.release(s).unwrap();
+                sum
+            }
+        }};
+    }
+    abba(
+        "K/V pool: 1,024 FP32 appends and reads, 8x64 heads",
+        run!(seed),
+        run!(vesper_tensor),
+    );
+}
+
+/// `text` without the arena owner tags, which differ between the builds:
+/// `DimId(3, 17)` becomes `DimId(3)`.
+fn without_owners(text: String) -> String {
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("DimId(") {
+        let (head, tail) = rest.split_at(at + 6);
+        out.push_str(head);
+        let close = tail.find(')').unwrap();
+        out.push_str(tail[..close].split(',').next().unwrap());
+        rest = &tail[close..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A shape script: an arena built from `ops`, every node normalized under
+/// two environments, and contractions, matmuls and GQA checks over its nodes
+/// planned under the first and discharged under the second.
+macro_rules! shape_script {
+    ($krate:ident, $ops:expr, $seed:expr) => {{
+        use $krate::shape::*;
+        const NAMES: [&str; 6] = ["K", "Batch", "heads", "N", "a_1", "M"];
+        let mut x: u64 = $seed;
+        let mut next = move || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            x >> 33
+        };
+        let mut log = Vec::new();
+        let mut d = Dimensions::new(48, 7, 6).unwrap();
+        let mut ids = Vec::new();
+        for _ in 0..$ops {
+            let r = match next() % 6 {
+                0 => d.constant(match next() % 5 {
+                    0 => 0,
+                    1 => u64::MAX / 3,
+                    2 => 1 << 40,
+                    _ => next() % 9,
+                }),
+                1 | 2 => d.symbol(if next() % 17 == 0 {
+                    "bad name"
+                } else {
+                    NAMES[(next() % 6) as usize]
+                }),
+                _ if ids.is_empty() => d.constant(2),
+                _ => {
+                    let a = ids[(next() as usize) % ids.len()];
+                    let b = ids[(next() as usize) % ids.len()];
+                    d.multiply(a, b)
+                }
+            };
+            match r {
+                Ok(id) => ids.push(id),
+                Err(e) => log.push(format!("Err({e:?})")),
+            }
+        }
+        let env = |seed: u64| {
+            let mut env = Environment::new();
+            for (i, name) in NAMES.iter().enumerate() {
+                match (seed >> (3 * i)) % 8 {
+                    0..=2 => (),
+                    3 => {
+                        env.insert((*name).into(), 0);
+                    }
+                    4 => {
+                        env.insert((*name).into(), u64::MAX / 5);
+                    }
+                    v => {
+                        env.insert((*name).into(), 2 * v);
+                    }
+                }
+            }
+            env.insert("unused".into(), 3);
+            env
+        };
+        let plan = env(next());
+        let bind = env(next());
+        for &id in &ids {
+            log.push(format!("{:?}", d.normalize(id, &plan)));
+            log.push(format!("{:?}", d.value(id, &bind)));
+        }
+        let pick = |r: u64| ids[(r as usize) % ids.len()];
+        for _ in 0..12 {
+            if ids.is_empty() {
+                break;
+            }
+            let (a, b) = (pick(next()), pick(next()));
+            let checked = d.unify(a, b, &plan);
+            log.push(format!("{checked:?}"));
+            if let Ok(c) = checked {
+                log.push(format!("{:?}", c.discharge(&d, &bind)));
+            }
+            let axes = [pick(next()), pick(next()), pick(next()), pick(next())];
+            let block = [None, Some(0), Some(2), Some(32)][(next() % 4) as usize];
+            let checked = d.matmul(axes, block, &plan);
+            log.push(format!("{checked:?}"));
+            if let Ok(c) = checked {
+                log.push(format!("{:?}", c.discharge(&d, &bind)));
+            }
+            log.push(format!(
+                "{:?}",
+                d.resolved_matmul(axes, block, &bind, 1 << 20)
+            ));
+            let checked = d.gqa_rope(pick(next()), pick(next()), pick(next()), &plan);
+            log.push(format!("{checked:?}"));
+            if let Ok(c) = checked {
+                log.push(format!("{:?}", c.discharge(&d, &bind)));
+            }
+        }
+        let (q, k) = (next() % 12, next() % 5);
+        log.push(format!(
+            "{:?} {:?}",
+            gqa_ratio(q, k),
+            gqa_kv_head(q, k, next() % 12)
+        ));
+        without_owners(log.join("\n"))
+    }};
+}
+
+#[test]
+fn both_builds_plan_the_same_shapes() {
+    let mut joined = String::new();
+    for seed in 0..300u64 {
+        let ops = 4 + seed % 60;
+        let rust = shape_script!(seed, ops, seed);
+        let port = shape_script!(vesper_tensor, ops, seed);
+        assert_eq!(rust, port, "shape script {seed}");
+        joined.push_str(&rust);
+    }
+    // The scripts reach every outcome, not just the easy ones.
+    for outcome in [
+        "\"Batch\", \"K\"",
+        "\"K\", \"K\"",
+        "Err(Overflow)",
+        "Err(Limit(\"symbol factors\"))",
+        "Err(Limit(\"dimension nodes/depth\"))",
+        "Err(InvalidName)",
+        "Err(Unresolved)",
+        "Err(Shape(\"contraction mismatch\"))",
+        "Err(Shape(\"zero dimension\"))",
+        "Err(Shape(\"zero block size\"))",
+        "Err(Shape(\"block alignment\"))",
+        "Err(Shape(\"invalid GQA ratio\"))",
+        "Err(Limit(\"matmul output\"))",
+        "Fits(DimId(",
+        "ProductFits(DimId(",
+        "GqaRatio {",
+        "Divisible(DimId(",
+        "Ok([",
+        "Ok(())",
+    ] {
+        assert!(joined.contains(outcome), "no script reached {outcome}");
+    }
+}
+
+/// A llama-style plan: symbolic batch, sequence and head axes, a few
+/// thousand products, normalized and checked as `attention.rs` does.
+#[test]
+#[ignore = "benchmark; run in release with --ignored --nocapture"]
+fn abba_shape_plan() {
+    macro_rules! run {
+        ($krate:ident) => {{
+            use $krate::shape::*;
+            let env = Environment::from([
+                ("Batch".into(), 4),
+                ("Seq".into(), 512),
+                ("Heads".into(), 32),
+                ("KvHeads".into(), 8),
+            ]);
+            move || {
+                let mut sum = 0u64;
+                let mut d = Dimensions::new(4096, 32, 32).unwrap();
+                let batch = d.symbol("Batch").unwrap();
+                let seq = d.symbol("Seq").unwrap();
+                let heads = d.symbol("Heads").unwrap();
+                let kv = d.symbol("KvHeads").unwrap();
+                let width = d.constant(128).unwrap();
+                let tokens = d.multiply(batch, seq).unwrap();
+                for layer in 0..64u64 {
+                    let hidden = d.multiply(heads, width).unwrap();
+                    let kv_width = d.multiply(kv, width).unwrap();
+                    let ffn = d.constant(11008 + layer).unwrap();
+                    let planned = d
+                        .matmul(
+                            [tokens, hidden, hidden, kv_width],
+                            Some(32),
+                            &Environment::new(),
+                        )
+                        .unwrap();
+                    sum += planned.obligations().len() as u64;
+                    planned.discharge(&d, &env).unwrap();
+                    let [m, n] = d
+                        .resolved_matmul([tokens, hidden, hidden, ffn], Some(32), &env, 1 << 30)
+                        .unwrap();
+                    sum += m ^ n;
+                    d.gqa_rope(heads, kv, width, &env)
+                        .unwrap()
+                        .discharge(&d, &env)
+                        .unwrap();
+                    let wide = d.multiply(tokens, hidden).unwrap();
+                    sum += d
+                        .normalize(wide, &Environment::new())
+                        .unwrap()
+                        .symbols
+                        .len() as u64;
+                }
+                sum
+            }
+        }};
+    }
+    abba(
+        "shape plan: 64 llama layers, matmul/GQA plans and discharges",
+        run!(seed),
+        run!(vesper_tensor),
+    );
+}

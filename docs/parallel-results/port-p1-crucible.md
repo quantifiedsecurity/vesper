@@ -1,4 +1,4 @@
-# Port P1 lane 18: vesper-crucible (parts 1 and 2a)
+# Port P1 lane 18: vesper-crucible (parts 1, 2a and 2b)
 
 Claim: [#915](https://github.com/robot-head/vesper/issues/915). Base: Simpulse
 port PR #964 at `382f11a` (which merges `main` at `153f264`), because the owner
@@ -48,9 +48,9 @@ re-export list in `src/lib.rs`:
 | `exec.rs` | `Verdict`, `PANIC_KIND` | stays Rust (runs the closure, catches panics) |
 | `fuzz.rs` | `fuzz`, `FuzzConfig`, `FuzzReport`, `Counterexample`, `Strategy`, `NONDETERMINISTIC_KIND` | **ported in part 2a** as a step machine (corpus, mutators, novelty, comparison solver); the closure call, replay checks and shrinking hand-off stay Rust |
 | `refute.rs` | `refute`, `Refutation`, `REFUTED_KIND` | stays Rust (generic `T: Debug` closures over `fuzz`) |
-| `sim.rs` | `run_fibers`, `replay_fibers`, `Fiber`, `FiberStep`, `SimConfig`, `SimRun` | part 2 |
-| `explore.rs` | `explore_random`, `replay_schedule`, `format_schedule`, `SimFiber`, `StepCx`, `ExploreConfig`, footprints, I/O requests | part 2 |
-| `dpor.rs` | `explore_exhaustive`, `explore_dpor`, `explore_cached`, `Exploration`, `Outcome`, `Search` | part 2 |
+| `sim.rs` | `run_fibers`, `replay_fibers`, `Fiber`, `FiberStep`, `SimConfig`, `SimRun` | stays Rust (see below) |
+| `explore.rs` | `explore_random`, `replay_schedule`, `format_schedule`, `SimFiber`, `StepCx`, `ExploreConfig`, footprints, I/O requests | stays Rust (see below); dependence and co-enabling moved into the port's search |
+| `dpor.rs` | `explore_exhaustive`, `explore_dpor`, `explore_cached`, `Exploration`, `Outcome`, `Search` | **search core ported in part 2b** (backtrack and sleep sets, clock vectors, the preemption bound, the state cache); re-execution, the observer and key interning stay Rust |
 | `arena.rs` | `VirtualArena`, `ArbitraryIn`, `draw_region_bytes`, `draw_region_vec`, limits | stays Rust for now (see below) |
 | re-exports | `Region`, `RegionBytes`, `RegionVec` (Strata), `IoResult`, `Journal`, `WakeReason` (SimPulse) | Rust seed types |
 
@@ -96,7 +96,7 @@ and a hidden `port_live_allocations()`.
 | `src/source.rs` (`Source` buffers, `Probe`, `Arbitrary`) | `Source` stays a Rust handle (lane prompt). `realized_values()` returns a borrowed `&[u64]`, which the binding cannot lend out of a Vesper sequence (`SeqRef` has no slice view). `Probe` is per-comparison bookkeeping that the property calls in Rust. | part 2 can move `Probe`'s maps behind a handle |
 | `src/arena.rs` | `ArbitraryIn` stays a Rust trait (lane prompt). `VirtualArena` wraps the Strata `Region` type, which crates outside the closure get as the Rust seed (the Strata port is non-default). | the Strata port becoming default |
 | `src/refute.rs`, the closure loop in `fuzz.rs` | `refute` is a Rust adapter over generic `T: Debug` closures, and the fuzz loop runs Rust property closures (see `exec.rs`). | not planned (by design) |
-| `src/sim.rs`, `src/explore.rs`, `src/dpor.rs` | Part 2. Fibers are `Box<dyn SimFiber<W>>` over a caller-chosen world type `W`, and cache keys come from caller `Hash` values. This needs the token-slab and command-plan patterns over about 1,900 lines. There is no `dyn Trait` (F7b). | part 2 of this lane |
+| `src/sim.rs`, `src/explore.rs` (the `Machine`), the loop in `dpor.rs` | Fibers are caller types implementing `SimFiber<W>` over a caller-chosen world `W`, stepped on the SimPulse seed, and cache keys are caller `Ord` values. The port's search makes every scheduling choice; Rust runs the steps. There is no `dyn Trait` (F7b), and the SimPulse port is not what crates outside its closure link. | `dyn Trait` and the SimPulse port as the default |
 | `seed/` | The frozen seed copy that the compiler links (seed-copy rule) | self-hosting Stage 2 |
 
 The port has no unsafe Vesper code. The only unsafe Rust is in the generated
@@ -240,10 +240,78 @@ default. Even with the whole campaign loop ported, `fuzz` is faster than
 in part 1. Most of its cost is still one call per draw and the copies of
 each candidate and kept tape across the binding.
 
-## Part 2b and later (remaining in this lane)
+## Part 2b: the schedule search
 
-Port the search core of `dpor.rs` (backtrack and sleep sets, clock vectors,
-the preemption bound and the state cache) as a step machine. `sim.rs` and
-`explore.rs` stay Rust adapters, because their fibers are
-`Box<dyn SimFiber<W>>` driving the SimPulse seed. `arena.rs` waits until
-`VirtualArena` can sit on the Strata port.
+The search loop of `dpor.rs` is now a third Vesper step machine, `Search`
+(lib.ves grows to 2,894 lines). It covers exhaustive search and
+persistent-set DPOR with sleep sets, the preemption bound (bounded POR), and
+the state cache with its sleep-set subsumption and subtree summaries. The
+Rust loop under `cfg(vesper_port)` does four things. It re-executes the
+prefix that `search_prefix` hands it, and reports each new state's enabled
+processes and `(process, transition)` pairs (`search_root`,
+`search_child`). It interns the state key and passes its id to
+`search_key`, which answers "cache hit" and adds the backtracking points.
+Last, it executes the process that `search_choose` picks. `search_backtrack`
+moves to the next unexplored alternative. The public API is unchanged.
+
+- **Processes** are words that keep the Rust `Proc` order: `Task(i) = i`,
+  `Io = 1 << 62 | task << 40 | seq << 8 | choice`, and
+  `Timer = 2 << 62 | task << 32 | seq`. A fiber's next transition is the id
+  of its footprint. Rust interns the footprints, and the port gets their
+  sorted reads, writes, spawn flag and cancellation targets once. The port
+  decides dependence and co-enabling itself.
+- **Nodes** are stack arenas indexed by depth: enabled processes with
+  backtrack, done and slept flags, a sorted order for backtrack iteration,
+  next transitions, the sleep set on arrival, and process clocks.
+  Clocks are immutable blocks that child states share. Popping a node
+  truncates every arena to its marks. Subtree summaries (caching only) are
+  a stack too: a popped node's block is merged into its parent's block,
+  which sits directly below it.
+- **Parity.** `explorations_match_the_rust_build` runs each explorer on 48
+  random programs: exhaustive, DPOR, cached exhaustive and cached DPOR, each
+  unbounded and with a preemption bound of one, on plain programs and on
+  programs with spawns, cancellation and chosen I/O results. It also runs
+  the RPC timeout race. Each run records executions, sleep-blocked runs,
+  transitions, cache hits, bound-pruned choices, and a fingerprint of every
+  outcome with its schedule, or the error (some runs hit the 3,000-execution
+  limit). The results were recorded from the Rust build. The port matches
+  all 50 lines exactly.
+- **Divergence.** A sixth edit makes unbounded DPOR add every awake
+  candidate instead of the first one, which is still sound but explores
+  more. `explorations_match_the_rust_build` fails while the tape test
+  passes. All six edits were caught locally.
+- All 18 DPOR tests (`dpor`, `dpor_rest`) and the 6 exploration tests pass
+  on the port. `tests/port_memory.rs` adds bounded and cached searches to
+  its leak loop, and the port leaks nothing.
+
+### Benchmarks after part 2b
+
+The script, machine and settings are the same as above, and the run is from
+2026-11-18. There are two new workloads. `dpor` is DPOR over 16 random
+three-fiber programs from the exploration tests. `cached` is cached DPOR
+with a preemption bound of one, over 16 random two-fiber programs with
+spawns, cancellation and chosen I/O results. The machine was noisy in this
+run: the first four workloads came out 5-15% above the part 2a run,
+although their code did not change.
+
+| Workload | Rust ns/run | Port ns/run | Port/Rust (median) | Range |
+|---|---:|---:|---:|---|
+| `draws` | 43,387 | 73,597 | 1.70x | 1.39x-2.47x |
+| `tape-text` | 419,894 | 711,738 | 1.89x | 1.38x-2.13x |
+| `shrink` | 1,223,027 | 3,454,667 | 2.53x | 1.84x-3.47x |
+| `fuzz` | 225,882 | 599,575 | 2.81x | 1.61x-3.34x |
+| `dpor` | 136,920 | 122,269 | 0.86x | 0.56x-1.07x |
+| `cached` | 162,277 | 147,926 | 0.87x | 0.53x-1.35x |
+
+The ported search is at parity: about 14% faster than Rust in the median.
+The Rust search clones `BTreeMap` clocks and `BTreeSet` sets for every node.
+The port keeps flat arenas, and children share immutable clock blocks.
+Executing each step still costs the same Rust SimPulse machine in both
+builds. The crate as a whole is not at parity (the generator, shrinker and
+fuzzer are 1.7x to 2.8x slower), so the Rust build stays the default.
+
+## Remaining in this lane
+
+`arena.rs` waits until `VirtualArena` can sit on the Strata port. `sim.rs`
+and the `explore.rs` machine stay Rust adapters, for the reasons in the
+table above.

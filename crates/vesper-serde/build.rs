@@ -34,7 +34,16 @@ const DIVERGENT_EDITS: &[(&str, &str, &str)] = &[
         "if p < end && at(in t, p) == 47 {",
     ),
     // dragon.ves (encode): negative floats print with a plus sign.
-    ("encode", "text.push(45);", "text.push(43);"),
+    ("encode", "out.try_set(p, 45);", "out.try_set(p, 43);"),
+    // grisu.ves: weeding keeps the last digit (the text still round-trips,
+    // but is not the closest shortest one).
+    (
+        "grisu",
+        "digits = wrapping_sub(digits, 1);",
+        "digits = wrapping_add(digits, 0);",
+    ),
+    // dragon.ves: the Dragon fallback never rounds its last digit up.
+    ("dragon", "        if round {", "        if !round {"),
     // helpers.ves: the escape mask lets a backslash escape a backslash.
     (
         "helpers",

@@ -1877,6 +1877,9 @@ struct ExitTarget {
     /// The sequence and string slots this graph frees on exit
     /// ([`crate::fip::seq_drop_plan`]).
     drops: Vec<SeqDropSlot>,
+    /// The writes of this graph that free what they replace, by (block,
+    /// instruction) ([`crate::fip::replace_drops`]).
+    replace: BTreeSet<(usize, usize)>,
     /// `try_get` reads of this graph that its `match` consumes without an
     /// `Option` in memory ([`seq_native::fused_reads`]).
     fused: BTreeMap<crate::ir::ValueId, Option<seq_native::FusedRead>>,
@@ -2864,12 +2867,23 @@ impl<M: Module> Codegen<'_, '_, M> {
         } else {
             self.seq_drop_slots(f, Some(&fresh_locals))?
         };
+        // Writes that free what they replace, and temporaries never bound.
+        let (replace, temporaries) = if self.drops_enabled() {
+            let fresh = return_to.is_some().then_some(&fresh_locals);
+            (
+                crate::fip::replace_drops(self.world, f, fresh),
+                crate::fip::temporary_drops(self.world, f),
+            )
+        } else {
+            Default::default()
+        };
         self.exits.push(ExitTarget {
             owner: f.name.clone(),
             join: return_to,
             sret,
             result: result_type,
             drops,
+            replace,
             fused: seq_native::fused_reads(f),
             header_words: BTreeMap::new(),
         });
@@ -2880,7 +2894,9 @@ impl<M: Module> Codegen<'_, '_, M> {
             }
             for id in &block.params {
                 self.def_var(registers[id], parameters[id]);
+                values.insert(*id, parameters[id]);
             }
+            self.drop_temporaries(&temporaries, f, i, crate::fip::AT_BLOCK_ENTRY, &values)?;
             if let Some(entries) = join_slot_params.get(&i) {
                 for &(dest_slot, param) in entries {
                     let var = self.b.declare_var(ptr_ty);
@@ -2978,10 +2994,12 @@ impl<M: Module> Codegen<'_, '_, M> {
                         if !self.seq_fused_bind(inst.dest, pattern, *value)? {
                             let bound = self.seq_drop_rebind(pattern, values[value])?;
                             self.bind_ir(inst.dest, &mut slot_index, false, pattern, bound, &t)?;
+                            self.seq_drop_bound(pattern)?;
                         }
                         self.zero()
                     }
                     Op::Write { place, op, value } => {
+                        self.drop_replaced(place, op, (i, inst_idx))?;
                         self.seq_drop_overwrite(place)?;
                         let mut path = place.split('.');
                         let p = crate::check::Place {
@@ -3187,6 +3205,29 @@ impl<M: Module> Codegen<'_, '_, M> {
                         let checked = !matches!(op, crate::seq::SeqOp::Hoisted(_));
                         self.seq_fused_try_get(inst.dest, operands, &receiver_type, checked)?
                     }
+                    Op::Seq { op, args } if op.place_primitive() => {
+                        // `swap` and `replace` write their `inout` places.
+                        let [a, b] = args.as_slice() else {
+                            return Err(format!("native {} needs two operands", op.name()));
+                        };
+                        let place = |a: &crate::ir::Argument| {
+                            a.place
+                                .as_ref()
+                                .map(|p| ir_place_expr(p, inst.span.clone()))
+                                .ok_or_else(|| format!("native {} lacks a place", op.name()))
+                        };
+                        let first = place(a)?;
+                        let second = if *op == crate::seq::SeqOp::Swap {
+                            place(b)?
+                        } else {
+                            self.ir_temp(b.value, &values, &f.values)?
+                        };
+                        let ty = f
+                            .values
+                            .get(&a.value)
+                            .map(|t| substitute(t, &self.generic_vars));
+                        self.seq_place_primitive(*op, &[&first, &second], ty)?
+                    }
                     Op::Seq { op, args } => {
                         let mut operands = Vec::new();
                         let mut operand_types = Vec::new();
@@ -3261,6 +3302,9 @@ impl<M: Module> Codegen<'_, '_, M> {
                 };
                 values.insert(inst.dest, value);
                 self.def_var(registers[&inst.dest], value);
+                if inst.ty.name() != "Never" {
+                    self.drop_temporaries(&temporaries, f, i, inst_idx, &values)?;
+                }
                 if !self.in_fip_fn
                     && inst.ty.name() != "Never"
                     && let Some(drops) = after_inst_drops

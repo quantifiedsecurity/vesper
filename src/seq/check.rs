@@ -25,6 +25,9 @@ impl Checker<'_> {
         span: Span,
         expected: &Type,
     ) -> Option<Type> {
+        if name == "swap" || name == "replace" {
+            return Some(self.place_primitive_call(name, types, args, env, span));
+        }
         let op = name.strip_prefix("ChunkSeq::")?;
         match op {
             "new" | "with_capacity" => {
@@ -118,6 +121,137 @@ impl Checker<'_> {
         }
     }
 
+    /// `swap(inout a, inout b)` and `replace(inout a, v)` (§13): `a` and
+    /// `b` are disjoint places of one type, which need not be copy, so a
+    /// non-copy field of an `inout` parameter can be exchanged or replaced
+    /// without moving out of it (`E0305`).
+    fn place_primitive_call(
+        &mut self,
+        name: &str,
+        types: &[Type],
+        args: &[Arg],
+        env: &mut Env,
+        span: Span,
+    ) -> Type {
+        let swap = name == "swap";
+        if !types.is_empty() {
+            self.error(
+                "E0207",
+                format!("'{name}' takes no type arguments"),
+                span.clone(),
+            );
+        }
+        if args.len() != 2 {
+            self.error(
+                "E0207",
+                format!("'{name}' expects 2 arguments, found {}", args.len()),
+                span.clone(),
+            );
+        }
+        let mut places: Vec<(Place, Span)> = vec![];
+        let mut first = Type::Infer;
+        let loan_base = self.loans.len();
+        for (i, a) in args.iter().enumerate() {
+            let span = a.expr.span.clone();
+            if i >= 2 {
+                self.expr(&a.expr, env, Usage::Own);
+                continue;
+            }
+            if i == 1 && !swap {
+                if a.explicit && a.pass != Pass::Sink {
+                    self.error(
+                        "E0308",
+                        "replace takes its new value by value",
+                        span.clone(),
+                    );
+                }
+                let t = self.expr_expected(&a.expr, env, Usage::Own, &first);
+                self.expect_type(&first, &t, span);
+                continue;
+            }
+            if !(a.explicit && a.pass == Pass::Inout) {
+                self.error(
+                    "E0308",
+                    format!("{name} borrows its places by 'inout'"),
+                    span.clone(),
+                );
+            }
+            let Some(place) = Place::from_expr(&a.expr) else {
+                self.error(
+                    "E0300",
+                    format!("{name} requires a place, such as a binding or a field"),
+                    span.clone(),
+                );
+                self.expr(&a.expr, env, Usage::Own);
+                continue;
+            };
+            let t = self.expr(&a.expr, env, Usage::Borrow(Pass::Inout));
+            if mentions_slice(&t) || crate::strings::is_str_type(&t) {
+                self.error(
+                    "E1520",
+                    format!("{name} exchanges stored values; '{t}' is a second-class view"),
+                    span.clone(),
+                );
+            }
+            if i == 0 {
+                first = t;
+            } else {
+                self.expect_type(&first, &t, span.clone());
+                // Each value is written into the other place, so the two
+                // types must be interchangeable, not merely compatible one
+                // way (a pure function is not an effectful one).
+                if first != Type::Infer
+                    && t != Type::Infer
+                    && (!super::compatible(&first, &t)
+                        || !super::compatible(&t, &first)
+                        || super::bound_capabilities(&first) != super::bound_capabilities(&t))
+                {
+                    self.error(
+                        "E0403",
+                        format!(
+                            "swap exchanges values, so '{first}' and '{t}' must be interchangeable, with the same effects and capabilities"
+                        ),
+                        span.clone(),
+                    );
+                }
+            }
+            for (old, origin) in &places {
+                if old.overlaps(&place) {
+                    self.error(
+                        "E0301",
+                        format!(
+                            "overlapping arguments '{}' and '{}' violate alias XOR mutability",
+                            old.display(),
+                            place.display()
+                        ),
+                        span.clone(),
+                    );
+                    self.related(
+                        origin.clone(),
+                        "earlier overlapping argument evaluated here",
+                    );
+                    self.help(
+                        "swap exchanges two disjoint places, such as two fields of one value.",
+                    );
+                }
+            }
+            // The place stays loaned while the next argument is evaluated.
+            self.loans.push((place.clone(), Pass::Inout, span.clone()));
+            places.push((place, span));
+        }
+        self.loans.truncate(loan_base);
+        // The places now hold other values: forget their facts, as an
+        // `inout` argument of a call does.
+        for (place, _) in &places {
+            if let Some(binding) = env.bindings.get_mut(&place.root) {
+                binding.mutation = std::sync::Arc::new(());
+                binding.integer = None;
+                binding.nonzero = false;
+            }
+        }
+        if swap { Type::unit() } else { first }
+    }
+
     fn seq_by_value(&mut self, name: &str, a: &Arg) {
         if a.explicit && a.pass != Pass::In {
             self.error(
@@ -181,8 +315,13 @@ impl Checker<'_> {
             | SeqOp::Extend
             | SeqOp::Fill
             | SeqOp::BytesEq
-            | SeqOp::FindByte => 1,
+            | SeqOp::FindByte
+            | SeqOp::EqIgnoreAsciiCase
+            | SeqOp::ExtendAsciiLowercase => 1,
+            SeqOp::FindEither => 2,
+            SeqOp::FindNotIn => 3,
             SeqOp::Wide(w) if !w.write => 1,
+            SeqOp::CopyWithin { .. } => 3,
             _ => 2,
         };
         if args.len() != arity {
@@ -205,15 +344,17 @@ impl Checker<'_> {
                     ),
                     span.clone(),
                 ),
-            SeqOp::Extend | SeqOp::CopyFrom { .. } | SeqOp::Fill if known && mode != Mode::Copy => {
+            SeqOp::Extend | SeqOp::CopyFrom { .. } | SeqOp::CopyWithin { .. } | SeqOp::Fill
+                if known && mode != Mode::Copy =>
+            {
                 self.error(
                     "E1522",
                     format!("{method} copies its elements, but '{elem_ty}' is not copy"),
                     span.clone(),
                 )
             }
-            SeqOp::Wide(_) | SeqOp::SumBe16 | SeqOp::BytesEq | SeqOp::FindByte
-                if known && crate::numeric::default_type(&elem_ty) != Type::named("u8") =>
+            _ if (matches!(op, SeqOp::Wide(_)) || op.byte_scan())
+                && known && crate::numeric::default_type(&elem_ty) != Type::named("u8") =>
             {
                 self.error(
                     "E1525",
@@ -251,10 +392,14 @@ impl Checker<'_> {
                         | SeqOp::Wide(_),
                     0
                 )
-            );
-            let source_arg = op == SeqOp::Extend
-                || op == SeqOp::BytesEq
-                || (matches!(op, SeqOp::CopyFrom { .. }) && i == 1);
+            ) || (matches!(op, SeqOp::CopyWithin { .. }) && i < 3);
+            let source_arg = matches!(
+                op,
+                SeqOp::Extend
+                    | SeqOp::BytesEq
+                    | SeqOp::EqIgnoreAsciiCase
+                    | SeqOp::ExtendAsciiLowercase
+            ) || (matches!(op, SeqOp::CopyFrom { .. }) && i == 1);
             if index_arg {
                 self.seq_by_value(method, a);
                 let t = self.expr_expected(&a.expr, env, Usage::Own, &u64_ty);
@@ -272,11 +417,12 @@ impl Checker<'_> {
                 let t = self.expr(&a.expr, env, Usage::Borrow(Pass::In));
                 self.expect_type(&slice_of(elem_ty.clone()), &t, a.expr.span.clone());
                 // `eq` only reads, so it may compare two views of one sequence.
+                // Distinct field paths are disjoint, as for call arguments.
                 if let (true, Some(src), Some(dst)) = (
-                    op != SeqOp::BytesEq,
+                    !matches!(op, SeqOp::BytesEq | SeqOp::EqIgnoreAsciiCase),
                     self.seq_view_place(&a.expr),
                     Place::from_expr(base),
-                ) && src.root == dst.root
+                ) && src.overlaps(&dst)
                 {
                     self.error(
                         "E0301",
@@ -284,6 +430,16 @@ impl Checker<'_> {
                         a.expr.span.clone(),
                     );
                 }
+            } else if op == SeqOp::FindNotIn {
+                // The class: two 64-bit masks and whether bytes >= 128 belong.
+                self.seq_by_value(method, a);
+                let want = if i < 2 {
+                    u64_ty.clone()
+                } else {
+                    Type::named("bool")
+                };
+                let t = self.expr_expected(&a.expr, env, Usage::Own, &want);
+                self.expect_type(&want, &t, a.expr.span.clone());
             } else if let (SeqOp::Wide(w), 1) = (op, i) {
                 self.seq_by_value(method, a);
                 let int_ty = Type::named(w.int_type());
@@ -302,9 +458,15 @@ impl Checker<'_> {
         Some(match op {
             SeqOp::Len | SeqOp::SliceLen => u64_ty,
             SeqOp::Pop | SeqOp::TryGet => Type::Named("Option".into(), vec![elem_ty]),
-            SeqOp::TrySet | SeqOp::CopyFrom { total: true } | SeqOp::BytesEq => Type::named("bool"),
+            SeqOp::TrySet
+            | SeqOp::CopyFrom { total: true }
+            | SeqOp::CopyWithin { total: true }
+            | SeqOp::BytesEq
+            | SeqOp::EqIgnoreAsciiCase => Type::named("bool"),
             SeqOp::SumBe16 => u64_ty,
-            SeqOp::FindByte => Type::Named("Option".into(), vec![u64_ty]),
+            SeqOp::FindByte | SeqOp::FindEither | SeqOp::FindNotIn => {
+                Type::Named("Option".into(), vec![u64_ty])
+            }
             SeqOp::Get | SeqOp::SliceGet => elem_ty,
             SeqOp::Wide(w) => match (w.write, w.total) {
                 (false, false) => Type::named(w.int_type()),

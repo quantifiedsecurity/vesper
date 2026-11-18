@@ -47,9 +47,20 @@ impl Lower<'_> {
                                 return None;
                             }
                             let op = resolve(n, None)?;
+                            // `swap` borrows both places and `replace` its
+                            // first one `inout`; other operands are values.
                             let operands = args
                                 .iter()
-                                .map(|a| self.argument(&a.expr, Pass::Sink, vec![]))
+                                .enumerate()
+                                .map(|(i, a)| {
+                                    let pass =
+                                        if op == SeqOp::Swap || (op == SeqOp::Replace && i == 0) {
+                                            Pass::Inout
+                                        } else {
+                                            Pass::Sink
+                                        };
+                                    self.argument(&a.expr, pass, vec![])
+                                })
                                 .collect();
                             (op, operands)
                         }
@@ -62,6 +73,8 @@ impl Lower<'_> {
                             for (i, a) in args.iter().enumerate() {
                                 let pass = if op == SeqOp::Extend
                                     || op == SeqOp::BytesEq
+                                    || op == SeqOp::EqIgnoreAsciiCase
+                                    || op == SeqOp::ExtendAsciiLowercase
                                     || op == SeqOp::Str(crate::strings::StrOp::PushStr)
                                     || (matches!(op, SeqOp::CopyFrom { .. }) && i == 1)
                                 {

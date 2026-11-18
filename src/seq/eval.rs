@@ -228,6 +228,32 @@ impl Runtime<'_> {
                     Value::Tuple(vec![])
                 })
             }
+            SeqOp::CopyWithin { total } => {
+                let (cell, start, len) = view(arg(0)?)?;
+                let lo = index(arg(1)?)?;
+                let hi = index(arg(2)?)?;
+                let at = index(arg(3)?)?;
+                if lo > hi || hi > len as u64 || !fits(len, at, (hi - lo) as usize) {
+                    return Ok(if total {
+                        V(Value::Bool(false))
+                    } else {
+                        OutOfBounds
+                    });
+                }
+                let (lo, hi, at) = (
+                    start + lo as usize,
+                    start + hi as usize,
+                    start + at as usize,
+                );
+                // `memmove`: the source and destination may overlap.
+                let items = cell.borrow()[lo..hi].to_vec();
+                cell.borrow_mut()[at..at + items.len()].clone_from_slice(&items);
+                V(if total {
+                    Value::Bool(true)
+                } else {
+                    Value::Tuple(vec![])
+                })
+            }
             SeqOp::Fill => {
                 let (cell, start, len) = view(arg(0)?)?;
                 let value = arg(1)?.clone();
@@ -245,9 +271,41 @@ impl Runtime<'_> {
                 V(Value::UInt(sum, 64))
             }
             SeqOp::BytesEq => V(Value::Bool(byte_view(arg(0)?)? == byte_view(arg(1)?)?)),
-            SeqOp::FindByte => {
-                let b = index(arg(1)?)?;
-                let found = byte_view(arg(0)?)?.iter().position(|&x| u64::from(x) == b);
+            SeqOp::EqIgnoreAsciiCase => V(Value::Bool(
+                byte_view(arg(0)?)?.eq_ignore_ascii_case(&byte_view(arg(1)?)?),
+            )),
+            SeqOp::ExtendAsciiLowercase => {
+                let bytes = byte_view(arg(1)?)?;
+                seq(arg(0)?)?.borrow_mut().extend(
+                    bytes
+                        .iter()
+                        .map(|b| Value::UInt(u64::from(b.to_ascii_lowercase()), 8)),
+                );
+                V(Value::Tuple(vec![]))
+            }
+            SeqOp::FindByte | SeqOp::FindEither | SeqOp::FindNotIn => {
+                let bytes = byte_view(arg(0)?)?;
+                let found = match op {
+                    SeqOp::FindByte => {
+                        let b = index(arg(1)?)?;
+                        bytes.iter().position(|&x| u64::from(x) == b)
+                    }
+                    SeqOp::FindEither => {
+                        let a = index(arg(1)?)?;
+                        let b = index(arg(2)?)?;
+                        bytes
+                            .iter()
+                            .position(|&x| u64::from(x) == a || u64::from(x) == b)
+                    }
+                    _ => {
+                        let lo = index(arg(1)?)?;
+                        let hi = index(arg(2)?)?;
+                        let high = matches!(arg(3)?, Value::Bool(true));
+                        bytes
+                            .iter()
+                            .position(|&x| !byte_class_holds(lo, hi, high, x))
+                    }
+                };
                 let (constructor, fields) = match found {
                     Some(i) => ("Some", BTreeMap::from([("0".to_string(), u64_value(i))])),
                     None => ("None", BTreeMap::new()),
@@ -261,6 +319,12 @@ impl Runtime<'_> {
             }
             SeqOp::Str(_) | SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. } => {
                 unreachable!("string and hoisted operations return above")
+            }
+            SeqOp::Swap | SeqOp::Replace => {
+                return Err(format!(
+                    "{} writes places; the evaluator runs it at its instruction",
+                    op.name()
+                ));
             }
             SeqOp::SubSlice => {
                 let (cell, start, len) = view(arg(0)?)?;
@@ -290,6 +354,16 @@ fn byte_view(v: &Value) -> Result<Vec<u8>, String> {
         .iter()
         .map(|b| index(b).map(|b| b as u8))
         .collect()
+}
+
+/// Whether byte `x` is in the class of `find_not_in(lo, hi, high)`: bit `x`
+/// of `lo` for `x < 64`, bit `x - 64` of `hi` for `x < 128`, else `high`.
+pub(crate) fn byte_class_holds(lo: u64, hi: u64, high: bool, x: u8) -> bool {
+    match x {
+        0..=63 => lo >> x & 1 == 1,
+        64..=127 => hi >> (x - 64) & 1 == 1,
+        _ => high,
+    }
 }
 
 /// Whether `n` elements starting at `at` fit in `len`.
