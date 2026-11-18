@@ -545,19 +545,22 @@ fn adversarial_inputs_stay_typed_errors() {
 }
 
 #[test]
-fn quadratic_parser_scope_copies_are_charged() {
-    // The parser copies the scope set at every block, and the set grows with
-    // each distinct local, so this shape is quadratic in the parser. The
-    // preflight charges for it and refuses it instead of spending seconds.
+fn many_locals_in_one_function_format_in_linear_time() {
+    // The parser's scope sets used to be cloned at every block, which made
+    // one function with thousands of locals quadratic, and the preflight
+    // refused it with `WorkLimit`. Scope sets are now an undo trail.
     let mut source = String::from("fn main() {\n");
     for i in 0..8_000 {
         source.push_str(&format!("    let x{i} = {{\n        0\n    }};\n"));
     }
     source.push_str("}\n");
+    let started = std::time::Instant::now();
     assert_eq!(
-        format_source(&source, Limits::default()).unwrap_err(),
-        Error::WorkLimit
+        format_source(&source, Limits::default()).unwrap().output,
+        source
     );
+    // Generous for debug builds; the quadratic parser took seconds in release.
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
     // The same number of locals spread over many functions is linear.
     let mut spread = String::new();
     for f in 0..400 {

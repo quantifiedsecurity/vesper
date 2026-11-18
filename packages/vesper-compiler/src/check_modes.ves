@@ -377,6 +377,11 @@ fn c_use(env: CEnv, slot: i64, usage: i64, loans: CEnv, start: i64, end: i64)
         env
     }
 }
+// Keep-writes (manuscript section 4.3, PostCall_abort): an abortable effect may
+// cross a stationary inout parameter or argument loan, and the caller keeps the
+// last write. E0402 remains only for a live owned linear binding. A torn inout
+// cannot reach this point: this checker moves whole bindings only, and moving
+// out of an inout place is E0305, so no inout has a moved-out hole.
 fn c_abort_frame(env: CEnv, i: i64, start: i64, end: i64)
     -> i64 eff [Fail[CheckError], Fail[Diag], Fail[ArithOverflow]] {
     if i == env.count {
@@ -384,8 +389,7 @@ fn c_abort_frame(env: CEnv, i: i64, start: i64, end: i64)
     } else {
         let b = c_slot(env, i);
         let live = c_lookup(env, b.name, env.count) == i;
-        let valid = if live
-            && (b.pass == 1 || b.pass == 2 && !c_moved(env, i) && c_mode(b.ty, 0) == 2) {
+        let valid = if live && b.pass == 2 && !c_moved(env, i) && c_mode(b.ty, 0) == 2 {
             c_error(402, start, end)
         } else {
             0
@@ -393,7 +397,7 @@ fn c_abort_frame(env: CEnv, i: i64, start: i64, end: i64)
         c_abort_frame(env, i + 1, start, end)
     }
 }
-fn c_require_row(needed: i64, allowed: i64, env: CEnv, loans: CEnv, start: i64, end: i64)
+fn c_require_row(needed: i64, allowed: i64, env: CEnv, start: i64, end: i64)
     -> i64 eff [Fail[CheckError], Fail[Diag], Fail[ArithOverflow]] {
     if needed < 0 || c_kind(needed) == 37 {
         0
@@ -412,11 +416,10 @@ fn c_require_row(needed: i64, allowed: i64, env: CEnv, loans: CEnv, start: i64, 
         } else {
             0
         };
-        let valid = c_abort_loans(loans, 0, start, end);
         let valid = c_abort_frame(env, 0, start, end);
         let next = c_take(ty.next, 37);
         if c_kind(next) == 38 {
-            c_require_row(c_next(next), allowed, env, loans, start, end)
+            c_require_row(c_next(next), allowed, env, start, end)
         } else {
             0
         }
@@ -451,17 +454,6 @@ fn c_live_loans(loans: CEnv, i: i64, active: CEnv)
         )
     }
 }
-fn c_abort_loans(loans: CEnv, i: i64, start: i64, end: i64)
-    -> i64 eff [Fail[CheckError], Fail[Diag], Fail[ArithOverflow]] {
-    if i == loans.count {
-        0
-    } else if c_slot(loans, i).pass == 1 {
-        c_error(402, start, end)
-    } else {
-        c_abort_loans(loans, i + 1, start, end)
-    }
-}
-
 fn c_literal_name(t: Tok, length: i64, first: i64, second: i64, third: i64)
     -> bool eff [Fail[CheckError], Fail[Diag], Fail[ArithOverflow]] {
     t

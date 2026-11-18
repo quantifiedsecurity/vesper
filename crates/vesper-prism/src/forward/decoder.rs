@@ -139,6 +139,11 @@ pub(crate) fn error_status(error: Error) -> Option<u16> {
 }
 
 /// Tokens and targets are ASCII by construction (the parser checked them).
+/// ASCII is converted as one copy instead of a `char` push per byte; the
+/// byte-to-char mapping of other bytes (never reached) is unchanged.
 fn ascii(bytes: &[u8]) -> String {
-    bytes.iter().copied().map(char::from).collect()
+    match std::str::from_utf8(bytes) {
+        Ok(text) if bytes.is_ascii() => text.to_owned(),
+        _ => bytes.iter().copied().map(char::from).collect(),
+    }
 }

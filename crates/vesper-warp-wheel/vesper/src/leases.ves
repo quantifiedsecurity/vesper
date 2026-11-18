@@ -43,11 +43,11 @@ impl LeaseCore {
     fn find(in self, tag: u64, pn: u64) -> u64 {
         let mut i = self.home(tag, pn);
         loop {
-            let s = at(in self.s_space.as_slice(), i);
+            let s = at(in self.s_space, i);
             if s == 0 {
                 break nil();
             }
-            if s == wrapping_add(tag, 1) && at(in self.s_pn.as_slice(), i) == pn {
+            if s == wrapping_add(tag, 1) && at(in self.s_pn, i) == pn {
                 break i;
             }
             i = wrapping_add(i, 1) & self.mask;
@@ -64,20 +64,17 @@ impl LeaseCore {
     // Empty slot `hole` and backward-shift its probe run. Returns the wheel
     // handle `(index, generation)` the slot held.
     fn remove_at(inout self, hole0: u64) -> (u64, u64) {
-        let removed = (
-            at(in self.s_index.as_slice(), hole0),
-            at(in self.s_generation.as_slice(), hole0)
-        );
+        let removed = (at(in self.s_index, hole0), at(in self.s_generation, hole0));
         self.s_space.try_set(hole0, 0);
         let mut hole = hole0;
         let mut j = hole0;
         loop {
             j = wrapping_add(j, 1) & self.mask;
-            let s = at(in self.s_space.as_slice(), j);
+            let s = at(in self.s_space, j);
             if s == 0 {
                 break;
             }
-            let pn = at(in self.s_pn.as_slice(), j);
+            let pn = at(in self.s_pn, j);
             let home = self.home(wrapping_sub(s, 1), pn);
             // Move `j` into the hole unless its home lies cyclically in
             // (hole, j].
@@ -87,8 +84,8 @@ impl LeaseCore {
                 hole < home || home <= j
             };
             if !in_range {
-                let index = at(in self.s_index.as_slice(), j);
-                let generation = at(in self.s_generation.as_slice(), j);
+                let index = at(in self.s_index, j);
+                let generation = at(in self.s_generation, j);
                 self.set_slot(hole, s, pn, index, generation);
                 self.s_space.try_set(j, 0);
                 hole = j;
@@ -120,7 +117,7 @@ impl LeaseCore {
         // Load factor <= 1/2 guarantees a free slot.
         let mut i = self.home(tag, pn);
         loop {
-            if at(in self.s_space.as_slice(), i) == 0 {
+            if at(in self.s_space, i) == 0 {
                 break;
             }
             i = wrapping_add(i, 1) & self.mask;
@@ -156,8 +153,8 @@ impl LeaseCore {
         if i == nil() {
             return Result::Err(LeaseError::NotOutstanding);
         }
-        let old = at(in self.s_index.as_slice(), i);
-        let generation = at(in self.s_generation.as_slice(), i);
+        let old = at(in self.s_index, i);
+        let generation = at(in self.s_generation, i);
         match self.wheel.check(old, generation) {
             Option::Some(_) => {
                 return Result::Err(LeaseError::NotOutstanding);
@@ -181,8 +178,8 @@ impl LeaseCore {
 
     // After the wheel fired entry `index`, drop its index slot.
     fn forget(inout self, index: u64) {
-        let tag = at(in self.k_space.as_slice(), index);
-        let pn = at(in self.k_pn.as_slice(), index);
+        let tag = at(in self.k_space, index);
+        let pn = at(in self.k_pn, index);
         let i = self.find(tag, pn);
         if i != nil() {
             let _stale = self.remove_at(i);
@@ -200,7 +197,7 @@ impl LeaseCore {
             if i >= n {
                 break;
             }
-            if at(in self.s_space.as_slice(), i) == tag_plus_one {
+            if at(in self.s_space, i) == tag_plus_one {
                 let (index, generation) = self.remove_at(i);
                 match self.wheel.check(index, generation) {
                     Option::None => {
@@ -228,7 +225,7 @@ impl LeaseCore {
         // wheel is drained here directly rather than through its pairs.
         let mut out: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](self.wheel.len);
         for index in 0..self.wheel.capacity {
-            if at(in self.wheel.e_list.as_slice(), index) != nil() {
+            if at(in self.wheel.e_list, index) != nil() {
                 self.wheel.unlink(index);
                 self.wheel.release(index);
                 out.push(index);

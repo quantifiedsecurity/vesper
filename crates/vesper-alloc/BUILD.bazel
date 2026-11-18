@@ -1,8 +1,70 @@
 load("//tools/bazel:defs.bzl", "vesper_crate")
+load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_package", "vesper_port_object")
+
+# The port-backed package (seed-copy rule, docs/maintenance/porting-a-crate.md;
+# port wave P1 lane 6, #903): build.rs links the object built here from the
+# Loom package in vesper/ and checks port/binding.rs against the generated
+# binding. The compiler and every other dependent link the Rust seed copy,
+# //crates/vesper-alloc/seed, instead.
+vesper_package(
+    name = "port_package",
+    srcs = glob(["vesper/src/**/*.ves"]),
+    manifest = "vesper/Loom.toml",
+)
+
+vesper_port_object(
+    name = "alloc_vesper",
+    library = "alloc",
+    package = ":port_package",
+    target = VESPER_TARGET,
+)
+
+filegroup(
+    name = "alloc_vesper_binding",
+    srcs = [":alloc_vesper"],
+    output_group = "rust_binding",
+)
+
+# The divergent build (the Cargo `vesper-port-divergent` feature applies the
+# same edits from build.rs): it must build from a copy of the package with the
+# edits applied. scripts/test-port-harness.sh asserts which test catches each.
+vesper_port_object(
+    name = "alloc_vesper_divergent",
+    edit_src = "vesper/src/lib.ves",
+    edits = {
+        "            let s = fit(chunk_at(in b, i), size, align);": "            let s = max_u64();",
+        "b.marks.truncate(pos);": "b.marks.truncate(inc(pos));",
+        "        && sget(in b, index, f_elen())\n        > 0;": "        && sget(in b, index, f_elen())\n        > 1;",
+    },
+    library = "alloc",
+    package = ":port_package",
+    target = VESPER_TARGET,
+)
 
 vesper_crate(
+    build_script_data = [
+        ":alloc_vesper",
+        ":alloc_vesper_binding",
+    ],
+    build_script_env = {
+        # rules_rust already makes these execpaths absolute.
+        "VESPER_PORT_OBJECT": "$(execpath :alloc_vesper)",
+        "VESPER_PORT_GENERATED_BINDING": "$(execpath :alloc_vesper_binding)",
+    },
     # tests/slot_arena_model.rs reads lean/StrataCollections.lean; Lean
     # rejects symlinked runfiles outside --root, so it runs in a regular copy.
     copy_test_cwd = ["test/slot_arena_model"],
     extra_test_data = ["//:lean"],
+)
+
+# The seed package (seed/) builds these same Rust sources without the port.
+exports_files(glob([
+    "src/**/*.rs",
+    "tests/**/*.rs",
+]))
+
+filegroup(
+    name = "rust_srcs",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/vesper-alloc/seed:__pkg__"],
 )

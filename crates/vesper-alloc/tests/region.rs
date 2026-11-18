@@ -864,6 +864,30 @@ fn panicking_finalizer_does_not_leak_chunks_or_double_drop() {
     assert_eq!(ledger.live.get(), 0, "chunks freed despite the panic");
 }
 
+#[test]
+fn caught_panicking_finalizer_never_lets_new_allocations_reuse_unfinalized_payloads() {
+    struct Bomb;
+    impl Drop for Bomb {
+        fn drop(&mut self) {
+            panic!("finalizer failed");
+        }
+    }
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let (mut r, ledger) = counting(small(4096));
+    let mark = r.checkpoint().unwrap();
+    r.alloc_value(tracked(2, &log)).unwrap();
+    r.alloc_value(Bomb).unwrap();
+    assert!(catch_unwind(AssertUnwindSafe(|| r.rewind(mark))).is_err());
+    // A new payload may take the bytes of the rewound ones only once those
+    // were finalized; every payload is finalized exactly once.
+    r.alloc_value(tracked(3, &log)).unwrap();
+    drop(r);
+    let mut dropped = log.borrow().clone();
+    dropped.sort_unstable();
+    assert_eq!(dropped, [2, 3]);
+    assert_eq!(ledger.live.get(), 0);
+}
+
 // ----- review follow-ups ---------------------------------------------------------------
 
 #[test]
