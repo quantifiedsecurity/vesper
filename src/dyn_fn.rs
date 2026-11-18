@@ -77,6 +77,27 @@ fn any_fn_object(t: &Type) -> Option<(&str, &Type)> {
     fn_object(t).or_else(|| boxed_fn_object(t))
 }
 
+fn names(e: &Effects) -> String {
+    let mut v = e
+        .instances
+        .iter()
+        .map(|i| i.name.clone())
+        .collect::<Vec<_>>();
+    v.extend(e.tail.clone());
+    v.join(", ")
+}
+
+/// An expression whose evaluation has no effect to order: a literal or a
+/// path of names, fields and literal indices.
+fn trivial(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Literal(_) | ExprKind::Name(_) => true,
+        ExprKind::Field(base, _) => trivial(base),
+        ExprKind::Index(base, index) => trivial(base) && trivial(index),
+        _ => false,
+    }
+}
+
 fn mentions_fn_object(t: &Type) -> bool {
     if fn_object(t).is_some() {
         return true;
@@ -376,7 +397,11 @@ impl Lowering<'_> {
                 Some(f.params.iter().map(|p| p.ty.clone()).collect())
             }
             ExprKind::Field(recv, m) => {
-                let f = match self.type_of(recv, env) {
+                let recv_ty = match self.infer(recv, env) {
+                    Type::Infer => None,
+                    t => Some(t),
+                };
+                let f = match recv_ty {
                     Some(t) => self
                         .decls
                         .methods
@@ -386,11 +411,11 @@ impl Lowering<'_> {
                         let all = self.decls.methods_named(m);
                         let first = (*all.first()?).clone();
                         // Every candidate must agree on its function-object
-                        // parameters.
+                        // parameters, type for type.
                         let shape = |f: &Function| {
                             f.params
                                 .iter()
-                                .map(|p| any_fn_object(&p.ty).is_some())
+                                .map(|p| any_fn_object(&p.ty).map(|_| p.ty.clone()))
                                 .collect::<Vec<_>>()
                         };
                         if all.iter().any(|f| shape(f) != shape(&first)) {
@@ -597,7 +622,9 @@ impl Lowering<'_> {
             ExprKind::Name(_) | ExprKind::Index(..) => self
                 .type_of(callee, env)
                 .is_some_and(|t| any_fn_object(&t).is_some()),
-            ExprKind::Field(recv, m) if m != CALL => {
+            // A field named `call` is a callback too; `f.call(x)` on the
+            // object itself is not a field access, so it is left alone.
+            ExprKind::Field(recv, m) => {
                 let has_method = self.type_of(recv, env).is_some_and(|t| {
                     self.decls
                         .methods
@@ -623,15 +650,54 @@ impl Lowering<'_> {
         self.lower(callee, env, None);
         self.origin = call_span.clone();
         let mut hoisted = vec![];
+        let wants = (0..args.len())
+            .map(|i| {
+                push_element
+                    .clone()
+                    .or_else(|| params.as_ref().and_then(|ps| ps.get(i).cloned()))
+            })
+            .collect::<Vec<_>>();
+        let lends = args
+            .iter()
+            .zip(&wants)
+            .map(|(a, want)| {
+                a.pass == Pass::Inout
+                    && matches!(a.expr.kind, ExprKind::Closure { .. })
+                    && want.as_ref().is_some_and(|t| fn_object(t).is_some())
+            })
+            .collect::<Vec<_>>();
+        let last_lend = lends.iter().rposition(|&l| l);
         for (i, a) in args.iter_mut().enumerate() {
-            let want = push_element
-                .clone()
-                .or_else(|| params.as_ref().and_then(|ps| ps.get(i).cloned()));
-            let lend_mut = a.pass == Pass::Inout
-                && matches!(a.expr.kind, ExprKind::Closure { .. })
-                && want.as_ref().is_some_and(|t| fn_object(t).is_some());
+            let want = wants[i].clone();
+            let lend_mut = lends[i];
             self.lower(&mut a.expr, env, want.as_ref());
             self.origin = call_span.clone();
+            if !lend_mut
+                && a.pass != Pass::Inout
+                && last_lend.is_some_and(|l| i < l)
+                && !trivial(&a.expr)
+            {
+                // An argument before a hoisted closure is evaluated first
+                // too, so the closure captures what it left behind.
+                let name = format!("$arg{}", a.expr.span.start);
+                let value = std::mem::replace(&mut a.expr.kind, ExprKind::Name(name.clone()));
+                let value = Expr {
+                    kind: value,
+                    span: a.expr.span.clone(),
+                };
+                a.expr.span = self.span();
+                let pat_span = self.span();
+                hoisted.push(Statement::Let {
+                    pat: Pattern {
+                        kind: PatternKind::Bind(name),
+                        span: pat_span,
+                    },
+                    ty: Type::Infer,
+                    value,
+                    mutable: false,
+                });
+                continue;
+            }
             if lend_mut {
                 // An `inout` lend needs a place: the object is a local of
                 // the call's own block.
@@ -692,7 +758,12 @@ impl Lowering<'_> {
     /// conforms to the hidden trait of `kind` and `sig`.
     fn coerce(&mut self, e: &mut Expr, env: &mut Env, kind: &str, sig: &Type) {
         let ExprKind::Closure {
-            params, mode, body, ..
+            params,
+            mode,
+            body,
+            result: written_result,
+            effects: written_effects,
+            infer_effects,
         } = &mut e.kind
         else {
             return;
@@ -720,6 +791,63 @@ impl Lowering<'_> {
             ));
             return;
         }
+        // What the closure writes must agree with the object's signature:
+        // the signature replaces it below.
+        for (p, (pass, t)) in params.iter().zip(sig_params) {
+            if p.ty != Type::Infer && p.ty != *t {
+                self.errors.push(d(
+                    "E0200",
+                    format!(
+                        "the closure's parameter '{}' is written `{}`; `dyn {kind}` passes `{t}`",
+                        p.name, p.ty
+                    ),
+                    &p.span,
+                ));
+                return;
+            }
+            if p.pass != Pass::In && p.pass != *pass {
+                self.errors.push(d(
+                    "E0200",
+                    format!(
+                        "the closure takes '{}' by `{:?}`; `dyn {kind}` passes it by `{pass:?}`",
+                        p.name, p.pass
+                    ),
+                    &p.span,
+                ));
+                return;
+            }
+        }
+        if *written_result != Type::Infer && *written_result != **result {
+            self.errors.push(d(
+                "E0200",
+                format!("the closure returns `{written_result}`; `dyn {kind}` returns `{result}`"),
+                &span,
+            ));
+            return;
+        }
+        // A written effect row restricts the body; it must fit the object's.
+        let body_effects = if *infer_effects {
+            effects.clone()
+        } else {
+            let fits = written_effects.tail.is_none()
+                && written_effects
+                    .instances
+                    .iter()
+                    .all(|w| effects.instances.iter().any(|e| e == w));
+            if !fits {
+                self.errors.push(d(
+                    "E0401",
+                    format!(
+                        "the closure's written effects [{}] are not within those of `dyn {kind}`: [{}]",
+                        names(written_effects),
+                        names(effects)
+                    ),
+                    &span,
+                ));
+                return;
+            }
+            written_effects.clone()
+        };
         if matches!(mode, Some(Mode::Linear)) && kind != "FnOnce" {
             self.errors.push(d(
                 "E0310",
@@ -892,7 +1020,9 @@ impl Lowering<'_> {
                         },
                         ty: Type::Infer,
                         value: self_expr,
-                        mutable: false,
+                        // The object owns its captures: a one-shot body may
+                        // mutate them before it consumes them.
+                        mutable: true,
                     }],
                     tail: Some(Box::new(body)),
                 },
@@ -913,7 +1043,7 @@ impl Lowering<'_> {
             generics: vec![],
             params: method_params,
             result: (**result).clone(),
-            effects: effects.clone(),
+            effects: body_effects,
             body: Some(body),
             span: self.span(),
         };

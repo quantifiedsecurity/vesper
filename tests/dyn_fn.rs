@@ -217,6 +217,62 @@ fn main() -> i64 {
 }
 
 #[test]
+fn review_fixes_for_function_objects() {
+    // An argument before a hoisted `inout` closure runs first, so the
+    // closure captures what it left.
+    let order = "fn run(x: i64, inout f: dyn FnMut() -> i64) -> i64 { wrapping_add(x, f()) }
+fn main() -> i64 { let mut n: i64 = 0; run({ n = 1; 10 }, inout || n) }
+";
+    assert_eq!(execute(order), "11");
+    // A `FnOnce` body may mutate the captures it owns.
+    let once = "fn mk() -> Box[dyn FnOnce() -> i64] {
+    let mut n: i64 = 4;
+    Box::new(|| { n = wrapping_add(n, 1); n })
+}
+fn main() -> i64 { let f = mk(); f() }
+";
+    assert_eq!(execute(once), "5");
+    // The receiver's type comes from the function that makes it.
+    let recv = "struct A { k: i64 }
+struct B { k: bool }
+impl A { fn apply(in self, in f: dyn Fn(i64) -> i64) -> i64 { f(self.k) } }
+impl B { fn apply(in self, in f: dyn Fn(bool) -> bool) -> bool { f(self.k) } }
+fn make_b() -> B { B { k: false } }
+fn main() -> i64 {
+    let a = A { k: 3 };
+    let x = a.apply(in |v| wrapping_mul(v, 2));
+    if make_b().apply(in |v| !v) { x } else { 0 }
+}
+";
+    assert_eq!(execute(recv), "6");
+    // A field named `call` holding a function object is called.
+    let field = "struct Handler { call: Box[dyn Fn(i64) -> i64] }
+fn main() -> i64 {
+    let h = Handler { call: Box::new(|x: i64| wrapping_add(x, 1)) };
+    h.call(41)
+}
+";
+    assert_eq!(execute(field), "42");
+    // A written annotation is checked against the signature, not replaced.
+    rejects(
+        &format!("{APPLY}fn main() -> i64 {{ apply(in |x: bool| x, 1) }}\n"),
+        "E0200",
+    );
+    rejects(
+        &format!("{APPLY}fn main() -> i64 {{ apply(in |x| -> bool x, 1) }}\n"),
+        "E0200",
+    );
+    // A written effect row restricts the body.
+    rejects(
+        "linear effect Log { fn note(v: i64) -> i64; }
+fn each(in f: dyn Fn(i64) -> i64 eff [Log]) -> i64 eff [Log] { f(1) }
+fn main() -> i64 eff [Log] { each(in |x: i64| -> i64 eff [] Log::note(x)) }
+",
+        "E0401",
+    );
+}
+
+#[test]
 fn rejected_function_objects() {
     // A `Fn` object cannot mutate its captures.
     rejects(
