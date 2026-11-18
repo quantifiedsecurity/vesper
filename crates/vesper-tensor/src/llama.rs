@@ -86,6 +86,27 @@ pub struct Config {
 impl Config {
     /// Checks every dimension is positive and within the hard ceilings,
     /// `dim % heads == 0`, `heads % kv_heads == 0` and an even head width.
+    #[cfg(vesper_port)]
+    pub fn validate(&self) -> Result<(), Error> {
+        let dims = [
+            self.dim,
+            self.hidden_dim,
+            self.layers,
+            self.heads,
+            self.kv_heads,
+            self.vocab,
+            self.seq_len,
+        ]
+        .map(|v| v as u64);
+        llama_code(crate::port::must(crate::port::binding::llama_validate(
+            &dims,
+            self.rope_base.to_bits(),
+            self.rms_epsilon.to_bits(),
+        )))
+    }
+    /// Checks every dimension is positive and within the hard ceilings,
+    /// `dim % heads == 0`, `heads % kv_heads == 0` and an even head width.
+    #[cfg(not(vesper_port))]
     pub fn validate(&self) -> Result<(), Error> {
         let bounds = [
             (self.dim, MAX_DIM, "dim"),
@@ -176,10 +197,12 @@ pub struct Model {
     classifier: Matrix,
 }
 
+#[cfg(not(vesper_port))]
 struct Reader<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
+#[cfg(not(vesper_port))]
 impl<'a> Reader<'a> {
     fn i32(&mut self) -> Result<i32, Error> {
         let b = self.take(4)?;
@@ -218,6 +241,66 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// A port result code of `vesper/src/llama.ves` as the Rust build's error.
+#[cfg(vesper_port)]
+fn llama_code(code: u64) -> Result<(), Error> {
+    const FIELDS: [&str; 7] = [
+        "dim",
+        "hidden_dim",
+        "layers",
+        "heads",
+        "kv_heads",
+        "vocab",
+        "seq_len",
+    ];
+    Err(match code {
+        0 => return Ok(()),
+        1..=7 => Error::Malformed(FIELDS[code as usize - 1]),
+        10..=16 => Error::Limit(FIELDS[code as usize - 10]),
+        20 => Error::Shape("dim must be a multiple of heads"),
+        21 => Error::Shape("invalid GQA ratio"),
+        22 => Error::Shape("RoPE needs an even head width"),
+        23 => Error::Shape("rope base"),
+        24 => Error::InvalidEpsilon,
+        30 => Error::Malformed("truncated input"),
+        31 => Error::NonFinite,
+        33 => Error::Malformed("trailing bytes after checkpoint"),
+        34 => Error::Limit("checkpoint bytes"),
+        35 => Error::Malformed("vocab"),
+        37 => Error::Malformed("max_token_length"),
+        38 => Error::Limit("max_token_length"),
+        39 => Error::Malformed("token length"),
+        40 => Error::Limit("token length"),
+        _ => Error::Malformed("trailing bytes after tokenizer"),
+    })
+}
+
+/// The port build's reader over bytes `vesper/src/llama.ves` has checked:
+/// every run is present and finite.
+#[cfg(vesper_port)]
+struct Checked<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+#[cfg(vesper_port)]
+impl Checked<'_> {
+    fn floats(&mut self, n: usize) -> Vec<f32> {
+        let end = self.offset + 4 * n;
+        let out = self.bytes[self.offset..end]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect();
+        self.offset = end;
+        out
+    }
+    fn matrix(&mut self, rows: usize, cols: usize) -> Result<Matrix, Error> {
+        Matrix::f32(rows, cols, self.floats(rows * cols))
+    }
+}
+
+#[cfg(not(vesper_port))]
 fn positive(v: i32, what: &'static str, max: usize) -> Result<usize, Error> {
     if v <= 0 {
         return Err(Error::Malformed(what));
@@ -234,6 +317,91 @@ impl Model {
     /// checked (positive, bounded, `dim % heads == 0`, `heads % kv_heads == 0`,
     /// even head width), the byte length must match the header exactly, and
     /// every weight must be finite.
+    #[cfg(vesper_port)]
+    pub fn from_llama2c(bytes: &[u8]) -> Result<Self, Error> {
+        let mut d = [0u64; 8];
+        llama_code(crate::port::check(
+            crate::port::binding::llama_checkpoint(
+                bytes,
+                ROPE_BASE.to_bits(),
+                RMS_EPSILON.to_bits(),
+                &mut d,
+            ),
+            |_| Error::Overflow,
+        )?)?;
+        let [dim, hidden_dim, layers, heads, kv_heads, vocab, seq_len, shared] =
+            d.map(|v| v as usize);
+        let config = Config::llama2c(
+            dim,
+            hidden_dim,
+            layers,
+            heads,
+            kv_heads,
+            vocab,
+            seq_len,
+            shared == 1,
+        );
+        let kv_dim = config.kv_dim();
+        let mut r = Checked {
+            bytes,
+            offset: 7 * 4,
+        };
+        let embedding = r.floats(vocab * dim);
+        let rms_attention: Vec<_> = (0..layers).map(|_| r.floats(dim)).collect();
+        let mut matrices = |rows: usize, cols: usize| -> Result<Vec<Matrix>, Error> {
+            (0..layers).map(|_| r.matrix(rows, cols)).collect()
+        };
+        let wq = matrices(dim, dim)?;
+        let wk = matrices(kv_dim, dim)?;
+        let wv = matrices(kv_dim, dim)?;
+        let wo = matrices(dim, dim)?;
+        let rms_ffn: Vec<_> = (0..layers).map(|_| r.floats(dim)).collect();
+        let mut matrices = |rows: usize, cols: usize| -> Result<Vec<Matrix>, Error> {
+            (0..layers).map(|_| r.matrix(rows, cols)).collect()
+        };
+        let w1 = matrices(hidden_dim, dim)?;
+        let w2 = matrices(dim, hidden_dim)?;
+        let w3 = matrices(hidden_dim, dim)?;
+        let rms_final = r.floats(dim);
+        r.offset += seq_len * config.head_dim() * 4;
+        let embedding = Matrix::f32(vocab, dim, embedding)?;
+        let classifier = if shared == 1 {
+            embedding.clone()
+        } else {
+            r.matrix(vocab, dim)?
+        };
+        let layers = rms_attention
+            .into_iter()
+            .zip(rms_ffn)
+            .zip(wq.into_iter().zip(wk).zip(wv.into_iter().zip(wo)))
+            .zip(w1.into_iter().zip(w2).zip(w3))
+            .map(
+                |(((rms_attention, rms_ffn), ((wq, wk), (wv, wo))), ((w1, w2), w3))| Layer {
+                    rms_attention,
+                    wq,
+                    wk,
+                    wv,
+                    wo,
+                    rms_ffn,
+                    w1,
+                    w2,
+                    w3,
+                },
+            )
+            .collect();
+        Ok(Self {
+            config,
+            embedding,
+            layers,
+            rms_final,
+            classifier,
+        })
+    }
+    /// Parses a llama2.c (`run.c` "version 0") checkpoint. Every dimension is
+    /// checked (positive, bounded, `dim % heads == 0`, `heads % kv_heads == 0`,
+    /// even head width), the byte length must match the header exactly, and
+    /// every weight must be finite.
+    #[cfg(not(vesper_port))]
     pub fn from_llama2c(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() > MAX_CHECKPOINT_BYTES {
             return Err(Error::Limit("checkpoint bytes"));
@@ -1070,6 +1238,29 @@ pub struct Tokenizer {
 impl Tokenizer {
     /// Parses `tokenizer.bin`: `i32` max token length, then `vocab` entries
     /// of `f32` score, `i32` length and that many bytes.
+    #[cfg(vesper_port)]
+    pub fn from_llama2c(bytes: &[u8], vocab: usize) -> Result<Self, Error> {
+        let mut out = vec![0u64; 1 + 3 * vocab.min(MAX_VOCAB)];
+        llama_code(crate::port::check(
+            crate::port::binding::llama_tokenizer(bytes, vocab as u64, &mut out),
+            |_| Error::Overflow,
+        )?)?;
+        let entries = out[1..].as_chunks::<3>().0;
+        Ok(Self {
+            pieces: entries
+                .iter()
+                .map(|&[_, at, len]| bytes[at as usize..(at + len) as usize].to_vec())
+                .collect(),
+            scores: entries
+                .iter()
+                .map(|&[score, _, _]| f32::from_bits(score as u32))
+                .collect(),
+            max_token_length: out[0] as usize,
+        })
+    }
+    /// Parses `tokenizer.bin`: `i32` max token length, then `vocab` entries
+    /// of `f32` score, `i32` length and that many bytes.
+    #[cfg(not(vesper_port))]
     pub fn from_llama2c(bytes: &[u8], vocab: usize) -> Result<Self, Error> {
         if vocab == 0 || vocab > MAX_VOCAB {
             return Err(Error::Limit("vocab"));
@@ -1111,6 +1302,28 @@ impl Tokenizer {
     /// Bytes `run.c` prints for `token` after `previous`: a leading space is
     /// dropped after BOS, `<0xHH>` pieces become that byte, and single
     /// non-printable, non-whitespace bytes are suppressed.
+    #[cfg(vesper_port)]
+    pub fn decode(&self, previous: u32, token: u32) -> Result<Vec<u8>, Error> {
+        let piece = self
+            .piece(token)
+            .ok_or(Error::Shape("token outside the vocabulary"))?;
+        let mut out = [0u64; 3];
+        Ok(
+            match crate::port::must(crate::port::binding::llama_decode(
+                piece,
+                previous == BOS,
+                &mut out,
+            )) {
+                0 => piece[out[1] as usize..(out[1] + out[2]) as usize].to_vec(),
+                1 => vec![out[1] as u8],
+                _ => Vec::new(),
+            },
+        )
+    }
+    /// Bytes `run.c` prints for `token` after `previous`: a leading space is
+    /// dropped after BOS, `<0xHH>` pieces become that byte, and single
+    /// non-printable, non-whitespace bytes are suppressed.
+    #[cfg(not(vesper_port))]
     pub fn decode(&self, previous: u32, token: u32) -> Result<Vec<u8>, Error> {
         let mut piece = self
             .piece(token)
@@ -1142,6 +1355,7 @@ impl Tokenizer {
     }
 }
 
+#[cfg(not(vesper_port))]
 static BYTES: [u8; 256] = {
     let mut table = [0u8; 256];
     let mut i = 0;
@@ -1151,6 +1365,7 @@ static BYTES: [u8; 256] = {
     }
     table
 };
+#[cfg(not(vesper_port))]
 fn raw_byte(piece: &[u8]) -> Option<&'static u8> {
     let hex = piece.strip_prefix(b"<0x")?.strip_suffix(b">")?;
     if hex.len() != 2 {

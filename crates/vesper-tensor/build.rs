@@ -59,6 +59,24 @@ const DIVERGENT: &[(&str, &str)] = &[
     // shape.rs (vesper/src/shape.ves): a product may hold one factor more
     // than the limit; abba both_builds_plan_the_same_shapes fails.
     ("if count > max_factors {", "if count > max_factors + 1 {"),
+    // attention.rs (vesper/src/lib.ves): BF16 keys and values lose a bit of
+    // their high byte; abba both_builds_attend_the_same fails.
+    (
+        "from_bits_f32((lo | (hi << 8)) << 16)",
+        "from_bits_f32((lo | (hi << 7)) << 16)",
+    ),
+    // llama.rs (vesper/src/llama.ves): `<0x-A>` decodes as a byte, not
+    // `<0x+A>`; abba both_builds_read_the_same_llama2c_files fails.
+    (
+        "if piece[start + 3] == 43 && lo < 16 {",
+        "if piece[start + 3] == 45 && lo < 16 {",
+    ),
+    // mmap.rs (vesper/src/lib.ves): an empty weight file fails to map; abba
+    // both_builds_open_the_same_weight_files fails.
+    (
+        "    if len == 0 {\n        return 1;",
+        "    if len == 0 {\n        return 4;",
+    ),
     // json.rs (vesper/src/text.ves): a leading zero is accepted before two
     // more digits only; abba both_builds_read_the_same_safetensors_headers
     // fails.

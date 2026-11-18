@@ -24,6 +24,8 @@ use std::{cell::RefCell, rc::Rc};
 #[path = "native_aggregates.rs"]
 mod aggregates;
 
+#[path = "dyn_trait/native.rs"]
+mod dyn_native;
 #[path = "native_export.rs"]
 pub mod export;
 /// Foreign calls of imported `.vsys` libraries (§13, `crate::ffi_lowering`).
@@ -460,7 +462,102 @@ fn register_locals(
                         || matches!(name.as_str(), "f32" | "f64" | "bool")))
         })
         .map(|(n, _)| n.clone())
+        .chain(in_param_registers(world, f, generics))
         .collect()
+}
+/// The `in` parameters of `f` whose word (a sequence, string or other
+/// handle; aggregates already arrive as pointers) can stay in the incoming
+/// argument register instead of a home slot (port speed lane 3, #1023).
+///
+/// An `in` parameter is a shared borrow for the whole call: the checker
+/// rejects every write to it and every `inout` or `sink` use of it, and
+/// while the caller lends it as `in` no other path may change it either. So
+/// the word read at entry is the word at every later read, and a use that
+/// needs an address gets a scratch copy ([`Codegen::address`]), which is
+/// never written. A name that the body rebinds, writes, moves or lends
+/// mutably, or that a closure or handler captures, keeps its slot, and so
+/// does every parameter of a function that calls.
+fn in_param_registers<'a>(
+    world: &'a World,
+    f: &'a crate::ir::FunctionIr,
+    generics: &'a BTreeMap<String, Type>,
+) -> impl Iterator<Item = String> + 'a {
+    use crate::ir::Op;
+    let mut kept = BTreeSet::new();
+    let lent = |args: &[crate::ir::Argument], kept: &mut BTreeSet<String>| {
+        for a in args {
+            if a.pass != Pass::In
+                && let Some(p) = &a.place
+            {
+                kept.insert(p.root.clone());
+            }
+        }
+    };
+    for inst in f.blocks.iter().flat_map(|b| &b.instructions) {
+        match &inst.op {
+            Op::Write { place, .. } => {
+                kept.insert(place.split('.').next().unwrap_or(place).to_owned());
+            }
+            Op::Bind { pattern, .. } => bound_names(pattern, &mut kept),
+            Op::Read { root, pass, .. } if *pass != Pass::In => {
+                kept.insert(root.clone());
+            }
+            Op::Call { args, .. }
+            | Op::Indirect { args, .. }
+            | Op::Tiled { args, .. }
+            | Op::Fip { args, .. }
+            | Op::Seq { args, .. } => lent(args, &mut kept),
+            Op::Closure {
+                expr,
+                aliases,
+                moves,
+            }
+            | Op::Handle {
+                expr,
+                aliases,
+                moves,
+                ..
+            } => {
+                kept.extend(crate::check::free_names(expr));
+                kept.extend(aliases.keys().cloned());
+                kept.extend(aliases.values().cloned());
+                kept.extend(moves.iter().map(|p| p.root.clone()));
+            }
+            _ => {}
+        }
+    }
+    // Only in a function that calls nothing: across a call the incoming
+    // word would need a callee-saved register (saved and restored around
+    // the whole body) or a spill, which costs more than the home slot's
+    // store and reloads (Quarry's planner ran 0.07% more instructions).
+    if f.blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|i| crate::bounds_hoist::calls_out(&i.op))
+    {
+        kept.extend(f.params.iter().map(|p| p.name.clone()));
+    }
+    f.params.iter().filter_map(move |p| {
+        let ty = crate::numeric::default_type(&substitute(&p.ty, generics));
+        (p.pass == Pass::In
+            && !kept.contains(&p.name)
+            && f.locals.contains_key(&p.name)
+            && !matches!(ty, Type::Function { .. })
+            && Layout::of(world, &ty).is_ok_and(|l| !l.aggregate()))
+        .then(|| p.name.clone())
+    })
+}
+fn bound_names(p: &Pattern, out: &mut BTreeSet<String>) {
+    match &p.kind {
+        PatternKind::Bind(n) => {
+            out.insert(n.clone());
+        }
+        PatternKind::Tuple(ps) => ps.iter().for_each(|p| bound_names(p, out)),
+        PatternKind::Constructor { fields, .. } => {
+            fields.iter().for_each(|(_, p)| bound_names(p, out))
+        }
+        PatternKind::Wild | PatternKind::Literal(_) => {}
+    }
 }
 fn fail_only(world: &World, f: &Function) -> bool {
     f.effects.tail.is_none()
@@ -547,6 +644,8 @@ struct FnAbi {
 #[derive(Default)]
 struct NativeAbi {
     functions: BTreeMap<String, FnAbi>,
+    /// Whether the internal conventions apply (optimized builds).
+    optimize: bool,
 }
 impl NativeAbi {
     fn plan(
@@ -557,24 +656,44 @@ impl NativeAbi {
     ) -> Result<Self, String> {
         let mut functions = BTreeMap::new();
         if !optimize {
-            return Ok(Self { functions });
+            return Ok(Self {
+                functions,
+                optimize,
+            });
         }
         for (key, (name, vars)) in instances {
             if is_boundary(key) {
                 continue;
             }
             let f = concrete(world, name, vars)?;
-            let mut abi = FnAbi::default();
-            if fail_only(world, &f) && !capability_abi(world, &f) {
-                abi.status = true;
-            } else if f.effects.instances.is_empty() && f.effects.tail.is_none() {
-                abi.result_words = register_result_words(world, &f)?;
-            }
+            let abi = Self::internal(world, &f)?;
             if abi != FnAbi::default() {
                 functions.insert(key.clone(), abi);
             }
         }
-        Ok(Self { functions })
+        Ok(Self {
+            functions,
+            optimize,
+        })
+    }
+    /// The internal convention of a non-boundary function `f`.
+    fn internal(world: &World, f: &Function) -> Result<FnAbi, String> {
+        let mut abi = FnAbi::default();
+        if fail_only(world, f) && !capability_abi(world, f) {
+            abi.status = true;
+        } else if f.effects.instances.is_empty() && f.effects.tail.is_none() {
+            abi.result_words = register_result_words(world, f)?;
+        }
+        Ok(abi)
+    }
+    /// The convention of a vtable slot whose stub is `f`: the one every
+    /// non-boundary method instance of that signature uses.
+    fn slot(&self, world: &World, f: &Function) -> Result<FnAbi, String> {
+        if self.optimize {
+            Self::internal(world, f)
+        } else {
+            Ok(FnAbi::default())
+        }
     }
     fn of(&self, key: &str) -> FnAbi {
         self.functions.get(key).copied().unwrap_or_default()
@@ -710,6 +829,21 @@ fn instances_for_entry(
                                 }
                             }
                             instance.extend(bound);
+                        }
+                        // A `dyn` argument needs its vtable's methods; the
+                        // `dyn` function has one instance, its `dyn`
+                        // parameters erased to their object types.
+                        for (_, vtable) in world.dyn_objects.coercions(&name, &instance) {
+                            for (method, vars) in
+                                vtable.map(|v| v.methods.clone()).unwrap_or_default()
+                            {
+                                todo.push((method, vars));
+                            }
+                        }
+                        let instance = world.dyn_objects.erase(&name, &instance);
+                        if world.dyn_objects.stubs.contains_key(&name) {
+                            // A vtable stub is called through its slot.
+                            return;
                         }
                         todo.push((name, instance));
                     }
@@ -1370,6 +1504,108 @@ pub fn jit_traced_with_options(
     optimize: bool,
 ) -> Result<crate::runtime::Value, String> {
     jit_run_entry(world, entry, optimize, EntryEffects::TraceHost)
+}
+/// A JIT-compiled function whose parameters and result are each one
+/// machine word (`in` aggregates are their addresses), for host code that
+/// calls compiled Vesper from several threads at once (source atomics,
+/// [`crate::atomics`]). The module owns the code; the function pointer is
+/// valid while this value lives.
+pub struct WordFunction {
+    _module: JITModule,
+    code: usize,
+    arity: usize,
+}
+// SAFETY: finalized JIT code is immutable and the module is only dropped
+// with the value; calling the code needs no access to the module.
+unsafe impl Sync for WordFunction {}
+// SAFETY: as above; nothing in the module is tied to the creating thread.
+unsafe impl Send for WordFunction {}
+impl WordFunction {
+    /// Compiles `entry` of `world` (optimized when `optimize`). Every
+    /// parameter and the result must have an eight-byte native lane or be
+    /// an `in` aggregate, and the row must be empty.
+    pub fn compile(world: &World, entry: &str, optimize: bool) -> Result<Self, String> {
+        let f = world.functions.get(entry).ok_or("unknown entry")?;
+        if !f.effects.instances.is_empty() || f.effects.tail.is_some() || f.params.len() > 3 {
+            return Err("a word function takes at most three words and has no effects".into());
+        }
+        if Layout::of(world, &f.result)?.aggregate() {
+            return Err("a word function returns one word".into());
+        }
+        let mut flags = settings::builder();
+        flags
+            .set("use_colocated_libcalls", "false")
+            .map_err(|e| e.to_string())?;
+        flags.set("is_pic", "false").map_err(|e| e.to_string())?;
+        if optimize {
+            flags.set("opt_level", "speed").map_err(|e| e.to_string())?;
+        }
+        let isa = cranelift_native::builder()
+            .map_err(str::to_string)?
+            .finish(settings::Flags::new(flags))
+            .map_err(|e| e.to_string())?;
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        register_jit_runtime_symbols(&mut builder, false);
+        let mut m = JITModule::new(builder);
+        let (ids, _) = compile_entry(
+            &mut m,
+            world,
+            entry,
+            optimize,
+            None,
+            None,
+            CodegenOptions::default(),
+            EntryEffects::Handled,
+            DefinitionLinkage::Jit,
+        )?;
+        let sig = signature(&m, world, f)?;
+        if sig.params.len() != f.params.len()
+            || sig.returns.len() != 1
+            || sig
+                .params
+                .iter()
+                .chain(&sig.returns)
+                .any(|p| p.value_type != types::I64)
+            || sig.call_conv != m.target_config().default_call_conv
+        {
+            return Err("word function ABI mismatch".into());
+        }
+        m.finalize_definitions().map_err(|e| e.to_string())?;
+        let code = m.get_finalized_function(ids[entry]) as usize;
+        Ok(Self {
+            _module: m,
+            code,
+            arity: f.params.len(),
+        })
+    }
+    /// Calls the function with `args` (one word per parameter).
+    ///
+    /// # Safety
+    ///
+    /// Every word must be a valid value of its parameter: an `in` aggregate
+    /// is the address of a live value in the native layout, which the call
+    /// only reads (atomic cells are updated through their shared element).
+    pub unsafe fn call(&self, args: &[u64]) -> Result<u64, String> {
+        if args.len() != self.arity {
+            return Err("word function arity mismatch".into());
+        }
+        // SAFETY: compile() checked a host-ABI signature of `arity` words
+        // returning one word; the caller vouches for the arguments.
+        unsafe {
+            let code = self.code as *const u8;
+            Ok(match *args {
+                [] => std::mem::transmute::<*const u8, extern "C" fn() -> u64>(code)(),
+                [a] => std::mem::transmute::<*const u8, extern "C" fn(u64) -> u64>(code)(a),
+                [a, b] => {
+                    std::mem::transmute::<*const u8, extern "C" fn(u64, u64) -> u64>(code)(a, b)
+                }
+                [a, b, c] => std::mem::transmute::<*const u8, extern "C" fn(u64, u64, u64) -> u64>(
+                    code,
+                )(a, b, c),
+                _ => unreachable!("arity checked at compile"),
+            })
+        }
+    }
 }
 pub(crate) fn register_jit_runtime_symbols(builder: &mut JITBuilder, trace_host: bool) {
     builder.symbol("fmod", native_float_remainder as *const u8);
@@ -4017,9 +4253,12 @@ impl<M: Module> Codegen<'_, '_, M> {
             (None, fs.as_slice())
         };
         let ptr = if self.operands_only {
-            // Zero only the words no field (or the tag) overwrites whole:
-            // the unused payload of an enum variant, and the word of an
-            // `f32` field, whose store writes only its low half.
+            // Zero only the words of this constructor that no field (or
+            // the tag) overwrites whole, such as the word of an `f32` field,
+            // whose store writes only its low half. The words past the
+            // variant's own fields are its inactive payload: no operation
+            // reads them (manuscript §16.6, "inactive payload"), so they
+            // are left as they are.
             let ptr = match into {
                 Some(ptr) => ptr,
                 None => self.alloc_uninit(layout.size),
@@ -4036,7 +4275,15 @@ impl<M: Module> Codegen<'_, '_, M> {
                     covered.extend((start..start + f.layout.size).step_by(8));
                 }
             }
-            for off in (0..layout.size.max(8)).step_by(8) {
+            let end = if tag.is_some() {
+                fs.iter()
+                    .map(|f| f.offset as u32 + f.layout.size)
+                    .max()
+                    .unwrap_or(8)
+            } else {
+                layout.size.max(8)
+            };
+            for off in (0..end).step_by(8) {
                 if !covered.contains(&off) {
                     let zero = self.zero();
                     self.b
@@ -5026,6 +5273,108 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.b.ins().uextend(types::I64, r)
         })
     }
+    /// An atomic operation of `atomics` on the one element of the receiver's
+    /// cell (`args[0]`, an `Atomic[T]`): one `atomic_load`, `atomic_store`,
+    /// `atomic_rmw` or `atomic_cas` at the width of `T` (`bool` and `u8` are
+    /// one byte), on the element at offset 0 of the sequence data. Operands
+    /// and results are canonical lanes. Cranelift atomics are sequentially
+    /// consistent, so the order arguments (literals, `E0820`) need no code.
+    fn atomic_call(
+        &mut self,
+        op: crate::atomics::AtomicOp,
+        args: &[Arg],
+        site: &Expr,
+        into: Option<ir::Value>,
+    ) -> Result<ir::Value, String> {
+        use crate::atomics::AtomicOp as A;
+        use cranelift_codegen::ir::AtomicRmwOp as Rmw;
+        let vars = call_vars(self.world, site, &self.generic_vars);
+        let cell = vars.get("T").ok_or("native atomic without a cell type")?;
+        let kind = crate::atomics::cell_kind(cell)
+            .ok_or_else(|| format!("native atomics are not defined on Atomic[{cell}]"))?;
+        let (narrow, signed) = match kind {
+            None => (types::I8, false),
+            Some(k) => (
+                match k.bits() {
+                    8 => types::I8,
+                    16 => types::I16,
+                    32 => types::I32,
+                    _ => types::I64,
+                },
+                k.signed(),
+            ),
+        };
+        if args.len() != 1 + op.values() + op.orders() {
+            return Err("native atomic operation with the wrong arity".into());
+        }
+        let flags = ir::MemFlags::trusted();
+        // `Atomic { cell }` -> sequence header `{len, cap, data}` -> element.
+        let receiver = self.expr(&args[0].expr)?;
+        let handle = self.b.ins().load(types::I64, flags, receiver, 0);
+        let data = self.b.ins().load(types::I64, flags, handle, 16);
+        let mut operands = vec![];
+        for a in &args[1..1 + op.values()] {
+            let v = self.expr(&a.expr)?;
+            operands.push(if narrow == types::I64 {
+                v
+            } else {
+                self.b.ins().ireduce(narrow, v)
+            });
+        }
+        let widen = |c: &mut Self, v: ir::Value| {
+            if narrow == types::I64 {
+                v
+            } else if signed {
+                c.b.ins().sextend(types::I64, v)
+            } else {
+                c.b.ins().uextend(types::I64, v)
+            }
+        };
+        let rmw = match op {
+            A::Load => {
+                let v = self.b.ins().atomic_load(narrow, flags, data);
+                return Ok(widen(self, v));
+            }
+            A::Store => {
+                self.b.ins().atomic_store(flags, operands[0], data);
+                return Ok(self.zero());
+            }
+            A::CompareExchange => {
+                let old = self
+                    .b
+                    .ins()
+                    .atomic_cas(flags, data, operands[0], operands[1]);
+                let same = self.b.ins().icmp(IntCC::Equal, old, operands[0]);
+                let old = widen(self, old);
+                let ty = Type::Named("Result".into(), vec![cell.clone(), cell.clone()]);
+                let layout = Layout::of(self.world, &ty)?;
+                let (ok, ok_fields) = layout.variant("Ok").ok_or("native Result without Ok")?;
+                let (err, _) = layout.variant("Err").ok_or("native Result without Err")?;
+                let offset = ok_fields.first().map_or(8, |f| f.offset);
+                let ok = self.b.ins().iconst(types::I64, ok as i64);
+                let err = self.b.ins().iconst(types::I64, err as i64);
+                let tag = self.b.ins().select(same, ok, err);
+                let ptr = match into {
+                    Some(out) => out,
+                    None => self.alloc(layout.size),
+                };
+                self.b.ins().store(ir::MemFlags::new(), tag, ptr, 0);
+                self.b.ins().store(ir::MemFlags::new(), old, ptr, offset);
+                return Ok(ptr);
+            }
+            A::Swap => Rmw::Xchg,
+            A::FetchAdd => Rmw::Add,
+            A::FetchSub => Rmw::Sub,
+            A::FetchAnd => Rmw::And,
+            A::FetchOr => Rmw::Or,
+            A::FetchXor => Rmw::Xor,
+        };
+        let old = self
+            .b
+            .ins()
+            .atomic_rmw(narrow, flags, rmw, data, operands[0]);
+        Ok(widen(self, old))
+    }
     /// `widen_k`, `narrow_k` and `wrapping_k` on a canonical `from` lane.
     /// In-range values have the same lane in every kind, so only the range
     /// check of a narrowing and the reduction of a wrapping emit code.
@@ -5427,6 +5776,10 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.b.ins().store(ir::MemFlags::new(), high, ptr, 8);
             return Ok(ptr);
         }
+        if let Some(op) = crate::atomics::intercepted(self.world, name) {
+            // An atomic operation (`atomics`): one Cranelift atomic.
+            return self.atomic_call(op, args, site, into);
+        }
         if let Some((op, _)) = crate::integer_widths::bit_builtin(name)
             && args.len() == op.arity()
             && args.iter().all(|a| a.pass == Pass::In)
@@ -5439,14 +5792,31 @@ impl<M: Module> Codegen<'_, '_, M> {
             };
             return self.bit_builtin(name, a, n);
         }
-        let vars = call_vars(self.world, site, &self.generic_vars);
+        // `dyn` parameters take their object types: a `dyn` function has
+        // one instance, and each concrete argument is coerced to an object.
+        let raw_vars = call_vars(self.world, site, &self.generic_vars);
+        let vars = self.world.dyn_objects.erase(name, &raw_vars);
+        let dyn_slot = self
+            .world
+            .dyn_objects
+            .stubs
+            .get(name)
+            .map(|(_, slot)| *slot);
         let f = concrete(self.world, name, &vars)?;
         let result_layout = Layout::of(self.world, &f.result)?;
         let mut values = vec![];
         let mut restores = vec![];
-        for (arg, param) in args.iter().zip(&f.params) {
+        let declared = self.world.functions[name].params.clone();
+        for ((arg, param), declared) in args.iter().zip(&f.params).zip(&declared) {
             let layout = Layout::of(self.world, &param.ty)?;
-            if param.pass == Pass::Inout && crate::seq::is_slice_type(&param.ty) {
+            if let Type::Named(g, _) = &declared.ty
+                && crate::dyn_trait::is_dyn_generic(g)
+                && let Some(actual) = raw_vars.get(g)
+                && !crate::dyn_trait::is_object(actual)
+            {
+                let pair = self.dyn_coerce(arg, param.pass, actual, &param.ty, &mut restores)?;
+                values.push(pair);
+            } else if param.pass == Pass::Inout && crate::seq::is_slice_type(&param.ty) {
                 // A slice view is passed as the address of its value.
                 values.push(self.expr(&arg.expr)?);
             } else if param.pass == Pass::Inout {
@@ -5509,6 +5879,11 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.current_call_slot = None;
             None
         };
+        // A vtable stub is called through the receiver's slot.
+        let dyn_target = match dyn_slot {
+            Some(slot) => Some(self.dyn_dispatch(&mut values, slot)?),
+            None => None,
+        };
         let call_key = instance_key(name, &vars);
         let trace_entry_name = self
             .trace_entry
@@ -5521,7 +5896,10 @@ impl<M: Module> Codegen<'_, '_, M> {
             .is_some_and(|id| id == "native-trace-host")
             && self.ids.contains_key(&call_key)
             && (trace_host_direct(self.world, &f) || call_key == trace_entry_name);
-        let result = if specialized_function(self.world, &f) && !direct_trace {
+        let result = if specialized_function(self.world, &f)
+            && !direct_trace
+            && dyn_target.is_none()
+        {
             if self.inline_depth >= 64 {
                 return Err("recursive effect specialization exceeds 64 inline frames".into());
             }
@@ -5608,14 +5986,21 @@ impl<M: Module> Codegen<'_, '_, M> {
             }
         } else {
             let key = instance_key(name, &vars);
-            let id = match &self.trace_entry {
-                Some((entry_name, internal_id)) if &key == entry_name => *internal_id,
-                _ => *self
-                    .ids
-                    .get(&key)
-                    .ok_or_else(|| format!("missing monomorphized function '{key}'"))?,
+            let id = match (&self.trace_entry, dyn_target) {
+                (_, Some(_)) => None,
+                (Some((entry_name, internal_id)), None) if &key == entry_name => Some(*internal_id),
+                _ => Some(
+                    *self
+                        .ids
+                        .get(&key)
+                        .ok_or_else(|| format!("missing monomorphized function '{key}'"))?,
+                ),
             };
-            let callee_abi = self.abi.of(&key);
+            let callee_abi = if dyn_target.is_some() {
+                self.abi.slot(self.world, &f)?
+            } else {
+                self.abi.of(&key)
+            };
             let output = if callee_abi.result_words.is_some() {
                 // Register result: the callee returns the words.
                 None
@@ -5653,21 +6038,30 @@ impl<M: Module> Codegen<'_, '_, M> {
             } else {
                 None
             };
-            let pass_trace = uses_trace_fail(
-                self.world,
-                self.trace_fail.is_some(),
-                &key,
-                self.trace_entry
-                    .as_ref()
-                    .map(|(e, _)| e.as_str())
-                    .unwrap_or(""),
-                &f,
-            );
+            let pass_trace = dyn_target.is_none()
+                && uses_trace_fail(
+                    self.world,
+                    self.trace_fail.is_some(),
+                    &key,
+                    self.trace_entry
+                        .as_ref()
+                        .map(|(e, _)| e.as_str())
+                        .unwrap_or(""),
+                    &f,
+                );
             if pass_trace {
                 values.push(self.trace_fail.ok_or("missing native trace failure slot")?);
             }
-            let fun = self.m.declare_func_in_func(id, self.b.func);
-            let sig = self.b.func.dfg.ext_funcs[fun].signature;
+            let (sig, fun) = match id {
+                Some(id) => {
+                    let fun = self.m.declare_func_in_func(id, self.b.func);
+                    (self.b.func.dfg.ext_funcs[fun].signature, Some(fun))
+                }
+                None => {
+                    let sig = signature_with_abi(&*self.m, self.world, &f, false, callee_abi)?;
+                    (self.b.import_signature(sig), None)
+                }
+            };
             let params = &self.b.func.dfg.signatures[sig].params;
             if params.len() != values.len()
                 || params
@@ -5677,7 +6071,11 @@ impl<M: Module> Codegen<'_, '_, M> {
             {
                 return Err(format!("native call ABI mismatch in '{name}'"));
             }
-            let call = self.b.ins().call(fun, &values);
+            let call = match (fun, dyn_target) {
+                (Some(fun), _) => self.b.ins().call(fun, &values),
+                (None, Some(target)) => self.b.ins().call_indirect(sig, target, &values),
+                (None, None) => return Err("native call lacks a callee".into()),
+            };
             let result = if let Some(words) = callee_abi.result_words {
                 let buffer = match into {
                     Some(out) => out,

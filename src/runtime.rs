@@ -2129,6 +2129,17 @@ impl<'a> Runtime<'a> {
         caller: &Env,
     ) -> Result<Control, String> {
         match callee {
+            Value::Function(name) if crate::atomics::intercepted(self.world, &name).is_some() => {
+                // An atomic operation (`atomics`): one update of the shared cell.
+                self.call_site = None;
+                let op = crate::atomics::intercepted(self.world, &name).unwrap();
+                Ok(Control::Return(atomic_call(op, &args)?))
+            }
+            Value::Function(name) if self.world.dyn_objects.stubs.contains_key(&name) => {
+                // A vtable stub: the receiver's slot function (§7.1).
+                let slot = self.dyn_slot(&name, caller)?;
+                self.invoke_scoped(Value::Function(slot), args, refs, caller)
+            }
             Value::Function(name) => {
                 let f = self
                     .world
@@ -2177,6 +2188,44 @@ impl<'a> Runtime<'a> {
                             env.insert(format!("$label:{label}"), Slot::new(Value::Capability(id)));
                         }
                     }
+                }
+                // Each `dyn` parameter's vtable, by its hidden type
+                // parameter: the caller's own when it forwards one.
+                for (g, tr) in self
+                    .world
+                    .dyn_objects
+                    .params
+                    .get(&name)
+                    .into_iter()
+                    .flatten()
+                {
+                    let key = dyn_key(g);
+                    let slot = match vars.get(g) {
+                        Some(Type::Named(h, a))
+                            if a.is_empty() && crate::dyn_trait::is_dyn_generic(h) =>
+                        {
+                            caller
+                                .get(&dyn_key(h))
+                                .cloned()
+                                .ok_or("a forwarded `dyn` argument lacks its vtable")?
+                        }
+                        Some(actual) => {
+                            let object = crate::dyn_trait::object(substitute(tr, &vars));
+                            let vtable =
+                                self.world.dyn_objects.vtable(&object, actual).ok_or_else(
+                                    || format!("no vtable of {actual} as `{object}`"),
+                                )?;
+                            Slot::new(Value::Tuple(
+                                vtable
+                                    .methods
+                                    .iter()
+                                    .map(|(m, _)| Value::Function(m.clone()))
+                                    .collect(),
+                            ))
+                        }
+                        None => return Err("a `dyn` argument's type is unknown".into()),
+                    };
+                    env.insert(key, slot);
                 }
                 for (i, (p, v)) in f.params.iter().zip(args).enumerate() {
                     let v = self.qualify_value(v, &p.ty, &env, true);
@@ -2715,6 +2764,68 @@ fn value_kind(v: &Value) -> Option<(crate::numeric::IntegerKind, i128)> {
         _ => return None,
     })
 }
+/// An atomic operation `op` on `args` (the `Atomic[T]` receiver, then the
+/// operands and orders): the cell's one element is updated in place, so
+/// every copy of the receiver's sequence cell observes it.
+fn atomic_call(op: crate::atomics::AtomicOp, args: &[Value]) -> Result<Value, String> {
+    use crate::atomics::AtomicOp as A;
+    let Some(Value::Data { fields, .. }) = args.first() else {
+        return Err("atomic operation without an Atomic receiver".into());
+    };
+    let Some(Value::Seq(cell)) = fields.get("cell") else {
+        return Err("atomic operation on a malformed Atomic cell".into());
+    };
+    let mut elements = cell.borrow_mut();
+    let slot = elements
+        .first_mut()
+        .ok_or("atomic operation on an empty Atomic cell")?;
+    let old = slot.clone();
+    let operand = args.get(1).cloned().unwrap_or(Value::Bool(false));
+    match op {
+        A::Load => return Ok(old),
+        A::Store => {
+            *slot = operand;
+            return Ok(Value::Tuple(vec![]));
+        }
+        A::CompareExchange => {
+            let new = args
+                .get(2)
+                .cloned()
+                .ok_or("compare_exchange without a new value")?;
+            let same = match (value_kind(&old), value_kind(&operand)) {
+                (Some((_, a)), Some((_, b))) => a == b,
+                _ => matches!((&old, &operand), (Value::Bool(a), Value::Bool(b)) if a == b),
+            };
+            if same {
+                *slot = new;
+            }
+            let constructor = if same { "Ok" } else { "Err" };
+            return Ok(Value::Data {
+                ty: "Result".into(),
+                constructor: constructor.into(),
+                fields: BTreeMap::from([("0".to_string(), old)]),
+                resource_identity: None,
+            });
+        }
+        _ => {}
+    }
+    *slot = match (&old, &operand) {
+        (Value::Bool(a), Value::Bool(b)) => Value::Bool(match op {
+            A::Swap => *b,
+            A::FetchAnd => *a && *b,
+            A::FetchOr => *a || *b,
+            A::FetchXor => *a != *b,
+            _ => return Err("arithmetic atomic operation on a bool cell".into()),
+        }),
+        _ => {
+            let (Some((kind, a)), Some((_, b))) = (value_kind(&old), value_kind(&operand)) else {
+                return Err("atomic operation on a non-integer cell".into());
+            };
+            integer_value(kind, op.rmw(kind, a, b).ok_or("not a read-modify-write")?)
+        }
+    };
+    Ok(old)
+}
 fn integer_value(kind: crate::numeric::IntegerKind, n: i128) -> Value {
     if kind.unsigned() {
         Value::UInt(n as u64, kind.bits())
@@ -3104,6 +3215,34 @@ fn capability(env: &Env, key: &str) -> Option<u64> {
             None
         }
     })
+}
+/// The environment entry holding the vtable of the `dyn` parameter whose
+/// hidden type parameter is `generic` (passed on like static evidence).
+fn dyn_key(generic: &str) -> String {
+    format!("$static:$dyn:{generic}")
+}
+impl Runtime<'_> {
+    /// The slot function a call of vtable stub `stub` reaches from `caller`.
+    fn dyn_slot(&mut self, stub: &str, caller: &Env) -> Result<String, String> {
+        let (_, slot) = self.world.dyn_objects.stubs[stub].clone();
+        let receiver = self
+            .call_site
+            .take()
+            .and_then(|site| self.world.calls.get(&site))
+            .and_then(|vars| vars.get("$Self").cloned())
+            .ok_or("a vtable call lacks its receiver type")?;
+        let table = caller
+            .get(&dyn_key(receiver.name()))
+            .ok_or("a vtable call lacks its object's vtable")?
+            .get()?;
+        match table {
+            Value::Tuple(slots) => match slots.get(slot) {
+                Some(Value::Function(f)) => Ok(f.clone()),
+                _ => Err("a vtable lacks a slot".into()),
+            },
+            _ => Err("a vtable is not a table".into()),
+        }
+    }
 }
 fn evidence_environment(env: &Env) -> Env {
     env.iter()

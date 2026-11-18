@@ -10,11 +10,13 @@ pub use vesper_pulse::frames;
 #[cfg(target_os = "linux")]
 pub use vesper_pulse::{io_driver, scheduler};
 pub use vesper_syntax::{lexer, parser};
+pub mod atomics;
 pub mod bounds_hoist;
 pub mod capability_effects;
 pub mod check;
 pub mod database;
 pub mod doctest;
+pub mod dyn_trait;
 pub mod ebpf_backend;
 pub mod ffi_lowering;
 pub mod fip;

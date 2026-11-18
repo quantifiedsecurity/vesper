@@ -6,6 +6,15 @@
 // | ) {
 // |     fn vesper_tensor_expf(bits: u32) -> ForeignVal[u32];
 // | }
+// @export vsys direct rust=crate::port::files
+// | sys library WeightFile (
+// |     target = "@TARGET@", abi = "@ABI@",
+// |     link = "static", name = "vesper_tensor_files",
+// |     artifact = "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+// | ) {
+// |     fn vesper_tensor_file_len() -> ForeignVal[u64];
+// |     fn vesper_tensor_file_map() -> ForeignVal[u64];
+// | }
 //
 // @vesper/tensor: Vesper port of vesper-tensor's element and block formats,
 // quantizers, sampling and FP32 kernels (port wave P1 lane 8, #905):
@@ -15,8 +24,10 @@
 // softmax, argmax, RMSNorm, SwiGLU and residual add (src/ops.rs), and the
 // llama2.c BPE prompt encoder (src/tokenizer.rs), the GGUF reader
 // (src/gguf.rs), the safetensors header's JSON reader (src/json.rs), the
-// paged K/V pool's bookkeeping (src/kv.rs) and the dimension planner's
-// normal form (src/shape.rs).
+// paged K/V pool's bookkeeping (src/kv.rs), the dimension planner's
+// normal form (src/shape.rs), scalar paged attention (src/attention.rs), the
+// pure checks of src/llama.rs (llama.ves) and the memory map's policy
+// (src/mmap.rs, through the `.vsys` library `WeightFile`).
 //
 // The export ABI has no f32, so an f32 crosses the boundary as its bit
 // pattern: a `u32` scalar, and `Slice[u32]` for `&[f32]`, which the Rust
@@ -30,6 +41,12 @@ use self::num::{
     is_finite,
     is_nan,
     u64_zero
+};
+use self::llama::{
+    check_checkpoint as l_check_checkpoint,
+    check_tokenizer as l_check_tokenizer,
+    decode_piece as l_decode_piece,
+    validate as l_validate
 };
 use self::ocp::{
     e8m0_half as f_e8m0_half,
@@ -609,4 +626,264 @@ pub fn shape_normalize(
 
 pub fn shape_gqa_ratio(query_heads: u64, kv_heads: u64) -> u64 eff [Fail[RuntimeError]] {
     d_gqa_ratio(query_heads, kv_heads)
+}
+
+// Paged GQA decode attention (src/attention.rs) with the scalar kernel, over
+// the K/V pool's tables and storage (see pool.ves): `tokens` visible tokens
+// of sequence `(slot, generation)`, query head `h` reading K/V head
+// `h / (query_heads / kv_heads)`. The wrapper has checked the shapes, the
+// GQA ratio and `tokens`. `scores` holds `query_heads * tokens` values for
+// the two-pass schedule; `block` holds one page of scores for the online
+// one; `page` is three words of scratch. Returns a pool code (see pool.ves);
+// non-finite values raise `NonFinite`.
+pub fn attend(
+    in storage: Slice[u8],
+    in pages: Slice[u64],
+    in slots: Slice[u64],
+    in leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64,
+    in query: Slice[u32],
+    inout scores: Slice[u32],
+    inout block: Slice[u32],
+    inout out: Slice[u32],
+    inout page: Slice[u64],
+    query_heads: u64,
+    tokens: u64,
+    online: bool,
+    words: bool
+) -> u64 eff [Ffi[Libm], Fail[ArithOverflow], Fail[RuntimeError], Fail[Fault]] {
+    let kv_heads = cfg[0];
+    let head_dim = cfg[1];
+    let plane = 16 * cfg[5];
+    let width: u64 = if words {
+        4
+    } else {
+        2
+    };
+    let kv_stride = kv_heads * head_dim;
+    let group = query_heads / kv_heads;
+    let npages = (tokens + 15) / 16;
+    let scale = sqrt(nearest_f32(head_dim));
+    let neg_inf = from_bits_f32(4286578688);
+    for h in u64_zero()..query_heads {
+        let kv_head = h / group;
+        let q0 = h * head_dim;
+        let o0 = h * head_dim;
+        if !online {
+            let s0 = h * tokens;
+            for p in u64_zero()..npages {
+                let code = p_kv_read_page(
+                    in pages,
+                    in slots,
+                    in leases,
+                    in cfg,
+                    slot,
+                    generation,
+                    p,
+                    inout page
+                );
+                if code != 0 {
+                    return code;
+                }
+                let first = page[0];
+                let n = visible(page[1], tokens - first);
+                for t in u64_zero()..n {
+                    let at = page[2] + (t * kv_stride + kv_head * head_dim) * width;
+                    let d = dot_at(in query, q0, in storage, at, head_dim, words) / scale;
+                    scores.set(s0 + first + t, to_bits_f32(d));
+                }
+            }
+            softmax(inout scores[s0..s0 + tokens]);
+            for i in u64_zero()..head_dim {
+                out.set(o0 + i, 0);
+            }
+            for p in u64_zero()..npages {
+                let code = p_kv_read_page(
+                    in pages,
+                    in slots,
+                    in leases,
+                    in cfg,
+                    slot,
+                    generation,
+                    p,
+                    inout page
+                );
+                if code != 0 {
+                    return code;
+                }
+                let first = page[0];
+                let n = visible(page[1], tokens - first);
+                for t in u64_zero()..n {
+                    let a = f(in scores, s0 + first + t);
+                    let at = page[2] + plane + (t * kv_stride + kv_head * head_dim) * width;
+                    axpy_at(inout out, o0, a, in storage, at, head_dim, words);
+                }
+            }
+        } else {
+            let mut max = neg_inf;
+            let mut sum: f32 = 0.0;
+            for i in u64_zero()..head_dim {
+                out.set(o0 + i, 0);
+            }
+            for p in u64_zero()..npages {
+                let code = p_kv_read_page(
+                    in pages,
+                    in slots,
+                    in leases,
+                    in cfg,
+                    slot,
+                    generation,
+                    p,
+                    inout page
+                );
+                if code != 0 {
+                    return code;
+                }
+                let first = page[0];
+                let n = visible(page[1], tokens - first);
+                let mut block_max = neg_inf;
+                for t in u64_zero()..n {
+                    let at = page[2] + (t * kv_stride + kv_head * head_dim) * width;
+                    let d = dot_at(in query, q0, in storage, at, head_dim, words) / scale;
+                    block.set(t, to_bits_f32(d));
+                    if d > block_max {
+                        block_max = d;
+                    }
+                }
+                if !is_finite(block_max) {
+                    Fail::raise(Fault::NonFinite);
+                }
+                if block_max > max {
+                    let rescale = expf(max - block_max);
+                    sum = sum * rescale;
+                    for i in u64_zero()..head_dim {
+                        let v = f(in out, o0 + i) * rescale;
+                        out.set(o0 + i, to_bits_f32(v));
+                    }
+                    max = block_max;
+                }
+                for t in u64_zero()..n {
+                    let weight = expf(f(in block, t) - max);
+                    sum = sum + weight;
+                    let at = page[2] + plane + (t * kv_stride + kv_head * head_dim) * width;
+                    axpy_at(inout out, o0, weight, in storage, at, head_dim, words);
+                }
+            }
+            for i in u64_zero()..head_dim {
+                let v = f(in out, o0 + i) / sum;
+                out.set(o0 + i, to_bits_f32(v));
+            }
+        }
+    }
+    for i in u64_zero()..out.len() {
+        if !is_finite(f(in out, i)) {
+            Fail::raise(Fault::NonFinite);
+        }
+    }
+    0
+}
+
+fn visible(stored: u64, left: u64) -> u64 {
+    if stored < left {
+        stored
+    } else {
+        left
+    }
+}
+
+// Element `i` of a K/V head at byte `at`: little-endian FP32 or BF16.
+fn kv_elem(in storage: Slice[u8], at: u64, i: u64, words: bool)
+    -> f32 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    if words {
+        from_bits_f32(storage.read_u32_le(at + 4 * i))
+    } else {
+        let lo = widen_u32(storage[at + 2 * i]);
+        let hi = widen_u32(storage[at + 2 * i + 1]);
+        from_bits_f32((lo | (hi << 8)) << 16)
+    }
+}
+
+// The scalar kernel's dot product, in element order.
+fn dot_at(in q: Slice[u32], q0: u64, in storage: Slice[u8], at: u64, n: u64, words: bool)
+    -> f32 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let mut acc: f32 = 0.0;
+    if words {
+        for i in u64_zero()..n {
+            acc = acc + from_bits_f32(q[q0 + i]) * from_bits_f32(storage.read_u32_le(at + 4 * i));
+        }
+    } else {
+        for i in u64_zero()..n {
+            acc = acc + f(in q, q0 + i) * kv_elem(in storage, at, i, false);
+        }
+    }
+    acc
+}
+
+fn axpy_at(
+    inout out: Slice[u32],
+    o0: u64,
+    alpha: f32,
+    in storage: Slice[u8],
+    at: u64,
+    n: u64,
+    words: bool
+) eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    if words {
+        for i in u64_zero()..n {
+            let v = from_bits_f32(out[o0 + i])
+                + alpha
+                * from_bits_f32(storage.read_u32_le(at + 4 * i));
+            out.set(o0 + i, to_bits_f32(v));
+        }
+    } else {
+        for i in u64_zero()..n {
+            let v = f(in out, o0 + i) + alpha * kv_elem(in storage, at, i, false);
+            out.set(o0 + i, to_bits_f32(v));
+        }
+    }
+}
+
+// The pure checks of src/llama.rs (see llama.ves).
+pub fn llama_validate(in dims: Slice[u64], rope_base: u32, rms_epsilon: u32)
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    l_validate(in dims, rope_base, rms_epsilon)
+}
+
+pub fn llama_checkpoint(in b: Slice[u8], rope_base: u32, rms_epsilon: u32, inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    l_check_checkpoint(in b, rope_base, rms_epsilon, inout out)
+}
+
+pub fn llama_tokenizer(in b: Slice[u8], vocab: u64, inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    l_check_tokenizer(in b, vocab, inout out)
+}
+
+pub fn llama_decode(in piece: Slice[u8], after_bos: bool, inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    l_decode_piece(in piece, after_bos, inout out)
+}
+
+// `Mapping::open` (src/mmap.rs) once the wrapper has opened the file: the
+// `WeightFile` library stats and maps the file it holds. Returns 0 when the
+// file is mapped, 1 when it is empty (zero-length mappings are not
+// portable), 2 when it cannot be stat'ed, 3 when it is larger than
+// `MAX_WEIGHT_FILE_BYTES` (64 GiB) and 4 when it cannot be mapped.
+pub fn open_weights() -> u64 eff [Ffi[WeightFile]] {
+    let len = WeightFile::vesper_tensor_file_len();
+    if len == 18446744073709551615 {
+        return 2;
+    }
+    if len > 68719476736 {
+        return 3;
+    }
+    if len == 0 {
+        return 1;
+    }
+    if WeightFile::vesper_tensor_file_map() != 0 {
+        return 4;
+    }
+    0
 }

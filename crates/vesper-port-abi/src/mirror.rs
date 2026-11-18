@@ -18,7 +18,9 @@
 //!   written through [`Word::new`]/[`Word::set`]; reading converts.
 //! * [`Words<T, N>`] holds any other copy value (an `Option`, a `Result`, a
 //!   tuple, an enum with payloads) as its `N` words, converted with [`Abi`]
-//!   only when the field is read or written.
+//!   only when the field is read or written. The words past an enum's
+//!   active variant are unspecified when Vesper wrote them (its inactive
+//!   payload), so equality and `Debug` compare the converted values.
 //! * A nested copy struct is its own mirror.
 //!
 //! The binding asserts every offset, so a mirror that does not match the
@@ -208,7 +210,8 @@ impl<T: Abi, const N: usize> Words<T, N> {
 }
 
 impl<T, const N: usize> Words<T, N> {
-    /// The raw words.
+    /// The raw words. When Vesper built the value, the inactive payload
+    /// words of an enum are unspecified.
     pub const fn bits(&self) -> &[u64; N] {
         &self.words
     }
@@ -228,17 +231,30 @@ impl<T, const N: usize> Clone for Words<T, N> {
 
 impl<T, const N: usize> Copy for Words<T, N> {}
 
-impl<T, const N: usize> PartialEq for Words<T, N> {
-    fn eq(&self, other: &Self) -> bool {
-        self.words == other.words
+impl<T: Abi, const N: usize> Words<T, N> {
+    /// The value's canonical words: the value read and written again, so
+    /// an enum's inactive payload words (unspecified when Vesper built the
+    /// value) are zero.
+    fn canonical(&self) -> [u64; N] {
+        let mut words = [0u64; N];
+        self.get().put(&mut words);
+        words
     }
 }
 
-impl<T, const N: usize> Eq for Words<T, N> {}
+/// Equal when the values' canonical words are: Vesper leaves the inactive
+/// payload words of an enum unspecified, so they never decide equality.
+impl<T: Abi, const N: usize> PartialEq for Words<T, N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.words == other.words || self.canonical() == other.canonical()
+    }
+}
 
-impl<T, const N: usize> fmt::Debug for Words<T, N> {
+impl<T: Abi, const N: usize> Eq for Words<T, N> {}
+
+impl<T: Abi, const N: usize> fmt::Debug for Words<T, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Words({:x?})", self.words)
+        write!(f, "Words({:x?})", self.canonical())
     }
 }
 
@@ -549,6 +565,27 @@ mod tests {
         let some = Words::<Option<u32>, 2>::new(Some(9));
         assert_eq!(some.bits(), &[1, 9]);
         assert_eq!(some.get(), Some(9));
+    }
+
+    #[test]
+    fn inactive_payload_words_never_decide_equality() {
+        // Vesper may leave a wider variant's words behind a `None`
+        // (manuscript §16.6, inactive payload).
+        let built_by_vesper = mirror_from_words::<Probe>(&[5, 1, 0, 0xdead]);
+        let built_by_rust = Probe {
+            a: 5,
+            b: Word::new(1),
+            c: Words::new(None),
+        };
+        assert_eq!(built_by_vesper.c.bits(), &[0, 0xdead]);
+        assert_eq!(built_by_vesper, built_by_rust);
+        assert_eq!(
+            alloc::format!("{:?}", built_by_vesper.c),
+            alloc::format!("{:?}", built_by_rust.c)
+        );
+        let some = mirror_from_words::<Probe>(&[5, 1, 1, 0xdead]);
+        assert_ne!(some, built_by_rust);
+        assert_eq!(some.c.get(), Some(0xdead));
     }
 
     #[test]
