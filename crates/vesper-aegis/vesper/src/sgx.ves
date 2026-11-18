@@ -59,6 +59,8 @@ pub fn report_body(in b: Slice[u8], inout r: Rd, inout w: ChunkSeq[u64], inout d
 pub fn parse(in b: Slice[u8], mode: u64, inout w: ChunkSeq[u64], inout d: ChunkSeq[u8])
     -> u64 eff [Fail[AErr]] {
     let mut r = rd(0, b.len(), 1);
+    w.reserve(14);
+    d.reserve(wrapping_add(b.len(), 816));
     let version = rd_u16(in b, inout r, 80);
     if version != 3 {
         unsupported(in r, 80, version);

@@ -21,11 +21,11 @@ fn main() {
 /// BUILD.bazel). Each must make the tests port/check.sh names fail.
 #[cfg(feature = "vesper-port-divergent")]
 const DIVERGENT: &[(&str, &str, &str)] = &[
-    // reader.rs: a reserved byte holding 1 reads as zero.
+    // reader.rs: a reserved word whose first byte holds 1 reads as zero.
     (
         "reader",
-        "match s.find_not_in(1, 0, false) {",
-        "match s.find_not_in(3, 0, false) {",
+        "acc = acc | x;",
+        "acc = acc | (x & 18446744073709551614);",
     ),
     // snp.rs: report version 7 is accepted.
     (

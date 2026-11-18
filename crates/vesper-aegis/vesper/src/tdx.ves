@@ -115,6 +115,8 @@ pub fn td15_ex(in b: Slice[u8], inout r: Rd, inout w: ChunkSeq[u64], inout d: Ch
 pub fn parse(in b: Slice[u8], mode: u64, inout w: ChunkSeq[u64], inout d: ChunkSeq[u8])
     -> u64 eff [Fail[AErr]] {
     let mut r = rd(0, b.len(), 0);
+    w.reserve(16);
+    d.reserve(b.len());
     let version = rd_u16(in b, inout r, 80);
     let att_key_type = rd_u16(in b, inout r, 81);
     let tee_type = rd_u32(in b, inout r, 82);

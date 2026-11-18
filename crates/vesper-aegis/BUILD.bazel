@@ -30,7 +30,7 @@ filegroup(
 # the Cargo run in port/check.sh (scripts/test-port-harness.sh) asserts that
 # the tests catch each edit.
 DIVERGENT = {
-    "reader": ("reader", {"match s.find_not_in(1, 0, false) {": "match s.find_not_in(3, 0, false) {"}),
+    "reader": ("reader", {"acc = acc | x;": "acc = acc | (x & 18446744073709551614);"}),
     "snp": ("snp", {"if version < 2 || version > 6 {": "if version < 2 || version > 7 {"}),
     "tdx": ("tdx", {"            885\n": "            884\n"}),
     "sgx": ("sgx", {"if cert_type != 5 {": "if cert_type != 6 {"}),

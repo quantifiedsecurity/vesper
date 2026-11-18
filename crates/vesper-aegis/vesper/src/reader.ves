@@ -116,7 +116,22 @@ pub fn byte(in b: Slice[u8], i: u64) -> u64 {
 
 // Whether `b[start..end]` is all zero.
 pub fn zero(in b: Slice[u8], start: u64, end: u64) -> bool {
-    all_zero(in b[start..end])
+    // Eight bytes at a time, then the tail.
+    let mut acc: u64 = 0;
+    let mut i = start;
+    let words = wrapping_sub(end, start) / 8;
+    for k in 0..words {
+        let x = match b.try_read_u64_le(i) {
+            Option::Some(v) => v,
+            Option::None => 1,
+        };
+        acc = acc | x;
+        i = wrapping_add(i, 8);
+    }
+    if acc != 0 {
+        return false;
+    }
+    all_zero(in b[i..end])
 }
 
 pub fn all_zero(in s: Slice[u8]) -> bool {

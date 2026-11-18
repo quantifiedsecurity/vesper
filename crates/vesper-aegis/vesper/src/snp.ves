@@ -50,6 +50,8 @@ pub fn parse_etcb(in b: Slice[u8], inout d: ChunkSeq[u8]) -> Unit eff [Fail[AErr
 pub fn parse(in b: Slice[u8], inout w: ChunkSeq[u64], inout d: ChunkSeq[u8])
     -> Unit eff [Fail[AErr]] {
     let mut r = rd(0, b.len(), 2);
+    w.reserve(14);
+    d.reserve(633);
     let version = rd_u32(in b, inout r, 1);
     if version < 2 || version > 6 {
         unsupported(in r, 1, version);
@@ -128,8 +130,15 @@ pub fn signature_half(in b: Slice[u8], at: u64, inout d: ChunkSeq[u8]) -> Unit e
     if !zero(in b, wrapping_add(at, 48), wrapping_add(at, 72)) {
         raise(k_reserved(), 2, 42, 0, 0);
     }
-    let n: u64 = 48;
-    for i in 0..n {
-        d.push(wrapping_u8(byte(in b, wrapping_add(at, wrapping_sub(47, i)))));
+    // Six eight-byte words, last first, each stored byte-swapped.
+    let base = d.len();
+    d.extend(in b[at..wrapping_add(at, 48)]);
+    let six: u64 = 6;
+    for k in 0..six {
+        let v = match b.try_read_u64_le(wrapping_add(at, wrapping_sub(40, wrapping_mul(k, 8)))) {
+            Option::Some(x) => x,
+            Option::None => 0,
+        };
+        d.try_write_u64_be(wrapping_add(base, wrapping_mul(k, 8)), v);
     }
 }
