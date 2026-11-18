@@ -1223,6 +1223,36 @@ impl<'a> Runtime<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 self.tiled_op(&op, values, &state.env)?
             }
+            Op::Seq { op, args } if op.place_primitive() => {
+                // `swap(inout a, inout b)` and `replace(inout a, v)` write
+                // their places (`inout` parameters share them).
+                let slot_of = |place: Option<crate::check::Place>| {
+                    let place = place.ok_or("swap and replace require places")?;
+                    let mut slot = state
+                        .env
+                        .get(&place.root)
+                        .cloned()
+                        .ok_or("undefined swap or replace place")?;
+                    slot.path.extend(place.path);
+                    Ok::<_, String>(slot)
+                };
+                let mut args = args.into_iter();
+                let (Some(a), Some(b)) = (args.next(), args.next()) else {
+                    return Err(format!("{} needs two operands", op.name()));
+                };
+                let first = get(a.value)?;
+                let second = get(b.value)?;
+                let a = slot_of(a.place)?;
+                if op == crate::seq::SeqOp::Swap {
+                    let b = slot_of(b.place)?;
+                    a.set(second)?;
+                    b.set(first)?;
+                    Value::Tuple(vec![])
+                } else {
+                    a.set(second)?;
+                    first
+                }
+            }
             Op::Seq { op, args } => {
                 let receiver = args.first().and_then(|a| a.place.clone());
                 let values = args

@@ -131,6 +131,20 @@ pub enum SeqOp {
     /// `s.find_byte(b)` on a byte sequence or slice: the index of the first
     /// byte equal to `b`, as an `Option[u64]`. Total.
     FindByte,
+    /// `s.copy_within(lo, hi, at)` (`try_copy_within` when `total`): moves
+    /// the elements of `s[lo..hi]` to `s[at..at + (hi - lo)]` with one bounds
+    /// check, as `memmove` does, so the two intervals may overlap. The
+    /// checked form raises `IndexOutOfBounds` and the total one yields
+    /// `false` when an interval does not fit; neither writes anything then.
+    CopyWithin { total: bool },
+    /// `swap(inout a, inout b)`: exchanges the values of two disjoint places
+    /// of one type, which need not be copy. Not a sequence operation: like
+    /// [`SeqOp::Str`], this place primitive shares `Op::Seq`. Total.
+    Swap,
+    /// `replace(inout a, v)`: stores `v` in the place `a` and yields the
+    /// value `a` held, which need not be copy. A place primitive like
+    /// [`SeqOp::Swap`]. Total.
+    Replace,
     /// `s.find_either(a, b)` on a byte sequence or slice: the index of the
     /// first byte equal to `a` or to `b`, as an `Option[u64]`. Total.
     FindEither,
@@ -285,6 +299,7 @@ impl SeqOp {
                 | Self::SliceGet
                 | Self::SliceSet
                 | Self::CopyFrom { total: false }
+                | Self::CopyWithin { total: false }
                 | Self::Wide(Wide { total: false, .. })
         )
     }
@@ -304,9 +319,15 @@ impl SeqOp {
                 | Self::Extend
                 | Self::ExtendAsciiLowercase
                 | Self::CopyFrom { .. }
+                | Self::CopyWithin { .. }
                 | Self::Fill
                 | Self::Wide(Wide { write: true, .. })
         )
+    }
+    /// Whether the operation is a place primitive (`swap`, `replace`) whose
+    /// `inout` operands are places of any type rather than a sequence.
+    pub fn place_primitive(self) -> bool {
+        matches!(self, Self::Swap | Self::Replace)
     }
     /// How the operation borrows its receiver.
     pub fn receiver_pass(self) -> Pass {
@@ -320,7 +341,7 @@ impl SeqOp {
     pub fn has_receiver(self) -> bool {
         !matches!(
             self,
-            Self::New | Self::WithCapacity | Self::BoundsGuard { .. }
+            Self::New | Self::WithCapacity | Self::BoundsGuard { .. } | Self::Swap | Self::Replace
         )
     }
     pub fn name(self) -> &'static str {
@@ -350,6 +371,10 @@ impl SeqOp {
             Self::SumBe16 => "sum_be16",
             Self::BytesEq => "eq",
             Self::FindByte => "find_byte",
+            Self::CopyWithin { total: false } => "copy_within",
+            Self::CopyWithin { total: true } => "try_copy_within",
+            Self::Swap => "swap",
+            Self::Replace => "replace",
             Self::FindEither => "find_either",
             Self::FindNotIn => "find_not_in",
             Self::EqIgnoreAsciiCase => "eq_ignore_ascii_case",
@@ -541,6 +566,8 @@ fn shared_method(method: &str) -> Option<SeqOp> {
     Some(match method {
         "copy_from" => SeqOp::CopyFrom { total: false },
         "try_copy_from" => SeqOp::CopyFrom { total: true },
+        "copy_within" => SeqOp::CopyWithin { total: false },
+        "try_copy_within" => SeqOp::CopyWithin { total: true },
         "fill" => SeqOp::Fill,
         "sum_be16" => SeqOp::SumBe16,
         "eq" => SeqOp::BytesEq,
@@ -586,6 +613,13 @@ pub fn resolve(callee_name: &str, receiver_ty: Option<&Type>) -> Option<SeqOp> {
             });
         }
         return None;
+    }
+    // The place primitives are free functions; a function of the same name
+    // shadows them (callers resolve declared functions first).
+    match callee_name {
+        "swap" => return Some(SeqOp::Swap),
+        "replace" => return Some(SeqOp::Replace),
+        _ => {}
     }
     match callee_name.strip_prefix("ChunkSeq::")? {
         "new" => Some(SeqOp::New),

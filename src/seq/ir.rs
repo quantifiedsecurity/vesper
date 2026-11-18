@@ -47,9 +47,20 @@ impl Lower<'_> {
                                 return None;
                             }
                             let op = resolve(n, None)?;
+                            // `swap` borrows both places and `replace` its
+                            // first one `inout`; other operands are values.
                             let operands = args
                                 .iter()
-                                .map(|a| self.argument(&a.expr, Pass::Sink, vec![]))
+                                .enumerate()
+                                .map(|(i, a)| {
+                                    let pass =
+                                        if op == SeqOp::Swap || (op == SeqOp::Replace && i == 0) {
+                                            Pass::Inout
+                                        } else {
+                                            Pass::Sink
+                                        };
+                                    self.argument(&a.expr, pass, vec![])
+                                })
                                 .collect();
                             (op, operands)
                         }

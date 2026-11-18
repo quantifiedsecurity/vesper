@@ -228,6 +228,32 @@ impl Runtime<'_> {
                     Value::Tuple(vec![])
                 })
             }
+            SeqOp::CopyWithin { total } => {
+                let (cell, start, len) = view(arg(0)?)?;
+                let lo = index(arg(1)?)?;
+                let hi = index(arg(2)?)?;
+                let at = index(arg(3)?)?;
+                if lo > hi || hi > len as u64 || !fits(len, at, (hi - lo) as usize) {
+                    return Ok(if total {
+                        V(Value::Bool(false))
+                    } else {
+                        OutOfBounds
+                    });
+                }
+                let (lo, hi, at) = (
+                    start + lo as usize,
+                    start + hi as usize,
+                    start + at as usize,
+                );
+                // `memmove`: the source and destination may overlap.
+                let items = cell.borrow()[lo..hi].to_vec();
+                cell.borrow_mut()[at..at + items.len()].clone_from_slice(&items);
+                V(if total {
+                    Value::Bool(true)
+                } else {
+                    Value::Tuple(vec![])
+                })
+            }
             SeqOp::Fill => {
                 let (cell, start, len) = view(arg(0)?)?;
                 let value = arg(1)?.clone();
@@ -293,6 +319,12 @@ impl Runtime<'_> {
             }
             SeqOp::Str(_) | SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. } => {
                 unreachable!("string and hoisted operations return above")
+            }
+            SeqOp::Swap | SeqOp::Replace => {
+                return Err(format!(
+                    "{} writes places; the evaluator runs it at its instruction",
+                    op.name()
+                ));
             }
             SeqOp::SubSlice => {
                 let (cell, start, len) = view(arg(0)?)?;

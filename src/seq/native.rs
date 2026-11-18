@@ -671,6 +671,7 @@ impl<M: Module> Codegen<'_, '_, M> {
             | SeqOp::Hoisted(_)
             | SeqOp::BoundsGuard { .. }
             | SeqOp::CopyFrom { .. }
+            | SeqOp::CopyWithin { .. }
             | SeqOp::Fill
             | SeqOp::Wide(_)
             | SeqOp::SumBe16
@@ -681,6 +682,12 @@ impl<M: Module> Codegen<'_, '_, M> {
             | SeqOp::EqIgnoreAsciiCase
             | SeqOp::ExtendAsciiLowercase => {
                 unreachable!("string, hoisted and byte operations return above")
+            }
+            SeqOp::Swap | SeqOp::Replace => {
+                return Err(format!(
+                    "native {} is lowered from its places (seq_place_primitive)",
+                    op.name()
+                ));
             }
             SeqOp::SubSlice => {
                 let (h, start, len) = self.seq_view(arg(0)?, &arg_types[0]);
@@ -796,6 +803,63 @@ impl<M: Module> Codegen<'_, '_, M> {
         self.b.switch_to_block(done);
     }
 
+    /// `swap(inout a, inout b)` and `replace(inout a, v)`: the places are
+    /// written through their addresses, an aggregate by a copy through a
+    /// scratch slot, and a scalar local kept in a register is restored from
+    /// its scratch copy afterwards, as `call_function` does.
+    pub(super) fn seq_place_primitive(
+        &mut self,
+        op: SeqOp,
+        operands: &[&Expr],
+        ty: Option<Type>,
+    ) -> Result<ir::Value, String> {
+        let [a, b] = operands else {
+            return Err(format!("native {} needs two operands", op.name()));
+        };
+        let ty = crate::numeric::default_type(&ty.unwrap_or_else(|| self.ty(a)));
+        let layout = Layout::of(self.world, &ty)?;
+        let swap = op == SeqOp::Swap;
+        let value = if swap { None } else { Some(self.expr(b)?) };
+        let pa = self.address(a)?;
+        let pb = if swap { Some(self.address(b)?) } else { None };
+        let result = if layout.aggregate() {
+            let old = self.alloc_uninit(layout.size);
+            self.copy_bytes(pa, old, layout.size);
+            if let Some(pb) = pb {
+                self.copy_bytes(pb, pa, layout.size);
+                self.copy_bytes(old, pb, layout.size);
+                self.zero()
+            } else {
+                let value = value.ok_or("native replace lacks its value")?;
+                self.store(pa, value, &ty)?;
+                old
+            }
+        } else {
+            let old = self.load(pa, &ty)?;
+            if let Some(pb) = pb {
+                let other = self.load(pb, &ty)?;
+                self.store(pa, other, &ty)?;
+                self.store(pb, old, &ty)?;
+                self.zero()
+            } else {
+                let value = value.ok_or("native replace lacks its value")?;
+                self.store(pa, value, &ty)?;
+                old
+            }
+        };
+        if !layout.aggregate() {
+            for (e, ptr) in [(a, Some(pa)), (b, pb)] {
+                if let (ExprKind::Name(n), Some(ptr)) = (&e.kind, ptr)
+                    && let Some(var) = self.vars.get(n).copied()
+                {
+                    let value = self.load(ptr, &ty)?;
+                    self.def_var(var, value);
+                }
+            }
+        }
+        Ok(result)
+    }
+
     /// The AST form of a sequence call, element index or slice view.
     pub(super) fn seq_ast_expr(&mut self, e: &Expr) -> Option<Result<ir::Value, String>> {
         let (op, operands): (SeqOp, Vec<&Expr>) = match &e.kind {
@@ -835,6 +899,9 @@ impl<M: Module> Codegen<'_, '_, M> {
             },
             _ => return None,
         };
+        if op.place_primitive() {
+            return Some(self.seq_place_primitive(op, &operands, None));
+        }
         Some((|| {
             let mut values = vec![];
             let mut types = vec![];
