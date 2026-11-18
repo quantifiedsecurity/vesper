@@ -236,14 +236,23 @@ pub fn sample_top_p(probs: &[f32], top_p: f32, coin: f32, scratch: &mut Vec<(f32
 #[cfg(vesper_port)]
 pub fn sample_top_p(probs: &[f32], top_p: f32, coin: f32, scratch: &mut Vec<(f32, u32)>) -> u32 {
     // The port sorts packed candidate words (see `sample_top_p` in
-    // vesper/src/sampling.ves); `scratch` keeps the Rust build's type, and
-    // this standalone call borrows a word buffer.
+    // vesper/src/sampling.ves). `scratch` keeps the Rust build's type; the
+    // words live in a per-thread buffer that is reused across calls, so a
+    // sampling loop allocates only when the vocabulary grows.
+    thread_local! {
+        static WORDS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
     scratch.clear();
-    let mut words = vec![0u64; probs.len()];
-    crate::port::must(crate::port::binding::sample_top_p(
-        crate::port::bits(probs),
-        top_p.to_bits(),
-        coin.to_bits(),
-        &mut words,
-    )) as u32
+    WORDS.with(|words| {
+        let mut words = words.borrow_mut();
+        if words.len() < probs.len() {
+            words.resize(probs.len(), 0);
+        }
+        crate::port::must(crate::port::binding::sample_top_p(
+            crate::port::bits(probs),
+            top_p.to_bits(),
+            coin.to_bits(),
+            &mut words[..probs.len()],
+        )) as u32
+    })
 }
