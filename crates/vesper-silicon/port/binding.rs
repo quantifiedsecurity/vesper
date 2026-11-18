@@ -65,6 +65,31 @@ impl Abi for AiaFault {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AplicHdr { pub base: u64, pub sources: u64, pub supervisor: bool, pub root: bool, pub msi_capable: bool, pub direct_capable: bool, pub children: u64, pub ie: bool, pub dm: bool, pub msicfg: MsiCfg, pub src_off: u64, pub idc_off: u64, pub idcs: u64 }
+
+impl Abi for AplicHdr {
+    const WORDS: usize = 20;
+    fn put(&self, out: &mut [u64]) {
+        Abi::put(&self.base, &mut out[0..]);
+        Abi::put(&self.sources, &mut out[1..]);
+        Abi::put(&self.supervisor, &mut out[2..]);
+        Abi::put(&self.root, &mut out[3..]);
+        Abi::put(&self.msi_capable, &mut out[4..]);
+        Abi::put(&self.direct_capable, &mut out[5..]);
+        Abi::put(&self.children, &mut out[6..]);
+        Abi::put(&self.ie, &mut out[7..]);
+        Abi::put(&self.dm, &mut out[8..]);
+        Abi::put(&self.msicfg, &mut out[9..]);
+        Abi::put(&self.src_off, &mut out[17..]);
+        Abi::put(&self.idc_off, &mut out[18..]);
+        Abi::put(&self.idcs, &mut out[19..]);
+    }
+    fn get(words: &[u64]) -> Self {
+        AplicHdr { base: Abi::get(&words[0..]), sources: Abi::get(&words[1..]), supervisor: Abi::get(&words[2..]), root: Abi::get(&words[3..]), msi_capable: Abi::get(&words[4..]), direct_capable: Abi::get(&words[5..]), children: Abi::get(&words[6..]), ie: Abi::get(&words[7..]), dm: Abi::get(&words[8..]), msicfg: Abi::get(&words[9..]), src_off: Abi::get(&words[17..]), idc_off: Abi::get(&words[18..]), idcs: Abi::get(&words[19..]) }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DtbFault {
     Truncated(u64),
     BadMagic(u64),
@@ -153,6 +178,24 @@ impl Abi for DtbFault {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImsicHdr { pub ids: u64, pub delivery: u64, pub external: bool, pub threshold: u64, pub off: u64, pub words: u64 }
+
+impl Abi for ImsicHdr {
+    const WORDS: usize = 6;
+    fn put(&self, out: &mut [u64]) {
+        Abi::put(&self.ids, &mut out[0..]);
+        Abi::put(&self.delivery, &mut out[1..]);
+        Abi::put(&self.external, &mut out[2..]);
+        Abi::put(&self.threshold, &mut out[3..]);
+        Abi::put(&self.off, &mut out[4..]);
+        Abi::put(&self.words, &mut out[5..]);
+    }
+    fn get(words: &[u64]) -> Self {
+        ImsicHdr { ids: Abi::get(&words[0..]), delivery: Abi::get(&words[1..]), external: Abi::get(&words[2..]), threshold: Abi::get(&words[3..]), off: Abi::get(&words[4..]), words: Abi::get(&words[5..]) }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Msi { pub addr: u64, pub data: u64 }
 
 impl Abi for Msi {
@@ -189,15 +232,15 @@ impl Abi for MsiCfg {
 /// Owned handle of a Vesper `Aplic` value: its words, which own the Vesper
 /// allocations they point to. Dropping it calls `vesper_silicon_Aplic_drop`.
 pub struct Aplic {
-    words: [u64; 27],
+    words: [u64; 12],
 }
 
 impl Aplic {
     /// # Safety
     /// `words` must hold a `Aplic` value of this library that the caller owns.
     unsafe fn from_words(words: &[u64]) -> Self {
-        let mut owned = [0u64; 27];
-        owned.copy_from_slice(&words[..27]);
+        let mut owned = [0u64; 12];
+        owned.copy_from_slice(&words[..12]);
         Self { words: owned }
     }
 
@@ -233,85 +276,53 @@ pub struct AplicRef<'a> {
 }
 
 impl<'a> AplicRef<'a> {
-    pub fn base(&self) -> u64 {
+    pub fn hdr(&self) -> vesper_port_abi::SeqRef<'a, AplicHdr> {
         let w: &'a [u64] = self.words;
-        <u64 as Abi>::get(&w[0..])
-    }
-    pub fn sources(&self) -> u64 {
-        let w: &'a [u64] = self.words;
-        <u64 as Abi>::get(&w[1..])
-    }
-    pub fn supervisor(&self) -> bool {
-        let w: &'a [u64] = self.words;
-        <bool as Abi>::get(&w[2..])
-    }
-    pub fn root(&self) -> bool {
-        let w: &'a [u64] = self.words;
-        <bool as Abi>::get(&w[3..])
-    }
-    pub fn msi_capable(&self) -> bool {
-        let w: &'a [u64] = self.words;
-        <bool as Abi>::get(&w[4..])
-    }
-    pub fn direct_capable(&self) -> bool {
-        let w: &'a [u64] = self.words;
-        <bool as Abi>::get(&w[5..])
-    }
-    pub fn children(&self) -> u64 {
-        let w: &'a [u64] = self.words;
-        <u64 as Abi>::get(&w[6..])
-    }
-    pub fn ie(&self) -> bool {
-        let w: &'a [u64] = self.words;
-        <bool as Abi>::get(&w[7..])
-    }
-    pub fn dm(&self) -> bool {
-        let w: &'a [u64] = self.words;
-        <bool as Abi>::get(&w[8..])
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[0]) }
     }
     pub fn sourcecfg(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[9]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[1]) }
     }
     pub fn active_here(&self) -> vesper_port_abi::SeqRef<'a, bool> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[10]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[2]) }
     }
     pub fn raw(&self) -> vesper_port_abi::SeqRef<'a, bool> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[11]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[3]) }
     }
     pub fn pending(&self) -> vesper_port_abi::SeqRef<'a, bool> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[12]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[4]) }
     }
     pub fn enabled(&self) -> vesper_port_abi::SeqRef<'a, bool> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[13]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[5]) }
     }
     pub fn target(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[14]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[6]) }
     }
     pub fn idc_delivery(&self) -> vesper_port_abi::SeqRef<'a, bool> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[15]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[7]) }
     }
     pub fn idc_force(&self) -> vesper_port_abi::SeqRef<'a, bool> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[16]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[8]) }
     }
     pub fn idc_threshold(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[17]) }
-    }
-    pub fn msicfg(&self) -> MsiCfg {
-        let w: &'a [u64] = self.words;
-        <MsiCfg as Abi>::get(&w[18..])
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[9]) }
     }
     pub fn outbox(&self) -> vesper_port_abi::SeqRef<'a, Msi> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[26]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[10]) }
+    }
+    pub fn outbox_dom(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[11]) }
     }
 }
 
@@ -407,15 +418,15 @@ impl<'a> FdtRef<'a> {
 /// Owned handle of a Vesper `Imsic` value: its words, which own the Vesper
 /// allocations they point to. Dropping it calls `vesper_silicon_Imsic_drop`.
 pub struct Imsic {
-    words: [u64; 6],
+    words: [u64; 3],
 }
 
 impl Imsic {
     /// # Safety
     /// `words` must hold a `Imsic` value of this library that the caller owns.
     unsafe fn from_words(words: &[u64]) -> Self {
-        let mut owned = [0u64; 6];
-        owned.copy_from_slice(&words[..6]);
+        let mut owned = [0u64; 3];
+        owned.copy_from_slice(&words[..3]);
         Self { words: owned }
     }
 
@@ -451,29 +462,17 @@ pub struct ImsicRef<'a> {
 }
 
 impl<'a> ImsicRef<'a> {
-    pub fn ids(&self) -> u64 {
+    pub fn hdr(&self) -> vesper_port_abi::SeqRef<'a, ImsicHdr> {
         let w: &'a [u64] = self.words;
-        <u64 as Abi>::get(&w[0..])
-    }
-    pub fn delivery(&self) -> u64 {
-        let w: &'a [u64] = self.words;
-        <u64 as Abi>::get(&w[1..])
-    }
-    pub fn external(&self) -> bool {
-        let w: &'a [u64] = self.words;
-        <bool as Abi>::get(&w[2..])
-    }
-    pub fn threshold(&self) -> u64 {
-        let w: &'a [u64] = self.words;
-        <u64 as Abi>::get(&w[3..])
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[0]) }
     }
     pub fn eip(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[4]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[1]) }
     }
     pub fn eie(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[5]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[2]) }
     }
 }
 
@@ -481,6 +480,37 @@ impl<'a> ImsicRef<'a> {
 /// layout (export ABI v3): `in`/`inout` parameters and slices of them are
 /// lent to Vesper in place.
 pub mod repr {
+    /// Mirror of the Vesper copy struct `AplicHdr` (20 words).
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct AplicHdr {
+        pub base: u64,
+        pub sources: u64,
+        pub supervisor: vesper_port_abi::Word<bool>,
+        pub root: vesper_port_abi::Word<bool>,
+        pub msi_capable: vesper_port_abi::Word<bool>,
+        pub direct_capable: vesper_port_abi::Word<bool>,
+        pub children: u64,
+        pub ie: vesper_port_abi::Word<bool>,
+        pub dm: vesper_port_abi::Word<bool>,
+        pub msicfg: MsiCfg,
+        pub src_off: u64,
+        pub idc_off: u64,
+        pub idcs: u64,
+    }
+
+    /// Mirror of the Vesper copy struct `ImsicHdr` (6 words).
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct ImsicHdr {
+        pub ids: u64,
+        pub delivery: u64,
+        pub external: vesper_port_abi::Word<bool>,
+        pub threshold: u64,
+        pub off: u64,
+        pub words: u64,
+    }
+
     /// Mirror of the Vesper copy struct `Msi` (2 words).
     #[repr(C)]
     #[derive(Clone, Copy, Debug, PartialEq)]
@@ -503,6 +533,77 @@ pub mod repr {
         pub locked: vesper_port_abi::Word<bool>,
     }
 
+}
+
+// The mirror of `AplicHdr` has exactly the Vesper layout.
+const _: () = {
+    assert!(core::mem::size_of::<repr::AplicHdr>() == 20 * 8);
+    assert!(core::mem::align_of::<repr::AplicHdr>() == 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, base) == 0 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, sources) == 1 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, supervisor) == 2 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, root) == 3 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, msi_capable) == 4 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, direct_capable) == 5 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, children) == 6 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, ie) == 7 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, dm) == 8 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, msicfg) == 9 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, src_off) == 17 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, idc_off) == 18 * 8);
+    assert!(core::mem::offset_of!(repr::AplicHdr, idcs) == 19 * 8);
+};
+
+// SAFETY: `repr::AplicHdr` is `#[repr(C)]`, 20 words, eight-byte aligned
+// (asserted above), and every field is a word cell or a mirror.
+unsafe impl vesper_port_abi::Mirror for repr::AplicHdr {
+    const WORDS: usize = 20;
+}
+
+impl repr::AplicHdr {
+    /// The mirror of a Rust value.
+    pub fn from_value(value: &AplicHdr) -> Self {
+        let mut words = [0u64; 20];
+        Abi::put(value, &mut words);
+        vesper_port_abi::mirror_from_words(&words)
+    }
+
+    /// The Rust value of the mirror.
+    pub fn to_value(&self) -> AplicHdr {
+        <AplicHdr as Abi>::get(vesper_port_abi::mirror_words(self))
+    }
+}
+
+// The mirror of `ImsicHdr` has exactly the Vesper layout.
+const _: () = {
+    assert!(core::mem::size_of::<repr::ImsicHdr>() == 6 * 8);
+    assert!(core::mem::align_of::<repr::ImsicHdr>() == 8);
+    assert!(core::mem::offset_of!(repr::ImsicHdr, ids) == 0 * 8);
+    assert!(core::mem::offset_of!(repr::ImsicHdr, delivery) == 1 * 8);
+    assert!(core::mem::offset_of!(repr::ImsicHdr, external) == 2 * 8);
+    assert!(core::mem::offset_of!(repr::ImsicHdr, threshold) == 3 * 8);
+    assert!(core::mem::offset_of!(repr::ImsicHdr, off) == 4 * 8);
+    assert!(core::mem::offset_of!(repr::ImsicHdr, words) == 5 * 8);
+};
+
+// SAFETY: `repr::ImsicHdr` is `#[repr(C)]`, 6 words, eight-byte aligned
+// (asserted above), and every field is a word cell or a mirror.
+unsafe impl vesper_port_abi::Mirror for repr::ImsicHdr {
+    const WORDS: usize = 6;
+}
+
+impl repr::ImsicHdr {
+    /// The mirror of a Rust value.
+    pub fn from_value(value: &ImsicHdr) -> Self {
+        let mut words = [0u64; 6];
+        Abi::put(value, &mut words);
+        vesper_port_abi::mirror_from_words(&words)
+    }
+
+    /// The Rust value of the mirror.
+    pub fn to_value(&self) -> ImsicHdr {
+        <ImsicHdr as Abi>::get(vesper_port_abi::mirror_words(self))
+    }
 }
 
 // The mirror of `Msi` has exactly the Vesper layout.
@@ -569,7 +670,9 @@ impl repr::MsiCfg {
 
 const _: () = assert!(<() as Abi>::WORDS == 1);
 const _: () = assert!(<AiaFault as Abi>::WORDS == 3);
+const _: () = assert!(<AplicHdr as Abi>::WORDS == 20);
 const _: () = assert!(<DtbFault as Abi>::WORDS == 3);
+const _: () = assert!(<ImsicHdr as Abi>::WORDS == 6);
 const _: () = assert!(<Msi as Abi>::WORDS == 2);
 const _: () = assert!(<MsiCfg as Abi>::WORDS == 8);
 const _: () = assert!(<Option<u64> as Abi>::WORDS == 2);
@@ -587,6 +690,7 @@ unsafe extern "C" {
     fn vesper_silicon_aplic_clone(result: *mut u64, a: *mut u64) -> i64;
     fn vesper_silicon_aplic_contains(a: *mut u64, addr: i64) -> i64;
     fn vesper_silicon_aplic_delegated_to(result: *mut u64, a: *mut u64, src: i64) -> i64;
+    fn vesper_silicon_aplic_header(result: *mut u64, a: *mut u64) -> i64;
     fn vesper_silicon_aplic_idc_asserted(a: *mut u64, idc: i64) -> i64;
     fn vesper_silicon_aplic_is_delegated_here(a: *mut u64, src: i64) -> i64;
     fn vesper_silicon_aplic_is_pending(a: *mut u64, src: i64) -> i64;
@@ -607,6 +711,7 @@ unsafe extern "C" {
     fn vesper_silicon_imsic_csr_read(f: *mut u64, isel: i64, fail: *mut u64) -> i64;
     fn vesper_silicon_imsic_csr_write(f: *mut u64, isel: i64, v: i64, fail: *mut u64) -> i64;
     fn vesper_silicon_imsic_eq(f: *mut u64, g: *mut u64) -> i64;
+    fn vesper_silicon_imsic_header(result: *mut u64, f: *mut u64) -> i64;
     fn vesper_silicon_imsic_is_enabled(f: *mut u64, id: i64) -> i64;
     fn vesper_silicon_imsic_is_pending(f: *mut u64, id: i64) -> i64;
     fn vesper_silicon_imsic_mmio_write32(f: *mut u64, off: i64, v: i64) -> i64;
@@ -640,7 +745,7 @@ pub fn aplic_claimi(a: &mut Aplic, idc: u64) -> u64 {
 
 /// Calls `aplic_clone` of the Vesper library `silicon` (`vesper_silicon_aplic_clone`).
 pub fn aplic_clone(a: &Aplic) -> Aplic {
-    let mut result = [0u64; 27];
+    let mut result = [0u64; 12];
     let mut arg_a = a.words;
     // SAFETY: `vesper_silicon_aplic_clone` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
@@ -668,6 +773,17 @@ pub fn aplic_delegated_to(a: &Aplic, src: u64) -> Option<u64> {
     // every handle passed is owned or borrowed as its mode requires.
     let raw = unsafe { vesper_silicon_aplic_delegated_to(result.as_mut_ptr(), arg_a.as_mut_ptr(), src as i64) };
     <Option<u64> as Abi>::get(&result[0..])
+}
+
+/// Calls `aplic_header` of the Vesper library `silicon` (`vesper_silicon_aplic_header`).
+pub fn aplic_header(a: &Aplic) -> repr::AplicHdr {
+    let mut result = [0u64; 20];
+    let mut arg_a = a.words;
+    // SAFETY: `vesper_silicon_aplic_header` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_silicon_aplic_header(result.as_mut_ptr(), arg_a.as_mut_ptr()) };
+    vesper_port_abi::mirror_from_words::<repr::AplicHdr>(&result[0..])
 }
 
 /// Calls `aplic_idc_asserted` of the Vesper library `silicon` (`vesper_silicon_aplic_idc_asserted`).
@@ -712,7 +828,7 @@ pub fn aplic_mode(a: &Aplic, src: u64) -> u64 {
 
 /// Calls `aplic_new` of the Vesper library `silicon` (`vesper_silicon_aplic_new`).
 pub fn aplic_new(base: u64, size: u64, sources: u64, idcs: u64, msi_capable: bool, root: bool, supervisor: bool, children: u64) -> Result<Aplic, AiaFault> {
-    let mut result = [0u64; 27];
+    let mut result = [0u64; 12];
     let mut fail = [0u64; 4];
     // SAFETY: `vesper_silicon_aplic_new` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
@@ -845,7 +961,7 @@ pub fn imsic_claim(f: &mut Imsic) -> u64 {
 
 /// Calls `imsic_clone` of the Vesper library `silicon` (`vesper_silicon_imsic_clone`).
 pub fn imsic_clone(f: &Imsic) -> Imsic {
-    let mut result = [0u64; 6];
+    let mut result = [0u64; 3];
     let mut arg_f = f.words;
     // SAFETY: `vesper_silicon_imsic_clone` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
@@ -894,6 +1010,17 @@ pub fn imsic_eq(f: &Imsic, g: &Imsic) -> bool {
     raw != 0
 }
 
+/// Calls `imsic_header` of the Vesper library `silicon` (`vesper_silicon_imsic_header`).
+pub fn imsic_header(f: &Imsic) -> repr::ImsicHdr {
+    let mut result = [0u64; 6];
+    let mut arg_f = f.words;
+    // SAFETY: `vesper_silicon_imsic_header` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_silicon_imsic_header(result.as_mut_ptr(), arg_f.as_mut_ptr()) };
+    vesper_port_abi::mirror_from_words::<repr::ImsicHdr>(&result[0..])
+}
+
 /// Calls `imsic_is_enabled` of the Vesper library `silicon` (`vesper_silicon_imsic_is_enabled`).
 pub fn imsic_is_enabled(f: &Imsic, id: u64) -> bool {
     let mut arg_f = f.words;
@@ -925,7 +1052,7 @@ pub fn imsic_mmio_write32(f: &mut Imsic, off: u64, v: u64) -> () {
 
 /// Calls `imsic_new` of the Vesper library `silicon` (`vesper_silicon_imsic_new`).
 pub fn imsic_new(ids: u64, external: bool) -> Result<Imsic, AiaFault> {
-    let mut result = [0u64; 6];
+    let mut result = [0u64; 3];
     let mut fail = [0u64; 4];
     // SAFETY: `vesper_silicon_imsic_new` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
@@ -995,6 +1122,11 @@ impl Aplic {
     /// `aplic_delegated_to` (`vesper_silicon_aplic_delegated_to`).
     pub fn delegated_to(&self, src: u64) -> Option<u64> {
         aplic_delegated_to(self, src)
+    }
+
+    /// `aplic_header` (`vesper_silicon_aplic_header`).
+    pub fn header(&self) -> repr::AplicHdr {
+        aplic_header(self)
     }
 
     /// `aplic_idc_asserted` (`vesper_silicon_aplic_idc_asserted`).
@@ -1092,6 +1224,11 @@ impl Imsic {
     /// `imsic_eq` (`vesper_silicon_imsic_eq`).
     pub fn eq(&self, g: &Imsic) -> bool {
         imsic_eq(self, g)
+    }
+
+    /// `imsic_header` (`vesper_silicon_imsic_header`).
+    pub fn header(&self) -> repr::ImsicHdr {
+        imsic_header(self)
     }
 
     /// `imsic_is_enabled` (`vesper_silicon_imsic_is_enabled`).

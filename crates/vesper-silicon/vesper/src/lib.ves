@@ -12,8 +12,8 @@ use self::aia::{
     m_aplic_claimi,
     m_aplic_contains,
     m_aplic_copy,
-    m_aplic_make,
     m_aplic_delegated_to,
+    m_aplic_hdr,
     m_aplic_idc_asserted,
     m_aplic_is_delegated_here,
     m_aplic_is_pending,
@@ -22,6 +22,7 @@ use self::aia::{
     m_aplic_read32,
     m_aplic_rectified,
     m_aplic_set_active_here,
+    m_aplic_set_msi_cfg,
     m_aplic_set_wire,
     m_aplic_take_msis,
     m_aplic_topi,
@@ -33,6 +34,7 @@ use self::aia::{
     m_imsic_copy,
     m_imsic_csr_read,
     m_imsic_csr_write,
+    m_imsic_hdr,
     m_imsic_make,
     m_imsic_mmio_write32,
     m_imsic_same,
@@ -79,18 +81,27 @@ pub copy struct Msi {
     data: u64
 }
 
-// aia::ImsicFile: `eip` and `eie` hold 64 identities per word.
-pub struct Imsic {
+// One IMSIC interrupt file of a bank: its `eip` and `eie` words (64
+// identities each) are `words` entries of the bank's sequences from `off`.
+pub copy struct ImsicHdr {
     ids: u64,
     delivery: u64,
     external: bool,
     threshold: u64,
+    off: u64,
+    words: u64
+}
+
+// A bank of aia::ImsicFile; a standalone file is a bank of one.
+pub struct Imsic {
+    hdr: ChunkSeq[ImsicHdr],
     eip: ChunkSeq[u64],
     eie: ChunkSeq[u64]
 }
 
-// aia::AplicDomain: one entry per source (index 0 unused) and one per IDC.
-pub struct Aplic {
+// One aia::AplicDomain of a bank: `sources + 1` per-source entries (index 0
+// unused) from `src_off` and `idcs` per-IDC entries from `idc_off`.
+pub copy struct AplicHdr {
     base: u64,
     sources: u64,
     supervisor: bool,
@@ -100,6 +111,15 @@ pub struct Aplic {
     children: u64,
     ie: bool,
     dm: bool,
+    msicfg: MsiCfg,
+    src_off: u64,
+    idc_off: u64,
+    idcs: u64
+}
+
+// A bank of APLIC domains; `outbox_dom` names the domain of each queued MSI.
+pub struct Aplic {
+    hdr: ChunkSeq[AplicHdr],
     sourcecfg: ChunkSeq[u64],
     active_here: ChunkSeq[bool],
     raw: ChunkSeq[bool],
@@ -109,11 +129,13 @@ pub struct Aplic {
     idc_delivery: ChunkSeq[bool],
     idc_force: ChunkSeq[bool],
     idc_threshold: ChunkSeq[u64],
-    msicfg: MsiCfg,
-    outbox: ChunkSeq[Msi]
+    outbox: ChunkSeq[Msi],
+    outbox_dom: ChunkSeq[u64]
 }
 
 // ---------------------------------------------------------------- AIA exports
+//
+// The standalone ImsicFile and AplicDomain: banks of one, file (domain) 0.
 
 // ImsicFile::new (`external` false) and ::with_external_delivery.
 pub fn imsic_new(ids: u64, external: bool) -> Imsic eff [Fail[AiaFault]] {
@@ -128,51 +150,55 @@ pub fn imsic_eq(in f: Imsic, in g: Imsic) -> bool {
     m_imsic_same(in f, in g)
 }
 
+pub fn imsic_header(in f: Imsic) -> ImsicHdr {
+    m_imsic_hdr(in f, 0)
+}
+
 pub fn imsic_is_pending(in f: Imsic, id: u64) -> bool {
-    m_imsic_bit_eip(in f, id)
+    m_imsic_bit_eip(in f, 0, id)
 }
 
 pub fn imsic_is_enabled(in f: Imsic, id: u64) -> bool {
-    m_imsic_bit_eie(in f, id)
+    m_imsic_bit_eie(in f, 0, id)
 }
 
 pub fn imsic_seteipnum(inout f: Imsic, id: u64) {
-    m_imsic_seteipnum(inout f, id)
+    m_imsic_seteipnum(inout f, 0, id)
 }
 
 pub fn imsic_mmio_write32(inout f: Imsic, off: u64, v: u64) {
-    m_imsic_mmio_write32(inout f, off, v)
+    m_imsic_mmio_write32(inout f, 0, off, v)
 }
 
 pub fn imsic_csr_read(in f: Imsic, isel: u64) -> u64 eff [Fail[AiaFault]] {
-    m_imsic_csr_read(in f, isel)
+    m_imsic_csr_read(in f, 0, isel)
 }
 
 pub fn imsic_csr_write(inout f: Imsic, isel: u64, v: u64) eff [Fail[AiaFault]] {
-    m_imsic_csr_write(inout f, isel, v)
+    m_imsic_csr_write(inout f, 0, isel, v)
 }
 
 pub fn imsic_top(in f: Imsic) -> u64 {
-    m_imsic_top(in f)
+    m_imsic_top(in f, 0)
 }
 
 pub fn imsic_topei(in f: Imsic) -> u64 {
-    m_imsic_topei(in f)
+    m_imsic_topei(in f, 0)
 }
 
 pub fn imsic_claim(inout f: Imsic) -> u64 {
-    m_imsic_claim(inout f)
+    m_imsic_claim(inout f, 0)
 }
 
 pub fn imsic_asserted(in f: Imsic) -> bool {
-    m_imsic_asserted(in f)
+    m_imsic_asserted(in f, 0)
 }
 
 pub fn msi_address(c: MsiCfg, supervisor: bool, hart: u64, guest: u64) -> u64 {
     m_msi_address(c, supervisor, hart, guest)
 }
 
-// AplicDomain::new without the path (NoDeliveryMode carries none).
+// AplicDomain::new; the path goes into NoDeliveryMode in the wrapper.
 pub fn aplic_new(
     base: u64,
     size: u64,
@@ -190,65 +216,69 @@ pub fn aplic_clone(in a: Aplic) -> Aplic {
     m_aplic_copy(in a)
 }
 
-pub fn aplic_contains(in a: Aplic, addr: u64) -> bool {
-    m_aplic_contains(in a, addr)
+pub fn aplic_header(in a: Aplic) -> AplicHdr {
+    m_aplic_hdr(in a, 0)
 }
 
-// The source mode's `sourcecfg.SM` code.
+pub fn aplic_contains(in a: Aplic, addr: u64) -> bool {
+    m_aplic_contains(in a, 0, addr)
+}
+
+// The source's `SourceMode` code (0 when inactive or delegated).
 pub fn aplic_mode(in a: Aplic, src: u64) -> u64 {
-    m_aplic_mode(in a, src)
+    m_aplic_mode(in a, 0, src)
 }
 
 pub fn aplic_delegated_to(in a: Aplic, src: u64) -> Option[u64] {
-    m_aplic_delegated_to(in a, src)
+    m_aplic_delegated_to(in a, 0, src)
 }
 
 pub fn aplic_is_delegated_here(in a: Aplic, src: u64) -> bool {
-    m_aplic_is_delegated_here(in a, src)
+    m_aplic_is_delegated_here(in a, 0, src)
 }
 
 pub fn aplic_set_active_here(inout a: Aplic, src: u64, active: bool) {
-    m_aplic_set_active_here(inout a, src, active)
+    m_aplic_set_active_here(inout a, 0, src, active)
 }
 
 pub fn aplic_is_pending(in a: Aplic, src: u64) -> bool {
-    m_aplic_is_pending(in a, src)
+    m_aplic_is_pending(in a, 0, src)
 }
 
 pub fn aplic_rectified(in a: Aplic, src: u64) -> bool {
-    m_aplic_rectified(in a, src)
+    m_aplic_rectified(in a, 0, src)
 }
 
 pub fn aplic_set_wire(inout a: Aplic, src: u64, high: bool) {
-    m_aplic_set_wire(inout a, src, high)
+    m_aplic_set_wire(inout a, 0, src, high)
 }
 
 pub fn aplic_set_msi_cfg(inout a: Aplic, c: MsiCfg) {
-    a.msicfg = c;
+    m_aplic_set_msi_cfg(inout a, 0, c)
 }
 
 pub fn aplic_topi(in a: Aplic, idc: u64) -> u64 {
-    m_aplic_topi(in a, idc)
+    m_aplic_topi(in a, 0, idc)
 }
 
 pub fn aplic_claimi(inout a: Aplic, idc: u64) -> u64 {
-    m_aplic_claimi(inout a, idc)
+    m_aplic_claimi(inout a, 0, idc)
 }
 
 pub fn aplic_idc_asserted(in a: Aplic, idc: u64) -> bool {
-    m_aplic_idc_asserted(in a, idc)
+    m_aplic_idc_asserted(in a, 0, idc)
 }
 
 pub fn aplic_take_msis(inout a: Aplic) -> ChunkSeq[Msi] {
-    m_aplic_take_msis(inout a)
+    m_aplic_take_msis(inout a, 0)
 }
 
 pub fn aplic_read32(inout a: Aplic, addr: u64) -> u64 eff [Fail[AiaFault]] {
-    m_aplic_read32(inout a, addr)
+    m_aplic_read32(inout a, 0, addr)
 }
 
 pub fn aplic_write32(inout a: Aplic, addr: u64, v: u64) eff [Fail[AiaFault]] {
-    m_aplic_write32(inout a, addr, v)
+    m_aplic_write32(inout a, 0, addr, v)
 }
 
 // ---------------------------------------------------------------- devicetree
