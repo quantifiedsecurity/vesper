@@ -136,3 +136,22 @@ divergent "Strata port (watermarks)" rewinding_an_outer_watermark_invalidates_in
     -p vesper-alloc --features vesper-port-divergent --test region
 divergent "Strata port (vectors)" linear_elements_block_discard_until_drained capacity_arithmetic_is_checked \
     -p vesper-alloc --features vesper-port-divergent --test collections
+# Grammar port (port wave P1 lane 9, #906): both builds pass the crate's
+# tests (including the 10^5-input no-panic run), and the divergent build
+# (one edit per ported module, DIVERGENT in crates/vesper-grammar/build.rs)
+# fails a test of each module while an unrelated test still passes.
+cargo test --locked -p vesper-grammar -p vesper-grammar-seed
+while read -r module file failing passing; do
+    divergent "Grammar port ($module)" "$failing" "$passing" \
+        -p vesper-grammar --features vesper-port-divergent --test "$file" </dev/null
+done <<'CHECKS'
+framing framing known_uleb_vectors_exact_prefix_and_transactional_output u24_big_endian_frames_roundtrip_and_preserve_remainder
+arrow arrow checked_nullable_aggregation_matches_i128_prefix_oracle alignment_checks_distinguish_relative_offsets_from_actual_host_addresses
+capnp framing capnp_stream_segments_are_borrowed_and_framing_is_exact u24_boundaries_fail_transactionally
+capnp_packed capnp_packed official_encoding_vectors_and_raw_runs_with_zeroes every_short_output_preserves_the_whole_buffer
+grammar grammar aliased_dag_expansion_cannot_bypass_capture_or_work_budgets ambiguity_duplicate_branch_ids_bad_references_and_recursion_fail
+codec codec independently_constructed_numbers_have_known_canonical_encodings codec_limit_configuration_is_checked_before_all_operations
+protobuf protobuf signed_twos_complement_varints_are_canonical_in_singular_and_packed_fields singular_presence_and_defaults_are_actual_distinct_logical_values
+der der typed_set_of_sorts_complete_encodings_retains_duplicates_and_rejects_untyped_set utf8_string_is_strict_borrowed_and_transactional
+ipc ipc independent_arrow_values_and_versions hostile_schema_and_union_discriminants
+CHECKS

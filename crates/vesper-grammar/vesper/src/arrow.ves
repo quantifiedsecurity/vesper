@@ -1,0 +1,182 @@
+// Module arrow of @vesper/grammar (see lib.ves): src/arrow.rs. Error
+// kinds are crate::ErrorKind indices: Overflow 2, InputLimit 5, WorkLimit 8,
+// CountLimit 10, Descriptor 13, Alignment 14, Range 15, Bitmap 16,
+// NullCount 17, Aliasing 18. Alignment profiles: ByteCopy 0, Relative8 1,
+// Relative64 2, HostAddress64 3.
+use self::{
+    ArCol,
+    ArReq,
+    GErr,
+    P2
+};
+use self::common::{
+    add_or,
+    bound,
+    charge_or,
+    fail,
+    le64,
+    mul_or,
+    pair,
+    sb,
+    shr
+};
+
+// The two little-endian i64 words of a 16-byte descriptor, as bits.
+pub fn wire_pair(in bytes: Slice[u8]) -> P2 eff [Fail[GErr]] {
+    if bytes.len() != 16 {
+        fail(13, 0);
+    }
+    pair(le64(in bytes, 0), le64(in bytes, 8))
+}
+
+// An i64 (as bits) that must be nonnegative.
+pub fn nonnegative(n: u64) -> u64 eff [Fail[GErr]] {
+    if n >= 9223372036854775808 {
+        fail(13, 0);
+    }
+    n
+}
+
+// (start, end) of a descriptor's byte range inside a body of `total` bytes.
+pub fn checked_buffer_range(total: u64, offset_bytes: u64, byte_length: u64, alignment: u64)
+    -> P2 eff [Fail[GErr]] {
+    if alignment == 0 || alignment & wrapping_sub(alignment, 1) != 0 {
+        fail(14, 0);
+    }
+    let offset = nonnegative(offset_bytes);
+    let len = nonnegative(byte_length);
+    if offset & wrapping_sub(alignment, 1) != 0 {
+        fail(14, offset);
+    }
+    let end = add_or(offset, len, 2, 0);
+    if end > total {
+        fail(15, offset);
+    }
+    pair(offset, end)
+}
+
+fn relative(profile: u64) -> u64 {
+    if profile == 0 {
+        1
+    } else if profile == 1 {
+        8
+    } else {
+        64
+    }
+}
+
+// Whether nonempty `[start, end)` lies at a 64-byte host address, given the
+// body's address `base`.
+fn host_aligned(base: u64, start: u64) -> bool eff [Fail[GErr]] {
+    add_or(base, start, 2, 0) & 63 == 0
+}
+
+// I64Column::validate.
+pub fn validate(in body: Slice[u8], r: ArReq) -> ArCol eff [Fail[GErr]] {
+    let n = body.len();
+    bound(n, r.max_body_bytes, 5);
+    let rows = nonnegative(r.row_length);
+    let nulls = nonnegative(r.null_count);
+    if nulls > rows {
+        fail(17, 0);
+    }
+    bound(rows, r.max_rows, 10);
+    let required = mul_or(rows, 8, 2, 0);
+    let rel = relative(r.profile);
+    let v = checked_buffer_range(n, r.values_offset, r.values_length, rel);
+    let b = checked_buffer_range(n, r.validity_offset, r.validity_length, rel);
+    if wrapping_sub(v.b, v.a) != required {
+        fail(15, v.a);
+    }
+    if v.a != v.b && b.a != b.b && v.a < b.b && b.a < v.b {
+        fail(18, b.a);
+    }
+    if r.profile == 3 {
+        if v.a != v.b && !host_aligned(r.body_address, v.a) {
+            fail(14, v.a);
+        }
+        if b.a != b.b && !host_aligned(r.body_address, b.a) {
+            fail(14, b.a);
+        }
+    }
+    let mut work = r.max_work;
+    charge_or(inout work, rows, 8);
+    let has = b.a != b.b;
+    if !has {
+        if nulls != 0 {
+            fail(16, b.a);
+        }
+    } else {
+        let tail: u64 = if rows & 7 != 0 {
+            1
+        } else {
+            0
+        };
+        let minimum = wrapping_add(rows >> 3, tail);
+        if wrapping_sub(b.b, b.a) < minimum {
+            fail(16, b.a);
+        }
+        let mut actual: u64 = 0;
+        for row in 0..rows {
+            let byte = sb(in body, wrapping_add(b.a, row >> 3));
+            if shr(byte, row & 7) & 1 == 0 {
+                actual = wrapping_add(actual, 1);
+            }
+        }
+        if actual != nulls {
+            fail(17, 0);
+        }
+    }
+    ArCol {
+        values_start: v.a,
+        values_end: v.b,
+        has_validity: has,
+        validity_start: b.a,
+        validity_end: b.b,
+        rows: rows,
+        nulls: nulls
+    }
+}
+
+// I64Column::get: (0, 0) past the end, (1, 0) for a null row, and (2, bits)
+// for a value.
+pub fn get(in values: Slice[u8], in validity: Slice[u8], has_validity: bool, rows: u64, row: u64)
+    -> P2 {
+    if row >= rows {
+        return pair(0, 0);
+    }
+    if has_validity && shr(sb(in validity, row >> 3), row & 7) & 1 == 0 {
+        return pair(1, 0);
+    }
+    pair(2, le64(in values, wrapping_mul(row, 8)))
+}
+
+// I64Column::checked_sum: (0, 0) when no row is valid, else (1, sum bits).
+pub fn checked_sum(
+    in values: Slice[u8],
+    in validity: Slice[u8],
+    has_validity: bool,
+    rows: u64,
+    max_work: u64
+) -> P2 eff [Fail[GErr]] {
+    bound(rows, max_work, 8);
+    let mut sum: i64 = 0;
+    let mut any = false;
+    for row in 0..rows {
+        let valid = !has_validity || shr(sb(in validity, row >> 3), row & 7) & 1 != 0;
+        if valid {
+            any = true;
+            let value = wrapping_i64(le64(in values, wrapping_mul(row, 8)));
+            let next = wrapping_add(sum, value);
+            if (value >= 0) == (sum >= 0) && (next >= 0) != (sum >= 0) {
+                fail(2, wrapping_mul(row, 8));
+            }
+            sum = next;
+        }
+    }
+    if any {
+        pair(1, wrapping_u64(sum))
+    } else {
+        pair(0, 0)
+    }
+}

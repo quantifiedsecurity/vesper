@@ -10,6 +10,7 @@ members = [
     "crates/vesper-lsp",
     "crates/vesper-diagnostics",
     "crates/vesper-grammar",
+    "crates/vesper-grammar/seed",
     "crates/vesper-fmt",
     "crates/vesper-lint",
     "crates/vesper-bench",
@@ -92,6 +93,7 @@ default-members = [
     "crates/vesper-lsp",
     "crates/vesper-diagnostics",
     "crates/vesper-grammar",
+    "crates/vesper-grammar/seed",
     "crates/vesper-fmt",
     "crates/vesper-lint",
     "crates/vesper-bench",
@@ -220,7 +222,8 @@ vesper-fmt = { path = "crates/vesper-fmt" }
 vesper-lint = { path = "crates/vesper-lint" }
 vesper-bench = { path = "crates/vesper-bench" }
 vesper-bench-pmu = { path = "crates/vesper-bench-pmu" }
-vesper-grammar = { path = "crates/vesper-grammar" }
+# The compiler links the frozen Rust seed copy (seed-copy rule, #906).
+vesper-grammar = { path = "crates/vesper-grammar/seed", package = "vesper-grammar-seed" }
 vesper-doc = { path = "crates/vesper-doc" }
 # The compiler links the frozen Rust seed copy, never the port-backed package
 # (seed-copy rule, docs/maintenance/porting-a-crate.md).
