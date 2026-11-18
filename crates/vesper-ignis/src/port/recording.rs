@@ -113,6 +113,9 @@ impl<A, R, T> Backend for RecordingBackend<A, R, T> {
                 count: s.commands.len() as u64,
             });
         }
+        let streams: Vec<v::repr::SimStream> =
+            streams.iter().map(v::repr::SimStream::from_value).collect();
+        let cmds: Vec<v::repr::SimCmd> = cmds.iter().map(v::repr::SimCmd::from_value).collect();
         let verdict = v::recorder_submit(
             &mut self.recorder,
             self.history.len() as u64,

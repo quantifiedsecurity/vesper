@@ -81,7 +81,9 @@ fn point(p: ffi::Point) -> FencePoint {
 
 /// A plan as stream and command records, plus each command record's
 /// command.
-fn plan_records(plan: &Plan) -> (Vec<ffi::StreamInfo>, Vec<ffi::PlanCmd>, Vec<&Command>) {
+fn plan_records(
+    plan: &Plan,
+) -> (Vec<v::repr::StreamInfo>, Vec<v::repr::PlanCmd>, Vec<&Command>) {
     let mut streams = Vec::with_capacity(plan.queues.len());
     let mut cmds = Vec::new();
     let mut commands = Vec::new();
@@ -97,28 +99,28 @@ fn plan_records(plan: &Plan) -> (Vec<ffi::StreamInfo>, Vec<ffi::PlanCmd>, Vec<&C
                 Command::Execute(pass) => (2, pass.graph, pass.index, 0, 0),
                 Command::Signal { value } => (3, 0, 0, *value, 0),
             };
-            cmds.push(ffi::PlanCmd {
+            cmds.push(v::repr::PlanCmd::from_value(&ffi::PlanCmd {
                 stream: si as u32,
                 tag,
                 graph,
                 index,
                 value,
                 barriers: count,
-            });
+            }));
             commands.push(c);
         }
-        streams.push(ffi::StreamInfo {
+        streams.push(v::repr::StreamInfo::from_value(&ffi::StreamInfo {
             graph: q.queue.graph,
             queue: q.queue.index as u32,
             kind: q.kind,
             commands: q.commands.len() as u64,
             barriers,
-        });
+        }));
     }
     (streams, cmds, commands)
 }
 
-fn binding_records(batch: &BatchView<'_>) -> Vec<ffi::BindingRec> {
+fn binding_records(batch: &BatchView<'_>) -> Vec<v::repr::BindingRec> {
     batch
         .bindings
         .iter()
@@ -128,14 +130,14 @@ fn binding_records(batch: &BatchView<'_>) -> Vec<ffi::BindingRec> {
                 runtime: 0,
                 index: usize::MAX,
             });
-            ffi::BindingRec {
+            v::repr::BindingRec::from_value(&ffi::BindingRec {
                 queue_graph: b.queue.graph,
                 queue_index: b.queue.index as u32,
                 runtime: b.timeline.runtime,
                 index: b.timeline.index as u64,
                 alloc_runtime: alloc.runtime,
                 alloc_index: alloc.index as u64,
-            }
+            })
         })
         .collect()
 }
@@ -166,14 +168,14 @@ pub(crate) struct Ledger {
 impl Ledger {
     pub(crate) fn check(queues: &[QueueConfig], l: Limits) -> Result<(), LifecycleError> {
         let initial: Vec<u64> = queues.iter().map(|q| q.initial_fence).collect();
-        result(v::lifecycle_check_new(limits(l), &initial))
+        result(v::lifecycle_check_new(&v::repr::Limits::from_value(&limits(l)), &initial))
     }
     pub(crate) fn new(id: u64, queues: &[QueueConfig], l: Limits) -> Self {
         let kinds: Vec<_> = queues.iter().map(|q| q.kind).collect();
         let initial: Vec<u64> = queues.iter().map(|q| q.initial_fence).collect();
         Self {
             id,
-            inner: v::lifecycle_new(id, limits(l), &kinds, &initial),
+            inner: v::lifecycle_new(id, &v::repr::Limits::from_value(&limits(l)), &kinds, &initial),
         }
     }
     pub(crate) fn id(&self) -> u64 {
@@ -213,14 +215,14 @@ impl Ledger {
     pub(crate) fn begin(&mut self, batch: &BatchView<'_>) -> Result<Submission, LifecycleError> {
         let (streams, cmds, commands) = plan_records(batch.plan);
         let bindings = binding_records(batch);
-        let scratch: Vec<ffi::ScratchRec> = batch
+        let scratch: Vec<v::repr::ScratchRec> = batch
             .scratch
             .iter()
-            .map(|(pass, action, _)| ffi::ScratchRec {
+            .map(|(pass, action, _)| v::repr::ScratchRec::from_value(&ffi::ScratchRec {
                 pass_graph: pass.graph,
                 pass_index: pass.index,
                 initialize: *action == ScratchAction::Initialize,
-            })
+            }))
             .collect();
         let t = v::lifecycle_submit(
             &mut self.inner,
