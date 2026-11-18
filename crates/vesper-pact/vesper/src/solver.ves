@@ -680,11 +680,15 @@ pub fn solve_key(inout s: S, env: u64, goal: u64, binders: u64) -> u64 {
     let ind = mk1(inout s, 31, fl);
     s.sk_env.push(env);
     s.sk_goal.push(goal);
-    s.sk_co.push(if coinductive {
-        1
-    } else {
-        0
-    });
+    s
+        .sk_co
+        .push(
+        if coinductive {
+            1
+        } else {
+            0
+        }
+    );
     s.sk_pco.push(identity);
     s.sk_pind.push(ind);
     s.sk_uco.push(0);
@@ -947,14 +951,7 @@ fn brand_mode(inout s: S, env: u64, inout cx: ChunkSeq[u64], tr: u64, brand: u64
 
 // Phase of an `Implements` goal: 0 with the candidates on the phase stack,
 // r_modelmis for a model of another trait, or a candidate error.
-fn implements(
-    inout s: S,
-    env: u64,
-    in cx0: ChunkSeq[u64],
-    tr: u64,
-    brand: u64,
-    vars: u64
-) -> u64 {
+fn implements(inout s: S, env: u64, in cx0: ChunkSeq[u64], tr: u64, brand: u64, vars: u64) -> u64 {
     let st = fb(in s, tr);
     if is_unresolved_infer(inout s, in cx0, st) {
         let a = mk0(inout s, 34);
@@ -981,7 +978,16 @@ fn implements(
             return 0;
         }
         truncate_phase(inout s, base);
-        let r = try_conformance(inout s, env, in cx, ci, inc(wrapping_mul(m, 2)), tr, builder, vars);
+        let r = try_conformance(
+            inout s,
+            env,
+            in cx,
+            ci,
+            inc(wrapping_mul(m, 2)),
+            tr,
+            builder,
+            vars
+        );
         push_phase(inout s, src(1, m), r);
         return 0;
     }
@@ -1068,7 +1074,21 @@ fn env_implements(
         if bt == tid {
             let bargs = sw(in s.bd_args, add(bat, bi));
             let bbrand = sw(in s.bd_brand, add(bat, bi));
-            let v = alias_bound(inout s, env, in cx0, tr, brand, builder, vars, binder, bargs, bbrand, ptr, pb, bi);
+            let v = alias_bound(
+                inout s,
+                env,
+                in cx0,
+                tr,
+                brand,
+                builder,
+                vars,
+                binder,
+                bargs,
+                bbrand,
+                ptr,
+                pb,
+                bi
+            );
             push_phase(inout s, src(3, bi), v);
         }
         bi = inc(bi);
@@ -1189,14 +1209,7 @@ fn try_conformance(
     make_response(inout s, in cx, vars, d)
 }
 
-fn projection_eq(
-    inout s: S,
-    env: u64,
-    in cx0: ChunkSeq[u64],
-    p: u64,
-    ty: u64,
-    vars: u64
-) -> u64 {
+fn projection_eq(inout s: S, env: u64, in cx0: ChunkSeq[u64], p: u64, ty: u64, vars: u64) -> u64 {
     let tr = fa(in s, p);
     let st = fb(in s, tr);
     if is_unresolved_infer(inout s, in cx0, st) {
@@ -1299,7 +1312,17 @@ fn projection_eq(
     if mt == 8 {
         let m = fa(in s, mode);
         let ci = add(s.nimpl, m);
-        let v = try_proj_conformance(inout s, env, in cx, ci, inc(wrapping_mul(m, 2)), p, ty, builder, vars);
+        let v = try_proj_conformance(
+            inout s,
+            env,
+            in cx,
+            ci,
+            inc(wrapping_mul(m, 2)),
+            p,
+            ty,
+            builder,
+            vars
+        );
         push_phase(inout s, src(1, m), v);
         return 0;
     }
@@ -1311,7 +1334,17 @@ fn projection_eq(
             break;
         }
         let ci = sw(in s.ib, add(at, j));
-        let v = try_proj_conformance(inout s, env, in cx, ci, wrapping_mul(ci, 2), p, ty, builder, vars);
+        let v = try_proj_conformance(
+            inout s,
+            env,
+            in cx,
+            ci,
+            wrapping_mul(ci, 2),
+            p,
+            ty,
+            builder,
+            vars
+        );
         push_phase(inout s, src(0, ci), v);
         j = inc(j);
     }
@@ -1432,15 +1465,8 @@ fn try_proj_conformance(
     make_response(inout s, in cx, vars, d)
 }
 
-fn mode_bound(
-    inout s: S,
-    env: u64,
-    in cx: ChunkSeq[u64],
-    goal: u64,
-    ty: u64,
-    bound: u64,
-    vars: u64
-) -> u64 {
+fn mode_bound(inout s: S, env: u64, in cx: ChunkSeq[u64], goal: u64, ty: u64, bound: u64, vars: u64)
+    -> u64 {
     let t = resolve(inout s, in cx, ty);
     if t == 0 {
         return dup_err(inout s);

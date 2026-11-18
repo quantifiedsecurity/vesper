@@ -164,14 +164,7 @@ fn restore_outcome(inout s: S, o: u64, origin: u64) -> u64 {
 
 // Solves one query: the restored outcome (an answer node), or 0 when the
 // query is rejected (sorted diagnostics from the base it had on entry).
-pub fn solve_query(
-    inout s: S,
-    maj: u64,
-    min: u64,
-    env: u64,
-    binders: u64,
-    goal: u64
-) -> u64 {
+pub fn solve_query(inout s: S, maj: u64, min: u64, env: u64, binders: u64, goal: u64) -> u64 {
     if !validate_query(inout s, maj, min, env, binders, goal) {
         return 0;
     }

@@ -611,10 +611,7 @@ fn v_conformance(inout s: S, ci: u64, sv: u64, sa: u64) {
     }
     if (flags(in s, tr) & 8) != 0 {
         let off = begin(in s);
-        lit(
-            inout s,
-            "associated-type projections in an impl/model head are outside this fragment"
-        );
+        lit(inout s, "associated-type projections in an impl/model head are outside this fragment");
         emit(inout s, 8, sv, sa, 0, off);
     }
     let wh = sw(in s.cf_where, ci);
@@ -792,16 +789,8 @@ fn r_what(inout s: S, what: u64, x: u64) {
     }
 }
 
-fn v_args(
-    inout s: S,
-    params: u64,
-    args: u64,
-    sv: u64,
-    sa: u64,
-    sb: u64,
-    what: u64,
-    x: u64
-) -> bool {
+fn v_args(inout s: S, params: u64, args: u64, sv: u64, sa: u64, sb: u64, what: u64, x: u64)
+    -> bool {
     let np = nlen(in s, params);
     let na = nlen(in s, args);
     if np != na {
@@ -1039,14 +1028,7 @@ fn v_var(inout s: S, v: u64, kind: u64, sv: u64, sa: u64, sb: u64) {
 
 // `validate_query` of (maj, min, env, binders, goal): whether it passed;
 // the diagnostics are from s.dg base on, sorted.
-pub fn validate_query(
-    inout s: S,
-    maj: u64,
-    min: u64,
-    env: u64,
-    binders: u64,
-    goal: u64
-) -> bool {
+pub fn validate_query(inout s: S, maj: u64, min: u64, env: u64, binders: u64, goal: u64) -> bool {
     let base = s.dg_code.len();
     if !check_schema(inout s, maj, min) {
         return false;

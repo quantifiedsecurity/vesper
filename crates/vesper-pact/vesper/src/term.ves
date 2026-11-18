@@ -513,13 +513,18 @@ pub fn mkl(inout s: S, tag: u64, a: u64, b: u64, c: u64, from: u64) -> u64 {
             break;
         }
         let m = dec(e);
-        if sw(in s.hs, m) == h
-            && sw(in s.tg, m) == tag
-            && sw(in s.fa, m) == a
-            && sw(in s.fb, m) == b
-            && sw(in s.fc, m) == c
-            && sw(in s.ln, m) == len
-        {
+        if sw(in s.hs, m)
+            == h
+            && sw(in s.tg, m)
+            == tag
+            && sw(in s.fa, m)
+            == a
+            && sw(in s.fb, m)
+            == b
+            && sw(in s.fc, m)
+            == c
+            && sw(in s.ln, m)
+            == len {
             let base = sw(in s.ls, m);
             let mut same = true;
             let mut j: u64 = 0;

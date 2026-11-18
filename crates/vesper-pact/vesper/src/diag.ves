@@ -91,13 +91,7 @@ fn cmp_diag(in s: S, i: u64, j: u64) -> u64 {
     if c != 1 {
         return c;
     }
-    cmp_txt(
-        in s,
-        sw(in s.dg_off, i),
-        sw(in s.dg_len, i),
-        sw(in s.dg_off, j),
-        sw(in s.dg_len, j)
-    )
+    cmp_txt(in s, sw(in s.dg_off, i), sw(in s.dg_len, i), sw(in s.dg_off, j), sw(in s.dg_len, j))
 }
 
 fn swap1(inout q: ChunkSeq[u64], i: u64, j: u64) {

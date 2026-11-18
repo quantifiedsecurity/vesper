@@ -208,13 +208,7 @@ pub fn unify_ty(inout s: S, inout cx: ChunkSeq[u64], a: u64, b: u64) -> u64 {
     1
 }
 
-fn unify_var_term(
-    inout s: S,
-    inout cx: ChunkSeq[u64],
-    a: u64,
-    b: u64,
-    vtag: u64
-) -> u64 {
+fn unify_var_term(inout s: S, inout cx: ChunkSeq[u64], a: u64, b: u64, vtag: u64) -> u64 {
     let ra = resolve(inout s, in cx, a);
     let rb = resolve(inout s, in cx, b);
     if ra == rb {

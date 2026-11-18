@@ -242,11 +242,14 @@ pub fn w_outcome(inout s: S, o: u64) {
         if at == 34 {
             w(inout s, 0);
         } else if at == 35 || at == 36 {
-            w(inout s, if at == 35 {
-                1
-            } else {
-                2
-            });
+            w(
+                inout s,
+                if at == 35 {
+                    1
+                } else {
+                    2
+                }
+            );
             let l = fa(in s, a);
             w_slist(inout s, l);
         } else if at == 37 {
