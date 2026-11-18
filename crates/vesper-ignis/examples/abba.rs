@@ -34,10 +34,8 @@ fn graph(passes: u32) -> RenderGraph {
     let compute = g.add_queue(QueueKind::Compute);
     let textures: Vec<TextureHandle> = (0..TEXTURES)
         .map(|t| {
-            g.add_texture(
-                TextureDesc::simple(format!("t{t}"), Layout::Common).with_mips(MIPS),
-            )
-            .unwrap()
+            g.add_texture(TextureDesc::simple(format!("t{t}"), Layout::Common).with_mips(MIPS))
+                .unwrap()
         })
         .collect();
     let buffer = g
@@ -111,7 +109,9 @@ fn measure(name: &str, passes: u32, ops: u64) -> u128 {
         }
         "lower" => {
             let plan = graph(passes).plan().unwrap();
-            time(ops, || lower_plan(GpuApiTarget::Vulkan14, &plan).barrier_count())
+            time(ops, || {
+                lower_plan(GpuApiTarget::Vulkan14, &plan).barrier_count()
+            })
         }
         _ => unreachable!(),
     }
@@ -218,7 +218,9 @@ fn main() {
             compare(rust, port, epochs.parse().unwrap(), ops.parse().unwrap())
         }
         _ => {
-            eprintln!("usage: abba measure <ops> | abba profile <workload> <passes> <ops> | abba digest | abba compare <rust> <port> <epochs> <ops>");
+            eprintln!(
+                "usage: abba measure <ops> | abba profile <workload> <passes> <ops> | abba digest | abba compare <rust> <port> <epochs> <ops>"
+            );
             std::process::exit(2);
         }
     }

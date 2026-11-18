@@ -83,7 +83,11 @@ fn point(p: ffi::Point) -> FencePoint {
 /// command.
 fn plan_records(
     plan: &Plan,
-) -> (Vec<v::repr::StreamInfo>, Vec<v::repr::PlanCmd>, Vec<&Command>) {
+) -> (
+    Vec<v::repr::StreamInfo>,
+    Vec<v::repr::PlanCmd>,
+    Vec<&Command>,
+) {
     let mut streams = Vec::with_capacity(plan.queues.len());
     let mut cmds = Vec::new();
     let mut commands = Vec::new();
@@ -168,14 +172,22 @@ pub(crate) struct Ledger {
 impl Ledger {
     pub(crate) fn check(queues: &[QueueConfig], l: Limits) -> Result<(), LifecycleError> {
         let initial: Vec<u64> = queues.iter().map(|q| q.initial_fence).collect();
-        result(v::lifecycle_check_new(&v::repr::Limits::from_value(&limits(l)), &initial))
+        result(v::lifecycle_check_new(
+            &v::repr::Limits::from_value(&limits(l)),
+            &initial,
+        ))
     }
     pub(crate) fn new(id: u64, queues: &[QueueConfig], l: Limits) -> Self {
         let kinds: Vec<_> = queues.iter().map(|q| q.kind).collect();
         let initial: Vec<u64> = queues.iter().map(|q| q.initial_fence).collect();
         Self {
             id,
-            inner: v::lifecycle_new(id, &v::repr::Limits::from_value(&limits(l)), &kinds, &initial),
+            inner: v::lifecycle_new(
+                id,
+                &v::repr::Limits::from_value(&limits(l)),
+                &kinds,
+                &initial,
+            ),
         }
     }
     pub(crate) fn id(&self) -> u64 {
@@ -218,11 +230,13 @@ impl Ledger {
         let scratch: Vec<v::repr::ScratchRec> = batch
             .scratch
             .iter()
-            .map(|(pass, action, _)| v::repr::ScratchRec::from_value(&ffi::ScratchRec {
-                pass_graph: pass.graph,
-                pass_index: pass.index,
-                initialize: *action == ScratchAction::Initialize,
-            }))
+            .map(|(pass, action, _)| {
+                v::repr::ScratchRec::from_value(&ffi::ScratchRec {
+                    pass_graph: pass.graph,
+                    pass_index: pass.index,
+                    initialize: *action == ScratchAction::Initialize,
+                })
+            })
             .collect();
         let t = v::lifecycle_submit(
             &mut self.inner,
