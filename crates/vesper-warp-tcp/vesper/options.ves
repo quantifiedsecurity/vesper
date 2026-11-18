@@ -196,6 +196,20 @@ fn malformed(kind: u8) -> Result[Opts, WireError] {
     )
 }
 
+// The SACK block at `bytes[at..at + 8]`: one wide read when it fits.
+fn sack_blk_at(in bytes: Slice[u8], at: u64) -> Blk {
+    match bytes.try_read_u64_be(at) {
+        Option::Some(w) => Blk {
+            left: wrapping_u32(w >> 32),
+            right: wrapping_u32(w)
+        },
+        Option::None => Blk {
+            left: rd32(in bytes, at),
+            right: rd32(in bytes, wrapping_add(at, 4))
+        },
+    }
+}
+
 // Parse the option list `bytes[from..to]`.
 fn opts_parse_at(in bytes: Slice[u8], from: u64, to: u64) -> Result[Opts, WireError] {
     let mut opts = opts_default();
@@ -204,7 +218,10 @@ fn opts_parse_at(in bytes: Slice[u8], from: u64, to: u64) -> Result[Opts, WireEr
         if i >= to {
             break;
         }
-        let kind = rd8(in bytes, i);
+        let kind = match bytes.try_get(i) {
+            Option::Some(v) => v,
+            Option::None => 0,
+        };
         if kind == 0 {
             // End of option list; the rest is padding.
             break;
@@ -215,7 +232,10 @@ fn opts_parse_at(in bytes: Slice[u8], from: u64, to: u64) -> Result[Opts, WireEr
             if wrapping_add(i, 1) >= to {
                 return malformed(kind);
             }
-            let len = widen_u64(rd8(in bytes, wrapping_add(i, 1)));
+            let len = match bytes.try_get(wrapping_add(i, 1)) {
+                Option::Some(v) => widen_u64(v),
+                Option::None => 0,
+            };
             if len < 2 || wrapping_add(i, len) > to {
                 return malformed(kind);
             }
@@ -250,14 +270,7 @@ fn opts_parse_at(in bytes: Slice[u8], from: u64, to: u64) -> Result[Opts, WireEr
                 }
                 for k in 0..n {
                     let at = wrapping_add(body, wrapping_mul(k, 8));
-                    opts_set_blk(
-                        inout opts,
-                        k,
-                        Blk {
-                            left: rd32(in bytes, at),
-                            right: rd32(in bytes, wrapping_add(at, 4))
-                        }
-                    );
+                    opts_set_blk(inout opts, k, sack_blk_at(in bytes, at));
                 }
                 opts.sack_len = wrapping_u8(n);
             } else if kind == 8 {
@@ -268,11 +281,18 @@ fn opts_parse_at(in bytes: Slice[u8], from: u64, to: u64) -> Result[Opts, WireEr
                 if len != 10 || dup {
                     return malformed(kind);
                 }
+                // One wide read of TSval and TSecr (the length check above
+                // keeps it inside `bytes[..to]`).
+                let w = match bytes.try_read_u64_be(body) {
+                    Option::Some(v) => v,
+                    Option::None => widen_u64(rd32(in bytes, body))
+                        << 32 | widen_u64(rd32(in bytes, wrapping_add(body, 4))),
+                };
                 opts
                     .timestamps = Option::Some(
                     Timestamps {
-                        val: rd32(in bytes, body),
-                        ecr: rd32(in bytes, wrapping_add(body, 4))
+                        val: wrapping_u32(w >> 32),
+                        ecr: wrapping_u32(w)
                     }
                 );
             }
