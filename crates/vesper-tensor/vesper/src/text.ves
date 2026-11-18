@@ -106,7 +106,7 @@ fn put_utf8(inout strs: Slice[u8], sp: u64, code: u64)
 
 // Whether `s[start..end]` is UTF-8 as `String::from_utf8` accepts it: no
 // overlong forms, surrogates or code points above U+10FFFF.
-fn utf8_ok(in s: Slice[u8], start: u64, end: u64)
+pub fn utf8_ok(in s: Slice[u8], start: u64, end: u64)
     -> bool eff [Fail[ArithOverflow], Fail[RuntimeError]] {
     let mut i = start;
     loop {

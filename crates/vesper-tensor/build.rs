@@ -47,6 +47,12 @@ const DIVERGENT: &[(&str, &str)] = &[
     // up as lowercase `<0xab>`; tokenizer_sampling
     // encoder_matches_run_c_and_round_trips fails.
     ("        55 + d\n", "        87 + d\n"),
+    // gguf.rs (vesper/src/store.ves): the default alignment is 16; abba
+    // both_builds_read_the_same_gguf_files fails.
+    (
+        "    let mut alignment: u64 = 32;",
+        "    let mut alignment: u64 = 16;",
+    ),
     // json.rs (vesper/src/text.ves): a leading zero is accepted before two
     // more digits only; abba both_builds_read_the_same_safetensors_headers
     // fails.

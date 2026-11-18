@@ -431,3 +431,146 @@ fn abba_safetensors_header() {
         },
     );
 }
+
+fn read_gguf(r: Result<impl GgufView, impl std::fmt::Debug>) -> String {
+    match r {
+        Ok(g) => g.view(),
+        Err(e) => format!("error {e:?}"),
+    }
+}
+
+trait GgufView {
+    fn view(&self) -> String;
+}
+macro_rules! gguf_view {
+    ($krate:ident) => {
+        impl GgufView for $krate::gguf::Gguf {
+            fn view(&self) -> String {
+                format!(
+                    "{} {} {:?} {:?}",
+                    self.version(),
+                    self.alignment(),
+                    self.metadata(),
+                    self.tensors()
+                )
+            }
+        }
+    };
+}
+gguf_view!(seed);
+gguf_view!(vesper_tensor);
+
+/// A GGUF file with every metadata type, written by the Rust seed.
+fn sample_gguf(alignment: Option<u32>) -> Vec<u8> {
+    use seed::gguf::{write, GgmlType, TensorData, Value};
+    let mut metadata = vec![
+        ("general.name".to_string(), Value::String("tiny é".into())),
+        ("a.u8".into(), Value::U8(7)),
+        ("a.i8".into(), Value::I8(-7)),
+        ("a.u16".into(), Value::U16(700)),
+        ("a.i16".into(), Value::I16(-700)),
+        ("a.u32".into(), Value::U32(70_000)),
+        ("a.i32".into(), Value::I32(-70_000)),
+        ("a.f32".into(), Value::F32(-1.5)),
+        ("a.bool".into(), Value::Bool(true)),
+        ("a.u64".into(), Value::U64(1 << 40)),
+        ("a.i64".into(), Value::I64(-(1 << 40))),
+        ("a.f64".into(), Value::F64(2.25)),
+        (
+            "a.strings".into(),
+            Value::Array(vec![Value::String("x".into()), Value::String("yz".into())]),
+        ),
+        (
+            "a.floats".into(),
+            Value::Array(vec![Value::F32(1.0), Value::F32(-0.5)]),
+        ),
+        ("a.empty".into(), Value::Array(vec![])),
+    ];
+    if let Some(a) = alignment {
+        metadata.push(("general.alignment".into(), Value::U32(a)));
+    }
+    let tensors = vec![
+        TensorData {
+            name: "w".into(),
+            dims: vec![32, 2],
+            ty: GgmlType::Q8_0,
+            bytes: vec![1; 68],
+        },
+        TensorData {
+            name: "v".into(),
+            dims: vec![3],
+            ty: GgmlType::F32,
+            bytes: vec![2; 12],
+        },
+    ];
+    write(&metadata, &tensors).unwrap()
+}
+
+#[test]
+fn both_builds_read_the_same_gguf_files() {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files = vec![
+        sample_gguf(None),
+        sample_gguf(Some(64)),
+        std::fs::read(dir.join("fixtures/interop.gguf")).unwrap(),
+        std::fs::read(dir.join("fixtures/stories260K-q8_0.gguf")).unwrap(),
+    ];
+    let mut x = 5u64;
+    let mut next = |n: usize| {
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (x >> 33) as usize % n
+    };
+    let base: Vec<Vec<u8>> = files.clone();
+    for file in &base[..2] {
+        // Every truncation of the header, and single-byte edits in it.
+        for len in 0..file.len().min(700) {
+            files.push(file[..len].to_vec());
+        }
+        for _ in 0..3000 {
+            let mut f = file.clone();
+            let at = next(f.len().min(700));
+            f[at] = match next(4) {
+                0 => 0,
+                1 => 0xff,
+                2 => f[at] ^ (1 << next(8)),
+                _ => next(256) as u8,
+            };
+            files.push(f);
+        }
+    }
+    let mut errors = std::collections::BTreeSet::new();
+    for file in files {
+        let r = read_gguf(seed::gguf::Gguf::from_vec(file.clone()));
+        let v = read_gguf(vesper_tensor::gguf::Gguf::from_vec(file));
+        assert_eq!(r, v);
+        if r.starts_with("error") {
+            errors.insert(r);
+        }
+    }
+    // The edits reach most of the reader's checks.
+    assert!(errors.len() >= 12, "{errors:#?}");
+}
+
+#[test]
+#[ignore = "benchmark; run in release with --ignored --nocapture"]
+fn abba_gguf_header() {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let file = std::fs::read(dir.join("fixtures/stories260K-q8_0.gguf")).unwrap();
+    abba(
+        "GGUF header, stories260K (512-piece vocabulary)",
+        || {
+            seed::gguf::Gguf::from_vec(file.clone())
+                .unwrap()
+                .metadata()
+                .len() as u64
+        },
+        || {
+            vesper_tensor::gguf::Gguf::from_vec(file.clone())
+                .unwrap()
+                .metadata()
+                .len() as u64
+        },
+    );
+}
