@@ -197,6 +197,23 @@ impl Checker<'_> {
                 first = t;
             } else {
                 self.expect_type(&first, &t, span.clone());
+                // Each value is written into the other place, so the two
+                // types must be interchangeable, not merely compatible one
+                // way (a pure function is not an effectful one).
+                if first != Type::Infer
+                    && t != Type::Infer
+                    && (!super::compatible(&first, &t)
+                        || !super::compatible(&t, &first)
+                        || super::bound_capabilities(&first) != super::bound_capabilities(&t))
+                {
+                    self.error(
+                        "E0403",
+                        format!(
+                            "swap exchanges values, so '{first}' and '{t}' must be interchangeable, with the same effects and capabilities"
+                        ),
+                        span.clone(),
+                    );
+                }
             }
             for (old, origin) in &places {
                 if old.overlaps(&place) {
@@ -223,6 +240,15 @@ impl Checker<'_> {
             places.push((place, span));
         }
         self.loans.truncate(loan_base);
+        // The places now hold other values: forget their facts, as an
+        // `inout` argument of a call does.
+        for (place, _) in &places {
+            if let Some(binding) = env.bindings.get_mut(&place.root) {
+                binding.mutation = std::sync::Arc::new(());
+                binding.integer = None;
+                binding.nonzero = false;
+            }
+        }
         if swap { Type::unit() } else { first }
     }
 

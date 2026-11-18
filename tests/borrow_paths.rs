@@ -486,3 +486,54 @@ fn main() -> u64 {
 ";
     assert_eq!(differential("shadowed", source), 2101);
 }
+
+/// The places a primitive writes lose their value facts, as `inout`
+/// arguments of calls do: `x + 1` after `replace(inout x, max)` may
+/// overflow, and swapping function values needs interchangeable types.
+#[test]
+fn primitives_invalidate_facts_and_need_interchangeable_types() {
+    let source = "fn grow() -> u64 eff [Fail[ArithOverflow]] {
+    let mut x: u64 = 0;
+    let mut old = replace(inout x, 18446744073709551615);
+    let mut y: u64 = 7;
+    swap(inout y, inout old);
+    wrapping_add(x + 1, y)
+}
+fn main() -> u64 {
+    handle Fail[ArithOverflow] in {
+        grow()
+    } with {
+        return v => v,
+        raise(e, k) => 4242,
+    }
+}
+";
+    assert_eq!(differential("facts", source), 4242);
+    // Without the row, the overflow is unhandled: the fact `x == 0` is gone.
+    rejected(
+        "fn main() -> u64 {
+    let mut x: u64 = 0;
+    let old = replace(inout x, 18446744073709551615);
+    x + 1
+}
+",
+        "E0401",
+        "unhandled effect",
+    );
+    rejected(
+        "fn boom() -> u64 eff [Fail[RuntimeError]] {
+    let s: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    s.get(3)
+}
+fn calm() -> u64 { 1 }
+fn main() -> u64 {
+    let mut a = boom;
+    let mut b = calm;
+    swap(inout a, inout b);
+    b()
+}
+",
+        "E0403",
+        "must be interchangeable",
+    );
+}
