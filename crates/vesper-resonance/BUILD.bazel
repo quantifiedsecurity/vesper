@@ -6,3 +6,15 @@ vesper_crate(
     copy_test_cwd = ["test/lean_model"],
     extra_test_data = ["//:lean"],
 )
+
+# The seed package (seed/) builds these same Rust sources without the port.
+exports_files(glob([
+    "src/**/*.rs",
+    "tests/**/*.rs",
+]))
+
+filegroup(
+    name = "rust_srcs",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/vesper-resonance/seed:__pkg__"],
+)
