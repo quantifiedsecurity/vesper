@@ -22,4 +22,35 @@ fn main() {
 /// The divergence check: one wrong line per ported module (mirrored in
 /// BUILD.bazel). Each must make the tests that cover its module fail.
 #[cfg(feature = "vesper-port-divergent")]
-const DIVERGENT_EDITS: &[(&str, &str, &str)] = &[];
+const DIVERGENT_EDITS: &[(&str, &str, &str)] = &[
+    // lemire.ves: every Eisel-Lemire and Clinger result flips its low bit.
+    ("lemire", "f.mantissa | sign", "(f.mantissa ^ 1) | sign"),
+    // index.ves: the scalar parser refuses `e+` exponents.
+    ("index", "if s == 43 || s == 45 {", "if s == 45 {"),
+    // stage2.ves: stage 2 refuses fractions.
+    (
+        "stage2",
+        "if p < end && at(in t, p) == 46 {",
+        "if p < end && at(in t, p) == 47 {",
+    ),
+    // dragon.ves (encode): negative floats print with a plus sign.
+    ("encode", "text.push(45);", "text.push(43);"),
+    // helpers.ves: the escape mask lets a backslash escape a backslash.
+    (
+        "helpers",
+        "carry = backslashes & bit != 0 && !carry;",
+        "carry = backslashes & bit != 0;",
+    ),
+    // binary.ves: StreamVByte writes every value one byte too wide.
+    (
+        "binary",
+        "let tag = bit_shl(wrapping_sub(w, 1), shift);",
+        "let tag = bit_shl(w, shift);",
+    ),
+    // records.ves: tiles store the flags as the status code.
+    (
+        "records",
+        "status_code: wrapping_u16(status),",
+        "status_code: wrapping_u16(flags),",
+    ),
+];

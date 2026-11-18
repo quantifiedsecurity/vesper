@@ -13,10 +13,12 @@ use self::{
 use self::index::utf8_valid_up_to;
 
 fn raise(kind: BinErrorKind, offset: u64) -> Unit eff [Fail[BinError]] {
-    Fail::raise(BinError {
-        kind: kind,
-        offset: offset
-    })
+    Fail::raise(
+        BinError {
+            kind: kind,
+            offset: offset
+        }
+    )
 }
 
 fn max64() -> u64 {
@@ -111,7 +113,8 @@ pub fn vbyte_size(in values: Slice[u32], lim: VbyteLimits) -> u64 eff [Fail[BinE
     size
 }
 
-pub fn vbyte_encode(in values: Slice[u32], inout out: Slice[u8], lim: VbyteLimits) -> u64 eff [Fail[BinError]] {
+pub fn vbyte_encode(in values: Slice[u32], inout out: Slice[u8], lim: VbyteLimits)
+    -> u64 eff [Fail[BinError]] {
     let size = vbyte_size(in values, lim);
     if out.len() < size {
         raise(BinErrorKind::BOutputTooSmall, 0);
@@ -339,7 +342,8 @@ fn meta_get(in meta: ChunkSeq[u64], i: u64) -> u64 {
     }
 }
 
-fn check_new(count: u64, lim: ArchiveLimits, inout meta: ChunkSeq[u64]) -> Check eff [Fail[BinError]] {
+fn check_new(count: u64, lim: ArchiveLimits, inout meta: ChunkSeq[u64])
+    -> Check eff [Fail[BinError]] {
     if count == 0 {
         raise(BinErrorKind::BTree, 12);
     }
@@ -373,7 +377,8 @@ fn check_label(inout c: Check, len: u64) -> Unit eff [Fail[BinError]] {
     work(inout c.remaining, len);
 }
 
-fn check_node(inout c: Check, in meta: ChunkSeq[u64], index: u64, children: u64) -> Unit eff [Fail[BinError]] {
+fn check_node(inout c: Check, in meta: ChunkSeq[u64], index: u64, children: u64)
+    -> Unit eff [Fail[BinError]] {
     work(inout c.remaining, node_len());
     if meta_get(in meta, wrapping_add(wrapping_mul(index, 2), 1)) == 0 {
         raise(BinErrorKind::BTree, node_offset(index));
@@ -383,7 +388,8 @@ fn check_node(inout c: Check, in meta: ChunkSeq[u64], index: u64, children: u64)
     bound(c.edges, c.lim.max_edges, BinErrorKind::BCountLimit);
 }
 
-fn check_edge(inout c: Check, inout meta: ChunkSeq[u64], parent: u64, child: u64) -> Unit eff [Fail[BinError]] {
+fn check_edge(inout c: Check, inout meta: ChunkSeq[u64], parent: u64, child: u64)
+    -> Unit eff [Fail[BinError]] {
     work(inout c.remaining, 8);
     if child <= parent || child >= c.count {
         raise(BinErrorKind::BTree, node_offset(parent));
@@ -412,8 +418,12 @@ fn w_at(in w: Slice[u64], i: u64) -> u64 {
 // `archive::encoded_size` over flattened nodes: five words per node (value,
 // label offset and length in `labels`, children offset and count in
 // `children`).
-pub fn archive_size(in nodes: Slice[u64], in labels: Slice[u8], in children: Slice[u32], lim: ArchiveLimits)
-    -> u64 eff [Fail[BinError]] {
+pub fn archive_size(
+    in nodes: Slice[u64],
+    in labels: Slice[u8],
+    in children: Slice[u32],
+    lim: ArchiveLimits
+) -> u64 eff [Fail[BinError]] {
     let count = nodes.len() / 5;
     let mut meta: ChunkSeq[u64] = ChunkSeq::new();
     let mut c = check_new(count, lim, inout meta);
@@ -491,7 +501,11 @@ pub fn archive_encode(
             put_relative(inout out, wrapping_add(offset, 4), cursor);
             put_u32(inout out, wrapping_add(offset, 8), label_len);
             for k in 0..label_len {
-                out.try_set(wrapping_add(cursor, k), wrapping_u8(byte(in labels, wrapping_add(label_off, k))));
+                out
+                    .try_set(
+                    wrapping_add(cursor, k),
+                    wrapping_u8(byte(in labels, wrapping_add(label_off, k)))
+                );
             }
             cursor = wrapping_add(cursor, label_len);
         }
@@ -504,7 +518,11 @@ pub fn archive_encode(
                     Option::Some(v) => widen_u64(v),
                     Option::None => 0,
                 };
-                put_relative(inout out, cursor, wrapping_add(header_len(), wrapping_mul(child, node_len())));
+                put_relative(
+                    inout out,
+                    cursor,
+                    wrapping_add(header_len(), wrapping_mul(child, node_len()))
+                );
                 cursor = wrapping_add(cursor, 4);
             }
         }
@@ -520,7 +538,14 @@ pub fn archive_validate(in bytes: Slice[u8], lim: ArchiveLimits) -> u64 eff [Fai
     if len < header_len() {
         raise(BinErrorKind::BTruncated, len);
     }
-    if byte(in bytes, 0) != 86 || byte(in bytes, 1) != 83 || byte(in bytes, 2) != 80 || byte(in bytes, 3) != 65 {
+    if byte(in bytes, 0)
+        != 86
+        || byte(in bytes, 1)
+        != 83
+        || byte(in bytes, 2)
+        != 80
+        || byte(in bytes, 3)
+        != 65 {
         raise(BinErrorKind::BMagic, 0);
     }
     if byte(in bytes, 4) != 1 || byte(in bytes, 5) != 0 {
@@ -579,7 +604,14 @@ pub fn archive_validate(in bytes: Slice[u8], lim: ArchiveLimits) -> u64 eff [Fai
         let child_count = get_u32(in bytes, wrapping_add(offset, 16));
         check_node(inout c, in meta, i, child_count);
         check_label(inout c, label_count);
-        let label = relslice_resolve(label_offset, wrapping_u32(label_count), wrapping_add(offset, 4), 1, 1, len);
+        let label = relslice_resolve(
+            label_offset,
+            wrapping_u32(label_count),
+            wrapping_add(offset, 4),
+            1,
+            1,
+            len
+        );
         if label_count != 0 {
             if label.start != cursor {
                 raise(BinErrorKind::BLayout, wrapping_add(offset, 4));
@@ -600,7 +632,14 @@ pub fn archive_validate(in bytes: Slice[u8], lim: ArchiveLimits) -> u64 eff [Fai
             }
         }
         cursor = next;
-        let kids = relslice_resolve(child_offset, wrapping_u32(child_count), wrapping_add(offset, 12), 4, 4, len);
+        let kids = relslice_resolve(
+            child_offset,
+            wrapping_u32(child_count),
+            wrapping_add(offset, 12),
+            4,
+            4,
+            len
+        );
         if child_count != 0 {
             if kids.start != cursor {
                 raise(BinErrorKind::BLayout, wrapping_add(offset, 12));
@@ -611,10 +650,16 @@ pub fn archive_validate(in bytes: Slice[u8], lim: ArchiveLimits) -> u64 eff [Fai
                     break;
                 }
                 let target = relptr_resolve(get_i32(in bytes, entry), entry, node_len(), 4, len);
-                if target.start < header_len() || target.start >= range.end || wrapping_sub(
-                    target.start,
-                    header_len()
-                ) % 32 != 0 {
+                if target
+                    .start
+                    < header_len()
+                    || target
+                    .start
+                    >= range
+                    .end
+                    || wrapping_sub(target.start, header_len())
+                    % 32
+                    != 0 {
                     raise(BinErrorKind::BTree, entry);
                 }
                 check_edge(inout c, inout meta, i, wrapping_sub(target.start, header_len()) / 32);

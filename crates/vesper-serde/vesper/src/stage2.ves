@@ -97,8 +97,14 @@ fn work_offset(in t: Slice[u8], in escapes: Slice[u32], p: u64) -> u64 {
 
 // Raise `kind` at `at` as the scalar parser reports it, having stepped
 // every byte before `stepped` when detecting it.
-fn fail(in b: B, in t: Slice[u8], in escapes: Slice[u32], kind: ErrorKind, at_pos: u64, stepped: u64)
-    -> Unit eff [Fail[Error]] {
+fn fail(
+    in b: B,
+    in t: Slice[u8],
+    in escapes: Slice[u32],
+    kind: ErrorKind,
+    at_pos: u64,
+    stepped: u64
+) -> Unit eff [Fail[Error]] {
     let f = frontier(in b);
     if f < stepped {
         raise(ErrorKind::WorkLimit, work_offset(in t, in escapes, f));
@@ -106,11 +112,13 @@ fn fail(in b: B, in t: Slice[u8], in escapes: Slice[u32], kind: ErrorKind, at_po
     raise(kind, at_pos);
 }
 
-fn err(in b: B, in t: Slice[u8], in escapes: Slice[u32], kind: ErrorKind, at_pos: u64) -> Unit eff [Fail[Error]] {
+fn err(in b: B, in t: Slice[u8], in escapes: Slice[u32], kind: ErrorKind, at_pos: u64)
+    -> Unit eff [Fail[Error]] {
     fail(in b, in t, in escapes, kind, at_pos, at_pos)
 }
 
-fn check_frontier(in b: B, in t: Slice[u8], in escapes: Slice[u32], stepped: u64) -> Unit eff [Fail[Error]] {
+fn check_frontier(in b: B, in t: Slice[u8], in escapes: Slice[u32], stepped: u64)
+    -> Unit eff [Fail[Error]] {
     let f = frontier(in b);
     if f < stepped {
         raise(ErrorKind::WorkLimit, work_offset(in t, in escapes, f));
@@ -148,11 +156,13 @@ fn entry(in b: B, in t: Slice[u8], in escapes: Slice[u32], i: u64) -> Unit eff [
     }
 }
 
-fn syntax(in b: B, in t: Slice[u8], in s: Slice[u32], in escapes: Slice[u32], i: u64) -> Unit eff [Fail[Error]] {
+fn syntax(in b: B, in t: Slice[u8], in s: Slice[u32], in escapes: Slice[u32], i: u64)
+    -> Unit eff [Fail[Error]] {
     err(in b, in t, in escapes, ErrorKind::Syntax, pos(in b, in s, i))
 }
 
-fn op(in b: B, in t: Slice[u8], in s: Slice[u32], in escapes: Slice[u32], i: u64, c: u64) -> Unit eff [Fail[Error]] {
+fn op(in b: B, in t: Slice[u8], in s: Slice[u32], in escapes: Slice[u32], i: u64, c: u64)
+    -> Unit eff [Fail[Error]] {
     if byte(in b, in t, in s, i) != c {
         syntax(in b, in t, in s, in escapes, i);
     }
@@ -175,15 +185,18 @@ fn push(
     if n >= b.capacity {
         err(in b, in t, in escapes, ErrorKind::AllocationLimit, start);
     }
-    toks.push(Token {
-        start: start,
-        end: 0,
-        next: wrapping_add(n, 1),
-        kind: kind,
-        decoded_len: 0,
-        escaped: false,
-        depth: depth
-    });
+    toks
+        .push(
+        Token {
+            start: start,
+            end: 0,
+            next: wrapping_add(n, 1),
+            kind: kind,
+            decoded_len: 0,
+            escaped: false,
+            depth: depth
+        }
+    );
     n
 }
 
@@ -521,7 +534,15 @@ fn key(
     check_frontier(in b, in t, in escapes, here);
     let before = wrapping_add(wrapping_add(b.len, here), b.dup);
     let mut work = before;
-    check_duplicate(in toks, in t, wrapping_add(object, 1), key_index, inout work, b.lim.max_work, here);
+    check_duplicate(
+        in toks,
+        in t,
+        wrapping_add(object, 1),
+        key_index,
+        inout work,
+        b.lim.max_work,
+        here
+    );
     b.dup = wrapping_add(b.dup, wrapping_sub(work, before));
     op(in b, in t, in s, in escapes, next, 58);
     wrapping_add(next, 1)
@@ -574,11 +595,14 @@ fn document(
                 set_end(inout toks, token, wrapping_add(pos(in b, in s, i), 1));
                 i = wrapping_add(i, 1);
             } else {
-                let frame = wrapping_add(wrapping_mul(token, 2), if object {
-                    1
-                } else {
-                    0
-                });
+                let frame = wrapping_add(
+                    wrapping_mul(token, 2),
+                    if object {
+                        1
+                    } else {
+                        0
+                    }
+                );
                 if stack.len() > depth {
                     stack.try_set(depth, frame);
                 } else {

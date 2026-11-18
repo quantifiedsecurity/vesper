@@ -22,6 +22,7 @@ vesper-port-harness = { path = "../vesper-port-harness" }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+vesper-bench = { path = "../vesper-bench" }
 
 [features]
 # A deliberately divergent port build (one wrong edit per ported module,

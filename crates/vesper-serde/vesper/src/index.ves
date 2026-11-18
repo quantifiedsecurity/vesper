@@ -14,10 +14,12 @@ use self::{
 };
 
 pub fn raise(kind: ErrorKind, offset: u64) -> Unit eff [Fail[Error]] {
-    Fail::raise(Error {
-        kind: kind,
-        offset: offset
-    })
+    Fail::raise(
+        Error {
+            kind: kind,
+            offset: offset
+        }
+    )
 }
 
 pub fn hard_depth() -> u64 {
@@ -147,18 +149,16 @@ pub fn utf8_char(in t: Slice[u8], p: u64) -> (u64, u64) {
         (((b & 31) << 6) | (at(in t, wrapping_add(p, 1)) & 63), 2)
     } else if b < 240 {
         (
-            ((b & 15) << 12) | ((at(in t, wrapping_add(p, 1)) & 63) << 6) | (at(
-                in t,
-                wrapping_add(p, 2)
-            ) & 63),
+            ((b & 15) << 12) | ((at(in t, wrapping_add(p, 1)) & 63) << 6) | (
+                at(in t, wrapping_add(p, 2)) & 63
+            ),
             3
         )
     } else {
         (
-            ((b & 7) << 18) | ((at(in t, wrapping_add(p, 1)) & 63) << 12) | ((at(
-                in t,
-                wrapping_add(p, 2)
-            ) & 63) << 6) | (at(in t, wrapping_add(p, 3)) & 63),
+            ((b & 7) << 18) | ((at(in t, wrapping_add(p, 1)) & 63) << 12) | (
+                (at(in t, wrapping_add(p, 2)) & 63) << 6
+            ) | (at(in t, wrapping_add(p, 3)) & 63),
             4
         )
     }
@@ -593,15 +593,18 @@ fn push(inout p: P, inout toks: ChunkSeq[Token], kind: Kind, depth: u64) -> u64 
     if n >= p.capacity {
         perr(in p, ErrorKind::AllocationLimit);
     }
-    toks.push(Token {
-        start: p.pos,
-        end: 0,
-        next: wrapping_add(n, 1),
-        kind: kind,
-        decoded_len: 0,
-        escaped: false,
-        depth: depth
-    });
+    toks
+        .push(
+        Token {
+            start: p.pos,
+            end: 0,
+            next: wrapping_add(n, 1),
+            kind: kind,
+            decoded_len: 0,
+            escaped: false,
+            depth: depth
+        }
+    );
     n
 }
 
@@ -652,7 +655,8 @@ fn number(inout p: P, in t: Slice[u8]) -> Unit eff [Fail[Error]] {
     }
 }
 
-fn string(inout p: P, inout toks: ChunkSeq[Token], in t: Slice[u8], index: u64) -> Unit eff [Fail[Error]] {
+fn string(inout p: P, inout toks: ChunkSeq[Token], in t: Slice[u8], index: u64)
+    -> Unit eff [Fail[Error]] {
     expect(inout p, in t, 34);
     let mut decoded: u64 = 0;
     let mut escaped = false;
@@ -718,8 +722,14 @@ fn literal(inout p: P, in t: Slice[u8], kind: u64) -> Unit eff [Fail[Error]] {
     }
 }
 
-fn container(inout p: P, inout toks: ChunkSeq[Token], in t: Slice[u8], index: u64, depth: u64, object: bool)
-    -> Unit eff [Fail[Error]] {
+fn container(
+    inout p: P,
+    inout toks: ChunkSeq[Token],
+    in t: Slice[u8],
+    index: u64,
+    depth: u64,
+    object: bool
+) -> Unit eff [Fail[Error]] {
     step(inout p);
     ws(inout p, in t);
     let close: u64 = if object {
@@ -758,7 +768,8 @@ fn container(inout p: P, inout toks: ChunkSeq[Token], in t: Slice[u8], index: u6
     }
 }
 
-fn value(inout p: P, inout toks: ChunkSeq[Token], in t: Slice[u8], depth: u64) -> Unit eff [Fail[Error]] {
+fn value(inout p: P, inout toks: ChunkSeq[Token], in t: Slice[u8], depth: u64)
+    -> Unit eff [Fail[Error]] {
     let b = at(in t, p.pos);
     let kind = if b == 110 {
         Kind::Null

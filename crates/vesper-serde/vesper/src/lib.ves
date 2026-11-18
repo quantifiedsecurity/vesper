@@ -348,17 +348,31 @@ pub fn doc_build(
     unclosed: bool,
     limits: Limits
 ) -> Unit eff [Fail[Error]] {
-    stage2_build(inout doc, in input, in structurals, in escapes, control, truncated, unclosed, limits)
+    stage2_build(
+        inout doc,
+        in input,
+        in structurals,
+        in escapes,
+        control,
+        truncated,
+        unclosed,
+        limits
+    )
 }
 
 // `encode::encoded_size` over a flattened value (vesper/src/encode.ves).
-pub fn value_size(in words: Slice[u64], in pool: Slice[u8], limits: EncodeLimits) -> u64 eff [Fail[Error]] {
+pub fn value_size(in words: Slice[u64], in pool: Slice[u8], limits: EncodeLimits)
+    -> u64 eff [Fail[Error]] {
     encode_size(in words, in pool, limits)
 }
 
 // `encode::encode_into` over a flattened value.
-pub fn value_write(in words: Slice[u64], in pool: Slice[u8], inout out: Slice[u8], limits: EncodeLimits)
-    -> u64 eff [Fail[Error]] {
+pub fn value_write(
+    in words: Slice[u64],
+    in pool: Slice[u8],
+    inout out: Slice[u8],
+    limits: EncodeLimits
+) -> u64 eff [Fail[Error]] {
     encode_write(in words, in pool, inout out, limits)
 }
 
@@ -397,7 +411,8 @@ pub fn size_bound_string(max_utf8_bytes: u64) -> Bound eff [Fail[Error]] {
 }
 
 // `JsonSizeBound::combine_field`.
-pub fn size_bound_field(object: Bound, key_escaped_len: u64, field: Bound, first: bool) -> Bound eff [Fail[Error]] {
+pub fn size_bound_field(object: Bound, key_escaped_len: u64, field: Bound, first: bool)
+    -> Bound eff [Fail[Error]] {
     bound_field(object, key_escaped_len, field, first)
 }
 
@@ -422,7 +437,8 @@ pub fn svb_size(in values: Slice[u32], limits: VbyteLimits) -> u64 eff [Fail[Bin
 }
 
 // `streamvbyte::encode_into`.
-pub fn svb_encode(in values: Slice[u32], inout out: Slice[u8], limits: VbyteLimits) -> u64 eff [Fail[BinError]] {
+pub fn svb_encode(in values: Slice[u32], inout out: Slice[u8], limits: VbyteLimits)
+    -> u64 eff [Fail[BinError]] {
     vbyte_encode(in values, inout out, limits)
 }
 
@@ -463,8 +479,12 @@ pub fn vspa_between(field_offset: u64, target_offset: u64) -> i32 eff [Fail[BinE
 // `archive::encoded_size` over flattened nodes: five words per node (value,
 // label offset, label length, children offset, child count) into the label
 // and child pools.
-pub fn vspa_size(in nodes: Slice[u64], in labels: Slice[u8], in children: Slice[u32], limits: ArchiveLimits)
-    -> u64 eff [Fail[BinError]] {
+pub fn vspa_size(
+    in nodes: Slice[u64],
+    in labels: Slice[u8],
+    in children: Slice[u32],
+    limits: ArchiveLimits
+) -> u64 eff [Fail[BinError]] {
     archive_size(in nodes, in labels, in children, limits)
 }
 
@@ -512,7 +532,8 @@ pub fn batch_validate(batch: BatchLimits, record: Limits) -> Unit eff [Fail[Faul
 }
 
 // NDJSON batch admission.
-pub fn batch_admit(in input: Slice[u8], batch: BatchLimits, record_size: u64) -> NdPlan eff [Fail[Fault]] {
+pub fn batch_admit(in input: Slice[u8], batch: BatchLimits, record_size: u64)
+    -> NdPlan eff [Fail[Fault]] {
     ndjson_admit(in input, batch, record_size)
 }
 
@@ -523,6 +544,7 @@ pub fn batch_frame(in input: Slice[u8], inout cursor: NdCursor, batch: BatchLimi
 }
 
 // One parsed NDJSON record's totals.
-pub fn batch_account(inout cursor: NdCursor, tokens: u64, index: u64, work: u64) -> Unit eff [Fail[Fault]] {
+pub fn batch_account(inout cursor: NdCursor, tokens: u64, index: u64, work: u64)
+    -> Unit eff [Fail[Fault]] {
     ndjson_account(inout cursor, tokens, index, work)
 }

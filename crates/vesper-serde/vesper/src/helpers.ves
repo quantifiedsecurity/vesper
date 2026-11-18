@@ -33,12 +33,14 @@ pub fn swar_compile(field_idx: u16, in key: Slice[u8]) -> Option[Swar] {
     word = word | bit_shl(34, wrapping_mul(n, 8));
     let count = wrapping_add(n, 1);
     let mask = bit_shr(18446744073709551615, wrapping_mul(wrapping_sub(8, count), 8));
-    Option::Some(Swar {
-        field_idx: field_idx,
-        word: word,
-        mask: mask,
-        len: wrapping_u8(n)
-    })
+    Option::Some(
+        Swar {
+            field_idx: field_idx,
+            word: word,
+            mask: mask,
+            len: wrapping_u8(n)
+        }
+    )
 }
 
 // `SwarFieldMatcher::matches_window`: the key and its closing quote are the
@@ -101,7 +103,8 @@ pub fn bound_string(max_utf8_bytes: u64) -> Bound eff [Fail[Error]] {
 }
 
 // `JsonSizeBound::combine_field`.
-pub fn bound_field(object: Bound, key_escaped_len: u64, field: Bound, first: bool) -> Bound eff [Fail[Error]] {
+pub fn bound_field(object: Bound, key_escaped_len: u64, field: Bound, first: bool)
+    -> Bound eff [Fail[Error]] {
     let not_first: u64 = if first {
         0
     } else {

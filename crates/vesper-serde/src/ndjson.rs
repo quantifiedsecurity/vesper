@@ -247,7 +247,11 @@ impl<'a> NdjsonBatch<'a> {
     /// The port's admission, framing and accounting around the per-record
     /// parse (itself the port's).
     #[cfg(vesper_port)]
-    fn port_parse_with(input: &'a [u8], limits: BatchLimits, engine: Engine) -> Result<Self, Error> {
+    fn port_parse_with(
+        input: &'a [u8],
+        limits: BatchLimits,
+        engine: Engine,
+    ) -> Result<Self, Error> {
         crate::port::batch_validate(&limits).map_err(fault)?;
         if let Engine::Simd(isa) = engine
             && !isa.is_available()
@@ -323,7 +327,11 @@ impl<'a> NdjsonBatch<'a> {
     }
 
     #[cfg(not(vesper_port))]
-    fn rust_parse_with(input: &'a [u8], limits: BatchLimits, engine: Engine) -> Result<Self, Error> {
+    fn rust_parse_with(
+        input: &'a [u8],
+        limits: BatchLimits,
+        engine: Engine,
+    ) -> Result<Self, Error> {
         limits.validate()?;
         if let Engine::Simd(isa) = engine
             && !isa.is_available()

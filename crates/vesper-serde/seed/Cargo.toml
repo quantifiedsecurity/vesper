@@ -24,6 +24,12 @@ path = "../src/lib.rs"
 
 [dev-dependencies]
 serde_json = { workspace = true }
+vesper-bench = { path = "../../vesper-bench" }
+
+# The Rust arm of the ABBA benchmark (the port package's serde_abba).
+[[example]]
+name = "serde_abba_rust"
+path = "../examples/serde_abba.rs"
 
 [[test]]
 name = "binary"

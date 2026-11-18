@@ -226,7 +226,9 @@ impl Tape {
 
 impl core::fmt::Debug for Tape {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_list().entries(self.doc.as_ref().tokens().iter()).finish()
+        f.debug_list()
+            .entries(self.doc.as_ref().tokens().iter())
+            .finish()
     }
 }
 
@@ -470,7 +472,9 @@ fn bound_in(b: JsonSizeBound) -> vp::repr::Bound {
 fn bound_out(b: vp::repr::Bound) -> JsonSizeBound {
     let b = b.to_value();
     if b.dynamic {
-        JsonSizeBound::Dynamic { static_ceiling: b.n }
+        JsonSizeBound::Dynamic {
+            static_ceiling: b.n,
+        }
     } else {
         JsonSizeBound::Bounded(b.n)
     }
@@ -519,7 +523,11 @@ pub(crate) fn svb_size(values: &[u32], limits: VbyteLimits) -> BinResult<usize> 
     Ok(vp::svb_size(values, &vbyte_limits(&limits))? as usize)
 }
 
-pub(crate) fn svb_encode(values: &[u32], output: &mut [u8], limits: VbyteLimits) -> BinResult<usize> {
+pub(crate) fn svb_encode(
+    values: &[u32],
+    output: &mut [u8],
+    limits: VbyteLimits,
+) -> BinResult<usize> {
     Ok(vp::svb_encode(values, output, &vbyte_limits(&limits))? as usize)
 }
 

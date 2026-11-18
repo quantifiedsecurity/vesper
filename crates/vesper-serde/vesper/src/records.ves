@@ -38,13 +38,15 @@ fn none() -> u64 {
 }
 
 fn fault(code: u64, detail: u64, offset: u64, record: u64, line: u64) -> Unit eff [Fail[Fault]] {
-    Fail::raise(Fault {
-        code: code,
-        detail: detail,
-        offset: offset,
-        record: record,
-        line: line
-    })
+    Fail::raise(
+        Fault {
+            code: code,
+            detail: detail,
+            offset: offset,
+            record: record,
+            line: line
+        }
+    )
 }
 
 // -------------------------------------------------------------------
@@ -336,10 +338,10 @@ fn utf8_bytes(c: u64) -> (u64, u64) {
     } else {
         (
             4,
-            (240 | (c >> 18)) | bit_shl(128 | ((c >> 12) & 63), 8) | bit_shl(128 | ((c >> 6) & 63), 16) | bit_shl(
-                128 | (c & 63),
-                24
-            )
+            (240 | (c >> 18)) | bit_shl(128 | ((c >> 12) & 63), 8) | bit_shl(
+                128 | ((c >> 6) & 63),
+                16
+            ) | bit_shl(128 | (c & 63), 24)
         )
     }
 }
@@ -520,7 +522,8 @@ fn find_newline(in s: Slice[u8]) -> Option[u64] {
 
 // Batch admission before any record: the record count, EOF line, record
 // metadata bytes (`record_size` per record) and the work charged so far.
-pub fn ndjson_admit(in input: Slice[u8], b: BatchLimits, record_size: u64) -> NdPlan eff [Fail[Fault]] {
+pub fn ndjson_admit(in input: Slice[u8], b: BatchLimits, record_size: u64)
+    -> NdPlan eff [Fail[Fault]] {
     let len = input.len();
     if len > b.max_input_bytes {
         initial(1);
@@ -582,7 +585,8 @@ fn blank(b: u64) -> bool {
 
 // The frame at `c.start`: its end, payload end and the record's limits
 // (`c.max_*`), with the checks before its parse.
-pub fn ndjson_frame(in input: Slice[u8], inout c: NdCursor, b: BatchLimits, r: Limits) -> Unit eff [Fail[Fault]] {
+pub fn ndjson_frame(in input: Slice[u8], inout c: NdCursor, b: BatchLimits, r: Limits)
+    -> Unit eff [Fail[Fault]] {
     let len = input.len();
     let start = c.start;
     let (end, body_end) = match find_newline(in input[start..len]) {
@@ -592,7 +596,12 @@ pub fn ndjson_frame(in input: Slice[u8], inout c: NdCursor, b: BatchLimits, r: L
         },
         Option::None => (len, len),
     };
-    let payload_end = if body_end < end && body_end > start && at(in input, wrapping_sub(body_end, 1)) == 13 {
+    let payload_end = if body_end
+        < end
+        && body_end
+        > start
+        && at(in input, wrapping_sub(body_end, 1))
+        == 13 {
         wrapping_sub(body_end, 1)
     } else {
         body_end
@@ -650,7 +659,8 @@ pub fn ndjson_frame(in input: Slice[u8], inout c: NdCursor, b: BatchLimits, r: L
 
 // After the record parsed: its totals against the batch, then the cursor
 // moves to the next frame.
-pub fn ndjson_account(inout c: NdCursor, tokens: u64, index: u64, work: u64) -> Unit eff [Fail[Fault]] {
+pub fn ndjson_account(inout c: NdCursor, tokens: u64, index: u64, work: u64)
+    -> Unit eff [Fail[Fault]] {
     if tokens > c.remaining_tokens {
         here(in c, 3);
     }
@@ -660,10 +670,12 @@ pub fn ndjson_account(inout c: NdCursor, tokens: u64, index: u64, work: u64) -> 
     if work > c.remaining_work {
         here(in c, 6);
     }
-    if tokens > wrapping_sub(max64(), c.tokens) || index > wrapping_sub(max64(), c.index_bytes) || work > wrapping_sub(
-        max64(),
-        c.work
-    ) {
+    if tokens
+        > wrapping_sub(max64(), c.tokens)
+        || index
+        > wrapping_sub(max64(), c.index_bytes)
+        || work
+        > wrapping_sub(max64(), c.work) {
         here(in c, 9);
     }
     c.tokens = wrapping_add(c.tokens, tokens);
