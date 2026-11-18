@@ -10,7 +10,8 @@ needed no manuscript change.
 runs at 0.3x to 1.1x of the Rust build's time (table below). Following the
 compiler's seed-copy rule, **the Rust code stays** and the four dependents
 the compiler links keep the Rust build. At parity, the owner chose to move
-the three dependents outside the compiler to the port (follow-up #996).
+the dependents outside the compiler to the port (follow-up #996):
+`vesper-chorus` and `vesper-flux` now link it.
 
 ## API inventory (re-measured)
 
@@ -95,8 +96,11 @@ and the owner's rule keeps Rust as the default.
   (inside the compiler closure) depend on the seed by rename.
   `vesper-chorus`, `vesper-flux` and `vesper-nexus` (outside it) first stayed
   on the seed too, under the owner's parity rule. Since the follow-up (#996),
-  they link the port, which the owner approved once the benchmarks reached
-  parity. Their tests pass against it.
+  `vesper-chorus` and `vesper-flux` link the port, which the owner approved
+  once the benchmarks reached parity. Their tests pass against it.
+  `vesper-nexus` stays on the seed: the root package lists it as a
+  dev-dependency, and Bazel's `//:vesper` targets take dev-dependencies, so
+  the port there made a dependency cycle through `//:bin/vesper`.
 - Crucible (lane 18) can import the port as `@vesper/simpulse` (one module,
   as the Rust crate has one).
 
