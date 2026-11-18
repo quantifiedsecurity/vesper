@@ -86,25 +86,37 @@ fn rd8(in b: Slice[u8], i: u64) -> u8 {
 }
 
 fn rd16(in b: Slice[u8], i: u64) -> u16 {
-    widen_u16(rd8(in b, i)) << 8 | widen_u16(rd8(in b, wrapping_add(i, 1)))
+    match b.try_read_u16_be(i) {
+        Option::Some(v) => v,
+        Option::None => widen_u16(rd8(in b, i)) << 8 | widen_u16(rd8(in b, wrapping_add(i, 1))),
+    }
 }
 
 fn rd32(in b: Slice[u8], i: u64) -> u32 {
-    widen_u32(rd16(in b, i)) << 16 | widen_u32(rd16(in b, wrapping_add(i, 2)))
+    match b.try_read_u32_be(i) {
+        Option::Some(v) => v,
+        Option::None => widen_u32(rd16(in b, i)) << 16 | widen_u32(rd16(in b, wrapping_add(i, 2))),
+    }
 }
 
 fn wr8(inout b: Slice[u8], i: u64, v: u8) {
     b.try_set(i, v);
 }
 
+// The wide write stores nothing when the interval does not fit; the byte
+// path then keeps the old partial write at the end of the buffer.
 fn wr16(inout b: Slice[u8], i: u64, v: u16) {
-    b.try_set(i, wrapping_u8(v >> 8));
-    b.try_set(wrapping_add(i, 1), wrapping_u8(v));
+    if !b.try_write_u16_be(i, v) {
+        b.try_set(i, wrapping_u8(v >> 8));
+        b.try_set(wrapping_add(i, 1), wrapping_u8(v));
+    }
 }
 
 fn wr32(inout b: Slice[u8], i: u64, v: u32) {
-    wr16(inout b, i, wrapping_u16(v >> 16));
-    wr16(inout b, wrapping_add(i, 2), wrapping_u16(v));
+    if !b.try_write_u32_be(i, v) {
+        wr16(inout b, i, wrapping_u16(v >> 16));
+        wr16(inout b, wrapping_add(i, 2), wrapping_u16(v));
+    }
 }
 
 // Write the options at `out[at..]`; the caller checked the room.
