@@ -18,6 +18,10 @@
 //! * plan: `Scan [0, table, binding, nslots, slots.., npreds, preds..]`,
 //!   `Filter [1, predicate, input]`, `Join [2, kind, lhs, rhs, on]`.
 //!
+//! `prepare` passes its catalog as slices of the Vesper build's own
+//! `CTab`/`CCol` mirrors instead (export ABI v3 lends them in place; port
+//! parity lane 7, #955).
+//!
 //! `Q` handles own their Vesper allocations and are freed on drop.
 #![allow(unsafe_code)]
 
