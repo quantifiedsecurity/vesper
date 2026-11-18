@@ -111,10 +111,9 @@ Vesper build, where only the generated binding (`port/binding.rs`) allows it.
 
 `frontier.rs` has the crate's only in-module test that reaches private state
 of a ported type (`stale_and_generation_exhaustion_preserve_holds` sets a
-slot's generation to `u64::MAX`). It runs on both builds: the Vesper build
-sets `gens[slot]` instead of `slots[slot].generation`. The in-module tests of
-`kafka.rs` and `kafka_wire.rs` cover code this part does not port and run
-unchanged on both builds.
+slot's generation to `u64::MAX`). It now sets `gens[slot]` instead of
+`slots[slot].generation`. The in-module tests of `kafka.rs` and
+`kafka_wire.rs` cover code this part does not port and run unchanged.
 
 ## Divergence checks
 
