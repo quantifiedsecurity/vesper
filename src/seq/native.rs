@@ -855,7 +855,8 @@ impl<M: Module> Codegen<'_, '_, M> {
             | SeqOp::FindEither
             | SeqOp::FindNotIn
             | SeqOp::EqIgnoreAsciiCase
-            | SeqOp::ExtendAsciiLowercase => {
+            | SeqOp::ExtendAsciiLowercase
+            | SeqOp::MakeAsciiLowercase { .. } => {
                 unreachable!("string, hoisted and byte operations return above")
             }
             SeqOp::Swap | SeqOp::Replace => {
