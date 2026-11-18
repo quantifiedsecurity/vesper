@@ -167,10 +167,7 @@ stay slower than Rust, so Rust stays the default build of every port.
 
 ## What is left
 
-* **Executable objects.** Inlining `vesper build` objects needs verifier-aware
-  boundaries: keep calls into functions a verifier policy names, or report
-  call paths through inlined frames, and make the verifiers recompile with
-  the build's opt level.
+* ~~**Executable objects.**~~ Done in #959, see below.
 * **Scalar locals live in stack slots.** Every scalar local gets an 8-byte
   slot that is kept in sync with its variable, and inlined callees add their
   locals to the caller. This is now the largest per-call cost left in the
@@ -182,3 +179,38 @@ stay slower than Rust, so Rust stays the default build of every port.
   the copied IR.
 * The ABI copies (lane 4), sequence access and drops (lane 2) and byte loops
   (lane 3) remain the larger gaps in BBR, Quarry and warp-tcp.
+
+## Follow-up: executable objects (#959)
+
+Optimized executable objects (`vesper build`, `vesper emit --emit object`,
+`native::object*`) now run the same inliner and Cranelift `opt_level=speed`
+as JIT and library builds. `--no-opt` objects are unchanged.
+
+* **The verified build is the shipped build.** Whether to inline depends only
+  on the world and `optimize`, never on the verifier observer, so an object
+  built with `--verify-*` is still byte-identical to the plain one
+  (`programs_compile_to_identical_code_without_verifier_flags`). The
+  verifiers check the code that ships, inlined bodies included.
+* **The stack verifier recompiles with the build's ISA.** `EmittedFunction`
+  now records `optimized`, and `measure_emitted` builds its ISA with
+  `object_isa_optimized`, so frame sizes are measured at the same opt level
+  the object used. Windows objects and `emit_capability_entry` (WCSD for
+  docs) use the same ISA.
+* **Capability functions keep their call graph.** The inliner already skips
+  callees with a capability effect and callers whose row names one
+  (`ConstTime`, `Realtime`, `DetFloat`), so the derived capability policies
+  see the calls they saw before.
+* **Policy files.** Inlined callees are still emitted, so policies naming
+  them still resolve. A stack path through an inlined helper now ends at the
+  caller (`via ct_main` instead of `via ct_main -> select`; the test checks
+  both, the long path with `--no-opt`). If a const-time `declassify` or
+  `constant_time_callees` entry names a callee the function no longer calls,
+  the report says so and suggests `--no-opt`; checking the inlined body can
+  only add findings, never hide one.
+* **Instrument hooks** (`object_instrumented`) see the same inlined code, so
+  an inert hook still leaves the bytes unchanged. `vesper fuzz
+  --native-coverage` builds its JIT unoptimized and is not affected.
+* **Stage 1.** `bootstrap/stage1.rs` builds objects with `optimize` off, so
+  the corpus artifacts, the lock and the verified backend do not change. No
+  file under `src/verified_codegen/**`, `src/ir.rs`, `src/ir_opt.rs`,
+  `lean/**`, `bootstrap/**` or `packages/vesper-compiler/**` changed.

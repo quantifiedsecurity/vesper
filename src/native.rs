@@ -757,12 +757,11 @@ fn compile_entry<M: Module>(
     let mut program = crate::ir::lower_world(world);
     if optimize {
         crate::ir_opt::optimize(world, &mut program)?;
-        // Object emission keeps every call: the integration-B verifiers
-        // report and budget the call graph of exactly these objects, and an
-        // observed build must equal the plain one (#931).
-        if matches!(linkage, DefinitionLinkage::Jit) {
-            crate::ir_inline::inline(world, &mut program, &crate::ir_inline::Budget::default());
-        }
+        // Executable objects inline too (#959). The decision depends only on
+        // the world, never on the observer or instrument hooks, so a
+        // verified build stays byte-identical to the plain one and the
+        // verifiers check the code that ships.
+        crate::ir_inline::inline(world, &mut program, &crate::ir_inline::Budget::default());
     } else {
         crate::ir_opt::fip_reuse_pass(world, &mut program)?;
     }
@@ -847,6 +846,10 @@ pub struct EmittedFunction {
     /// Generic substitution of this instance (empty for a non-generic
     /// function). [`EmittedFunction::instance`] applies it.
     pub vars: BTreeMap<String, Type>,
+    /// The build ran the Place IR optimizer, so hosted objects compile this
+    /// function at Cranelift `opt_level=speed` ([`object_isa_optimized`]).
+    /// The stack verifier recompiles with the same ISA (#959).
+    pub optimized: bool,
 }
 impl EmittedFunction {
     /// The source function with this instance's generic arguments
@@ -1204,6 +1207,7 @@ fn define_instances_observed_with_trace<M: Module>(
                 function,
                 callees,
                 vars: generic_vars.clone(),
+                optimized: operands_only,
             });
         }
         m.define_function(define_id, &mut ctx)
@@ -1423,10 +1427,10 @@ pub fn object_isa_for(
 ) -> Result<std::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, String> {
     isa_with_flags(target, needs_nan_canonicalization(world), false)
 }
-/// [`object_isa_for`] for an optimized library build
-/// ([`export::object`]): Cranelift runs at `opt_level=speed` when
-/// `optimize` is on (#931). Executable objects keep [`object_isa_for`],
-/// which the integration-B verifiers recompile emitted functions with.
+/// [`object_isa_for`] for an optimized build: Cranelift runs at
+/// `opt_level=speed` when `optimize` is on, for library objects
+/// ([`export::object`], #931) and executable objects (#959). The stack
+/// verifier recompiles emitted functions with this ISA.
 pub fn object_isa_optimized(
     world: &World,
     target: Option<&str>,
@@ -1517,7 +1521,7 @@ pub fn object_traced_with_options(
     target: Option<&str>,
     optimize: bool,
 ) -> Result<(Vec<u8>, String), String> {
-    let isa = object_isa_for(world, target)?;
+    let isa = object_isa_optimized(world, target, optimize)?;
     let builder = ObjectBuilder::new(isa, "vesper", cranelift_module::default_libcall_names())
         .map_err(|e| e.to_string())?;
     let mut m = ObjectModule::new(builder);
@@ -1545,7 +1549,7 @@ pub fn emit_capability_entry(
     optimize: bool,
     observer: &mut dyn FnMut(EmittedFunction),
 ) -> Result<(), String> {
-    let isa = object_isa_for(world, target)?;
+    let isa = object_isa_optimized(world, target, optimize)?;
     let builder = ObjectBuilder::new(isa, "vesper", cranelift_module::default_libcall_names())
         .map_err(|e| e.to_string())?;
     let mut m = ObjectModule::new(builder);
@@ -1595,7 +1599,7 @@ pub fn object_with_codegen_options(
     instrument: Option<Instrument<'_>>,
     options: CodegenOptions,
 ) -> Result<(Vec<u8>, String), String> {
-    let isa = object_isa_for(world, target)?;
+    let isa = object_isa_optimized(world, target, optimize)?;
     if windows::is_windows(isa.triple()) {
         return windows::object(world, entry, isa, optimize, observer, instrument, options);
     }

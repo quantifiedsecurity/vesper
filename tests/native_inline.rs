@@ -240,19 +240,40 @@ fn closures_and_generic_callees_stay_calls() {
     assert_eq!(calls(&program, "main", "apply"), 1, "closure body");
 }
 
-/// The Stage 1 lock corpus is built with `optimize` off, and executable
-/// objects keep their calls even with it on (the verifiers report their
-/// call graphs). Only the JIT, library exports and sessions inline.
+/// Executable objects inline when optimized (#959): `main`'s emitted code
+/// calls none of the small helpers, the unoptimized object keeps every call,
+/// and observing the build (the verifier hook) does not change its bytes.
+/// Inlined helpers are still emitted, so verifier policies can name them.
 #[test]
-fn objects_keep_their_calls() {
+fn objects_inline_when_optimized() {
     let w = world(NESTED);
-    let target = Some("x86_64-unknown-linux-gnu");
-    for optimize in [false, true] {
-        let (a, clif_a) = native::object_with_options(&w, "main", target, optimize).unwrap();
-        let (b, clif_b) = native::object_with_options(&w, "main", target, optimize).unwrap();
-        assert_eq!(a, b);
-        assert_eq!(clif_a, clif_b);
-        assert!(clif_a.contains("call "), "{clif_a}");
+    for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+        for optimize in [false, true] {
+            let (a, clif_a) =
+                native::object_with_options(&w, "main", Some(target), optimize).unwrap();
+            let mut emitted = Vec::new();
+            let (b, clif_b) = native::object_with_observer(
+                &w,
+                "main",
+                Some(target),
+                optimize,
+                Some(&mut |f| emitted.push(f)),
+            )
+            .unwrap();
+            assert_eq!(a, b, "{target} optimize={optimize}");
+            assert_eq!(clif_a, clif_b);
+            let keys: Vec<_> = emitted.iter().map(|f| f.key.as_str()).collect();
+            for key in ["main", "f", "add3", "sq"] {
+                assert!(keys.contains(&key), "{keys:?}");
+            }
+            let main = emitted.iter().find(|f| f.key == "main").unwrap();
+            assert_eq!(main.optimized, optimize);
+            let calls_helper = main
+                .callees
+                .iter()
+                .any(|(id, _)| emitted.iter().any(|f| f.func_id == *id && f.key != "main"));
+            assert_eq!(calls_helper, !optimize, "{target}: {:?}", main.callees);
+        }
     }
 }
 

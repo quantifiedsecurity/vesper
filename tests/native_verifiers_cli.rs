@@ -156,17 +156,27 @@ fn stack_rejects_recursion_and_budgets_and_accepts_a_bounded_root() {
         "tight.json",
         r#"{"schema":"vesper.native-verifiers/1","stack":{"roots":{"ct_main":8}}}"#,
     );
+    let policy = tight.to_str().unwrap();
     for target in TARGETS {
-        let (o, _) = emit(
-            &temp,
-            "ct_main",
-            target,
-            &["--verify-stack", "--verify-policy", tight.to_str().unwrap()],
-        );
-        let t = text(&o);
-        assert!(!o.status.success(), "{t}");
-        assert!(t.contains("silicon.stack.budget_exceeded"), "{t}");
-        assert!(t.contains("(exceeded) via ct_main -> select"), "{t}");
+        // Unoptimized objects keep every call, so the path names the callee.
+        // Optimized objects inline `select` into `ct_main` (#959) and the
+        // verifier budgets the frame that ships.
+        for (flags, path) in [
+            (
+                &["--verify-stack", "--verify-policy", policy, "--no-opt"][..],
+                "(exceeded) via ct_main -> select",
+            ),
+            (
+                &["--verify-stack", "--verify-policy", policy][..],
+                "(exceeded) via ct_main\n",
+            ),
+        ] {
+            let (o, _) = emit(&temp, "ct_main", target, flags);
+            let t = text(&o);
+            assert!(!o.status.success(), "{t}");
+            assert!(t.contains("silicon.stack.budget_exceeded"), "{t}");
+            assert!(t.contains(path), "{flags:?}: {t}");
+        }
     }
     let roomy = temp.policy(
         "roomy.json",
