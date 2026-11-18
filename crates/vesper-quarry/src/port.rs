@@ -36,8 +36,8 @@ use crate::{
     Result, ScalarType, Value,
 };
 use std::collections::BTreeMap;
-use vesper_port_abi::Word;
 use std::mem::size_of;
+use vesper_port_abi::Word;
 
 #[rustfmt::skip]
 #[path = "../port/binding.rs"]
