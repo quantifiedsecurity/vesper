@@ -6174,6 +6174,9 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
 ]
 
 [[package]]
@@ -6195,6 +6198,15 @@ dependencies = [
  "vesper",
  "vesper-pact",
  "vesper-pact-binding",
+]
+
+[[package]]
+name = "vesper-pact-seed"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vesper-bench",
 ]
 
 [[package]]
