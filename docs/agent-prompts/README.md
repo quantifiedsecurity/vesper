@@ -18,7 +18,12 @@ The [port parity wave](port-parity/README.md) puts the merged
 [Stage 1 performance wave](stage1-perf/README.md) speedups into the ports and
 measures each port against its Rust build again. The
 [port gaps wave](port-gaps/README.md) closes the compiler gaps those ports
-measured.
+measured. The [port speed wave](port-speed/README.md) closes the gaps its
+re-score left.
+
+The [port wave P3a plan](port-p3/README.md) ports the next six crates
+(Pact, Loom audit, Bench, eBPF, Silicon, Aegis) and adds the `dyn Trait`
+and atomics compiler lanes that the later P3b ports need.
 
 Earlier assignments retained as dependencies:
 
