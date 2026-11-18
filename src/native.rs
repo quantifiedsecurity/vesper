@@ -4056,9 +4056,12 @@ impl<M: Module> Codegen<'_, '_, M> {
             (None, fs.as_slice())
         };
         let ptr = if self.operands_only {
-            // Zero only the words no field (or the tag) overwrites whole:
-            // the unused payload of an enum variant, and the word of an
-            // `f32` field, whose store writes only its low half.
+            // Zero only the words of this constructor that no field (or
+            // the tag) overwrites whole, such as the word of an `f32` field,
+            // whose store writes only its low half. The words past the
+            // variant's own fields are its inactive payload: no operation
+            // reads them (manuscript §16.6, "inactive payload"), so they
+            // are left as they are.
             let ptr = match into {
                 Some(ptr) => ptr,
                 None => self.alloc_uninit(layout.size),
@@ -4075,7 +4078,15 @@ impl<M: Module> Codegen<'_, '_, M> {
                     covered.extend((start..start + f.layout.size).step_by(8));
                 }
             }
-            for off in (0..layout.size.max(8)).step_by(8) {
+            let end = if tag.is_some() {
+                fs.iter()
+                    .map(|f| f.offset as u32 + f.layout.size)
+                    .max()
+                    .unwrap_or(8)
+            } else {
+                layout.size.max(8)
+            };
+            for off in (0..end).step_by(8) {
                 if !covered.contains(&off) {
                     let zero = self.zero();
                     self.b
