@@ -40,6 +40,7 @@ members = [
     "crates/vesper-serde",
     "crates/vesper-quarry",
     "crates/vesper-tensor",
+    "crates/vesper-tensor/seed",
     "crates/vesper-flux",
     "crates/vesper-aether",
     "crates/vesper-fiber-abi",
@@ -123,6 +124,7 @@ default-members = [
     "crates/vesper-serde",
     "crates/vesper-quarry",
     "crates/vesper-tensor",
+    "crates/vesper-tensor/seed",
     "crates/vesper-flux",
     "crates/vesper-aether",
     "crates/vesper-fiber-abi",
@@ -256,7 +258,7 @@ vesper-vault = { path = "crates/vesper-vault" }
 # port is the package crates/vesper-alloc.
 vesper-alloc = { path = "crates/vesper-alloc/seed", package = "vesper-alloc-seed" }
 # Source tensor types (wave eight lane 10) evaluate on the host kernels.
-vesper-tensor = { path = "crates/vesper-tensor" }
+vesper-tensor = { path = "crates/vesper-tensor/seed", package = "vesper-tensor-seed" }
 ariadne = "0.5"
 petgraph = "0.8"
 egg = "0.10"

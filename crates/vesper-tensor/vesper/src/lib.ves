@@ -1,0 +1,376 @@
+// @export vsys direct rust=crate::port::shim
+// | sys library Libm (
+// |     target = "@TARGET@", abi = "@ABI@",
+// |     link = "static", name = "vesper_tensor",
+// |     artifact = "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+// | ) {
+// |     fn vesper_tensor_expf(bits: u32) -> ForeignVal[u32];
+// | }
+//
+// @vesper/tensor: Vesper port of vesper-tensor's element and block formats,
+// quantizers, sampling and FP32 kernels (port wave P1 lane 8, #905):
+// binary16/BF16 (src/quant.rs, src/host.rs), Q4_K, MXFP4 and FP8
+// (src/formats.rs), Q8_0/Q4_0 and the row decoder of `Matrix`
+// (src/quant.rs), `run.c` sampling (src/sampling.rs) and the decoder kernels
+// softmax, argmax, RMSNorm, SwiGLU and residual add (src/ops.rs).
+//
+// The export ABI has no f32, so an f32 crosses the boundary as its bit
+// pattern: a `u32` scalar, and `Slice[u32]` for `&[f32]`, which the Rust
+// wrapper (src/port.rs) lends in place. Typed errors are `Fault`; the
+// wrapper maps each to the crate's `Error` with the Rust build's message.
+use self::num::{
+    decode_bf16 as h_decode_bf16,
+    decode_fp16 as h_decode_fp16,
+    encode_bf16 as h_encode_bf16,
+    encode_fp16 as h_encode_fp16,
+    is_finite,
+    is_nan,
+    u64_zero
+};
+use self::ocp::{
+    e8m0_half as f_e8m0_half,
+    fp8_decode as f_fp8_decode,
+    fp8_encode as f_fp8_encode,
+    nearest_int as f_nearest_int
+};
+use self::qk::{
+    check_block,
+    dequantize_block,
+    make_qkx2,
+    quantize_block,
+    scale_min
+};
+use self::rows::{
+    check_rows,
+    decode_piece as b_decode_piece,
+    dequantize_mxfp4,
+    dequantize_q4_0,
+    dequantize_q8_0,
+    fp8_codes as b_fp8_codes,
+    finite_payload as b_finite_payload,
+    fp8_scale as b_fp8_scale,
+    quantize_mxfp4 as b_quantize_mxfp4,
+    quantize_q4_0 as b_quantize_q4_0,
+    quantize_q8_0 as b_quantize_q8_0
+};
+use self::sampling::{
+    add_assign as s_add_assign,
+    argmax as s_argmax,
+    rms_norm as s_rms_norm,
+    rng_f32,
+    rng_next,
+    sample_mult as s_sample_mult,
+    sample_top_p as s_sample_top_p
+};
+
+// A typed failure; src/port.rs maps it to the crate's `Error` with the
+// message the Rust build uses at that call.
+pub copy enum Fault {
+    Shape,
+    NonFinite,
+    Limit
+}
+
+// binary16 / BF16 (src/quant.rs `encode_fp16`, `encode_bf16`,
+// `decode_bf16`; src/host.rs `decode_fp16`).
+pub fn decode_fp16(bits: u16) -> u32 eff [Fail[ArithOverflow]] {
+    to_bits_f32(h_decode_fp16(bits))
+}
+
+pub fn encode_fp16(value: u32) -> u16 eff [Fail[ArithOverflow]] {
+    h_encode_fp16(from_bits_f32(value))
+}
+
+pub fn encode_bf16(value: u32) -> u16 eff [Fail[ArithOverflow]] {
+    h_encode_bf16(from_bits_f32(value))
+}
+
+pub fn decode_bf16(bits: u16) -> u32 eff [Fail[ArithOverflow]] {
+    to_bits_f32(h_decode_bf16(bits))
+}
+
+// src/formats.rs scalars.
+pub fn nearest_int(value: u32) -> i32 eff [Fail[ArithOverflow]] {
+    f_nearest_int(from_bits_f32(value))
+}
+
+pub fn e8m0_half(e: u8) -> u32 eff [Fail[ArithOverflow]] {
+    to_bits_f32(f_e8m0_half(e))
+}
+
+pub fn fp8_decode(e5m2: bool, code: u8) -> u32 eff [Fail[ArithOverflow]] {
+    to_bits_f32(f_fp8_decode(e5m2, code))
+}
+
+pub fn fp8_encode(e5m2: bool, value: u32) -> u8 eff [Fail[ArithOverflow]] {
+    f_fp8_encode(e5m2, from_bits_f32(value))
+}
+
+// Q4_K (src/formats.rs).
+pub fn q4_k_scale_min(j: u64, in scales: Slice[u8])
+    -> (u8, u8) eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    scale_min(j, in scales)
+}
+
+pub fn dequantize_q4_k_block(in block: Slice[u8], inout out: Slice[u32]) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    dequantize_block(in block, inout out, 0);
+}
+
+pub fn check_q4_k_block(in block: Slice[u8]) -> bool eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    check_block(in block)
+}
+
+pub fn make_qkx2_quants(
+    nmax: i32,
+    in x: Slice[u32],
+    in weights: Slice[u32],
+    inout l: Slice[u8],
+    inout laux: Slice[u8],
+    rmin: u32,
+    rdelta: u32,
+    nstep: i32,
+    use_mad: bool
+) -> (u32, u32) eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    make_qkx2(
+        nmax,
+        in x,
+        in weights,
+        inout l,
+        inout laux,
+        from_bits_f32(rmin),
+        from_bits_f32(rdelta),
+        nstep,
+        use_mad
+    )
+}
+
+// One super-block of 256 values: the 144 block bytes.
+pub fn quantize_q4_k_block(in x: Slice[u32])
+    -> ChunkSeq[u8] eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let mut out = ChunkSeq::with_capacity[u8](144);
+    let mut s = ChunkSeq::new[u8]();
+    for i in u64_zero()..320 {
+        s.push(0);
+    }
+    let mut w = ChunkSeq::new[u32]();
+    for i in u64_zero()..48 {
+        w.push(0);
+    }
+    quantize_block(in x, 0, inout out, inout s.as_slice_mut(), inout w.as_slice_mut());
+    out
+}
+
+// Rows of super-blocks; `Fault::Limit` when a scale exceeds binary16.
+pub fn quantize_q4_k(in data: Slice[u32], cols: u64)
+    -> ChunkSeq[u8] eff [Fail[ArithOverflow], Fail[RuntimeError], Fail[Fault]] {
+    check_rows(in data, cols, 256);
+    let blocks = data.len() / 256;
+    let mut out = ChunkSeq::with_capacity[u8](blocks * 144);
+    let mut s = ChunkSeq::new[u8]();
+    for i in u64_zero()..320 {
+        s.push(0);
+    }
+    let mut w = ChunkSeq::new[u32]();
+    for i in u64_zero()..48 {
+        w.push(0);
+    }
+    for b in 0..blocks {
+        quantize_block(in data, 256 * b, inout out, inout s.as_slice_mut(), inout w.as_slice_mut());
+        if !check_block(in out[144 * b..144 * b + 144]) {
+            Fail::raise(Fault::Limit);
+        }
+    }
+    out
+}
+
+// MXFP4, Q8_0 and Q4_0 blocks (src/formats.rs, src/quant.rs).
+pub fn check_mxfp4_block(in block: Slice[u8]) -> bool eff [Fail[RuntimeError]] {
+    block[0] != 255
+}
+
+pub fn dequantize_mxfp4_block(in block: Slice[u8], inout out: Slice[u32]) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    dequantize_mxfp4(in block, inout out, 0);
+}
+
+pub fn dequantize_q8_0_block(in block: Slice[u8], inout out: Slice[u32]) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    dequantize_q8_0(in block, inout out, 0);
+}
+
+pub fn dequantize_q4_0_block(in block: Slice[u8], inout out: Slice[u32]) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    dequantize_q4_0(in block, inout out, 0);
+}
+
+pub fn quantize_mxfp4(in data: Slice[u32], cols: u64)
+    -> ChunkSeq[u8] eff [Fail[ArithOverflow], Fail[RuntimeError], Fail[Fault]] {
+    b_quantize_mxfp4(in data, cols)
+}
+
+pub fn quantize_q8_0(in data: Slice[u32], cols: u64)
+    -> ChunkSeq[u8] eff [Fail[ArithOverflow], Fail[RuntimeError], Fail[Fault]] {
+    b_quantize_q8_0(in data, cols)
+}
+
+pub fn quantize_q4_0(in data: Slice[u32], cols: u64)
+    -> ChunkSeq[u8] eff [Fail[ArithOverflow], Fail[RuntimeError], Fail[Fault]] {
+    b_quantize_q4_0(in data, cols)
+}
+
+// Per-tensor FP8: the scale, then the codes of `data / scale`.
+pub fn fp8_scale(in data: Slice[u32], e5m2: bool) -> u32 eff [Fail[RuntimeError], Fail[Fault]] {
+    to_bits_f32(b_fp8_scale(in data, e5m2))
+}
+
+pub fn fp8_codes(in data: Slice[u32], e5m2: bool, scale: u32)
+    -> ChunkSeq[u8] eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    b_fp8_codes(in data, e5m2, from_bits_f32(scale))
+}
+
+// `Matrix::row_chunks`: decodes one piece of a byte-backed row.
+pub fn decode_piece(format: u8, scale: u32, in raw: Slice[u8], inout out: Slice[u32]) eff [
+    Fail[ArithOverflow],
+    Fail[RuntimeError]
+] {
+    b_decode_piece(format, from_bits_f32(scale), in raw, inout out);
+}
+
+// `Matrix::from_bytes`: every element or block scale is finite.
+pub fn finite_payload(format: u8, in raw: Slice[u8])
+    -> bool eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    b_finite_payload(format, in raw)
+}
+
+// Sampling (src/sampling.rs).
+pub fn rng_next_u32(seed: u64) -> (u64, u32) eff [Fail[ArithOverflow]] {
+    rng_next(seed)
+}
+
+pub fn rng_next_f32(seed: u64) -> (u64, u32) eff [Fail[ArithOverflow]] {
+    let (s, v) = rng_f32(seed);
+    (s, to_bits_f32(v))
+}
+
+pub fn sample_mult(in probs: Slice[u32], coin: u32)
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    s_sample_mult(in probs, from_bits_f32(coin))
+}
+
+pub fn sample_top_p(in probs: Slice[u32], top_p: u32, coin: u32, inout scratch: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    s_sample_top_p(in probs, from_bits_f32(top_p), from_bits_f32(coin), inout scratch)
+}
+
+// FP32 kernels (src/ops.rs).
+pub fn argmax(in x: Slice[u32]) -> u64 eff [Fail[RuntimeError], Fail[Fault]] {
+    s_argmax(in x)
+}
+
+pub fn rms_norm(inout out: Slice[u32], in x: Slice[u32], in weight: Slice[u32], epsilon: u32) eff [
+    Fail[RuntimeError],
+    Fail[Fault]
+] {
+    s_rms_norm(inout out, in x, in weight, from_bits_f32(epsilon));
+}
+
+pub fn silu(v: u32) -> u32 eff [Ffi[Libm]] {
+    to_bits_f32(silu_f(from_bits_f32(v)))
+}
+
+pub fn add_assign(inout acc: Slice[u32], in x: Slice[u32]) eff [Fail[RuntimeError], Fail[Fault]] {
+    s_add_assign(inout acc, in x);
+}
+
+// The FP32 kernels that call the platform `exp` (`f32::exp`, through the
+// `Libm` shim in src/port.rs), so their results equal the Rust build's bit
+// for bit; a `.vsys` library is visible only in this root module.
+fn f(in s: Slice[u32], i: u64) -> f32 eff [Fail[RuntimeError]] {
+    from_bits_f32(s[i])
+}
+
+fn expf(v: f32) -> f32 eff [Ffi[Libm]] {
+    from_bits_f32(Libm::vesper_tensor_expf(to_bits_f32(v)))
+}
+
+pub fn softmax(inout x: Slice[u32]) eff [Ffi[Libm], Fail[RuntimeError], Fail[Fault]] {
+    let n = x.len();
+    if n == 0 {
+        Fail::raise(Fault::Shape);
+    }
+    let mut mx = from_bits_f32(4286578688);
+    for i in 0..n {
+        let v = f(in x, i);
+        if is_nan(v) {
+            Fail::raise(Fault::NonFinite);
+        }
+        if v > mx {
+            mx = v;
+        }
+    }
+    if !is_finite(mx) {
+        Fail::raise(Fault::NonFinite);
+    }
+    let mut sum: f32 = 0.0;
+    for i in 0..n {
+        let e = expf(f(in x, i) - mx);
+        x.set(i, to_bits_f32(e));
+        sum = sum + e;
+    }
+    for i in 0..n {
+        let v = f(in x, i) / sum;
+        x.set(i, to_bits_f32(v));
+    }
+}
+
+// `Sampler::sample` after the length check: the token and the new seed.
+pub fn sample(
+    inout probs: Slice[u32],
+    in logits: Slice[u32],
+    temperature_bits: u32,
+    top_p_bits: u32,
+    rng: u64,
+    inout scratch: Slice[u64]
+) -> (u64, u64) eff [Ffi[Libm], Fail[ArithOverflow], Fail[RuntimeError], Fail[Fault]] {
+    let temperature = from_bits_f32(temperature_bits);
+    let top_p = from_bits_f32(top_p_bits);
+    if temperature == 0.0 {
+        return (s_argmax(in logits), rng);
+    }
+    for i in 0..logits.len() {
+        probs.set(i, to_bits_f32(f(in logits, i) / temperature));
+    }
+    softmax(inout probs);
+    let (seed, coin) = rng_f32(rng);
+    if top_p <= 0.0 || top_p >= 1.0 {
+        return (s_sample_mult(in probs, coin), seed);
+    }
+    (s_sample_top_p(in probs, top_p, coin, inout scratch), seed)
+}
+
+fn silu_f(v: f32) -> f32 eff [Ffi[Libm]] {
+    v * (1.0 / (1.0 + expf(-v)))
+}
+
+pub fn swiglu(inout gate: Slice[u32], in up: Slice[u32]) eff [
+    Ffi[Libm],
+    Fail[RuntimeError],
+    Fail[Fault]
+] {
+    if gate.len() != up.len() || gate.len() == 0 {
+        Fail::raise(Fault::Shape);
+    }
+    for i in 0..gate.len() {
+        let g = silu_f(f(in gate, i)) * f(in up, i);
+        gate.set(i, to_bits_f32(g));
+    }
+}
