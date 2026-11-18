@@ -1,0 +1,167 @@
+// @export abi 3
+//
+// @vesper/serde: Vesper port of the vesper-serde scalar codecs (port wave P1
+// lane 19, #916). The Rust crate keeps its public types and borrowed views
+// (src/port.rs is the adapter); every function here is one entry point the
+// adapter calls. The modules mirror the Rust ones: lemire.ves and pow5.ves
+// (src/lemire.rs, src/pow5.rs), index.ves (src/index.rs), stage2.ves
+// (src/stage2.rs), and so on.
+//
+// Integers are u64 here where the Rust code uses usize; the binding
+// converts them through the crate's own types (`crate::port_types`).
+use self::index::{
+    decode_into,
+    doc_clear,
+    field_lookup,
+    parse_document,
+    strings_equal
+};
+use self::lemire::decode_bits;
+use self::stage2::{
+    stage2_admit,
+    stage2_build
+};
+use self::pow5::pow5_table;
+
+// A decoded binary64: `path` 0 when the text is not a JSON number, 1
+// Clinger, 2 Eisel-Lemire, 3 undecided (the caller falls back).
+pub copy struct Decoded {
+    path: u64,
+    bits: u64
+}
+
+// `crate::ErrorKind`, variant for variant.
+pub copy enum ErrorKind {
+    Syntax,
+    Utf8,
+    Escape,
+    Number,
+    DuplicateKey,
+    InputLimit,
+    DepthLimit,
+    TokenLimit,
+    StringLimit,
+    WorkLimit,
+    AllocationLimit,
+    AllocationFailed,
+    ScratchTooSmall,
+    OutputTooSmall,
+    OutputLimit,
+    Overflow,
+    Type,
+    End,
+    IsaUnavailable
+}
+
+// `crate::Error`.
+pub copy struct Error {
+    kind: ErrorKind,
+    offset: u64
+}
+
+// `crate::Kind`.
+pub copy enum Kind {
+    Null,
+    Bool,
+    Number,
+    String,
+    Array,
+    Object
+}
+
+// `crate::index::Token`: one tape entry.
+pub copy struct Token {
+    start: u64,
+    end: u64,
+    next: u64,
+    kind: Kind,
+    decoded_len: u64,
+    escaped: bool,
+    depth: u64
+}
+
+// `crate::Limits`.
+pub copy struct Limits {
+    max_input_bytes: u64,
+    max_depth: u64,
+    max_tokens: u64,
+    max_string_bytes: u64,
+    max_total_string_bytes: u64,
+    max_work: u64,
+    max_index_bytes: u64
+}
+
+// A validated document's token tape (`IndexedJson` without its input):
+// `capacity` tokens reserved, `work` units used, `entries` stage 1 entries
+// (structural and escape positions) counted.
+pub struct Doc {
+    tokens: ChunkSeq[Token],
+    capacity: u64,
+    work: u64,
+    entries: u64
+}
+
+pub fn number_pow5() -> ChunkSeq[u64] {
+    pow5_table()
+}
+
+pub fn number_decode(in text: Slice[u8], in pow5: Slice[u64]) -> Decoded {
+    decode_bits(in text, in pow5)
+}
+
+pub fn doc_new() -> Doc {
+    Doc {
+        tokens: ChunkSeq::new(),
+        capacity: 0,
+        work: 0,
+        entries: 0
+    }
+}
+
+// `IndexedJson::parse`: validate `input` into `doc`, reusing its storage.
+pub fn doc_parse(inout doc: Doc, in input: Slice[u8], limits: Limits) -> Unit eff [Fail[Error]] {
+    parse_document(inout doc, in input, limits)
+}
+
+// Empty the tape, keeping its storage (a failed parse leaves it so too).
+pub fn doc_reset(inout doc: Doc) {
+    doc_clear(inout doc)
+}
+
+// `Node::field`: the value token of key `key` in the object at `index`.
+pub fn doc_field(in doc: Doc, in input: Slice[u8], index: u64, in key: Slice[u8], max_work: u64)
+    -> Option[u64] eff [Fail[Error]] {
+    field_lookup(in doc, in input, index, in key, max_work)
+}
+
+// `JsonString::decode` of validated escaped string content `raw`: the
+// decoded bytes go to `scratch`, which the caller checked holds them all.
+// Returns the decoded length.
+pub fn string_decode(in raw: Slice[u8], inout scratch: Slice[u8]) -> u64 {
+    decode_into(in raw, inout scratch)
+}
+
+// `JsonString::equals`: validated string content `raw` decodes to `text`.
+pub fn string_equals(in raw: Slice[u8], in text: Slice[u8]) -> bool {
+    strings_equal(in raw, in text)
+}
+
+// `admit` of src/stage2.rs: the stage 1 entries allowed for `len` bytes.
+pub fn doc_admit(len: u64, limits: Limits) -> u64 eff [Fail[Error]] {
+    stage2_admit(len, limits)
+}
+
+// Stage 2 over a stage 1 index (src/stage2.rs `build`); absent positions
+// are 2^64 - 1.
+pub fn doc_build(
+    inout doc: Doc,
+    in input: Slice[u8],
+    in structurals: Slice[u32],
+    in escapes: Slice[u32],
+    control: u64,
+    truncated: u64,
+    unclosed: bool,
+    limits: Limits
+) -> Unit eff [Fail[Error]] {
+    stage2_build(inout doc, in input, in structurals, in escapes, control, truncated, unclosed, limits)
+}
