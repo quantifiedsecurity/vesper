@@ -52,7 +52,10 @@
 //! exits, counted leaks); they are not an implementation of the Vesper source
 //! typing rules for `linear` values.
 
-#![forbid(unsafe_code)]
+// The seed build (the compiler's copy) is safe Rust. The port-backed build
+// links the Vesper port through the generated binding, which calls the C ABI.
+#![cfg_attr(not(vesper_port), forbid(unsafe_code))]
+#![cfg_attr(vesper_port, deny(unsafe_code))]
 
 pub mod aia;
 pub mod atomic;
@@ -69,6 +72,27 @@ pub mod pac;
 pub mod prologue;
 pub mod stack;
 pub mod svd;
+
+// The Rust build is the default: the seed package (seed/) and every
+// dependent use it. The package `vesper-silicon` is the port-backed build,
+// whose build script links the Vesper port in vesper/ and sets
+// cfg(vesper_port); see "Crates the compiler links" in
+// docs/maintenance/porting-a-crate.md and docs/parallel-results/port-p3-silicon.md.
+#[cfg(vesper_port)]
+#[allow(clippy::all, dead_code, unsafe_code)]
+#[rustfmt::skip]
+#[path = "../port/binding.rs"]
+mod binding;
+
+/// Which build this is: `"vesper"` for the port, `"rust"` for the seed.
+pub const IMPLEMENTATION: &str = if cfg!(vesper_port) { "vesper" } else { "rust" };
+
+/// Sequences the Vesper library holds now (leak tests only).
+#[cfg(vesper_port)]
+#[doc(hidden)]
+pub fn port_live_allocations() -> i64 {
+    binding::live_allocations()
+}
 
 /// Target architecture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

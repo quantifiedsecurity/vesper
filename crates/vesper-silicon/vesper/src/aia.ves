@@ -1,0 +1,993 @@
+// Module aia of @vesper/silicon (see lib.ves): the RISC-V AIA register
+// models of src/aia.rs, the IMSIC interrupt file and one APLIC domain.
+//
+// Source modes are their `sourcecfg.SM` codes: 0 Inactive, 1 Detached,
+// 4 EdgeRising, 5 EdgeFalling, 6 LevelHigh, 7 LevelLow.
+use self::{
+    AiaFault,
+    Aplic,
+    Imsic,
+    Msi,
+    MsiCfg
+};
+
+fn word_at(in s: ChunkSeq[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+fn flag_at(in s: ChunkSeq[bool], i: u64) -> bool {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => false,
+    }
+}
+
+fn thirty_two() -> u64 {
+    32
+}
+
+fn words_eq(in x: Slice[u64], in y: Slice[u64]) -> bool {
+    if x.len() != y.len() {
+        return false;
+    }
+    for i in 0..x.len() {
+        if x.try_get(i) != y.try_get(i) {
+            return false;
+        }
+    }
+    true
+}
+
+fn bit(x: u64, b: u64) -> bool {
+    (wrapping_shr_u64(x, wrapping_u32(b)) & 1) != 0
+}
+
+fn flag(b: bool) -> u64 {
+    if b {
+        1
+    } else {
+        0
+    }
+}
+
+// `u32::swap_bytes` of the low 32 bits.
+fn swap32(v: u64) -> u64 {
+    ((v & 255) << 24) | (((v >> 8) & 255) << 16) | (((v >> 16) & 255) << 8) | ((v >> 24) & 255)
+}
+
+fn bad_iselect(isel: u64) -> Never eff [Fail[AiaFault]] {
+    Fail::raise(AiaFault::BadIselect(isel))
+}
+
+// ---------------------------------------------------------------- IMSIC
+
+pub fn m_imsic_make(ids: u64, external: bool) -> Imsic eff [Fail[AiaFault]] {
+    if ids < 63 || ids > 2047 || (wrapping_add(ids, 1) & 63) != 0 {
+        Fail::raise(AiaFault::BadIdCount(ids));
+    }
+    let words = wrapping_add(ids, 1) >> 6;
+    let mut eip: ChunkSeq[u64] = ChunkSeq::new();
+    let mut eie: ChunkSeq[u64] = ChunkSeq::new();
+    for i in 0..words {
+        eip.push(0);
+        eie.push(0);
+    }
+    Imsic {
+        ids: ids,
+        delivery: if external {
+            1073741824
+        } else {
+            0
+        },
+        external: external,
+        threshold: 0,
+        eip: eip,
+        eie: eie
+    }
+}
+
+pub fn m_imsic_copy(in f: Imsic) -> Imsic {
+    let mut eip: ChunkSeq[u64] = ChunkSeq::new();
+    let mut eie: ChunkSeq[u64] = ChunkSeq::new();
+    eip.extend(in f.eip.as_slice());
+    eie.extend(in f.eie.as_slice());
+    Imsic {
+        ids: f.ids,
+        delivery: f.delivery,
+        external: f.external,
+        threshold: f.threshold,
+        eip: eip,
+        eie: eie
+    }
+}
+
+pub fn m_imsic_same(in a: Imsic, in b: Imsic) -> bool {
+    a
+        .ids
+        == b
+        .ids
+        && a
+        .delivery
+        == b
+        .delivery
+        && a
+        .external
+        == b
+        .external
+        && a
+        .threshold
+        == b
+        .threshold
+        && words_eq(in a.eip.as_slice(), in b.eip.as_slice())
+        && words_eq(in a.eie.as_slice(), in b.eie.as_slice())
+}
+
+pub fn m_imsic_bit_eip(in f: Imsic, id: u64) -> bool {
+    bit(word_at(in f.eip, id >> 6), id & 63)
+}
+
+pub fn m_imsic_bit_eie(in f: Imsic, id: u64) -> bool {
+    bit(word_at(in f.eie, id >> 6), id & 63)
+}
+
+fn set_eip(inout f: Imsic, id: u64, on: bool) {
+    let w = id >> 6;
+    match f.eip.try_get(w) {
+        Option::Some(x) => {
+            let m = wrapping_shl_u64(1, wrapping_u32(id & 63));
+            let _ = f
+                .eip
+                .try_set(
+                w,
+                if on {
+                    x | m
+                } else {
+                    x & ~m
+                }
+            );
+        },
+        Option::None => (),
+    }
+}
+
+pub fn m_imsic_seteipnum(inout f: Imsic, id: u64) {
+    if id != 0 && id <= f.ids {
+        set_eip(inout f, id, true);
+    }
+}
+
+pub fn m_imsic_mmio_write32(inout f: Imsic, off: u64, v: u64) {
+    if off == 0 {
+        m_imsic_seteipnum(inout f, v);
+    } else if off == 4 {
+        m_imsic_seteipnum(inout f, swap32(v));
+    }
+}
+
+pub fn m_imsic_csr_read(in f: Imsic, isel: u64) -> u64 eff [Fail[AiaFault]] {
+    if isel == 112 {
+        return f.delivery;
+    }
+    if isel == 114 {
+        return f.threshold;
+    }
+    if isel >= 128 && isel <= 191 {
+        let k = wrapping_sub(isel, 128);
+        if (k & 1) != 0 {
+            bad_iselect(isel);
+        }
+        return word_at(in f.eip, k >> 1);
+    }
+    if isel >= 192 && isel <= 255 {
+        let k = wrapping_sub(isel, 192);
+        if (k & 1) != 0 {
+            bad_iselect(isel);
+        }
+        return word_at(in f.eie, k >> 1);
+    }
+    bad_iselect(isel)
+}
+
+pub fn m_imsic_csr_write(inout f: Imsic, isel: u64, v: u64) eff [Fail[AiaFault]] {
+    if isel == 112 {
+        f.delivery = if f.external && v == 1073741824 {
+            1073741824
+        } else {
+            v & 1
+        };
+        return;
+    }
+    if isel == 114 {
+        let bits = wrapping_sub(64, widen_u64(leading_zeros_u64(f.ids)));
+        f.threshold = v & wrapping_sub(wrapping_shl_u64(1, wrapping_u32(bits)), 1) & 4294967295;
+        return;
+    }
+    if isel >= 128 && isel <= 191 {
+        let k = wrapping_sub(isel, 128);
+        if (k & 1) != 0 {
+            bad_iselect(isel);
+        }
+        let w = k >> 1;
+        if w < f.eip.len() {
+            let _ = f
+                .eip
+                .try_set(
+                w,
+                if w == 0 {
+                    v & ~1
+                } else {
+                    v
+                }
+            );
+        }
+        return;
+    }
+    if isel >= 192 && isel <= 255 {
+        let k = wrapping_sub(isel, 192);
+        if (k & 1) != 0 {
+            bad_iselect(isel);
+        }
+        let w = k >> 1;
+        if w < f.eie.len() {
+            let _ = f
+                .eie
+                .try_set(
+                w,
+                if w == 0 {
+                    v & ~1
+                } else {
+                    v
+                }
+            );
+        }
+        return;
+    }
+    bad_iselect(isel)
+}
+
+pub fn m_imsic_top(in f: Imsic) -> u64 {
+    let n = f.eip.len();
+    for w in 0..n {
+        let m = word_at(in f.eip, w) & word_at(in f.eie, w);
+        if m != 0 {
+            let id = wrapping_add(w << 6, widen_u64(trailing_zeros_u64(m)));
+            if f.threshold == 0 || id < f.threshold {
+                return id;
+            }
+            return 0;
+        }
+    }
+    0
+}
+
+pub fn m_imsic_topei(in f: Imsic) -> u64 {
+    let id = m_imsic_top(in f);
+    (id << 16) | id
+}
+
+pub fn m_imsic_claim(inout f: Imsic) -> u64 {
+    let id = m_imsic_top(in f);
+    if id != 0 {
+        set_eip(inout f, id, false);
+    }
+    (id << 16) | id
+}
+
+pub fn m_imsic_asserted(in f: Imsic) -> bool {
+    f.delivery == 1 && m_imsic_top(in f) != 0
+}
+
+// ---------------------------------------------------------------- MSI addresses
+
+fn low_mask(w: u64) -> u64 {
+    wrapping_sub(wrapping_shl_u64(1, wrapping_u32(w)), 1)
+}
+
+// MsiAddrCfg::address (§4.9.1).
+pub fn m_msi_address(c: MsiCfg, supervisor: bool, hart: u64, guest: u64) -> u64 {
+    let g = wrapping_shr_u64(hart, wrapping_u32(c.lhxw)) & low_mask(c.hhxw);
+    let h = hart & low_mask(c.lhxw);
+    let ppn = if supervisor {
+        c.s_ppn
+    } else {
+        c.m_ppn
+    };
+    let lhxs = if supervisor {
+        c.lhxs_s
+    } else {
+        c.lhxs_m
+    };
+    let gu = if supervisor {
+        guest
+    } else {
+        0
+    };
+    let v = ppn | wrapping_shl_u64(g, wrapping_u32(wrapping_add(c.hhxs, 12))) | wrapping_shl_u64(
+        h,
+        wrapping_u32(lhxs)
+    ) | gu;
+    wrapping_shl_u64(v, 12)
+}
+
+fn high_m(c: MsiCfg) -> u64 {
+    (flag(c.locked) << 31) | wrapping_shl_u64(c.hhxs, 24) | wrapping_shl_u64(
+        c.lhxs_m,
+        20
+    ) | wrapping_shl_u64(c.hhxw, 16) | wrapping_shl_u64(c.lhxw, 12) | ((c.m_ppn >> 32) & 4095)
+}
+
+fn high_s(c: MsiCfg) -> u64 {
+    wrapping_shl_u64(c.lhxs_s, 20) | ((c.s_ppn >> 32) & 4095)
+}
+
+// ---------------------------------------------------------------- APLIC
+
+fn mode_of(sm: u64) -> u64 {
+    let m = sm & 7;
+    if m == 2 || m == 3 {
+        0
+    } else {
+        m
+    }
+}
+
+fn rectify(mode: u64, raw: bool) -> bool {
+    if mode == 4 || mode == 6 {
+        raw
+    } else if mode == 5 || mode == 7 {
+        !raw
+    } else {
+        false
+    }
+}
+
+fn is_level(mode: u64) -> bool {
+    mode == 6 || mode == 7
+}
+
+pub fn m_aplic_make(
+    base: u64,
+    size: u64,
+    sources: u64,
+    idcs: u64,
+    msi_capable: bool,
+    root: bool,
+    supervisor: bool,
+    children: u64
+) -> Aplic eff [Fail[AiaFault]] {
+    if sources == 0 || sources > 1023 {
+        Fail::raise(AiaFault::BadSourceCount(sources));
+    }
+    if idcs == 0 && !msi_capable {
+        Fail::raise(AiaFault::NoDeliveryMode);
+    }
+    let needed = wrapping_add(16384, wrapping_mul(32, idcs));
+    if size < needed {
+        Fail::raise(
+            AiaFault::WindowTooSmall {
+                size: size,
+                needed: needed
+            }
+        );
+    }
+    let n = wrapping_add(sources, 1);
+    let mut a = Aplic {
+        base: base,
+        sources: sources,
+        supervisor: supervisor,
+        root: root,
+        msi_capable: msi_capable,
+        direct_capable: idcs > 0,
+        children: children,
+        ie: false,
+        dm: msi_capable && idcs == 0,
+        sourcecfg: ChunkSeq::new(),
+        active_here: ChunkSeq::new(),
+        raw: ChunkSeq::new(),
+        pending: ChunkSeq::new(),
+        enabled: ChunkSeq::new(),
+        target: ChunkSeq::new(),
+        idc_delivery: ChunkSeq::new(),
+        idc_force: ChunkSeq::new(),
+        idc_threshold: ChunkSeq::new(),
+        msicfg: MsiCfg {
+            m_ppn: 0,
+            s_ppn: 0,
+            hhxs: 0,
+            lhxs_m: 0,
+            lhxs_s: 0,
+            hhxw: 0,
+            lhxw: 0,
+            locked: false
+        },
+        outbox: ChunkSeq::new()
+    };
+    for i in 0..n {
+        a.sourcecfg.push(0);
+        a.active_here.push(root);
+        a.raw.push(false);
+        a.pending.push(false);
+        a.enabled.push(false);
+        a.target.push(0);
+    }
+    for i in 0..idcs {
+        a.idc_delivery.push(false);
+        a.idc_force.push(false);
+        a.idc_threshold.push(0);
+    }
+    a
+}
+
+pub fn m_aplic_copy(in a: Aplic) -> Aplic {
+    let mut b = Aplic {
+        base: a.base,
+        sources: a.sources,
+        supervisor: a.supervisor,
+        root: a.root,
+        msi_capable: a.msi_capable,
+        direct_capable: a.direct_capable,
+        children: a.children,
+        ie: a.ie,
+        dm: a.dm,
+        sourcecfg: ChunkSeq::new(),
+        active_here: ChunkSeq::new(),
+        raw: ChunkSeq::new(),
+        pending: ChunkSeq::new(),
+        enabled: ChunkSeq::new(),
+        target: ChunkSeq::new(),
+        idc_delivery: ChunkSeq::new(),
+        idc_force: ChunkSeq::new(),
+        idc_threshold: ChunkSeq::new(),
+        msicfg: a.msicfg,
+        outbox: ChunkSeq::new()
+    };
+    b.sourcecfg.extend(in a.sourcecfg.as_slice());
+    b.active_here.extend(in a.active_here.as_slice());
+    b.raw.extend(in a.raw.as_slice());
+    b.pending.extend(in a.pending.as_slice());
+    b.enabled.extend(in a.enabled.as_slice());
+    b.target.extend(in a.target.as_slice());
+    b.idc_delivery.extend(in a.idc_delivery.as_slice());
+    b.idc_force.extend(in a.idc_force.as_slice());
+    b.idc_threshold.extend(in a.idc_threshold.as_slice());
+    b.outbox.extend(in a.outbox.as_slice());
+    b
+}
+
+pub fn m_aplic_contains(in a: Aplic, addr: u64) -> bool {
+    let end = wrapping_add(16384, wrapping_mul(32, a.idc_delivery.len()));
+    let top = if end > 16384 {
+        end
+    } else {
+        16384
+    };
+    addr >= a.base && wrapping_sub(addr, a.base) < top
+}
+
+pub fn m_aplic_mode(in a: Aplic, src: u64) -> u64 {
+    if src == 0 || src > a.sources || !flag_at(in a.active_here, src) {
+        return 0;
+    }
+    let cfg = word_at(in a.sourcecfg, src);
+    if (cfg & 1024) != 0 {
+        0
+    } else {
+        mode_of(cfg)
+    }
+}
+
+pub fn m_aplic_delegated_to(in a: Aplic, src: u64) -> Option[u64] {
+    if src == 0 || src > a.sources || !flag_at(in a.active_here, src) {
+        return Option::None;
+    }
+    let cfg = word_at(in a.sourcecfg, src);
+    if (cfg & 1024) != 0 {
+        Option::Some(cfg & 1023)
+    } else {
+        Option::None
+    }
+}
+
+pub fn m_aplic_is_delegated_here(in a: Aplic, src: u64) -> bool {
+    src != 0 && src <= a.sources && flag_at(in a.active_here, src)
+}
+
+pub fn m_aplic_is_pending(in a: Aplic, src: u64) -> bool {
+    flag_at(in a.pending, src)
+}
+
+pub fn m_aplic_rectified(in a: Aplic, src: u64) -> bool {
+    src < a.raw.len() && rectify(m_aplic_mode(in a, src), flag_at(in a.raw, src))
+}
+
+fn settle(inout a: Aplic, s: u64) {
+    let mode = m_aplic_mode(in a, s);
+    if mode == 0 {
+        let _ = a.pending.try_set(s, false);
+        let _ = a.enabled.try_set(s, false);
+        let _ = a.target.try_set(s, 0);
+        return;
+    }
+    if is_level(mode) {
+        let r = rectify(mode, flag_at(in a.raw, s));
+        if !a.dm {
+            let _ = a.pending.try_set(s, r);
+        } else if !r {
+            let _ = a.pending.try_set(s, false);
+        }
+    }
+}
+
+pub fn m_aplic_set_active_here(inout a: Aplic, src: u64, active: bool) {
+    if src == 0 || src >= a.active_here.len() {
+        return;
+    }
+    if flag_at(in a.active_here, src) != active {
+        let _ = a.active_here.try_set(src, active);
+        if !active {
+            let _ = a.sourcecfg.try_set(src, 0);
+        }
+        settle(inout a, src);
+    }
+}
+
+pub fn m_aplic_set_wire(inout a: Aplic, src: u64, high: bool) {
+    if src == 0 || src > a.sources {
+        return;
+    }
+    let mode = m_aplic_mode(in a, src);
+    let before = rectify(mode, flag_at(in a.raw, src));
+    let _ = a.raw.try_set(src, high);
+    let after = rectify(mode, high);
+    if mode == 4 || mode == 5 {
+        if !before && after {
+            let _ = a.pending.try_set(src, true);
+        }
+    } else if is_level(mode) {
+        if !a.dm {
+            let _ = a.pending.try_set(src, after);
+        } else if !after {
+            let _ = a.pending.try_set(src, false);
+        } else if !before {
+            let _ = a.pending.try_set(src, true);
+        }
+    }
+}
+
+fn set_pending(inout a: Aplic, src: u64) {
+    let mode = m_aplic_mode(in a, src);
+    if mode == 1 || mode == 4 || mode == 5 {
+        let _ = a.pending.try_set(src, true);
+    } else if is_level(mode) {
+        if a.dm && rectify(mode, flag_at(in a.raw, src)) {
+            let _ = a.pending.try_set(src, true);
+        }
+    }
+}
+
+fn clear_pending(inout a: Aplic, src: u64) {
+    let mode = m_aplic_mode(in a, src);
+    if mode == 0 {
+        return;
+    }
+    if is_level(mode) && !a.dm {
+        return;
+    }
+    let _ = a.pending.try_set(src, false);
+}
+
+fn set_enable(inout a: Aplic, src: u64, on: bool) {
+    if m_aplic_mode(in a, src) != 0 {
+        let _ = a.enabled.try_set(src, on);
+    }
+}
+
+// The bits of 32-source word `w`: 0 pending, 1 rectified input, 2 enabled.
+fn word_bits(in a: Aplic, w: u64, which: u64) -> u64 {
+    let mut acc: u64 = 0;
+    for b in 0..thirty_two() {
+        let s = wrapping_add(wrapping_mul(w, 32), b);
+        if s != 0 && s <= a.sources {
+            let on = if which == 0 {
+                flag_at(in a.pending, s)
+            } else if which == 1 {
+                m_aplic_rectified(in a, s)
+            } else {
+                flag_at(in a.enabled, s)
+            };
+            if on {
+                acc = acc | wrapping_shl_u64(1, wrapping_u32(b));
+            }
+        }
+    }
+    acc
+}
+
+fn words(in a: Aplic) -> u64 {
+    wrapping_add(a.sources >> 5, 1)
+}
+
+pub fn m_aplic_topi(in a: Aplic, idc: u64) -> u64 {
+    if idc >= a.idc_threshold.len() || a.dm {
+        return 0;
+    }
+    let threshold = word_at(in a.idc_threshold, idc);
+    let mut found = false;
+    let mut bp: u64 = 0;
+    let mut bs: u64 = 0;
+    let mut s: u64 = 1;
+    loop {
+        if s > a.sources {
+            break;
+        }
+        if flag_at(in a.pending, s) && flag_at(in a.enabled, s) {
+            let t = word_at(in a.target, s);
+            if (t >> 18) == idc {
+                let prio = t & 255;
+                if threshold == 0 || prio < threshold {
+                    if !found || prio < bp {
+                        found = true;
+                        bp = prio;
+                        bs = s;
+                    }
+                }
+            }
+        }
+        s = wrapping_add(s, 1);
+    }
+    if found {
+        (bs << 16) | bp
+    } else {
+        0
+    }
+}
+
+pub fn m_aplic_claimi(inout a: Aplic, idc: u64) -> u64 {
+    let v = m_aplic_topi(in a, idc);
+    if v == 0 {
+        if idc < a.idc_force.len() {
+            let _ = a.idc_force.try_set(idc, false);
+        }
+        return 0;
+    }
+    let s = v >> 16;
+    let mode = m_aplic_mode(in a, s);
+    if is_level(mode) {
+        let r = rectify(mode, flag_at(in a.raw, s));
+        let _ = a.pending.try_set(s, r);
+    } else {
+        let _ = a.pending.try_set(s, false);
+    }
+    v
+}
+
+pub fn m_aplic_idc_asserted(in a: Aplic, idc: u64) -> bool {
+    idc
+        < a
+        .idc_delivery
+        .len()
+        && a
+        .ie
+        && !a
+        .dm
+        && flag_at(in a.idc_delivery, idc)
+        && (flag_at(in a.idc_force, idc) || m_aplic_topi(in a, idc) != 0)
+}
+
+pub fn m_aplic_take_msis(inout a: Aplic) -> ChunkSeq[Msi] {
+    if a.dm && a.ie {
+        let mut s: u64 = 1;
+        loop {
+            if s > a.sources {
+                break;
+            }
+            if flag_at(in a.pending, s) && flag_at(in a.enabled, s) {
+                let t = word_at(in a.target, s);
+                let addr = m_msi_address(a.msicfg, a.supervisor, t >> 18, (t >> 12) & 63);
+                a
+                    .outbox
+                    .push(
+                    Msi {
+                        addr: addr,
+                        data: t & 2047
+                    }
+                );
+                let _ = a.pending.try_set(s, false);
+            }
+            s = wrapping_add(s, 1);
+        }
+    }
+    let mut out: ChunkSeq[Msi] = ChunkSeq::new();
+    out.extend(in a.outbox.as_slice());
+    a.outbox.clear();
+    out
+}
+
+fn decode(in a: Aplic, addr: u64) -> u64 eff [Fail[AiaFault]] {
+    if (addr & 3) != 0 {
+        Fail::raise(AiaFault::Misaligned(addr));
+    }
+    if !m_aplic_contains(in a, addr) {
+        Fail::raise(AiaFault::Unmapped(addr));
+    }
+    wrapping_sub(addr, a.base)
+}
+
+fn num(in a: Aplic, v: u64) -> u64 {
+    if v != 0 && v <= a.sources {
+        v
+    } else {
+        0
+    }
+}
+
+fn in_words(o: u64, base: u64, n: u64) -> bool {
+    o >= base && o < wrapping_add(base, wrapping_mul(4, n))
+}
+
+fn unmapped(addr: u64) -> Never eff [Fail[AiaFault]] {
+    Fail::raise(AiaFault::Unmapped(addr))
+}
+
+pub fn m_aplic_read32(inout a: Aplic, addr: u64) -> u64 eff [Fail[AiaFault]] {
+    let off = decode(in a, addr);
+    let w = off >> 2;
+    let cfg_ok = a.root && a.msi_capable;
+    if off == 0 {
+        return 2147483648 | (flag(a.ie) << 8) | (flag(a.dm) << 2);
+    }
+    if in_words(off, 4, a.sources) {
+        let s = wrapping_add(wrapping_sub(off, 4) >> 2, 1);
+        if flag_at(in a.active_here, s) {
+            return word_at(in a.sourcecfg, s);
+        }
+        return 0;
+    }
+    if off >= 7104 && off <= 7116 {
+        if !cfg_ok {
+            return 0;
+        }
+        if off == 7104 {
+            return a.msicfg.m_ppn & 4294967295;
+        }
+        if off == 7108 {
+            return high_m(a.msicfg);
+        }
+        if off == 7112 {
+            return a.msicfg.s_ppn & 4294967295;
+        }
+        return high_s(a.msicfg);
+    }
+    let nw = words(in a);
+    if in_words(off, 7168, nw) {
+        return word_bits(in a, wrapping_sub(off, 7168) >> 2, 0);
+    }
+    if in_words(off, 7424, nw) {
+        return word_bits(in a, wrapping_sub(off, 7424) >> 2, 1);
+    }
+    if in_words(off, 7680, nw) {
+        return word_bits(in a, wrapping_sub(off, 7680) >> 2, 2);
+    }
+    if off == 7388 || off == 7644 || off == 7900 || off == 8156 || off == 8192 || off == 8196 {
+        return 0;
+    }
+    if in_words(off, 7936, nw) {
+        return 0;
+    }
+    if off == 12288 {
+        return 0;
+    }
+    if in_words(off, 12292, a.sources) {
+        return word_at(in a.target, wrapping_add(wrapping_sub(off, 12292) >> 2, 1));
+    }
+    if off >= 16384 && a.direct_capable {
+        let rel = wrapping_sub(off, 16384);
+        let i = rel >> 5;
+        let r = rel & 31;
+        if r == 0 {
+            return flag(flag_at(in a.idc_delivery, i));
+        }
+        if r == 4 {
+            return flag(flag_at(in a.idc_force, i));
+        }
+        if r == 8 {
+            return word_at(in a.idc_threshold, i);
+        }
+        if r == 24 {
+            return m_aplic_topi(in a, i);
+        }
+        if r == 28 {
+            return m_aplic_claimi(inout a, i);
+        }
+        unmapped(addr);
+    }
+    unmapped(addr)
+}
+
+fn each_bit(inout a: Aplic, w: u64, v: u64, op: u64) {
+    for b in 0..thirty_two() {
+        if bit(v, b) {
+            let s = num(in a, wrapping_add(wrapping_mul(w, 32), b));
+            if s != 0 {
+                if op == 0 {
+                    set_pending(inout a, s);
+                } else if op == 1 {
+                    clear_pending(inout a, s);
+                } else {
+                    set_enable(inout a, s, op == 2);
+                }
+            }
+        }
+    }
+}
+
+pub fn m_aplic_write32(inout a: Aplic, addr: u64, v: u64) eff [Fail[AiaFault]] {
+    let off = decode(in a, addr);
+    if off == 0 {
+        a.ie = (v & 256) != 0;
+        if a.msi_capable && a.direct_capable {
+            a.dm = (v & 4) != 0;
+            let mut s: u64 = 1;
+            loop {
+                if s > a.sources {
+                    break;
+                }
+                settle(inout a, s);
+                s = wrapping_add(s, 1);
+            }
+        }
+        return;
+    }
+    if in_words(off, 4, a.sources) {
+        let s = wrapping_add(wrapping_sub(off, 4) >> 2, 1);
+        if !flag_at(in a.active_here, s) {
+            return;
+        }
+        let cfg = if (v & 1024) != 0 && a.children > 0 {
+            1024 | (v & 1023)
+        } else {
+            mode_of(v)
+        };
+        let _ = a.sourcecfg.try_set(s, cfg);
+        settle(inout a, s);
+        return;
+    }
+    if off >= 7104 && off <= 7116 {
+        if !a.root || !a.msi_capable || a.msicfg.locked {
+            return;
+        }
+        let mut c = a.msicfg;
+        if off == 7104 {
+            c.m_ppn = (c.m_ppn & 18446744069414584320) | v;
+        } else if off == 7108 {
+            c.m_ppn = (c.m_ppn & 4294967295) | ((v & 4095) << 32);
+            c.lhxw = (v >> 12) & 15;
+            c.hhxw = (v >> 16) & 7;
+            c.lhxs_m = (v >> 20) & 7;
+            c.hhxs = (v >> 24) & 31;
+            c.locked = (v & 2147483648) != 0;
+        } else if off == 7112 {
+            c.s_ppn = (c.s_ppn & 18446744069414584320) | v;
+        } else {
+            c.s_ppn = (c.s_ppn & 4294967295) | ((v & 4095) << 32);
+            c.lhxs_s = (v >> 20) & 7;
+        }
+        a.msicfg = c;
+        return;
+    }
+    let nw = words(in a);
+    if in_words(off, 7168, nw) {
+        each_bit(inout a, wrapping_sub(off, 7168) >> 2, v, 0);
+        return;
+    }
+    if off == 7388 || off == 8192 {
+        let s = num(in a, v);
+        if s != 0 {
+            set_pending(inout a, s);
+        }
+        return;
+    }
+    if off == 8196 {
+        let s = num(in a, swap32(v));
+        if s != 0 {
+            set_pending(inout a, s);
+        }
+        return;
+    }
+    if in_words(off, 7424, nw) {
+        each_bit(inout a, wrapping_sub(off, 7424) >> 2, v, 1);
+        return;
+    }
+    if off == 7644 {
+        let s = num(in a, v);
+        if s != 0 {
+            clear_pending(inout a, s);
+        }
+        return;
+    }
+    if in_words(off, 7680, nw) {
+        each_bit(inout a, wrapping_sub(off, 7680) >> 2, v, 2);
+        return;
+    }
+    if off == 7900 {
+        let s = num(in a, v);
+        if s != 0 {
+            set_enable(inout a, s, true);
+        }
+        return;
+    }
+    if in_words(off, 7936, nw) {
+        each_bit(inout a, wrapping_sub(off, 7936) >> 2, v, 3);
+        return;
+    }
+    if off == 8156 {
+        let s = num(in a, v);
+        if s != 0 {
+            set_enable(inout a, s, false);
+        }
+        return;
+    }
+    if off == 12288 {
+        if a.dm {
+            let addr = m_msi_address(a.msicfg, a.supervisor, v >> 18, 0);
+            a
+                .outbox
+                .push(
+                Msi {
+                    addr: addr,
+                    data: v & 2047
+                }
+            );
+        }
+        return;
+    }
+    if in_words(off, 12292, a.sources) {
+        let s = wrapping_add(wrapping_sub(off, 12292) >> 2, 1);
+        if m_aplic_mode(in a, s) == 0 {
+            return;
+        }
+        let t = if a.dm {
+            let guest = if a.supervisor {
+                v & 258048
+            } else {
+                0
+            };
+            (v & 4294705152) | guest | (v & 2047)
+        } else {
+            let p = v & 255;
+            let prio = if p == 0 {
+                1
+            } else {
+                p
+            };
+            (v & 4294705152) | prio
+        };
+        let _ = a.target.try_set(s, t);
+        return;
+    }
+    if off >= 16384 && a.direct_capable {
+        let rel = wrapping_sub(off, 16384);
+        let i = rel >> 5;
+        let r = rel & 31;
+        if r == 0 {
+            let _ = a.idc_delivery.try_set(i, (v & 1) != 0);
+            return;
+        }
+        if r == 4 {
+            let _ = a.idc_force.try_set(i, (v & 1) != 0);
+            return;
+        }
+        if r == 8 {
+            let _ = a.idc_threshold.try_set(i, v & 255);
+            return;
+        }
+        if r == 24 || r == 28 {
+            return;
+        }
+        unmapped(addr);
+    }
+    unmapped(addr)
+}
