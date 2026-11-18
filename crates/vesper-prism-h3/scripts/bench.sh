@@ -17,7 +17,7 @@ cargo build --locked --release -p vesper-prism-h3 --example abba
 cp "$target/release/examples/abba$exe" "$dir/rust$exe"
 cargo build --locked --release -p vesper-prism-h3 --features vesper-port --example abba
 cp "$target/release/examples/abba$exe" "$dir/vesper$exe"
-for workload in decode encode frames; do
+for workload in decode encode frames messages; do
     "$dir/rust$exe" drive "$workload" "$dir/rust$exe" "$dir/vesper$exe"
     if [ "${CALLGRIND:-}" = 1 ]; then
         for arm in rust vesper; do

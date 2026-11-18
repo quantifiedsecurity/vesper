@@ -38,6 +38,7 @@ DIVERGENT = {
     "varint": ("varint", "if v < 64 {", "if v <= 64 {"),
     "frame": ("frame", "if n.used == p.len() {", "if n.used <= p.len() {"),
     "priority": ("priority", "item.kind == 0 && item.mag <= 7", "item.kind == 0 && item.mag <= 8"),
+    "message": ("message", "if hosts > 1 {", "if hosts > 2 {"),
     "capsule": ("capsule", "(widen_u64(byte(in v, 0)) << 24)", "(widen_u64(byte(in v, 0)) << 16)"),
 }
 
@@ -77,6 +78,7 @@ rust_library(
 PORT_TESTS = [
     "frame_codec",
     "h3_mem",
+    "message_rules",
     "priority_bodies",
     "qpack_encode_golden",
     "qpack_qifs",
@@ -100,6 +102,7 @@ CHECKS = {
     "frame": "frame_codec",
     "priority": "frame_codec",
     "capsule": "frame_codec",
+    "message": "message_rules",
 }
 
 [

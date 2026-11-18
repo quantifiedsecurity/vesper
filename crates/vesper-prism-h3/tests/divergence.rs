@@ -1,6 +1,6 @@
 //! The divergence check: a Vesper build with one deliberate error per ported
 //! module (huffman, prefix, table, encoder, decoder, varint, frame,
-//! priority, capsule; `DIVERGENT_EDITS` in
+//! priority, capsule, message; `DIVERGENT_EDITS` in
 //! build.rs) must fail the test that guards that module, and must still pass
 //! a test that the change does not reach. Bazel passes the divergent test
 //! binaries; under Cargo the check is port/check.sh. Without the variables
@@ -113,5 +113,14 @@ fn divergent_capsule_fails() {
         "capsule",
         "capsules_round_trip_split_anywhere",
         "frames_round_trip_split_anywhere",
+    );
+}
+
+#[test]
+fn divergent_message_fails() {
+    check(
+        "message",
+        "content_length_and_host_rules",
+        "response_statuses",
     );
 }

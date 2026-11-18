@@ -1,12 +1,12 @@
 # Port P3b lane 5: vesper-prism-h3 (#1067)
 
-Status: parts 1 (QPACK) and 2 (frames, priorities, capsules) of 3. The Rust build stays the default. The Vesper build is behind the non-default `vesper-port` feature, per the standing parity rule.
+Status: all three parts. Part 1 is QPACK, part 2 frames, priorities and capsules, part 3 message validation. `error.rs` and `session.rs` stay Rust, for the reasons below. The Rust build stays the default. The Vesper build is behind the non-default `vesper-port` feature, per the standing parity rule.
 
 | Part | Scope | State |
 |---|---|---|
 | 1 | QPACK: Huffman code, prefixed integers, static and dynamic tables, encoder, decoder (`src/qpack/**`) | #1075 |
-| 2 | `frame.rs`, `priority.rs`, `capsule.rs`, plus a frame-parsing ABBA | this PR |
-| 3 | `message.rs`, `session.rs`, `error.rs` | last, closes #1067 |
+| 2 | `frame.rs`, `priority.rs`, `capsule.rs`, plus a frame-parsing ABBA | part 2 PR |
+| 3 | `message.rs`. `session.rs` and `error.rs` are assessed and stay Rust (see part 3). | part 3 PR, closes #1067 |
 
 ## Layout
 
@@ -129,22 +129,25 @@ Divergence checks for part 2. Each guarding test fails and each control test pas
 
 ### ABBA, all workloads
 
-Instruction counts are now the difference between 6 and 1 batches, so setup (loading the corpus, building inputs and tables) is not counted. This moves the part 1 figures slightly.
+Instruction counts are now the difference between 6 and 1 batches, so setup (loading the corpus, building inputs and tables) is not counted. This moves the part 1 figures slightly. All numbers below are from one run of `CALLGRIND=1 sh crates/vesper-prism-h3/scripts/bench.sh` after part 3.
 
-The `frames` workload, per batch:
-- 64 request streams, each HEADERS plus four 1–16 KiB DATA frames plus a grease frame;
-- a control stream with SETTINGS, 256 PRIORITY_UPDATEs and GOAWAY. Each update is also serialized and re-parsed.
-- 512 capsules, mostly DATAGRAM, with unknown ones and a close.
+The workloads:
+- **frames**, per batch:
+  - 64 request streams, each HEADERS plus four 1–16 KiB DATA frames plus a grease frame;
+  - a control stream with SETTINGS, 256 PRIORITY_UPDATEs and GOAWAY. Each update is also serialized and re-parsed.
+  - 512 capsules, mostly DATAGRAM, with unknown ones and a close.
 
-Each stream is pushed in 1,200-byte pieces.
+  Each stream is pushed in 1,200-byte pieces.
+- **messages** (part 3): the netbsd QIF's 18 field lists, validated as requests 64 times per batch. These are real browser requests. Most carry `connection: keep-alive`, so most are rejected as connection-specific partway through their fields, exactly as in the Rust build.
 
 | Workload | Rust instructions | Vesper instructions | Instruction ratio | Wall-clock median (95% interval) | 2x gate |
 |---|---|---|---|---|---|
-| decode | 169.75M | 176.54M | 1.04x | 1.23x (1.10–1.43x) | Pass |
-| encode | 60.09M | 78.55M | 1.31x | 1.27x (1.14–1.32x) | Pass |
-| frames | 60.34M | 61.77M | 1.02x | 1.02x (0.99–1.10x) | Pass |
+| decode | 175.61M | 175.19M | 1.00x | 1.03x (0.96–1.18x) | Pass |
+| encode | 63.67M | 79.13M | 1.24x | 1.48x (1.38–1.80x) | Pass |
+| frames | 59.47M | 61.67M | 1.04x | 1.03x (0.99–1.08x) | Pass |
+| messages | 57.55M | 93.92M | 1.63x | 1.79x (1.75–1.86x) | Pass |
 
-Frame parsing is at parity. QPACK encoding is the remaining gap (see above).
+Decoding and frame parsing are at parity. QPACK encoding and message validation are not, so Rust stays the default build.
 
 ### Compiler gaps found in part 2
 
@@ -159,6 +162,43 @@ Frame parsing is at parity. QPACK encoding is the remaining gap (see above).
    fails with `constructor 'S' requires 1 fields`, `unknown field 'a'`. The port names the variants `SettingsFrame` and `PriorityUpdateFrame`.
 8. **`inout ChunkSeq[u8]` from Rust copies the whole buffer in and out on every call.** `vesper_port_abi::with_seq_mut` does `seq_from`, then the call, then `seq_take`. An export that appends a few bytes to a caller's growing output buffer is therefore O(buffer) per call. Building the 64-stream workload through such writers cost 72M instructions, against 8M in Rust. The port's writers return the bytes they write, and Rust appends them. A borrowed-`Vec` `inout` handle (reserve, write in place, set the length) would remove the copies.
 9. **Integer literals in a tuple do not take their type from use.** In `let (lo, hi) = if c == 224 { (160, 191) } else { (128, 191) };`, `lo` and `hi` are `i64`, so passing them as `u8` fails (E0200). Annotating each binding works.
+
+## Part 3: message validation; session.rs and error.rs
+
+`message.ves` ports `parse_request`, `parse_response` and `check_trailers` with their rules:
+- token and value checks;
+- connection-specific fields and `te`;
+- pseudo-header order, duplicates, names and values;
+- the extended-CONNECT rules;
+- `:authority` against `host`;
+- the http/https authority requirement;
+- `content-length`;
+- `:status`.
+
+The adapter passes the field list in the encoder's flattened form, and Vesper returns the validated head as byte ranges (`RequestParts`, `ResponseParts`). Rust then builds the `String`s; the UTF-8 was already checked in Vesper with the capsule reader's strict check. Rust also drains the pseudo-header fields, which always come first, so the regular `Field`s move into the head without a copy. The checks run in the same order as in the Rust build, so the same input gives the same error.
+
+The byte classes use `find_not_in`. Literal names are compared only after a length test, so a literal is never built for a name it cannot match.
+
+Tests:
+- The unit tests run in both builds.
+- New `tests/message_rules.rs` runs in Cargo and Bazel. It holds the unit cases plus content-length bounds, the Host rules, pseudo-header bytes and UTF-8, statuses and trailers.
+- Divergence: the edit `hosts > 1` → `hosts > 2` (two Host fields accepted) fails `content_length_and_host_rules`, and the control `response_statuses` passes.
+
+The remaining gap (1.63x instructions) is the byte scans. `find_not_in` is a scalar loop on the x86-64 baseline target (it needs SSSE3; see the byte-classes lane), about 7 instructions per byte. Rust's `iter().all(token)` and its value scan compile tighter.
+
+**`session.rs` stays with the Rust driver.** Every function in it is a method of `connection::Core` over `impl Transport`, for example:
+- `adopt_stream`, `session_data`, `poll_datagrams`, `send_session_datagram`;
+- `open_wt_stream`, `wt_read`, `wt_write`, `wt_reset`.
+
+Each one reads, writes or resets transport streams in the middle of its bookkeeping. Its codec work already runs in the port: capsules, the CLOSE capsule, varints and stream headers (`session_header` is two `put_varint` calls). Moving the bookkeeping needs a callable transport across the export boundary: effectful `dyn` parameters, which are P3b compiler lane 1 (#1063). The driver files the prompt keeps in Rust (connection, client, transport, warp, prism) would also have to come along. It is a follow-up once #1063 lands.
+
+**`error.rs` stays Rust.** `Code::webtransport`, `Code::webtransport_code` and `Code::is_reserved` are `pub const fn`. A const fn cannot call into the library, and dropping `const` would break the public API. `Code::name` returns `&'static str`s from a table, and `Display` formats them. Porting the table would only hand indices back to the same Rust strings.
+
+### Compiler gaps found in part 3
+
+10. **Struct literals are not allowed in an `if` condition**, even as call arguments: `if same(in b, Span { lo: a, hi: b }, s) { ... }` fails to parse (E0002). Bind the literal first.
+11. **No `continue`.** Invert the condition and nest the loop body.
+12. **A slice view cannot be a method receiver or a `let`.** `b[lo..hi].eq(in x)` and `let st = s.as_slice();` are refused (E1521, a slice is a second-class borrow). A wrapper function taking `in Slice[u8]` works.
 
 ## Compiler gaps found in part 1
 

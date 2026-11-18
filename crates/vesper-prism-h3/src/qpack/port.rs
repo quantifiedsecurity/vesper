@@ -19,6 +19,35 @@ pub(crate) mod abi {
 
     pub use crate::capsule::CapsuleError;
     pub use crate::frame::{FrameError, Settings};
+    pub use crate::message::MessageError;
+
+    /// A byte range of a flattened field list.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Span {
+        pub lo: u64,
+        pub hi: u64,
+    }
+
+    /// A validated request head, as ranges of the flattened field list;
+    /// the first `pseudo` fields are the pseudo-headers.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct RequestParts {
+        pub method: Span,
+        pub scheme: Span,
+        pub authority: Option<Span>,
+        pub path: Span,
+        pub protocol: Option<Span>,
+        pub pseudo: u64,
+        pub content_length: Option<u64>,
+    }
+
+    /// A validated response head.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ResponseParts {
+        pub status: u16,
+        pub pseudo: u64,
+        pub content_length: Option<u64>,
+    }
     pub use crate::priority::{Priority, PriorityUpdate};
 
     /// A frame from the reader: [`crate::frame::Frame`] without its

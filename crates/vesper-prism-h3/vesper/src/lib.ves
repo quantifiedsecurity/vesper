@@ -62,6 +62,11 @@ use self::capsule::{
     capsule_next,
     capsule_write_close
 };
+use self::message::{
+    message_parse_request,
+    message_parse_response,
+    message_check_trailers
+};
 use self::varint::{
     vput,
     put_record
@@ -640,4 +645,62 @@ pub fn h3_close_session(code: u32, in reason: Slice[u8]) -> ChunkSeq[u8] {
         out.clear();
     }
     out
+}
+
+// ---------------------------------------------------------------------
+// Part 3: message validation (message.rs)
+// ---------------------------------------------------------------------
+
+pub copy enum MessageError {
+    InvalidFieldName,
+    InvalidFieldValue,
+    ConnectionSpecificField,
+    PseudoAfterRegular,
+    UnknownPseudoHeader,
+    DuplicatePseudoHeader,
+    MissingPseudoHeader,
+    InvalidPseudoHeader,
+    AuthorityMismatch,
+    InvalidContentLength,
+    ContentLengthMismatch,
+    InvalidStatus,
+    UnsupportedConnect
+}
+
+// A byte range of the flattened field list.
+pub copy struct Span {
+    lo: u64,
+    hi: u64
+}
+
+// A validated request head as ranges; `pseudo` fields come first and the
+// rest are the regular fields.
+pub copy struct RequestParts {
+    method: Span,
+    scheme: Span,
+    authority: Option[Span],
+    path: Span,
+    protocol: Option[Span],
+    pseudo: u64,
+    content_length: Option[u64]
+}
+
+pub copy struct ResponseParts {
+    status: u16,
+    pseudo: u64,
+    content_length: Option[u64]
+}
+
+pub fn h3_parse_request(in bytes: Slice[u8], in meta: Slice[u64])
+    -> Result[RequestParts, MessageError] {
+    message_parse_request(in bytes, in meta)
+}
+
+pub fn h3_parse_response(in bytes: Slice[u8], in meta: Slice[u64])
+    -> Result[ResponseParts, MessageError] {
+    message_parse_response(in bytes, in meta)
+}
+
+pub fn h3_check_trailers(in bytes: Slice[u8], in meta: Slice[u64]) -> Option[MessageError] {
+    message_check_trailers(in bytes, in meta)
 }

@@ -68,4 +68,6 @@ const DIVERGENT_EDITS: &[(&str, &str, &str)] = &[
         "(widen_u64(byte(in v, 0)) << 24)",
         "(widen_u64(byte(in v, 0)) << 16)",
     ),
+    // message.rs: two Host fields are accepted.
+    ("message", "if hosts > 1 {", "if hosts > 2 {"),
 ];

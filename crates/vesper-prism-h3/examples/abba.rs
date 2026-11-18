@@ -2,7 +2,9 @@
 //! wave P3b lane 5, #1067): QPACK decoding of the committed QIFs corpus,
 //! QPACK encoding of its field lists, and frame parsing (`frames`): request
 //! streams of HEADERS and DATA frames, a control stream of SETTINGS and
-//! PRIORITY_UPDATE frames, and capsules, read in packet-sized pushes.
+//! PRIORITY_UPDATE frames, and capsules, read in packet-sized pushes; and
+//! message validation (`messages`) of the netbsd QIF's field lists as requests
+//! or responses.
 //!
 //! The two builds are one crate compiled with and without `vesper-port`, so
 //! they cannot share a process. Each arm is a worker process (this example
@@ -15,9 +17,9 @@
 //!
 //! ```text
 //! crates/vesper-prism-h3/scripts/bench.sh       # builds both, runs every workload
-//! abba worker <decode|encode|frames>                # one arm
-//! abba drive <decode|encode|frames> <rust-worker> <vesper-worker>
-//! abba once <decode|encode|frames> <batches>
+//! abba worker <decode|encode|frames|messages>                # one arm
+//! abba drive <decode|encode|frames|messages> <rust-worker> <vesper-worker>
+//! abba once <decode|encode|frames|messages> <batches>
 //! ```
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +28,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use vesper_bench::{BenchCase, Invocation, RunConfig, analyze_pairs, run_abba};
 use vesper_prism_h3::capsule::{self, Capsule, CapsuleReader};
 use vesper_prism_h3::frame::{self, Frame, FrameReader, Settings};
+use vesper_prism_h3::message;
 use vesper_prism_h3::priority::{Priority, PriorityUpdate};
 use vesper_prism_h3::qpack::{Decoded, Decoder, DecoderConfig, Encoder, EncoderConfig, Field};
 
@@ -301,6 +304,31 @@ fn frames_batch(s: &Streams) -> u64 {
     digest
 }
 
+/// Validates every field list of the QIFs corpus (requests, and responses
+/// when it starts with `:status`), 64 rounds.
+fn messages_batch(lists: &[Vec<Field>]) -> u64 {
+    let mut digest = 0xcbf2_9ce4_8422_2325;
+    for _ in 0..64 {
+        for list in lists {
+            if list.first().is_some_and(|f| f.name == b":status") {
+                match message::parse_response(list.clone()) {
+                    Ok(r) => digest = fnv(digest, &r.status.to_be_bytes()),
+                    Err(e) => digest = fnv(digest, format!("{e:?}").as_bytes()),
+                }
+            } else {
+                match message::parse_request(list.clone()) {
+                    Ok(r) => {
+                        digest = fnv(digest, r.path.as_bytes());
+                        digest = fnv(digest, &r.fields.len().to_be_bytes());
+                    }
+                    Err(e) => digest = fnv(digest, format!("{e:?}").as_bytes()),
+                }
+            }
+        }
+    }
+    digest
+}
+
 fn frame_count(_s: &Streams) -> usize {
     // 64 requests x 6 frames, the control stream's 258, and the capsules.
     64 * 6 + 258 + 512 + 512 / 16 + 1
@@ -310,6 +338,7 @@ struct Workload {
     corpus: Vec<Encoded>,
     blocks: Vec<Vec<Field>>,
     streams: Streams,
+    lists: Vec<Vec<Field>>,
 }
 
 impl Workload {
@@ -320,6 +349,7 @@ impl Workload {
             corpus,
             blocks: qif_blocks(),
             streams,
+            lists: qif_blocks(),
         }
     }
 
@@ -328,6 +358,7 @@ impl Workload {
             "decode" => decode_batch(&self.corpus),
             "encode" => encode_batch(&self.blocks),
             "frames" => frames_batch(&self.streams),
+            "messages" => messages_batch(&self.lists),
             other => panic!("unknown workload {other}"),
         }
     }
@@ -408,6 +439,7 @@ fn drive(workload: &str, rust: &str, vesper: &str) {
         ),
         "encode" => (16 * w.blocks.len(), "section"),
         "frames" => (frame_count(&w.streams), "frame"),
+        "messages" => (64 * w.lists.len(), "message"),
         other => panic!("unknown workload {other}"),
     };
     let operations = 16;
@@ -495,7 +527,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: abba worker <decode|encode> | abba drive <decode|encode|frames> <rust-worker> <vesper-worker> | abba once <decode|encode|frames> <batches>"
+                "usage: abba worker <decode|encode> | abba drive <decode|encode|frames|messages> <rust-worker> <vesper-worker> | abba once <decode|encode|frames|messages> <batches>"
             );
             std::process::exit(2);
         }
