@@ -108,14 +108,21 @@ rust_library(
     deps = ["//crates/vesper-port-abi"],
 )
 
+# The in-crate unit tests of the port build, compiled from the same sources
+# as :port (a `crate = ":port"` test does not find the crate root here).
 rust_test(
     name = "port_unit_test",
+    srcs = glob(["src/**/*.rs"]) + ["port/binding.rs"],
     compile_data = [":beacon_vesper"],
-    crate = ":port",
+    crate_features = ["vesper-port"],
+    crate_name = "vesper_beacon",
+    crate_root = "src/lib.rs",
+    edition = "2021",
     rustc_flags = [
         "--cfg=vesper_port",
         "-Clink-arg=$(location :beacon_vesper)",
     ],
+    deps = ["//crates/vesper-port-abi"],
 )
 
 [
