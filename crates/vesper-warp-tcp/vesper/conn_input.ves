@@ -9,7 +9,14 @@ copy struct Seg {
     pay_len: u64
 }
 
+// `dst[at..at + n] = src[from..from + n]`, skipping the bytes whose source
+// or destination is out of range. In range, one block copy.
 fn copy_into(in src: Slice[u8], from: u64, inout dst: Slice[u8], at: u64, n: u64) {
+    if n <= src.len() && from <= wrapping_sub(src.len(), n) {
+        if dst.try_copy_from(at, in src[from..wrapping_add(from, n)]) {
+            return;
+        }
+    }
     for k in 0..n {
         match src.try_get(wrapping_add(from, k)) {
             Option::Some(b) => {
