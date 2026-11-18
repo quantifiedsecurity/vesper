@@ -86,6 +86,7 @@ unsafe extern "C" {
     fn vesper_tensor_fp8_scale(data: *mut u64, e5m2: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_make_qkx2_quants(result: *mut u64, nmax: i64, x: *mut u64, weights: *mut u64, l: *mut u64, laux: *mut u64, rmin: i64, rdelta: i64, nstep: i64, use_mad: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_nearest_int(value: i64, fail: *mut u64) -> i64;
+    fn vesper_tensor_parse_json(bytes: *mut u64, tape: *mut u64, keys: *mut u64, strs: *mut u64, levels: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_q4_k_scale_min(result: *mut u64, j: i64, scales: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_quantize_mxfp4(data: *mut u64, cols: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_quantize_q4_0(data: *mut u64, cols: i64, fail: *mut u64) -> i64;
@@ -529,6 +530,28 @@ pub fn nearest_int(value: u32) -> Result<i32, vesper_port_abi::ArithOverflow> {
         0 => Ok(raw as i32),
         1 => Err(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..])),
         status => panic!("invalid failure status {status} from vesper_tensor_nearest_int"),
+    }
+}
+
+/// The errors `parse_json` can raise, in status order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ParseJsonError {
+    ArithOverflow(vesper_port_abi::ArithOverflow),
+    RuntimeError(vesper_port_abi::RuntimeError),
+}
+
+/// Calls `parse_json` of the Vesper library `tensor` (`vesper_tensor_parse_json`).
+pub fn parse_json(bytes: &[u8], tape: &mut [u64], keys: &mut [u64], strs: &mut [u8], levels: &mut [u64]) -> Result<u64, ParseJsonError> {
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_parse_json` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(bytes, |view_bytes| vesper_port_abi::with_slice_mut(tape, |view_tape| vesper_port_abi::with_slice_mut(keys, |view_keys| vesper_port_abi::with_slice_mut(strs, |view_strs| vesper_port_abi::with_slice_mut(levels, |view_levels| unsafe { vesper_tensor_parse_json(view_bytes, view_tape, view_keys, view_strs, view_levels, fail.as_mut_ptr()) })))));
+    match fail[0] {
+        0 => Ok(raw as u64),
+        1 => Err(ParseJsonError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
+        2 => Err(ParseJsonError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
+        status => panic!("invalid failure status {status} from vesper_tensor_parse_json"),
     }
 }
 

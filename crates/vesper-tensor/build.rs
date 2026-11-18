@@ -47,6 +47,13 @@ const DIVERGENT: &[(&str, &str)] = &[
     // up as lowercase `<0xab>`; tokenizer_sampling
     // encoder_matches_run_c_and_round_trips fails.
     ("        55 + d\n", "        87 + d\n"),
+    // json.rs (vesper/src/text.ves): a leading zero is accepted before two
+    // more digits only; abba both_builds_read_the_same_safetensors_headers
+    // fails.
+    (
+        "if at - start > 1 && b[start] == 48 {",
+        "if at - start > 2 && b[start] == 48 {",
+    ),
     // ops.rs (vesper/src/lib.ves): softmax divides by twice the sum;
     // inference_ops silu_swiglu_softmax_argmax fails.
     (

@@ -86,6 +86,7 @@ failures! {
     Fp8CodesError [ArithOverflow, RuntimeError],
     Fp8ScaleError [RuntimeError, Fault],
     MakeQkx2QuantsError [ArithOverflow, RuntimeError],
+    ParseJsonError [ArithOverflow, RuntimeError],
     Q4KScaleMinError [ArithOverflow, RuntimeError],
     QuantizeMxfp4Error [ArithOverflow, RuntimeError, Fault],
     QuantizeQ40Error [ArithOverflow, RuntimeError, Fault],

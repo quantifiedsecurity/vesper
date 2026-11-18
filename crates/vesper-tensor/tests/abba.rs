@@ -260,3 +260,174 @@ fn abba_bpe_encode() {
         || ve.encode(&text, true, false).unwrap().len() as u64,
     );
 }
+
+/// A safetensors file whose header is `header`, with `data` zero bytes.
+fn safetensors_file(header: &[u8], data: usize) -> Vec<u8> {
+    let mut file = (header.len() as u64).to_le_bytes().to_vec();
+    file.extend_from_slice(header);
+    file.resize(file.len() + data, 0);
+    file
+}
+
+fn read_safetensors<T: std::fmt::Debug, M: std::fmt::Debug, E: std::fmt::Debug>(
+    r: Result<(T, M), E>,
+) -> String {
+    match r {
+        Ok(v) => format!("{v:?}"),
+        Err(e) => format!("error {e:?}"),
+    }
+}
+
+#[test]
+fn both_builds_read_the_same_safetensors_headers() {
+    const VALID: &[&str] = &[
+        "{",
+        r#""__metadata__""#,
+        ":",
+        "{",
+        r#""k""#,
+        ":",
+        r#""vé😀""#,
+        "}",
+        ",",
+        r#""w""#,
+        ":",
+        "{",
+        r#""dtype""#,
+        ":",
+        r#""F32""#,
+        ",",
+        r#""shape""#,
+        ":",
+        "[",
+        "2",
+        "]",
+        ",",
+        r#""data_offsets""#,
+        ":",
+        "[",
+        "0",
+        ",",
+        "8",
+        "]",
+        "}",
+        "}",
+    ];
+    const NOISE: &[&str] = &[
+        "{",
+        "}",
+        "[",
+        "]",
+        ":",
+        ",",
+        " ",
+        "\t",
+        "0",
+        "01",
+        "1.5",
+        "-1",
+        "1e3",
+        "18446744073709551615",
+        "18446744073709551616",
+        "true",
+        "false",
+        "null",
+        "nul",
+        r#""a""#,
+        r#""\ud800""#,
+        r#""\udc00x""#,
+        r#""\ud800A""#,
+        r#""\x""#,
+        "\"\u{1}\"",
+        "\"\u{e9}\"",
+        r#""\"\\\/\b\f\n\r\t""#,
+        r#""\u12""#,
+        "\"",
+        "x",
+    ];
+    let mut x = 99u64;
+    let mut next = |n: usize| {
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (x >> 33) as usize % n
+    };
+    let mut cases: Vec<Vec<u8>> = vec![VALID.concat().into_bytes()];
+    for _ in 0..3000 {
+        let mut tokens: Vec<&str> = VALID.to_vec();
+        for _ in 0..1 + next(3) {
+            let at = next(tokens.len());
+            match next(3) {
+                0 => {
+                    tokens.remove(at);
+                }
+                1 => tokens.insert(at, NOISE[next(NOISE.len())]),
+                _ => tokens[at] = NOISE[next(NOISE.len())],
+            }
+        }
+        cases.push(tokens.concat().into_bytes());
+    }
+    for _ in 0..1000 {
+        let tokens: Vec<&str> = (0..next(12)).map(|_| NOISE[next(NOISE.len())]).collect();
+        cases.push(tokens.concat().into_bytes());
+    }
+    cases.push(b"{\"a\":\"\xff\"}".to_vec());
+    cases.push(b"{\"a\":\"\xed\xa0\x80\"}".to_vec());
+    cases.push(b"{\"a\":\"\xf4\x90\x80\x80\"}".to_vec());
+    cases.push(b"{\"a\":\"\xe0\x80\x80\"}".to_vec());
+    cases.push(b"{\"a\":\"\xf0\x9f\x98\x80\xc3\"}".to_vec());
+    cases.push(b"[[[[[[[[[]]]]]]]]]".to_vec());
+    cases.push(b"[[[[[[[[[[]]]]]]]]]]".to_vec());
+    let mut big = String::from("{");
+    for i in 0..5000 {
+        big.push_str(&format!(
+            "\"t{i}\":{{\"dtype\":\"U8\",\"shape\":[0],\"data_offsets\":[0,0]}},"
+        ));
+    }
+    big.push_str("\"t7\":1}");
+    cases.push(big.into_bytes());
+    for header in &cases {
+        let file = safetensors_file(header, 8);
+        let r = seed::safetensors::SafeTensors::from_vec(file.clone())
+            .map(|s| (s.tensors().to_vec(), s.metadata().to_vec()));
+        let v = vesper_tensor::safetensors::SafeTensors::from_vec(file)
+            .map(|s| (s.tensors().to_vec(), s.metadata().to_vec()));
+        assert_eq!(
+            read_safetensors(r),
+            read_safetensors(v),
+            "{}",
+            String::from_utf8_lossy(header)
+        );
+    }
+}
+
+#[test]
+#[ignore = "benchmark; run in release with --ignored --nocapture"]
+fn abba_safetensors_header() {
+    let mut header = String::from("{");
+    for i in 0..5000 {
+        if i > 0 {
+            header.push(',');
+        }
+        header.push_str(&format!(
+            "\"model.layers.{i}.weight\":{{\"dtype\":\"U8\",\"shape\":[0],\"data_offsets\":[0,0]}}"
+        ));
+    }
+    header.push('}');
+    let file = safetensors_file(header.as_bytes(), 0);
+    abba(
+        "safetensors header, 5000 tensors (JSON reader)",
+        || {
+            seed::safetensors::SafeTensors::from_vec(file.clone())
+                .unwrap()
+                .tensors()
+                .len() as u64
+        },
+        || {
+            vesper_tensor::safetensors::SafeTensors::from_vec(file.clone())
+                .unwrap()
+                .tensors()
+                .len() as u64
+        },
+    );
+}
