@@ -528,10 +528,7 @@ impl Circuit {
         let prior = self
             .nodes
             .iter()
-            .map(|n| ZSet {
-                width: n.width,
-                rows: Default::default(),
-            })
+            .map(|n| ZSet::from_rows(n.width, Default::default()))
             .collect();
         let versions = vec![0; self.nodes.len()];
         Executor {
@@ -724,6 +721,31 @@ fn copy(set: &ZSet, limits: Limits, budget: &mut Budget) -> Result<ZSet, Error> 
     union(&[set], limits, budget)
 }
 fn apply(op: &Op, values: &[ZSet], limits: Limits, budget: &mut Budget) -> Result<ZSet, Error> {
+    // The Vesper build runs the operators in the port's kernels.
+    #[cfg(feature = "vesper-port")]
+    match op {
+        Op::Filter(a, p) => {
+            let (at_least, column, value) = match *p {
+                Predicate::Equal { column, value } => (false, column, value),
+                Predicate::AtLeast { column, value } => (true, column, value),
+            };
+            return crate::port::filter(&values[*a], at_least, column, value, limits, budget);
+        }
+        Op::Map(a, fields) => {
+            let mut pairs = Vec::with_capacity(fields.len() * 2);
+            for f in fields {
+                match f {
+                    Field::Column(c) => pairs.extend([0, *c as i64]),
+                    Field::Constant(v) => pairs.extend([1, *v]),
+                }
+            }
+            return crate::port::map(&values[*a], &pairs, limits, budget);
+        }
+        Op::Join { a, b, ka, kb } => {
+            return crate::port::join(&values[*a], &values[*b], *ka, *kb, limits, budget);
+        }
+        _ => {}
+    }
     match op {
         Op::Input(_) => Err(Error::InvalidNode),
         Op::Union(a, b) => union(&[&values[*a], &values[*b]], limits, budget),
@@ -742,7 +764,7 @@ fn apply(op: &Op, values: &[ZSet], limits: Limits, budget: &mut Budget) -> Resul
             let mut out = Accumulator::new(fields.len(), limits)?;
             for (row, w) in values[*a].entries() {
                 budget.charge(fields.len())?;
-                let mapped = fields
+                let mapped: Row = fields
                     .iter()
                     .map(|f| match f {
                         Field::Column(c) => row[*c],

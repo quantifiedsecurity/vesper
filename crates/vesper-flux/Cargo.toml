@@ -5,7 +5,17 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Bounded checked host DBSP circuits, owned frontier holds, LSM-spine CAS checkpoints, a durable input log, an exactly-once Quarry sink and simulated multi-worker recovery and rescaling"
 
+[features]
+# Run the Z-set kernels and the frontier on the Vesper port (the Loom
+# package in vesper/, port wave P3b lane 7, #1069). The Rust build stays the
+# default until the port matches it.
+vesper-port = ["dep:vesper-port-abi", "dep:vesper-port-harness"]
+# A deliberately wrong Vesper build, one change per ported kernel: the port
+# test runs must fail (scripts/test-port-harness.sh and Bazel assert it).
+vesper-port-divergent = ["vesper-port"]
+
 [dependencies]
+vesper-port-abi = { path = "../vesper-port-abi", optional = true }
 blake3 = "1.8"
 # The Kafka wire client (src/kafka_wire.rs, src/kafka_client.rs) is Flux's
 # own; these are its vetted building blocks: CRC-32C of record batches,
@@ -21,6 +31,9 @@ vesper-loom-cas = { path = "../vesper-loom-cas" }
 vesper-quarry = { path = "../vesper-quarry" }
 vesper-simpulse = { path = "../vesper-simpulse" }
 
+[build-dependencies]
+vesper-port-harness = { path = "../vesper-port-harness", optional = true }
+
 [dev-dependencies]
 rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "pem"] }
 # The pure-Rust Kafka client from earlier lanes, kept as an independent
@@ -28,4 +41,5 @@ rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "p
 # read Flux's transactional output back through it.
 rskafka = { version = "=0.6.0", default-features = false, features = ["compression-gzip", "compression-snappy", "compression-zstd"] }
 tempfile = "3"
+vesper-bench = { path = "../vesper-bench" }
 tokio = { version = "1", default-features = false, features = ["rt", "time"] }
