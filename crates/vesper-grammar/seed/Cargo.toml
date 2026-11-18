@@ -1,0 +1,78 @@
+[package]
+name = "vesper-grammar-seed"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Frozen Rust seed copy of vesper-grammar for the compiler's own dependency closure"
+autotests = false
+autoexamples = false
+autobenches = false
+build = false
+
+# The seed-copy rule (port wave P1 lane 2, #899; Grammar is lane 9, #906):
+# the compiler links this package, the Rust build of ../src, under the
+# library name `vesper_grammar`. Crates inside
+# `cargo tree -p vesper -e normal,build` depend on it with
+# `vesper-grammar = { path = ".../seed", package = "vesper-grammar-seed" }`.
+# Every other dependent uses it too until the port-backed package
+# `vesper-grammar` matches the Rust build in function and speed (the Rust
+# build stays the default and is not deleted until then). The Rust code
+# takes bug fixes only until self-hosting Stage 2.
+[lib]
+name = "vesper_grammar"
+path = "../src/lib.rs"
+
+[[test]]
+name = "arrow"
+path = "../tests/arrow.rs"
+
+[[test]]
+name = "capnp_packed"
+path = "../tests/capnp_packed.rs"
+
+[[test]]
+name = "codec"
+path = "../tests/codec.rs"
+
+[[test]]
+name = "codec_acceptance"
+path = "../tests/codec_acceptance.rs"
+
+[[test]]
+name = "der"
+path = "../tests/der.rs"
+
+[[test]]
+name = "framing"
+path = "../tests/framing.rs"
+
+[[test]]
+name = "grammar"
+path = "../tests/grammar.rs"
+
+[[test]]
+name = "ipc"
+path = "../tests/ipc.rs"
+
+[[test]]
+name = "no_panic"
+path = "../tests/no_panic.rs"
+
+[[test]]
+name = "protobuf"
+path = "../tests/protobuf.rs"
+
+[[test]]
+name = "repetition"
+path = "../tests/repetition.rs"
+
+[[example]]
+name = "grammar_abba_seed"
+path = "../examples/grammar_abba.rs"
+
+[dev-dependencies]
+vesper-bench = { path = "../../vesper-bench" }
+
+[lints.rust]
+# cfg(vesper_port) is set only by the port-backed package's build script.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(vesper_port)"] }

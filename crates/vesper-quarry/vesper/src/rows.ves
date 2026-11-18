@@ -2,6 +2,7 @@
 use self::{
     CCol,
     CTab,
+    D,
     Q,
     Val
 };
@@ -34,19 +35,19 @@ use self::values::{
 };
 
 // The scan slots of the plan below n, in order (`RelPlan::slots`).
-// The slots scanned under plan n, appended to `aux`.
-pub fn slots_of(inout q: Q, n: u64) {
+// The slots scanned under plan n, appended to `out`.
+pub fn slots_of(in q: Q, n: u64, inout out: ChunkSeq[u64]) {
     let x = node(in q, n);
     if x.kind == 0 {
         for k in 0..x.e {
             let slot = ex(in q, wrapping_add(x.d, k));
-            q.aux.push(slot);
+            out.push(slot);
         }
     } else if x.kind == 1 {
-        slots_of(inout q, x.b);
+        slots_of(in q, x.b, inout out);
     } else {
-        slots_of(inout q, x.b);
-        slots_of(inout q, x.c);
+        slots_of(in q, x.b, inout out);
+        slots_of(in q, x.c, inout out);
     }
 }
 
@@ -70,14 +71,14 @@ pub fn set_val(inout q: Q, row: u64, slot: u64, v: Val) {
 }
 
 // `run`: the rows of plan n, as a range of `rowset`.
-pub fn run(inout q: Q, n: u64) -> (u64, u64) {
+pub fn run(inout ds: D, inout q: Q, n: u64) -> (u64, u64) {
     let x = node(in q, n);
     if q.err != 0 {
         return (0, 0);
     }
     if x.kind == 0 {
-        let first = q.rowset.len();
-        let t = dtab(in q, find_data(in q, x.a, x.b));
+        let first = ds.rowset.len();
+        let t = dtab(in ds, in q, find_data(in ds, in q, x.a, x.b));
         let mut p = t.start;
         for r in 0..t.n {
             if q.err != 0 {
@@ -106,79 +107,78 @@ pub fn run(inout q: Q, n: u64) -> (u64, u64) {
                     break;
                 }
                 let k = link(in q, l);
-                if !holds(inout q, k.expr, row) {
+                if !holds(in ds, inout q, k.expr, row) {
                     keep = false;
                     break;
                 }
                 l = k.next;
             }
             if keep && q.err == 0 {
-                q.rowset.push(row);
+                ds.rowset.push(row);
             } else {
                 q.rows.truncate(row);
             }
         }
-        (first, q.rowset.len())
+        (first, ds.rowset.len())
     } else if x.kind == 1 {
-        let (s, e) = run(inout q, x.b);
-        let first = q.rowset.len();
+        let (s, e) = run(inout ds, inout q, x.b);
+        let first = ds.rowset.len();
         for i in s..e {
             if q.err != 0 {
                 break;
             }
-            let row = cw(in q.rowset, i);
-            if holds(inout q, x.a, row) {
-                q.rowset.push(row);
+            let row = cw(in ds.rowset, i);
+            if holds(in ds, inout q, x.a, row) {
+                ds.rowset.push(row);
             }
         }
-        (first, q.rowset.len())
+        (first, ds.rowset.len())
     } else {
-        let (ls, le) = run(inout q, x.b);
-        let (rs, re) = run(inout q, x.c);
-        // Recursive runs are done, so the join owns the scratch tails.
-        let sbase = q.aux.len();
-        slots_of(inout q, x.c);
-        let send = q.aux.len();
-        let mbase = q.bits.len();
+        let (ls, le) = run(inout ds, inout q, x.b);
+        let (rs, re) = run(inout ds, inout q, x.c);
+        // The right side's scan slots, and which right rows matched.
+        let mut slots = ChunkSeq::new[u64]();
+        slots_of(in q, x.c, inout slots);
+        let mut matched = ChunkSeq::new[bool]();
         for j in rs..re {
-            q.bits.push(false);
+            matched.push(false);
         }
         let w = width(in q);
-        let first = q.rowset.len();
+        let first = ds.rowset.len();
         for i in ls..le {
             if q.err != 0 {
                 break;
             }
-            let l = cw(in q.rowset, i);
+            let l = cw(in ds.rowset, i);
             let mut matched_left = false;
             for j in rs..re {
                 if q.err != 0 {
                     break;
                 }
-                let r = cw(in q.rowset, j);
+                let r = cw(in ds.rowset, j);
                 tick(inout q, wrapping_add(1, w));
                 let row = new_row(inout q);
                 for k in 0..w {
                     let v = row_val(in q, l, k);
                     set_val(inout q, row, k, v);
                 }
-                for k in sbase..send {
-                    let slot = cw(in q.aux, k);
+                for k in 0..slots.len() {
+                    let slot = cw(in slots, k);
                     let v = row_val(in q, r, slot);
                     set_val(inout q, row, slot, v);
                 }
                 charge_row(inout q, row);
-                if q.err == 0 && holds(inout q, x.d, row) {
+                if q.err == 0 && holds(in ds, inout q, x.d, row) {
                     matched_left = true;
-                    q.bits.try_set(wrapping_add(mbase, wrapping_sub(j, rs)), true);
-                    q.rowset.push(row);
+                    matched.try_set(wrapping_sub(j, rs), true);
+                    ds.rowset.push(row);
                 } else {
                     q.rows.truncate(row);
                 }
             }
             if q.err == 0 && !matched_left && (x.a == 1 || x.a == 3) {
                 charge_row(inout q, l);
-                q.rowset.push(l);
+                ds.rowset.push(l);
             }
         }
         if x.a == 2 || x.a == 3 {
@@ -186,44 +186,42 @@ pub fn run(inout q: Q, n: u64) -> (u64, u64) {
                 if q.err != 0 {
                     break;
                 }
-                let m = match q.bits.try_get(wrapping_add(mbase, wrapping_sub(j, rs))) {
+                let m = match matched.try_get(wrapping_sub(j, rs)) {
                     Option::Some(b) => b,
                     Option::None => false,
                 };
                 if !m {
-                    let r = cw(in q.rowset, j);
+                    let r = cw(in ds.rowset, j);
                     charge_row(inout q, r);
-                    q.rowset.push(r);
+                    ds.rowset.push(r);
                 }
             }
         }
-        q.aux.truncate(sbase);
-        q.bits.truncate(mbase);
-        (first, q.rowset.len())
+        (first, ds.rowset.len())
     }
 }
 
 // `check_inputs`: every scanned table has data, in plan order.
-pub fn check_inputs(inout q: Q, n: u64) {
+pub fn check_inputs(in ds: D, inout q: Q, n: u64) {
     let x = node(in q, n);
     if q.err != 0 {
         return;
     }
     if x.kind == 0 {
-        if find_data(in q, x.a, x.b) == none() {
+        if find_data(in ds, in q, x.a, x.b) == none() {
             fail_name(inout q, 8, "missing data for ", x.a, x.b);
         }
     } else if x.kind == 1 {
-        check_inputs(inout q, x.b);
+        check_inputs(in ds, inout q, x.b);
     } else {
-        check_inputs(inout q, x.b);
-        check_inputs(inout q, x.c);
+        check_inputs(in ds, inout q, x.b);
+        check_inputs(in ds, inout q, x.c);
     }
 }
 
 // Load data tables at p of `ex`: [ndata, (name off, name len, nrows,
 // (nvals, values..)*)*]. Returns the end.
-pub fn load_data(inout q: Q, p: u64) -> u64 {
+pub fn load_data(inout ds: D, inout q: Q, p: u64) -> u64 {
     let n = ex(in q, p);
     let mut at = wrapping_add(p, 1);
     for t in 0..n {
@@ -231,7 +229,7 @@ pub fn load_data(inout q: Q, p: u64) -> u64 {
         let nlen = ex(in q, wrapping_add(at, 1));
         let nrows = ex(in q, wrapping_add(at, 2));
         at = wrapping_add(at, 3);
-        q
+        ds
             .dtabs
             .push(
             CTab {

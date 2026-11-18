@@ -4,6 +4,7 @@ use self::{
     Bind,
     CCol,
     CTab,
+    D,
     Link,
     Node,
     Q,
@@ -22,13 +23,22 @@ pub fn none() -> u64 {
 }
 
 pub fn new_q() -> Q {
+    new_q_sized(0, 0, 0, 0, 0)
+}
+
+// A `Q` whose largest sequences start with room for a call's usual sizes,
+// so that they do not grow element by element: `pool` bytes, `words` output
+// words, `ex` expression words, `toks` tokens and `nodes` plan nodes. The
+// small sequences start empty, since an allocation they may not need costs
+// more than a growth.
+pub fn new_q_sized(pool: u64, words: u64, ex: u64, toks: u64, nodes: u64) -> Q {
     Q {
         err: 0,
         msg: ChunkSeq::new[u8](),
-        words: ChunkSeq::new[u64](),
-        pool: ChunkSeq::new[u8](),
+        words: ChunkSeq::with_capacity[u64](words),
+        pool: ChunkSeq::with_capacity[u8](pool),
         lim: ChunkSeq::new[u64](),
-        toks: ChunkSeq::new[Tok](),
+        toks: ChunkSeq::with_capacity[Tok](toks),
         pos: 0,
         nodes: 0,
         raw: ChunkSeq::new[Raw](),
@@ -41,25 +51,35 @@ pub fn new_q() -> Q {
         bcols: ChunkSeq::new[BCol](),
         aliases: ChunkSeq::new[Rng](),
         nbindings: 0,
-        ex: ChunkSeq::new[u64](),
-        plan: ChunkSeq::new[Node](),
+        ex: ChunkSeq::with_capacity[u64](ex),
+        plan: ChunkSeq::with_capacity[Node](nodes),
         links: ChunkSeq::new[Link](),
         rows: ChunkSeq::new[u64](),
-        rowset: ChunkSeq::new[u64](),
-        flags: ChunkSeq::new[bool](),
         work: 0,
         brows: 0,
-        bbytes: 0,
+        bbytes: 0
+    }
+}
+
+// Frees the sequences of a `D`. Native code frees the sequences a function
+// binds itself, but not the sequence fields of a struct it owns.
+pub fn free_d(sink ds: D) {
+    let rowset = ds.rowset;
+    let dtabs = ds.dtabs;
+    let decls = ds.decls;
+    let stats = ds.stats;
+    let vals = ds.vals;
+    let counts = ds.counts;
+}
+
+pub fn new_d() -> D {
+    D {
+        rowset: ChunkSeq::new[u64](),
         dtabs: ChunkSeq::new[CTab](),
         decls: ChunkSeq::new[CCol](),
         stats: ChunkSeq::new[Stat](),
         vals: ChunkSeq::new[Val](),
-        counts: ChunkSeq::new[u64](),
-        aux: ChunkSeq::new[u64](),
-        aux2: ChunkSeq::new[u64](),
-        aux3: ChunkSeq::new[u64](),
-        aux4: ChunkSeq::new[u64](),
-        bits: ChunkSeq::new[bool]()
+        counts: ChunkSeq::new[u64]()
     }
 }
 
@@ -228,17 +248,10 @@ pub fn bool_val(b: bool) -> Val {
     }
 }
 
-pub fn vat(in q: Q, i: u64) -> Val {
-    match q.vals.try_get(i) {
+pub fn vat(in d: D, in q: Q, i: u64) -> Val {
+    match d.vals.try_get(i) {
         Option::Some(v) => v,
         Option::None => null_val(),
-    }
-}
-
-pub fn bflag(in q: Q, i: u64) -> bool {
-    match q.flags.try_get(i) {
-        Option::Some(b) => b,
-        Option::None => false,
     }
 }
 
@@ -440,8 +453,12 @@ pub fn hard(i: u64) -> u64 {
 // (`Limits::validate`).
 pub fn load_limits(inout q: Q, in limits: Slice[u64]) -> bool {
     let all: u64 = 16;
-    for i in 0..all {
-        q.lim.push(sw(in limits, i));
+    if limits.len() >= all {
+        q.lim.extend(in limits[0..all]);
+    } else {
+        for i in 0..all {
+            q.lim.push(sw(in limits, i));
+        }
     }
     let n: u64 = 14;
     for i in 0..n {
@@ -453,28 +470,33 @@ pub fn load_limits(inout q: Q, in limits: Slice[u64]) -> bool {
     true
 }
 
-// `identifier(pool[off..off+len])`: appends the lowercase copy to the pool
-// and returns its offset, or records the Syntax error.
+// `identifier(pool[off..off+len])`: the offset of its lowercase form in the
+// pool, or the Syntax error. A name that is already lowercase is its own
+// lowercase form, so only a name with an uppercase byte is copied (to the
+// end of the pool).
 pub fn identifier(inout q: Q, off: u64, len: u64) -> u64 {
     let mut ok = len > 0 && len <= 128;
+    let mut upper = false;
     for i in 0..len {
         let c = match q.pool.try_get(wrapping_add(off, i)) {
             Option::Some(c) => c,
             Option::None => 0,
         };
-        let alpha = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95;
-        let digit = c >= 48 && c <= 57;
-        if i == 0 {
-            if !alpha {
-                ok = false;
-            }
-        } else if !alpha && !digit {
+        let lower = c >= 97 && c <= 122;
+        let up = c >= 65 && c <= 90;
+        if up {
+            upper = true;
+        }
+        if !(lower || up || c == 95) && (i == 0 || c < 48 || c > 57) {
             ok = false;
         }
     }
     if !ok {
         fail(inout q, 1, "expected ASCII identifier of at most 128 bytes");
         return 0;
+    }
+    if !upper {
+        return off;
     }
     let start = q.pool.len();
     for i in 0..len {

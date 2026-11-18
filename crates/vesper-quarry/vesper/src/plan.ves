@@ -1,6 +1,8 @@
 // Module plan of @vesper/quarry (see lib.ves).
 use self::{
     Bind,
+    CCol,
+    CTab,
     Link,
     Node,
     Q,
@@ -14,9 +16,8 @@ use self::util::{
     ex,
     fail,
     link,
-    load_catalog,
     load_limits,
-    new_q,
+    new_q_sized,
     node,
     none,
     param,
@@ -50,9 +51,28 @@ use self::check::{
 
 pub fn copy_expr(inout q: Q, p: u64) {
     let end = ex_end(in q, p);
-    for i in p..end {
-        let w = ex(in q, i);
-        q.words.push(w);
+    copy_ex(inout q, p, end);
+}
+
+// `dst.extend(src[p..end])`. A separate function, because `extend` on one
+// field of `q` from a view of another is refused as a self-read (E0301).
+pub fn append(inout dst: ChunkSeq[u64], in src: ChunkSeq[u64], p: u64, end: u64) {
+    dst.extend(in src[p..end]);
+}
+
+// Appends `ex[p..end]` to `words` in one block copy. Words past the end of
+// `ex` read as 0, as `ex` reads them.
+pub fn copy_ex(inout q: Q, p: u64, end: u64) {
+    let n = q.ex.len();
+    if end <= n {
+        if p < end {
+            append(inout q.words, in q.ex, p, end);
+        }
+    } else {
+        for i in p..end {
+            let w = ex(in q, i);
+            q.words.push(w);
+        }
     }
 }
 
@@ -64,10 +84,7 @@ pub fn emit_plan(inout q: Q, n: u64) {
         q.words.push(x.b);
         q.words.push(x.c);
         q.words.push(x.e);
-        for k in 0..x.e {
-            let w = ex(in q, wrapping_add(x.d, k));
-            q.words.push(w);
-        }
+        copy_ex(inout q, x.d, wrapping_add(x.d, x.e));
         let at = q.words.len();
         q.words.push(0);
         let mut count: u64 = 0;
@@ -306,7 +323,8 @@ pub fn optimize_node(inout q: Q, n: u64) -> u64 {
 
 // `PreparedQuery::optimized` on a plan stream. Text ranges pass through.
 pub fn optimize_q(in plan: Slice[u64]) -> Q {
-    let mut q = new_q();
+    let n = plan.len();
+    let mut q = new_q_sized(0, wrapping_add(n, 8), n, 0, 4);
     q.ex.extend(in plan);
     let (root, end) = decode_plan(inout q, 0);
     let top = optimize_node(inout q, root);
@@ -314,21 +332,46 @@ pub fn optimize_q(in plan: Slice[u64]) -> Q {
     q
 }
 
-// `HermeticCatalog::prepare`. meta holds the catalog encoding followed by
-// the parameter encoding; text their names. On success words holds
+// `HermeticCatalog::prepare`. tabs and cols are the catalog (each table's
+// columns at `cols[start .. start + n]`, `used` false), meta the parameter
+// encoding, and text their names. On success words holds
 //   plan, ncols, (alias off, alias len, column off, column len, binding,
 //   slot, ty, nullable)*, nproj, projection expressions..,
 //   nout, (name off, name len, ty, nullable)*, nparams,
 //   (name off, name len, ty, nullable)*
 // with ranges into pool.
-pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in limits: Slice[u64])
-    -> Q {
-    let mut q = new_q();
+pub fn prepare_q(
+    in tabs: Slice[CTab],
+    in cols: Slice[CCol],
+    in meta: Slice[u64],
+    in text: Slice[u8],
+    in sql: Slice[u8],
+    in limits: Slice[u64]
+) -> Q {
+    // Sized from the planner golden cases: the pool holds the input text,
+    // the SQL and the lowercased identifiers, and the expression and output
+    // words grow with the SQL. The hint is capped, because the SQL byte
+    // limit is only checked by `lex`: an oversized query must still fail
+    // with the limit error, not reserve buffers in proportion to its length.
+    let cap: u64 = 4096;
+    let n = if sql.len() < cap {
+        sql.len()
+    } else {
+        cap
+    };
+    let mut q = new_q_sized(
+        wrapping_add(wrapping_add(text.len(), wrapping_mul(n, 2)), 32),
+        wrapping_add(wrapping_mul(n, 2), 48),
+        wrapping_add(n, 16),
+        wrapping_add(n / 2, 8),
+        8
+    );
     q.pool.extend(in text);
     if !load_limits(inout q, limits) {
         return q;
     }
-    let after = load_catalog(inout q, meta, 0);
+    q.tabs.extend(in tabs);
+    q.cols.extend(in cols);
     let bn = q.tabs.len();
     if !bound(inout q, bn, 4, "catalog table limit") {
         return q;
@@ -341,7 +384,7 @@ pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in 
     }
     lex(inout q, sql);
     parse_select(inout q);
-    load_params(inout q, meta, after);
+    load_params(inout q, meta, 0);
     if q.err != 0 {
         return q;
     }
@@ -406,9 +449,9 @@ pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in 
         }
         plan = new_filter(inout q, pred, plan);
     }
-    // Projection: expressions in `ex`, output names as ranges in `rows`
-    // (scratch), as (off, len) pairs.
-    q.aux.truncate(0);
+    // Projection: expressions in `ex` (their positions in `projs`), output
+    // names as ranges in `rows` (scratch), as (off, len) pairs.
+    let mut projs = ChunkSeq::new[u64]();
     for s in 0..q.sels.len() {
         let sel = match q.sels.try_get(s) {
             Option::Some(x) => x,
@@ -443,7 +486,7 @@ pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in 
                 noff = sel.aoff;
                 nlen = sel.alen;
             }
-            let bn = wrapping_add(q.aux.len(), 1);
+            let bn = wrapping_add(projs.len(), 1);
             if !bound(inout q, bn, 2, "expanded projection limit") {
                 return q;
             }
@@ -484,7 +527,7 @@ pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in 
                 fail(inout q, 5, "NULL projection has no inferable type");
                 return q;
             }
-            q.aux.push(p);
+            projs.push(p);
         }
     }
     let mut used: u64 = 0;
@@ -511,14 +554,14 @@ pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in 
         q.words.push(c.ty);
         q.words.push(bool_word(c.nullable));
     }
-    q.words.push(q.aux.len());
-    for i in 0..q.aux.len() {
-        let e = cw(in q.aux, i);
+    q.words.push(projs.len());
+    for i in 0..projs.len() {
+        let e = cw(in projs, i);
         copy_expr(inout q, e);
     }
-    q.words.push(q.aux.len());
-    for i in 0..q.aux.len() {
-        let p = cw(in q.aux, i);
+    q.words.push(projs.len());
+    for i in 0..projs.len() {
+        let p = cw(in projs, i);
         q.words.push(cw(in q.rows, wrapping_mul(i, 2)));
         q.words.push(cw(in q.rows, wrapping_add(wrapping_mul(i, 2), 1)));
         let w = wrapping_sub(ex_ty(in q, p), 1);

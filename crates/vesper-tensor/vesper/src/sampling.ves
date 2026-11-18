@@ -1,0 +1,194 @@
+// Module sampling of @vesper/tensor (see lib.ves): llama2.c `run.c` sampling
+// (src/sampling.rs) and the FP32 kernels of src/ops.rs that need no `exp`
+// (lib.ves holds the ones that call `Libm`).
+use self::{
+    Fault
+};
+use self::num::{
+    is_finite,
+    u64_zero
+};
+
+fn f(in s: Slice[u32], i: u64) -> f32 eff [Fail[RuntimeError]] {
+    from_bits_f32(s[i])
+}
+
+// xorshift64* (`Rng::next_u32`): the new seed and the draw.
+pub fn rng_next(seed: u64) -> (u64, u32) eff [Fail[ArithOverflow]] {
+    let mut s = seed;
+    s = s ^ (s >> 12);
+    s = s ^ (s << 25);
+    s = s ^ (s >> 27);
+    (s, wrapping_u32(wrapping_mul(s, 2685821657736338717) >> 32))
+}
+
+// `Rng::next_f32`: 24 random bits over `2^24`.
+pub fn rng_f32(seed: u64) -> (u64, f32) eff [Fail[ArithOverflow]] {
+    let (s, r) = rng_next(seed);
+    (s, nearest_f32(r >> 8) / 16777216.0)
+}
+
+pub fn argmax(in x: Slice[u32]) -> u64 eff [Fail[RuntimeError], Fail[Fault]] {
+    if x.len() == 0 {
+        Fail::raise(Fault::Shape);
+    }
+    let mut best: u64 = 0;
+    let mut best_v = from_bits_f32(4286578688);
+    for i in 0..x.len() {
+        let v = f(in x, i);
+        if !is_finite(v) {
+            Fail::raise(Fault::NonFinite);
+        }
+        if v > best_v {
+            best = i;
+            best_v = v;
+        }
+    }
+    best
+}
+
+pub fn sample_mult(in probs: Slice[u32], coin: f32)
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let mut cdf: f32 = 0.0;
+    for i in 0..probs.len() {
+        cdf = cdf + f(in probs, i);
+        if coin < cdf {
+            return i;
+        }
+    }
+    probs.len() - 1
+}
+
+// Sift `s[root]` down a max-heap of `s[0..n]`.
+fn sift(inout s: Slice[u64], root: u64, n: u64) eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let mut r = root;
+    loop {
+        let c = 2 * r + 1;
+        if c >= n {
+            break;
+        }
+        let mut m = c;
+        if c + 1 < n && s[c + 1] > s[c] {
+            m = c + 1;
+        }
+        let a = s[r];
+        let b = s[m];
+        if a >= b {
+            break;
+        }
+        s.set(r, b);
+        s.set(m, a);
+        r = m;
+    }
+}
+
+// Ascending heapsort of `s[0..n]`.
+fn sort_prefix(inout s: Slice[u64], n: u64) eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    if n < 2 {
+        return;
+    }
+    let mut i = n / 2;
+    loop {
+        if i == 0 {
+            break;
+        }
+        i = i - 1;
+        sift(inout s, i, n);
+    }
+    let mut end = n;
+    loop {
+        if end < 2 {
+            break;
+        }
+        end = end - 1;
+        let a = s[0];
+        let b = s[end];
+        s.set(0, b);
+        s.set(end, a);
+        sift(inout s, 0, end);
+    }
+}
+
+// `run.c` `sample_topp` with ties by ascending id. A candidate is the word
+// `(!bits(p) << 32) | id`: probabilities are non-negative, so ascending
+// words are descending probabilities, then ascending ids. `scratch` has at
+// least `probs.len()` words.
+pub fn sample_top_p(in probs: Slice[u32], top_p: f32, coin: f32, inout scratch: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let n = probs.len();
+    if n == 1 {
+        return 0;
+    }
+    let cutoff = (1.0 - top_p) / nearest_f32(n - 1);
+    let mut k: u64 = 0;
+    for i in 0..n {
+        let p = probs[i];
+        if from_bits_f32(p) >= cutoff {
+            scratch.set(k, (widen_u64(~p) << 32) | i);
+            k = k + 1;
+        }
+    }
+    if k == 0 {
+        let mut best: u64 = 0;
+        for i in 0..n {
+            if f(in probs, i) > f(in probs, best) {
+                best = i;
+            }
+        }
+        return best;
+    }
+    sort_prefix(inout scratch, k);
+    let mut cumulative: f32 = 0.0;
+    let mut last = k - 1;
+    for i in 0..k {
+        cumulative = cumulative + from_bits_f32(~wrapping_u32(scratch[i] >> 32));
+        if cumulative > top_p {
+            last = i;
+            break;
+        }
+    }
+    let r = coin * cumulative;
+    let mut cdf: f32 = 0.0;
+    for i in u64_zero()..last + 1 {
+        let c = scratch[i];
+        cdf = cdf + from_bits_f32(~wrapping_u32(c >> 32));
+        if r < cdf {
+            return c & 4294967295;
+        }
+    }
+    scratch[last] & 4294967295
+}
+
+pub fn rms_norm(inout out: Slice[u32], in x: Slice[u32], in weight: Slice[u32], epsilon: f32) eff [
+    Fail[RuntimeError],
+    Fail[Fault]
+] {
+    let n = x.len();
+    if n == 0 || out.len() != n || weight.len() != n {
+        Fail::raise(Fault::Shape);
+    }
+    if !(is_finite(epsilon) && epsilon > 0.0) {
+        Fail::raise(Fault::NonFinite);
+    }
+    let mut ss: f32 = 0.0;
+    for i in 0..n {
+        let v = f(in x, i);
+        ss = ss + v * v;
+    }
+    ss = ss / nearest_f32(n);
+    ss = ss + epsilon;
+    let inv = 1.0 / sqrt(ss);
+    for i in 0..n {
+        out.set(i, to_bits_f32(f(in weight, i) * (inv * f(in x, i))));
+    }
+}
+
+pub fn add_assign(inout acc: Slice[u32], in x: Slice[u32]) eff [Fail[RuntimeError], Fail[Fault]] {
+    if acc.len() != x.len() {
+        Fail::raise(Fault::Shape);
+    }
+    for i in 0..acc.len() {
+        let a = f(in acc, i) + f(in x, i);
+        acc.set(i, to_bits_f32(a));
+    }
+}
