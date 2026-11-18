@@ -497,7 +497,10 @@ impl<M: Module> Codegen<'_, '_, M> {
             | SeqOp::BoundsGuard { .. }
             | SeqOp::CopyFrom { .. }
             | SeqOp::Fill
-            | SeqOp::Wide(_) => {
+            | SeqOp::Wide(_)
+            | SeqOp::SumBe16
+            | SeqOp::BytesEq
+            | SeqOp::FindByte => {
                 unreachable!("string, hoisted and byte operations return above")
             }
             SeqOp::SubSlice => {

@@ -32,7 +32,10 @@
 //! The block operations `copy_from` and `fill` and the fixed-width byte
 //! accesses (`read_u32_be`, `write_u16_le`, ...) check their whole interval
 //! once ([`SeqOp::CopyFrom`], [`SeqOp::Fill`], [`SeqOp::Wide`]); native code
-//! lowers them in `src/seq/native_bytes.rs`. An interval `s[a..b]` is evaluated while its sibling loans are
+//! lowers them in `src/seq/native_bytes.rs`. The byte scans `sum_be16`, `eq`
+//! and `find_byte` ([`SeqOp::SumBe16`], [`SeqOp::BytesEq`],
+//! [`SeqOp::FindByte`]) are total; optimized native code runs them 16 bytes
+//! at a time (`src/seq/native_bytes.rs`). An interval `s[a..b]` is evaluated while its sibling loans are
 //! live, so an interval outside `0 <= a <= b <= len` is a run-time fault
 //! like a `TiledSeq` bounds fault: the evaluator and the JIT report an error
 //! and an executable exits with [`FAULT_STATUS`].
@@ -115,6 +118,17 @@ pub enum SeqOp {
     Fill,
     /// A fixed-width integer read or write of a byte sequence or slice.
     Wide(Wide),
+    /// `s.sum_be16()` on a byte sequence or slice: the sum, wrapping at
+    /// 2^64, of its big-endian 16-bit words `s[2k] << 8 | s[2k + 1]`; an odd
+    /// last byte counts as `s[n - 1] << 8`. Folding it gives the RFC 1071
+    /// one's-complement sum. Total.
+    SumBe16,
+    /// `s.eq(in other)` on a byte sequence or slice: whether `other` has the
+    /// same length and the same bytes. Total.
+    BytesEq,
+    /// `s.find_byte(b)` on a byte sequence or slice: the index of the first
+    /// byte equal to `b`, as an `Option[u64]`. Total.
+    FindByte,
 }
 
 /// `read_u16_le`, `try_write_u64_be` and the other fixed-width accesses of a
@@ -225,6 +239,11 @@ impl Access {
 }
 
 impl SeqOp {
+    /// Whether the operation is a byte scan: `sum_be16`, `eq` or
+    /// `find_byte`, which need a `u8` element type.
+    pub fn byte_scan(self) -> bool {
+        matches!(self, Self::SumBe16 | Self::BytesEq | Self::FindByte)
+    }
     /// Whether the operation may raise `Fail[RuntimeError]`.
     pub fn fallible(self) -> bool {
         if let Self::Str(op) = self {
@@ -299,6 +318,9 @@ impl SeqOp {
             Self::CopyFrom { total: true } => "try_copy_from",
             Self::Fill => "fill",
             Self::Wide(wide) => wide.name(),
+            Self::SumBe16 => "sum_be16",
+            Self::BytesEq => "eq",
+            Self::FindByte => "find_byte",
         }
     }
 }
@@ -486,6 +508,9 @@ fn shared_method(method: &str) -> Option<SeqOp> {
         "copy_from" => SeqOp::CopyFrom { total: false },
         "try_copy_from" => SeqOp::CopyFrom { total: true },
         "fill" => SeqOp::Fill,
+        "sum_be16" => SeqOp::SumBe16,
+        "eq" => SeqOp::BytesEq,
+        "find_byte" => SeqOp::FindByte,
         _ => SeqOp::Wide(Wide::parse(method)?),
     })
 }

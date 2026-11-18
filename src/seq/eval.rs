@@ -235,6 +235,30 @@ impl Runtime<'_> {
                 V(Value::Tuple(vec![]))
             }
             SeqOp::Wide(wide) => return self.wide_op(wide, &args, site),
+            SeqOp::SumBe16 => {
+                let bytes = byte_view(arg(0)?)?;
+                let mut sum: u64 = 0;
+                for pair in bytes.chunks(2) {
+                    let word = u64::from(pair[0]) << 8 | u64::from(*pair.get(1).unwrap_or(&0));
+                    sum = sum.wrapping_add(word);
+                }
+                V(Value::UInt(sum, 64))
+            }
+            SeqOp::BytesEq => V(Value::Bool(byte_view(arg(0)?)? == byte_view(arg(1)?)?)),
+            SeqOp::FindByte => {
+                let b = index(arg(1)?)?;
+                let found = byte_view(arg(0)?)?.iter().position(|&x| u64::from(x) == b);
+                let (constructor, fields) = match found {
+                    Some(i) => ("Some", BTreeMap::from([("0".to_string(), u64_value(i))])),
+                    None => ("None", BTreeMap::new()),
+                };
+                V(self.construct_data(
+                    "Option".into(),
+                    constructor.into(),
+                    fields,
+                    Some(site.clone()),
+                )?)
+            }
             SeqOp::Str(_) | SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. } => {
                 unreachable!("string and hoisted operations return above")
             }
@@ -256,6 +280,16 @@ impl Runtime<'_> {
             }
         })
     }
+}
+
+/// The bytes of a `ChunkSeq[u8]` or `Slice[u8]` value.
+fn byte_view(v: &Value) -> Result<Vec<u8>, String> {
+    let (cell, start, len) = view(v)?;
+    let items = cell.borrow();
+    items[start..start + len]
+        .iter()
+        .map(|b| index(b).map(|b| b as u8))
+        .collect()
 }
 
 /// Whether `n` elements starting at `at` fit in `len`.
