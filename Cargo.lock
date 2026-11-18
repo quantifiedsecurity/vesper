@@ -5537,8 +5537,8 @@ dependencies = [
  "vesper-aegis",
  "vesper-alloc-seed",
  "vesper-beacon-seed",
- "vesper-bench",
  "vesper-bench-pmu",
+ "vesper-bench-seed",
  "vesper-chrono",
  "vesper-core",
  "vesper-crucible-seed",
@@ -5694,14 +5694,23 @@ version = "0.1.0"
 [[package]]
 name = "vesper-bench"
 version = "0.1.0"
+dependencies = [
+ "vesper-bench-seed",
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
 
 [[package]]
 name = "vesper-bench-pmu"
 version = "0.1.0"
 dependencies = [
  "libc",
- "vesper-bench",
+ "vesper-bench-seed",
 ]
+
+[[package]]
+name = "vesper-bench-seed"
+version = "0.1.0"
 
 [[package]]
 name = "vesper-chorus"
