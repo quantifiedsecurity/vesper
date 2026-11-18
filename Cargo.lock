@@ -5630,7 +5630,7 @@ name = "vesper-alloc-seed"
 version = "0.1.0"
 dependencies = [
  "libc",
- "vesper-bench",
+ "vesper-bench-seed",
 ]
 
 [[package]]
@@ -5773,7 +5773,7 @@ name = "vesper-crucible-seed"
 version = "0.1.0"
 dependencies = [
  "vesper-alloc-seed",
- "vesper-bench",
+ "vesper-bench-seed",
  "vesper-simpulse-seed",
 ]
 
@@ -5922,7 +5922,7 @@ dependencies = [
 name = "vesper-grammar-seed"
 version = "0.1.0"
 dependencies = [
- "vesper-bench",
+ "vesper-bench-seed",
 ]
 
 [[package]]
@@ -6034,7 +6034,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "vesper-bench",
+ "vesper-bench-seed",
  "vesper-loom-calculus-seed",
 ]
 
@@ -6073,7 +6073,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 0.8.23",
- "vesper-bench",
+ "vesper-bench-seed",
 ]
 
 [[package]]
@@ -6123,7 +6123,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "vesper-bench",
+ "vesper-bench-seed",
  "vesper-loom-calculus-seed",
 ]
 
@@ -6337,7 +6337,7 @@ name = "vesper-serde-seed"
 version = "0.1.0"
 dependencies = [
  "serde_json",
- "vesper-bench",
+ "vesper-bench-seed",
 ]
 
 [[package]]
@@ -6392,7 +6392,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "vesper-bench",
+ "vesper-bench-seed",
 ]
 
 [[package]]

@@ -5,7 +5,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     // The harness sets the cfg under `vesper-port`; declare it either way.
-    println!("cargo:rustc-check-cfg=cfg(vesper_port)");
+    println!("cargo:rustc-check-cfg=cfg({})", vesper_port_harness::CFG);
     #[cfg(feature = "vesper-port")]
     {
         let port = vesper_port_harness::Port::new("bench", "vesper")

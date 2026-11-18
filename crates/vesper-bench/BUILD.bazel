@@ -29,12 +29,18 @@ filegroup(
     output_group = "rust_binding",
 )
 
-# Unlike vesper-beacon, the default crate's build script gets no port
-# object and no harness (Cargo.toml makes it optional): crates in the
-# compiler's closure (the other ports' seeds) take this package as a
-# dev-dependency, so either would make the compiler depend on itself. The
-# port is built only by :port and its tests.
+# The build script links this object only under `vesper-port`; passing it
+# keeps the port in this package's dependency graph.
 vesper_crate(
+    build_script_data = [
+        ":bench_vesper",
+        ":bench_vesper_binding",
+    ],
+    build_script_env = {
+        # rules_rust already makes these execpaths absolute.
+        "VESPER_PORT_OBJECT": "$(execpath :bench_vesper)",
+        "VESPER_PORT_GENERATED_BINDING": "$(execpath :bench_vesper_binding)",
+    },
     # The causal-profiling test measures wall-clock speedups of spinning
     # threads; sharing the CPU with other test actions distorts it.
     test_tags = {"test/causal": ["exclusive"]},
