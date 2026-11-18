@@ -23,6 +23,13 @@ pub(crate) struct Kqueue {
     events: Vec<libc::kevent>,
 }
 
+impl Kqueue {
+    pub(crate) fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.fd.as_fd()
+    }
+}
+
 fn check(rc: libc::c_int) -> io::Result<libc::c_int> {
     if rc < 0 {
         Err(io::Error::last_os_error())
@@ -190,6 +197,12 @@ impl<T> CompletionDriver<T> for KqueueDriver<T> {
     }
     fn poll(&mut self, wait: bool) -> Result<Vec<Completion<T>>, PollError<T>> {
         self.inner.poll(wait)
+    }
+    fn pollable_fd(&self) -> io::Result<std::os::fd::BorrowedFd<'_>> {
+        Ok(self.inner.poller.fd())
+    }
+    fn has_ready(&self) -> bool {
+        self.inner.has_ready()
     }
 }
 

@@ -22,6 +22,13 @@ pub(crate) struct Epoll {
     events: Vec<libc::epoll_event>,
 }
 
+impl Epoll {
+    pub(crate) fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.fd.as_fd()
+    }
+}
+
 fn mask(interest: Interest) -> u32 {
     let base = (libc::EPOLLONESHOT | libc::EPOLLRDHUP) as u32;
     base | match interest {
@@ -147,6 +154,12 @@ impl<T> CompletionDriver<T> for EpollDriver<T> {
     }
     fn poll(&mut self, wait: bool) -> Result<Vec<Completion<T>>, PollError<T>> {
         self.inner.poll(wait)
+    }
+    fn pollable_fd(&self) -> io::Result<std::os::fd::BorrowedFd<'_>> {
+        Ok(self.inner.poller.fd())
+    }
+    fn has_ready(&self) -> bool {
+        self.inner.has_ready()
     }
 }
 

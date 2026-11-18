@@ -247,6 +247,13 @@ impl<T> CompletionDriver<T> for AnyDriver<T> {
     fn poll(&mut self, wait: bool) -> Result<Vec<Completion<T>>, PollError<T>> {
         each!(self, d => CompletionDriver::poll(d, wait))
     }
+    #[cfg(unix)]
+    fn pollable_fd(&self) -> io::Result<std::os::fd::BorrowedFd<'_>> {
+        each!(self, d => CompletionDriver::pollable_fd(d))
+    }
+    fn has_ready(&self) -> bool {
+        each!(self, d => CompletionDriver::has_ready(d))
+    }
 }
 
 #[cfg(test)]

@@ -13,9 +13,11 @@
 #![allow(unsafe_code)]
 use crate::driver::Operation;
 use std::{
+    collections::HashMap,
     fs::File,
     io,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle},
+    sync::{Mutex, OnceLock},
 };
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::{FILE_OPEN, NtCreateFile};
@@ -145,10 +147,8 @@ pub(crate) fn socket_of(file: &File) -> Option<(SOCKET, SOCKET)> {
     (rc != SOCKET_ERROR && base != 0).then_some((socket, base))
 }
 
-/// Put the socket in non-blocking mode (left set, like the readiness
-/// drivers' `O_NONBLOCK`).
-pub(crate) fn set_nonblocking(socket: SOCKET) -> io::Result<()> {
-    let mut on = 1u32;
+pub(crate) fn set_mode(socket: SOCKET, nonblocking: bool) -> io::Result<()> {
+    let mut on = u32::from(nonblocking);
     // SAFETY: FIONBIO reads one u32 from a live local.
     if unsafe { ioctlsocket(socket, FIONBIO, &mut on) } == SOCKET_ERROR {
         return Err(wsa_error());
@@ -156,13 +156,90 @@ pub(crate) fn set_nonblocking(socket: SOCKET) -> io::Result<()> {
     Ok(())
 }
 
+/// Requests in flight per base socket, across every IOCP driver in the
+/// process: a socket may be used by several drivers at once, and must stay
+/// non-blocking until the last of them is done with it. Keyed by the base
+/// provider socket (`SIO_BASE_HANDLE`), so layered handles of one socket
+/// count together. Handles duplicated with `DuplicateHandle` or
+/// `WSADuplicateSocket` may not be recognised as the same socket; this is
+/// why restoring blocking mode is opt-in (see
+/// `IocpDriver::restore_blocking_sockets`).
+fn nonblocking_users() -> &'static Mutex<HashMap<SOCKET, usize>> {
+    static USERS: OnceLock<Mutex<HashMap<SOCKET, usize>>> = OnceLock::new();
+    USERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Put the socket in non-blocking mode for one request. Every successful
+/// call is paired with [`release_nonblocking`] with the same `base`.
+pub(crate) fn acquire_nonblocking(socket: SOCKET, base: SOCKET) -> io::Result<()> {
+    let mut users = nonblocking_users()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let n = users.entry(base).or_insert(0);
+    if *n == 0 {
+        set_mode(socket, true)?;
+    }
+    *n += 1;
+    Ok(())
+}
+
+/// One request is done with the socket. When it was the last, the socket
+/// goes back to blocking mode (the Winsock default), so a caller that uses
+/// it synchronously afterwards is not surprised by `WSAEWOULDBLOCK`.
+/// Winsock cannot report a socket's previous mode, so a socket the caller
+/// had made non-blocking comes back blocking too.
+pub(crate) fn release_nonblocking(socket: SOCKET, base: SOCKET) {
+    let mut users = nonblocking_users()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let Some(n) = users.get_mut(&base) else {
+        return;
+    };
+    *n -= 1;
+    if *n == 0 {
+        users.remove(&base);
+        // A socket closed meanwhile just fails the call.
+        let _ = set_mode(socket, false);
+    }
+}
+
+/// Largest single `send`: bigger buffers go out as several sends, so a huge
+/// buffer never makes Winsock lock it all down at once (`WSAENOBUFS`).
+pub(crate) const SEND_CHUNK: usize = 256 * 1024;
+
 fn wsa_error() -> io::Error {
     // SAFETY: reads the calling thread's Winsock error.
     io::Error::from_raw_os_error(unsafe { WSAGetLastError() })
 }
 
 /// One non-blocking transfer. `Err(WouldBlock)` means "not ready yet".
+/// A send is split into [`SEND_CHUNK`] pieces and keeps going while the
+/// socket takes them; it returns the bytes sent once the socket would block
+/// or fails after some progress, like a short `write(2)`.
 pub(crate) fn transfer(socket: SOCKET, op: Operation, buffer: &mut [u8]) -> io::Result<usize> {
+    if op == Operation::Read {
+        return transfer_once(socket, op, buffer);
+    }
+    let mut sent = 0;
+    while sent < buffer.len() {
+        let end = buffer.len().min(sent + SEND_CHUNK);
+        let offered = end - sent;
+        match transfer_once(socket, op, &mut buffer[sent..end]) {
+            Ok(n) => {
+                sent += n;
+                if n < offered {
+                    // The socket took less than offered: it is full.
+                    break;
+                }
+            }
+            Err(_) if sent > 0 => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(sent)
+}
+
+fn transfer_once(socket: SOCKET, op: Operation, buffer: &mut [u8]) -> io::Result<usize> {
     let len = buffer.len().min(i32::MAX as usize) as i32;
     // SAFETY: the buffer is live and at least `len` bytes long.
     let n = unsafe {
