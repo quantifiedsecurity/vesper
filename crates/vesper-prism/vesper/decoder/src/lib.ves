@@ -175,7 +175,10 @@ fn parse_head(in h: Slice[u8], limits: Limits) -> Result[Head, Error] {
             return bad(Error::InvalidHeader);
         }
         for i in inc(colon)..hi {
-            let b = byte(in h, i);
+            let b = match h.try_get(i) {
+                Option::Some(b) => b,
+                Option::None => 0,
+            };
             if (b < 32 && b != 9) || b == 127 {
                 return bad(Error::InvalidHeader);
             }
@@ -300,8 +303,47 @@ fn incomplete(inout d: DecoderCore, total: u64) -> Step {
     }
 }
 
+fn first_or(in s: Slice[u8], b: u8, none: u64) -> u64 {
+    match s.find_byte(b) {
+        Option::Some(i) => i,
+        Option::None => none,
+    }
+}
+
+// The first index in `lo..hi` (with `hi <= s.len()`) that holds CR or LF,
+// else `hi`: a scan for CR, then one for LF before it.
+fn line_break(in s: Slice[u8], lo: u64, hi: u64) -> u64 {
+    if lo >= hi {
+        return hi;
+    }
+    let n = wrapping_sub(hi, lo);
+    let cr = first_or(in s[lo..hi], 13, n);
+    let lf = if cr == 0 {
+        n
+    } else {
+        first_or(in s[lo..wrapping_add(lo, cr)], 10, cr)
+    };
+    wrapping_add(
+        lo,
+        if lf < cr {
+            lf
+        } else {
+            cr
+        }
+    )
+}
+
+// The incremental CRLF scan, every byte examined once. Outside a CR, the run
+// of bytes that are neither CR nor LF is skipped with `find_byte`, up to the
+// end of the current slice or the head limit, whichever is first.
 fn scan_head(inout d: DecoderCore, in front: Slice[u8], in back: Slice[u8]) -> Scan {
     let total = wrapping_add(front.len(), back.len());
+    let front_len = front.len();
+    let stop = if total < d.limits.max_head_bytes {
+        total
+    } else {
+        d.limits.max_head_bytes
+    };
     loop {
         if d.scan >= total {
             break;
@@ -309,25 +351,47 @@ fn scan_head(inout d: DecoderCore, in front: Slice[u8], in back: Slice[u8]) -> S
         if d.scan == d.limits.max_head_bytes {
             return Scan::Fail(Error::HeadLimit);
         }
-        let b = queued(in front, in back, d.scan);
-        let index = d.scan;
-        d.scan = inc(d.scan);
-        if d.after_cr {
-            if b != 10 {
+        let skip_to = if d.after_cr {
+            d.scan
+        } else if d.scan < front_len {
+            line_break(
+                in front,
+                d.scan,
+                if stop < front_len {
+                    stop
+                } else {
+                    front_len
+                }
+            )
+        } else {
+            wrapping_add(
+                front_len,
+                line_break(in back, wrapping_sub(d.scan, front_len), wrapping_sub(stop, front_len))
+            )
+        };
+        if skip_to > d.scan {
+            d.scan = skip_to;
+        } else {
+            let b = queued(in front, in back, d.scan);
+            let index = d.scan;
+            d.scan = inc(d.scan);
+            if d.after_cr {
+                if b != 10 {
+                    return Scan::Fail(Error::InvalidLineEnding);
+                }
+                d.after_cr = false;
+                if dec(index) == d.line_start {
+                    if d.line_start == 0 {
+                        return Scan::Fail(Error::InvalidRequestLine);
+                    }
+                    return Scan::Found(d.scan);
+                }
+                d.line_start = d.scan;
+            } else if b == 13 {
+                d.after_cr = true;
+            } else if b == 10 {
                 return Scan::Fail(Error::InvalidLineEnding);
             }
-            d.after_cr = false;
-            if dec(index) == d.line_start {
-                if d.line_start == 0 {
-                    return Scan::Fail(Error::InvalidRequestLine);
-                }
-                return Scan::Found(d.scan);
-            }
-            d.line_start = d.scan;
-        } else if b == 13 {
-            d.after_cr = true;
-        } else if b == 10 {
-            return Scan::Fail(Error::InvalidLineEnding);
         }
     }
     if d.scan == d.limits.max_head_bytes {
@@ -344,11 +408,17 @@ pub fn decoder_core_next(inout d: DecoderCore, in front: Slice[u8], in back: Sli
     if !d.pending {
         match scan_head(inout d, in front, in back) {
             Scan::Found(head_bytes) => {
-                let mut h: ChunkSeq[u8] = ChunkSeq::with_capacity[u8](head_bytes);
-                for i in 0..head_bytes {
-                    h.push(queued(in front, in back, i));
-                }
-                match parse_head(in h.as_slice(), d.limits) {
+                // A head inside the front slice is parsed in place; one that
+                // wraps into the back slice is copied out once.
+                let parsed = if head_bytes <= front.len() {
+                    parse_head(in front[0..head_bytes], d.limits)
+                } else {
+                    let mut h: ChunkSeq[u8] = ChunkSeq::with_capacity[u8](head_bytes);
+                    h.extend(in front);
+                    h.extend(in back[0..wrapping_sub(head_bytes, front.len())]);
+                    parse_head(in h.as_slice(), d.limits)
+                };
+                match parsed {
                     Result::Ok(head) => {
                         d.head = head;
                         d.pending = true;

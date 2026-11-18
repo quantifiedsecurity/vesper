@@ -52,41 +52,60 @@ pub fn lower(b: u8) -> u8 {
     }
 }
 
-pub fn in_set(b: u8, in set: Str) -> bool {
-    for i in 0..set.len() {
-        match set.try_byte_at(i) {
-            Option::Some(c) => if c == b {
-                return true;
-            },
-            Option::None => (),
-        }
-    }
-    false
+// The symbols of RFC 9110 `tchar`: !#$%&'*+-.^_`|~ (a comparison chain, not
+// a scan of a set string, so it costs no call).
+fn tchar_symbol(b: u8) -> bool {
+    (b == 33)
+        || (b >= 35 && b <= 39)
+        || (b == 42)
+        || (b == 43)
+        || (b == 45)
+        || (b == 46)
+        || (b >= 94 && b <= 96)
+        || (b == 124)
+        || (b == 126)
 }
 
 pub fn token(b: u8) -> bool {
-    is_alnum(b) || in_set(b, "!#$%&'*+-.^_`|~")
+    is_alnum(b) || tchar_symbol(b)
 }
 
+// The hot loops read with `try_get` directly: a call to `byte` is not
+// inlined, because the inliner skips functions with slice parameters.
 pub fn all_token(in s: Slice[u8], lo: u64, hi: u64) -> bool {
     for i in lo..hi {
-        if !token(byte(in s, i)) {
-            return false;
+        match s.try_get(i) {
+            Option::Some(b) => if !token(b) {
+                return false;
+            },
+            Option::None => {
+                return false;
+            },
         }
     }
     true
+}
+
+fn same_bytes(in a: Slice[u8], in b: Slice[u8]) -> bool {
+    a.eq(in b)
 }
 
 pub fn eq_lit(in s: Slice[u8], lo: u64, hi: u64, in lit: Str, fold: bool) -> bool {
     if wrapping_sub(hi, lo) != lit.len() {
         return false;
     }
+    if !fold && lo <= hi && hi <= s.len() {
+        return same_bytes(in s[lo..hi], in lit.as_bytes());
+    }
     for i in 0..lit.len() {
         let want = match lit.try_byte_at(i) {
             Option::Some(b) => b,
             Option::None => 0,
         };
-        let have = byte(in s, wrapping_add(lo, i));
+        let have = match s.try_get(wrapping_add(lo, i)) {
+            Option::Some(b) => b,
+            Option::None => 0,
+        };
         if fold {
             if lower(have) != lower(want) {
                 return false;
@@ -132,13 +151,49 @@ pub fn trim_ows(in s: Slice[u8], lo: u64, hi: u64) -> Span {
     }
 }
 
+fn first_byte(in s: Slice[u8], b: u8) -> Option[u64] {
+    s.find_byte(b)
+}
+
+// The first `i` in `lo..hi` with `byte(in s, i) == b`, else `hi`. Bytes past
+// the end read as 0, as in `byte`.
 pub fn find(in s: Slice[u8], lo: u64, hi: u64, b: u8) -> u64 {
-    for i in lo..hi {
-        if byte(in s, i) == b {
-            return i;
+    let end = if hi < s.len() {
+        hi
+    } else {
+        s.len()
+    };
+    if lo < end {
+        match first_byte(in s[lo..end], b) {
+            Option::Some(i) => {
+                return wrapping_add(lo, i);
+            },
+            Option::None => (),
         }
     }
-    hi
+    if b == 0 && end < hi && lo < hi {
+        if lo > end {
+            lo
+        } else {
+            end
+        }
+    } else {
+        hi
+    }
+}
+
+// The symbols the origin-form grammar allows unescaped: -._~!$&'()*+,;=:@/?
+fn target_symbol(b: u8) -> bool {
+    (b == 33)
+        || (b == 36)
+        || (b >= 38 && b <= 47)
+        || (b == 58)
+        || (b == 59)
+        || (b == 61)
+        || (b == 63)
+        || (b == 64)
+        || (b == 95)
+        || (b == 126)
 }
 
 pub fn valid_target(options: bool, in t: Slice[u8], lo: u64, hi: u64) -> bool {
@@ -157,7 +212,10 @@ pub fn valid_target(options: bool, in t: Slice[u8], lo: u64, hi: u64) -> bool {
         if i >= hi {
             break;
         }
-        let b = byte(in t, i);
+        let b = match t.try_get(i) {
+            Option::Some(b) => b,
+            Option::None => 0,
+        };
         if b == 37 {
             let h1 = inc(i);
             let h2 = wrapping_add(i, 2);
@@ -165,7 +223,7 @@ pub fn valid_target(options: bool, in t: Slice[u8], lo: u64, hi: u64) -> bool {
                 return false;
             }
             i = wrapping_add(i, 3);
-        } else if is_alnum(b) || in_set(b, "-._~!$&'()*+,;=:@/?") {
+        } else if is_alnum(b) || target_symbol(b) {
             i = inc(i);
         } else {
             return false;
@@ -331,7 +389,10 @@ pub fn valid_label(in s: Slice[u8], lo: u64, hi: u64) -> bool {
         return false;
     }
     for i in lo..hi {
-        let b = byte(in s, i);
+        let b = match s.try_get(i) {
+            Option::Some(b) => b,
+            Option::None => 0,
+        };
         if !is_alnum(b) && b != 45 {
             return false;
         }
@@ -421,14 +482,21 @@ pub fn decimal(in s: Slice[u8], lo: u64, hi: u64) -> Option[u64] {
 }
 
 pub fn push_range(inout out: ChunkSeq[u8], in s: Slice[u8], lo: u64, hi: u64) {
-    for i in lo..hi {
-        out.push(byte(in s, i));
+    if lo <= hi && hi <= s.len() {
+        out.extend(in s[lo..hi]);
+    } else {
+        for i in lo..hi {
+            out.push(byte(in s, i));
+        }
     }
 }
 
 pub fn push_lower(inout out: ChunkSeq[u8], in s: Slice[u8], lo: u64, hi: u64) {
     for i in lo..hi {
-        out.push(lower(byte(in s, i)));
+        match s.try_get(i) {
+            Option::Some(b) => out.push(lower(b)),
+            Option::None => out.push(0),
+        }
     }
 }
 
