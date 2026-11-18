@@ -11,9 +11,10 @@ use crate::driver::{
 };
 use io_uring::{IoUring, opcode, squeue, types};
 use std::{
+    cell::OnceCell,
     collections::{BTreeMap, BTreeSet},
     io,
-    os::fd::AsRawFd,
+    os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
 };
 
 const CANCEL_BIT: u64 = 1 << 63;
@@ -123,6 +124,10 @@ impl<T> Ledger<T> {
 pub struct IoDriver<T> {
     ring: IoUring,
     ledger: Ledger<T>,
+    /// An eventfd registered with the ring, made on the first
+    /// [`pollable_fd`](CompletionDriver::pollable_fd) call; the kernel
+    /// signals it for every posted completion.
+    eventfd: OnceCell<OwnedFd>,
 }
 impl<T> IoDriver<T> {
     pub fn new(entries: u32) -> io::Result<Self> {
@@ -137,6 +142,7 @@ impl<T> IoDriver<T> {
         Ok(Self {
             ring,
             ledger: Ledger::new(),
+            eventfd: OnceCell::new(),
         })
     }
     pub fn pending(&self) -> usize {
@@ -219,7 +225,31 @@ impl<T> IoDriver<T> {
         }
         Ok(())
     }
+    /// The ring's eventfd, made and registered on first use.
+    pub fn eventfd(&self) -> io::Result<BorrowedFd<'_>> {
+        if let Some(fd) = self.eventfd.get() {
+            return Ok(fd.as_fd());
+        }
+        // SAFETY: eventfd returns a new descriptor or -1.
+        let raw = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        if raw < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `raw` is a fresh descriptor this driver now owns.
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        self.ring.submitter().register_eventfd(fd.as_raw_fd())?;
+        // Completions posted before registration never signal it, so the
+        // first wait returns at once; a spurious wake-up only costs the
+        // outside loop one empty `poll(false)`.
+        signal(&fd);
+        Ok(self.eventfd.get_or_init(|| fd).as_fd())
+    }
     pub fn poll(&mut self, wait: bool) -> Result<Vec<Completion<T>>, PollError<T>> {
+        if let Some(fd) = self.eventfd.get() {
+            // Reset the counter before harvesting, so a completion posted
+            // after this point signals the descriptor again.
+            drain(fd);
+        }
         let wait = usize::from(
             wait && (!self.ledger.requests.is_empty() || !self.ledger.cancellations.is_empty()),
         );
@@ -272,6 +302,19 @@ impl<T> IoDriver<T> {
         Ok(completed)
     }
 }
+fn signal(fd: &OwnedFd) {
+    let one = 1u64.to_ne_bytes();
+    // SAFETY: writes 8 bytes from a live buffer to an owned eventfd.
+    let _ = unsafe { libc::write(fd.as_raw_fd(), one.as_ptr().cast(), 8) };
+}
+
+fn drain(fd: &OwnedFd) {
+    let mut counter = [0u8; 8];
+    // SAFETY: reads at most 8 bytes into a live buffer from an owned,
+    // non-blocking eventfd; EAGAIN (nothing signalled) is ignored.
+    let _ = unsafe { libc::read(fd.as_raw_fd(), counter.as_mut_ptr().cast(), 8) };
+}
+
 impl<T> CompletionDriver<T> for IoDriver<T> {
     fn kind(&self) -> DriverKind {
         DriverKind::IoUring
@@ -290,6 +333,9 @@ impl<T> CompletionDriver<T> for IoDriver<T> {
     }
     fn poll(&mut self, wait: bool) -> Result<Vec<Completion<T>>, PollError<T>> {
         IoDriver::poll(self, wait)
+    }
+    fn pollable_fd(&self) -> io::Result<BorrowedFd<'_>> {
+        self.eventfd()
     }
 }
 impl<T> Drop for IoDriver<T> {

@@ -94,6 +94,9 @@ impl<T, P: Poller> Readiness<T, P> {
     pub(crate) fn in_flight(&self) -> usize {
         self.waiting.len()
     }
+    pub(crate) fn has_ready(&self) -> bool {
+        !self.ready.is_empty()
+    }
     pub(crate) fn submit(&mut self, mut request: Request<T>) -> Result<RequestId, Rejected<T>> {
         if self.pending() >= self.capacity {
             return Err((queue_full(), request));

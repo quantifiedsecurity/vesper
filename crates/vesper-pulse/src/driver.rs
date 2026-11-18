@@ -174,6 +174,27 @@ pub trait CompletionDriver<T> {
     /// available, unless the driver owns nothing.
     fn poll(&mut self, wait: bool) -> Result<Vec<Completion<T>>, PollError<T>>;
 
+    /// A descriptor that becomes readable when [`poll`](Self::poll) may have
+    /// completions to return, so an outside event loop (a GLib main context,
+    /// another reactor) can wait on it instead of blocking in `poll(true)`.
+    /// The loop then calls `poll(false)`. Check
+    /// [`has_ready`](Self::has_ready) before waiting: completions that
+    /// finished at submission never make the descriptor readable. The
+    /// descriptor is the epoll or kqueue instance itself, or an eventfd
+    /// registered with the io_uring ring on first use.
+    #[cfg(unix)]
+    fn pollable_fd(&self) -> io::Result<std::os::fd::BorrowedFd<'_>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this driver has no pollable descriptor",
+        ))
+    }
+    /// Completions are ready now, without waiting on
+    /// [`pollable_fd`](Self::pollable_fd).
+    fn has_ready(&self) -> bool {
+        false
+    }
+
     /// Cancel every request and poll until the driver owns nothing.
     fn drain(mut self) -> Result<Vec<Completion<T>>, DrainError<T, Self>>
     where
