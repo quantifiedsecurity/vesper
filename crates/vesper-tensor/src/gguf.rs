@@ -400,13 +400,14 @@ impl Gguf {
                 .get(at..at + 8)
                 .map_or(0, |b| u64::from_le_bytes(b.try_into().expect("8 bytes")))
         };
-        let names_needed = count(8)
-            .saturating_add(count(16))
-            .min(bytes.len() as u64 / 8) as usize;
-        let mut slots = (2 * names_needed + 2).next_power_of_two();
+        // The counts are not checked yet, so the first sizes are also
+        // capped (a corrupt count must fail with the reader's error, not a
+        // huge allocation); a larger header makes the port ask for more.
+        const FIRST_ENTRIES: u64 = 1 << 12;
+        let entries = |at: usize| count(at).min(bytes.len() as u64 / 8).min(FIRST_ENTRIES) as usize;
+        let mut slots = (2 * (entries(8) + entries(16)) + 2).next_power_of_two();
         // 6 words per metadata entry, 10 per tensor of rank 4, and 2 more
         // of scratch per tensor.
-        let entries = |at: usize| count(at).min(bytes.len() as u64 / 8) as usize;
         let mut words = 4 + 6 * entries(16) + 12 * entries(8);
         let tape = loop {
             let mut tape = vec![0u64; words];

@@ -522,7 +522,16 @@ fn both_builds_read_the_same_gguf_files() {
             .wrapping_add(1442695040888963407);
         (x >> 33) as usize % n
     };
-    let base: Vec<Vec<u8>> = files.clone();
+    // Corrupt counts fail with the count limits, without sizing buffers from
+    // them (the file is 64 MiB, so `len / 8` alone would allow 8M entries).
+    let mut huge = sample_gguf(None);
+    huge[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+    huge[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
+    huge.resize(64 << 20, 0);
+    files.push(huge.clone());
+    huge[8..16].copy_from_slice(&2u64.to_le_bytes());
+    files.push(huge);
+    let base: Vec<Vec<u8>> = files[..4].to_vec();
     for file in &base[..2] {
         // Every truncation of the header, and single-byte edits in it.
         for len in 0..file.len().min(700) {
