@@ -1,0 +1,605 @@
+// @vesper/bench: Vesper port of vesper-bench's statistics and contracts
+// (port wave P3a lane 5, #1040).
+//
+// Ported: the exact signed-rank probability, its inverted confidence set and
+// gates (signed_rank.rs, signed_rank_confidence.rs), Hodges-Lehmann and
+// Walsh pseudomedians (hodges_lehmann.rs, walsh.rs), exact paired
+// differences (paired_difference.rs), Mann-Whitney ranks and exact
+// probabilities and the exact median-ratio interval (statistics.rs),
+// `PairedSample` (contract.rs), the `@bench` attribute parser
+// (contract.rs), the contract gate (contract_gate.rs), the PmuSampleWire
+// record (wire.rs), layout plans and the survival test (layout.rs), the
+// configuration check and epoch fold (execution.rs), the causal
+// profiler's folds (causal.rs), the counter residue and layout offsets
+// (arithmetic.rs) and the evidence gate (lib.rs).
+//
+// The Rust crate keeps its public types and the parts that touch the OS:
+// the clock, the callback run loop, the heap shim, stack padding and the
+// profiler's threads, which pass their measurements in. Its wrappers
+// (src/port.rs) convert to and from the port-only records below. Vesper has
+// no `i128`, so 128-bit values are `W` word pairs (module wide), joined by
+// the wrappers. Every helper is total, so each export raises only its own
+// crate error type.
+use self::contract::{
+    do_gate_evaluate,
+    do_parse_attribute
+};
+use self::plan::{
+    do_evaluate_evidence_requirement,
+    do_experiment_run,
+    do_fold_epoch,
+    do_layout_offset_bytes,
+    do_layout_plan,
+    do_median_i64,
+    do_median_run,
+    do_modular_counter_delta,
+    do_predicted_bp,
+    do_region_delay,
+    do_unavailable_evidence,
+    do_validate_config
+};
+use self::ranks::{
+    do_classify_differences,
+    do_classify_samples,
+    do_compare_endpoint,
+    do_exact_paired_differences,
+    do_gate_paired_difference,
+    do_hodges_lehmann_paired,
+    do_paired_samples_confidence_set,
+    do_signed_rank_confidence_set,
+    do_signed_rank_exact,
+    do_signed_rank_exact_paired_samples,
+    do_walsh_pseudomedian
+};
+use self::stats::{
+    do_analyze_pairs,
+    do_layout_sample,
+    do_layout_survival,
+    do_mann_whitney_exact,
+    do_mann_whitney_exact_with_ties,
+    do_mann_whitney_ranks,
+    do_paired_sample_new,
+    do_regression_bp_bounds
+};
+use self::wide::{
+    w
+};
+use self::wire::{
+    do_backend_bound_bp,
+    do_mask_check,
+    do_sample_check,
+    do_wire_decode,
+    do_wire_encode,
+    do_wire_from_values,
+    do_wire_validate
+};
+
+// ---------------------------------------------------------------------------
+// Records shared with the Rust crate. Types named like a crate type are that
+// type (crate::port re-exports it); the rest are port-only records.
+
+// A 128-bit two's-complement value as (high, low) words.
+pub copy struct W {
+    hi: u64,
+    lo: u64
+}
+
+// PairedSample (contract.rs); its fields are private in Rust.
+pub copy struct Sample {
+    baseline: u64,
+    candidate: u64,
+    operations: u64
+}
+
+// SignedRankConfidenceSegment with each Option<i128> endpoint as a flag and
+// two words.
+pub copy struct Segment {
+    lower_bounded: bool,
+    lower_hi: u64,
+    lower_lo: u64,
+    lower_inclusive: bool,
+    upper_bounded: bool,
+    upper_hi: u64,
+    upper_lo: u64,
+    upper_inclusive: bool
+}
+
+pub copy struct SignedRankProbability {
+    nonzero_pairs: usize,
+    discarded_zero_pairs: usize,
+    tied_magnitude_groups: usize,
+    twice_w_positive: u64,
+    numerator: u64,
+    denominator: u64
+}
+
+pub copy enum SignedRankError {
+    EmptyEvidence,
+    TooManyPairs,
+    NoNonzeroDifferences
+}
+
+pub copy enum SignedRankConfidenceError {
+    EmptyEvidence,
+    TooManyPairs,
+    AllocationFailed
+}
+
+// PairedSampleConfidenceError without the (unreachable) inversion errors.
+pub copy enum PairedConfError {
+    EmptyEvidence,
+    TooManySamples,
+    OperationsMismatch {
+        index: usize
+    },
+    DifferenceOutOfRange {
+        index: usize
+    }
+}
+
+pub copy enum WalshEstimateError {
+    EmptyEvidence,
+    TooManyPairs
+}
+
+pub copy struct WalshOut {
+    pairs: usize,
+    walsh_averages: usize,
+    estimate_times_four: W
+}
+
+pub copy enum HodgesLehmannError {
+    EmptyEvidence,
+    TooManyPairs,
+    ZeroDifference,
+    TiedAbsoluteDifferences,
+    TiedWalshAverages,
+    AllocationFailed
+}
+
+// HodgesLehmannEstimate; the interval fields are meaningful when
+// `has_interval`.
+pub copy struct HlOut {
+    estimate_times_four: W,
+    has_interval: bool,
+    lower_times_two: W,
+    upper_times_two: W,
+    critical_rank: usize,
+    covered_outcomes: u64,
+    total_outcomes: u64
+}
+
+pub copy struct HlGate {
+    outcome: u64,
+    estimate: HlOut
+}
+
+pub copy enum PairedDifferenceError {
+    EmptyEvidence,
+    TooManySamples,
+    NonIntegral {
+        index: usize
+    },
+    OutOfRange {
+        index: usize
+    },
+    AllocationFailed
+}
+
+// The crate's Error, with each `&'static str` message as a code
+// (src/port.rs).
+pub copy enum PortError {
+    InvalidConfig {
+        code: u64
+    },
+    Limit {
+        code: u64
+    },
+    ArithmeticOverflow,
+    AllocationFailed,
+    ClockOverflow,
+    ZeroDuration,
+    EmptyEvidence,
+    NonPositiveEvidence,
+    InvalidThreshold,
+    InvalidCounterWidth,
+    CounterValueOutOfRange,
+    TiedObservations
+}
+
+pub copy struct MannWhitneyRanks {
+    first_count: usize,
+    second_count: usize,
+    twice_u_first: u64,
+    twice_u_second: u64,
+    tied_pairs: u64
+}
+
+// ExactMannWhitney / ExactTiedMannWhitney with the u128 counts as words
+// (they are at most 64 choose 32).
+pub copy struct ExactMw {
+    u_first: u64,
+    numerator: u64,
+    denominator: u64
+}
+
+pub copy enum Decision {
+    Pass,
+    Regression,
+    Inconclusive
+}
+
+// Analysis with its interval flattened; `reason` is 0 none, 1
+// InsufficientEpochs, 2 IntervalCrossesThreshold.
+pub copy struct AnalysisOut {
+    decision: Decision,
+    reason: u64,
+    median_lower: Sample,
+    median_upper: Sample,
+    has_interval: bool,
+    lower: Sample,
+    upper: Sample,
+    lower_rank: usize,
+    upper_rank: usize,
+    covered_outcomes: W,
+    total_outcomes: W
+}
+
+pub copy struct BpBounds {
+    floor: W,
+    ceil: W
+}
+
+pub copy struct SurvivalOut {
+    verdict: u64,
+    analysis: AnalysisOut
+}
+
+pub copy enum ErrorKind {
+    InputLimit,
+    Syntax,
+    UnknownField,
+    DuplicateField,
+    NumberOverflow
+}
+
+pub copy struct ParseError {
+    kind: ErrorKind,
+    offset: usize
+}
+
+// BenchContract with each Option as a flag (the booleans: 0 unset, 1
+// false, 2 true).
+pub copy struct ContractOut {
+    zero_alloc: u64,
+    expect_vectorized: u64,
+    has_instructions_per_byte: bool,
+    instructions_coefficient: u64,
+    instructions_scale: u32,
+    has_stabilizer_pages: bool,
+    stabilizer_pages: u64,
+    has_l1d_misses_per_op: bool,
+    l1d_misses_per_op: u64
+}
+
+// The inputs of contract_gate.rs `evaluate`: the requested limits, the two
+// counters it reads and the sample's counts.
+pub copy struct GateIn {
+    has_instructions_per_byte: bool,
+    instructions_coefficient: u64,
+    instructions_scale: u32,
+    has_l1d_misses_per_op: bool,
+    l1d_misses_per_op: u64,
+    zero_alloc: bool,
+    expect_vectorized: bool,
+    has_stabilizer_pages: bool,
+    has_instructions: bool,
+    instructions: u64,
+    has_l1d_misses: bool,
+    l1d_misses: u64,
+    has_input_bytes: bool,
+    input_bytes: u64,
+    has_operations: bool,
+    operations: u64
+}
+
+// GateReport as status codes (module contract).
+pub copy struct GateOut {
+    instructions_per_byte: u64,
+    l1d_misses_per_op: u64,
+    zero_alloc: u64,
+    expect_vectorized: u64,
+    stabilizer_pages: u64,
+    overall: u64
+}
+
+pub copy enum GateError {
+    InvalidDecimalScale
+}
+
+pub copy struct PmuSampleWire {
+    ref_cycles: u64,
+    instructions_retired: u64,
+    l1d_read_misses: u64,
+    llc_misses: u64,
+    branch_mispredicts: u64,
+    simd_vec_uops_retired: u64,
+    arena_bump_bytes: u64,
+    tma_backend_bound_slots_bp: u32,
+    icache_rand_offset_bytes: u32
+}
+
+// WireError without the field list of `Unavailable`, which Rust builds.
+pub copy enum WireErr {
+    Length {
+        len: usize
+    },
+    BasisPointsOutOfRange {
+        value: u64
+    },
+    LayoutOffsetOutOfRange {
+        value: u64
+    },
+    FieldOverflow {
+        field: u64
+    },
+    InvalidMask {
+        bits: u16
+    }
+}
+
+pub copy struct LayoutPlan {
+    seed: u64,
+    run: u32,
+    heap_offset_bytes: u32,
+    stack_padding_bytes: u32,
+    env_padding_bytes: u32,
+    run_seed: u64
+}
+
+pub copy struct ExperimentRun {
+    elapsed_ns: u64,
+    global_delay_ns: u64,
+    effective_ns: u64,
+    progress: u64
+}
+
+pub copy enum CausalErr {
+    EmptyEvidence,
+    DelayExceedsElapsed {
+        elapsed: u64,
+        delay: u64
+    }
+}
+
+pub copy enum EvidenceRequirement {
+    HardwareCycles,
+    RetiredInstructions,
+    L1DataMisses,
+    LlcMisses,
+    BranchMispredicts,
+    SimdVectorOperations,
+    TmaBackendSlots,
+    ZeroAllocation,
+    Vectorization
+}
+
+pub copy enum UnavailableReason {
+    NoPmuProvider,
+    NoAllocationInstrumentation,
+    NoCompilerVectorizationEvidence
+}
+
+pub copy struct UnavailableEvidence {
+    requirement: EvidenceRequirement,
+    reason: UnavailableReason
+}
+
+pub copy struct EvidenceGate {
+    decision: Decision,
+    unavailable: UnavailableEvidence
+}
+
+// ---------------------------------------------------------------------------
+// signed_rank.rs, signed_rank_confidence.rs
+
+pub fn signed_rank_exact(in differences: Slice[i64])
+    -> SignedRankProbability eff [Fail[SignedRankError]] {
+    do_signed_rank_exact(in differences)
+}
+
+pub fn signed_rank_exact_paired_samples(in samples: Slice[Sample])
+    -> SignedRankProbability eff [Fail[SignedRankError]] {
+    do_signed_rank_exact_paired_samples(in samples)
+}
+
+pub fn signed_rank_confidence_set(in differences: Slice[i64])
+    -> ChunkSeq[Segment] eff [Fail[SignedRankConfidenceError]] {
+    do_signed_rank_confidence_set(in differences)
+}
+
+pub fn paired_samples_confidence_set(in samples: Slice[Sample])
+    -> ChunkSeq[Segment] eff [Fail[PairedConfError]] {
+    do_paired_samples_confidence_set(in samples)
+}
+
+pub fn classify_differences(in segments: Slice[Segment], max_difference: i64) -> u64 {
+    do_classify_differences(in segments, max_difference)
+}
+
+pub fn classify_samples(in segments: Slice[Segment], operations: u64, max_difference: i64) -> u64 {
+    do_classify_samples(in segments, operations, max_difference)
+}
+
+pub fn compare_endpoint(endpoint_hi: u64, endpoint_lo: u64, operations: u64, max_difference: i64)
+    -> i64 {
+    do_compare_endpoint(w(endpoint_hi, endpoint_lo), operations, max_difference)
+}
+
+// ---------------------------------------------------------------------------
+// walsh.rs, hodges_lehmann.rs, paired_difference.rs
+
+pub fn walsh_pseudomedian(in differences: Slice[i64]) -> WalshOut eff [Fail[WalshEstimateError]] {
+    do_walsh_pseudomedian(in differences)
+}
+
+pub fn hodges_lehmann_paired(in differences: Slice[i64]) -> HlOut eff [Fail[HodgesLehmannError]] {
+    do_hodges_lehmann_paired(in differences)
+}
+
+pub fn gate_paired_difference(in differences: Slice[i64], max_difference: i64)
+    -> HlGate eff [Fail[HodgesLehmannError]] {
+    do_gate_paired_difference(in differences, max_difference)
+}
+
+pub fn exact_paired_differences(in samples: Slice[Sample])
+    -> ChunkSeq[i64] eff [Fail[PairedDifferenceError]] {
+    do_exact_paired_differences(in samples)
+}
+
+// ---------------------------------------------------------------------------
+// statistics.rs, contract.rs PairedSample
+
+pub fn mann_whitney_ranks(in first: Slice[u64], in second: Slice[u64])
+    -> MannWhitneyRanks eff [Fail[PortError]] {
+    do_mann_whitney_ranks(in first, in second)
+}
+
+pub fn mann_whitney_exact(in first: Slice[u64], in second: Slice[u64])
+    -> ExactMw eff [Fail[PortError]] {
+    do_mann_whitney_exact(in first, in second)
+}
+
+pub fn mann_whitney_exact_with_ties(in first: Slice[u64], in second: Slice[u64])
+    -> ExactMw eff [Fail[PortError]] {
+    do_mann_whitney_exact_with_ties(in first, in second)
+}
+
+pub fn analyze_pairs(in samples: Slice[Sample], max_regression_bp: i64)
+    -> AnalysisOut eff [Fail[PortError]] {
+    do_analyze_pairs(in samples, max_regression_bp)
+}
+
+pub fn paired_sample_new(baseline: u64, candidate: u64, operations: u64)
+    -> Sample eff [Fail[PortError]] {
+    do_paired_sample_new(baseline, candidate, operations)
+}
+
+pub fn regression_bp_bounds(sample: Sample) -> BpBounds {
+    do_regression_bp_bounds(sample)
+}
+
+// ---------------------------------------------------------------------------
+// contract.rs, contract_gate.rs
+
+pub fn parse_attribute(in source: Slice[u8]) -> ContractOut eff [Fail[ParseError]] {
+    do_parse_attribute(in source)
+}
+
+pub fn gate_evaluate(input: GateIn) -> GateOut eff [Fail[GateError]] {
+    do_gate_evaluate(input)
+}
+
+// ---------------------------------------------------------------------------
+// wire.rs
+
+pub fn wire_validate(in wire: PmuSampleWire) eff [Fail[WireErr]] {
+    do_wire_validate(in wire)
+}
+
+pub fn wire_encode(in wire: PmuSampleWire) -> ChunkSeq[u8] eff [Fail[WireErr]] {
+    do_wire_encode(in wire)
+}
+
+pub fn wire_decode(in bytes: Slice[u8]) -> PmuSampleWire eff [Fail[WireErr]] {
+    do_wire_decode(in bytes)
+}
+
+pub fn sample_check(field: u64, value: u64) eff [Fail[WireErr]] {
+    do_sample_check(field, value)
+}
+
+pub fn wire_from_values(in values: Slice[u64], present: u64) -> PmuSampleWire eff [Fail[WireErr]] {
+    do_wire_from_values(in values, present)
+}
+
+pub fn mask_check(bits: u16) eff [Fail[WireErr]] {
+    do_mask_check(bits)
+}
+
+pub fn backend_bound_bp(backend_slots: u64, total_slots: u64) -> Option[u64] {
+    do_backend_bound_bp(backend_slots, total_slots)
+}
+
+// ---------------------------------------------------------------------------
+// layout.rs, execution.rs, causal.rs, arithmetic.rs, lib.rs
+
+pub fn layout_plan(seed: u64, run: u32) -> LayoutPlan {
+    do_layout_plan(seed, run)
+}
+
+pub fn layout_sample(in pairs: Slice[Sample]) -> Sample eff [Fail[PortError]] {
+    do_layout_sample(in pairs)
+}
+
+pub fn layout_survival(in per_layout: Slice[Sample]) -> SurvivalOut eff [Fail[PortError]] {
+    do_layout_survival(in per_layout)
+}
+
+pub fn validate_config(
+    epochs: usize,
+    warmup_epochs: usize,
+    operations_per_window: usize,
+    max_total_calls: usize,
+    max_elapsed_nanos: u64
+) -> usize eff [Fail[PortError]] {
+    do_validate_config(
+        epochs,
+        warmup_epochs,
+        operations_per_window,
+        max_total_calls,
+        max_elapsed_nanos
+    )
+}
+
+pub fn fold_epoch(w0: u64, w1: u64, w2: u64, w3: u64, operations: u64)
+    -> Sample eff [Fail[PortError]] {
+    do_fold_epoch(w0, w1, w2, w3, operations)
+}
+
+pub fn experiment_run(elapsed: u64, delay: u64, progress: u64)
+    -> ExperimentRun eff [Fail[CausalErr]] {
+    do_experiment_run(elapsed, delay, progress)
+}
+
+pub fn median_run(in runs: Slice[ExperimentRun]) -> ExperimentRun {
+    do_median_run(in runs)
+}
+
+pub fn median_i64(in values: Slice[i64]) -> i64 {
+    do_median_i64(in values)
+}
+
+pub fn predicted_bp(baseline: ExperimentRun, run: ExperimentRun) -> i64 eff [Fail[PortError]] {
+    do_predicted_bp(baseline, run)
+}
+
+pub fn region_delay(elapsed: u64, speedup_pct: u32) -> u64 {
+    do_region_delay(elapsed, speedup_pct)
+}
+
+pub fn modular_counter_delta(start: u64, end: u64, width_bits: u8) -> u64 eff [Fail[PortError]] {
+    do_modular_counter_delta(start, end, width_bits)
+}
+
+pub fn layout_offset_bytes(seed: u64, epoch: u64) -> u32 {
+    do_layout_offset_bytes(seed, epoch)
+}
+
+pub fn unavailable_evidence(requirement: EvidenceRequirement) -> UnavailableEvidence {
+    do_unavailable_evidence(requirement)
+}
+
+pub fn evaluate_evidence_requirement(requirement: EvidenceRequirement) -> EvidenceGate {
+    do_evaluate_evidence_requirement(requirement)
+}

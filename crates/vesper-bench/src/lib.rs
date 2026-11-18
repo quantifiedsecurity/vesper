@@ -10,7 +10,21 @@
 //! survives; it does not relocate machine code. [`causal`] is a Coz-style
 //! virtual-speedup profiler for instrumented host threads. [`wire`] is the
 //! 64-byte padding-free `PmuSampleWire` record with explicit availability.
-#![forbid(unsafe_code)]
+//!
+//! Two builds share these sources (port wave P3a lane 5, #1040). This
+//! package builds the Rust code by default; under its `vesper-port` feature
+//! the build script links the Vesper port in `vesper/` and sets
+//! `cfg(vesper_port)`, and the statistics, contracts, wire format and the
+//! pure folds of the drivers forward to it. The clock, the callback run
+//! loop, layout shims and the causal profiler's threads stay Rust in both.
+//! The compiler links the frozen seed copy (`seed/`, `vesper-bench-seed`).
+// The seed build stays safe. The port build links the Vesper port through
+// the generated binding, which calls the C ABI.
+#![cfg_attr(not(vesper_port), forbid(unsafe_code))]
+#![cfg_attr(vesper_port, deny(unsafe_code))]
+// Under the port, the Rust bodies the public API no longer calls stay
+// compiled (they are the seed's code) but unused.
+#![cfg_attr(vesper_port, allow(dead_code, unused_imports))]
 mod arithmetic;
 pub mod causal;
 pub mod contract;
@@ -35,6 +49,31 @@ pub use signed_rank_confidence::*;
 pub use hodges_lehmann::*;
 pub use statistics::*;
 pub use walsh::*;
+
+// Generated and committed, but kept outside src/ so formatters, which
+// check every file under src/, never reflow it (see the porting recipe).
+#[cfg(vesper_port)]
+#[allow(unsafe_code)]
+#[rustfmt::skip]
+#[path = "../port/binding.rs"]
+mod port_binding;
+#[cfg(vesper_port)]
+mod port;
+
+/// Which build this is: `"vesper"` under the `vesper-port` feature, `"rust"`
+/// for the default build and the seed copy `vesper-bench-seed` that the
+/// compiler links.
+pub const IMPLEMENTATION: &str = if cfg!(vesper_port) { "vesper" } else { "rust" };
+
+/// Live sequence allocations of the Vesper port (for leak tests); always 0
+/// in the Rust build.
+#[doc(hidden)]
+pub fn port_live_allocations() -> i64 {
+    #[cfg(vesper_port)]
+    return port_binding::live_allocations();
+    #[cfg(not(vesper_port))]
+    0
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -84,14 +123,21 @@ pub struct UnavailableEvidence {
 /// This backend has no hardware/static evidence provider. A requirement remains
 /// inconclusive; caller assertions and wall time never authorize it to pass.
 pub fn unavailable_evidence(requirement: EvidenceRequirement) -> UnavailableEvidence {
-    let reason = match requirement {
-        EvidenceRequirement::ZeroAllocation => UnavailableReason::NoAllocationInstrumentation,
-        EvidenceRequirement::Vectorization => UnavailableReason::NoCompilerVectorizationEvidence,
-        _ => UnavailableReason::NoPmuProvider,
-    };
-    UnavailableEvidence {
-        requirement,
-        reason,
+    #[cfg(vesper_port)]
+    return port::unavailable_evidence(requirement);
+    #[cfg(not(vesper_port))]
+    {
+        let reason = match requirement {
+            EvidenceRequirement::ZeroAllocation => UnavailableReason::NoAllocationInstrumentation,
+            EvidenceRequirement::Vectorization => {
+                UnavailableReason::NoCompilerVectorizationEvidence
+            }
+            _ => UnavailableReason::NoPmuProvider,
+        };
+        UnavailableEvidence {
+            requirement,
+            reason,
+        }
     }
 }
 
@@ -101,8 +147,13 @@ pub struct EvidenceGate {
     pub unavailable: UnavailableEvidence,
 }
 pub fn evaluate_evidence_requirement(requirement: EvidenceRequirement) -> EvidenceGate {
-    EvidenceGate {
-        decision: Decision::Inconclusive,
-        unavailable: unavailable_evidence(requirement),
+    #[cfg(vesper_port)]
+    return port::evaluate_evidence_requirement(requirement);
+    #[cfg(not(vesper_port))]
+    {
+        EvidenceGate {
+            decision: Decision::Inconclusive,
+            unavailable: unavailable_evidence(requirement),
+        }
     }
 }

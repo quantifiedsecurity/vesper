@@ -30,30 +30,35 @@ pub struct WalshEstimate {
 /// bounded calculation allocates no heap storage. It supplies no confidence
 /// interval, gate decision, or evidence of measurement provenance.
 pub fn walsh_pseudomedian(differences: &[i64]) -> Result<WalshEstimate, WalshEstimateError> {
-    let n = differences.len();
-    if n == 0 {
-        return Err(WalshEstimateError::EmptyEvidence);
-    }
-    if n > MAX_WALSH_PAIRS {
-        return Err(WalshEstimateError::TooManyPairs);
-    }
-    let mut sums = [0i128; MAX_WALSH_AVERAGES];
-    let mut count = 0;
-    for i in 0..n {
-        for j in i..n {
-            sums[count] = i128::from(differences[i]) + i128::from(differences[j]);
-            count += 1;
+    #[cfg(vesper_port)]
+    return crate::port::walsh_pseudomedian(differences).map(crate::port::walsh);
+    #[cfg(not(vesper_port))]
+    {
+        let n = differences.len();
+        if n == 0 {
+            return Err(WalshEstimateError::EmptyEvidence);
         }
+        if n > MAX_WALSH_PAIRS {
+            return Err(WalshEstimateError::TooManyPairs);
+        }
+        let mut sums = [0i128; MAX_WALSH_AVERAGES];
+        let mut count = 0;
+        for i in 0..n {
+            for j in i..n {
+                sums[count] = i128::from(differences[i]) + i128::from(differences[j]);
+                count += 1;
+            }
+        }
+        sums[..count].sort_unstable();
+        let estimate_times_four = if count.is_multiple_of(2) {
+            sums[count / 2 - 1] + sums[count / 2]
+        } else {
+            2 * sums[count / 2]
+        };
+        Ok(WalshEstimate {
+            pairs: n,
+            walsh_averages: count,
+            estimate_times_four,
+        })
     }
-    sums[..count].sort_unstable();
-    let estimate_times_four = if count.is_multiple_of(2) {
-        sums[count / 2 - 1] + sums[count / 2]
-    } else {
-        2 * sums[count / 2]
-    };
-    Ok(WalshEstimate {
-        pairs: n,
-        walsh_averages: count,
-        estimate_times_four,
-    })
 }
