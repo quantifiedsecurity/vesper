@@ -1,6 +1,8 @@
 // Module plan of @vesper/quarry (see lib.ves).
 use self::{
     Bind,
+    CCol,
+    CTab,
     Link,
     Node,
     Q,
@@ -14,7 +16,6 @@ use self::util::{
     ex,
     fail,
     link,
-    load_catalog,
     load_limits,
     new_q_sized,
     node,
@@ -331,15 +332,22 @@ pub fn optimize_q(in plan: Slice[u64]) -> Q {
     q
 }
 
-// `HermeticCatalog::prepare`. meta holds the catalog encoding followed by
-// the parameter encoding; text their names. On success words holds
+// `HermeticCatalog::prepare`. tabs and cols are the catalog (each table's
+// columns at `cols[start .. start + n]`, `used` false), meta the parameter
+// encoding, and text their names. On success words holds
 //   plan, ncols, (alias off, alias len, column off, column len, binding,
 //   slot, ty, nullable)*, nproj, projection expressions..,
 //   nout, (name off, name len, ty, nullable)*, nparams,
 //   (name off, name len, ty, nullable)*
 // with ranges into pool.
-pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in limits: Slice[u64])
-    -> Q {
+pub fn prepare_q(
+    in tabs: Slice[CTab],
+    in cols: Slice[CCol],
+    in meta: Slice[u64],
+    in text: Slice[u8],
+    in sql: Slice[u8],
+    in limits: Slice[u64]
+) -> Q {
     // Sized from the planner golden cases: the pool holds the input text,
     // the SQL and the lowercased identifiers, and the expression and output
     // words grow with the SQL.
@@ -355,7 +363,8 @@ pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in 
     if !load_limits(inout q, limits) {
         return q;
     }
-    let after = load_catalog(inout q, meta, 0);
+    q.tabs.extend(in tabs);
+    q.cols.extend(in cols);
     let bn = q.tabs.len();
     if !bound(inout q, bn, 4, "catalog table limit") {
         return q;
@@ -368,7 +377,7 @@ pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in 
     }
     lex(inout q, sql);
     parse_select(inout q);
-    load_params(inout q, meta, after);
+    load_params(inout q, meta, 0);
     if q.err != 0 {
         return q;
     }

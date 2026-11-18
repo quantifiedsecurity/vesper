@@ -32,6 +32,7 @@ use crate::{
     Result, ScalarType, Value,
 };
 use std::collections::BTreeMap;
+use vesper_port_abi::Word;
 use std::mem::size_of;
 
 #[rustfmt::skip]
@@ -187,6 +188,41 @@ impl Enc {
                 self.w(u64::from(col.nullable));
             }
         }
+    }
+    /// The catalog as the Vesper build's own `CTab`/`CCol` storage (export
+    /// ABI v3 lends both slices in place), with the names in the text pool.
+    fn catalog_mirrors(
+        &mut self,
+        c: &HermeticCatalog,
+    ) -> (Vec<binding::repr::CTab>, Vec<binding::repr::CCol>) {
+        let mut tabs = Vec::with_capacity(c.tables.len());
+        let mut cols = Vec::with_capacity(c.tables.values().map(Vec::len).sum());
+        for (name, defs) in &c.tables {
+            let (noff, nlen) = self.range(name.as_bytes());
+            tabs.push(binding::repr::CTab {
+                noff,
+                nlen,
+                start: cols.len() as u64,
+                n: defs.len() as u64,
+            });
+            for col in defs {
+                let (noff, nlen) = self.range(col.name.as_bytes());
+                cols.push(binding::repr::CCol {
+                    noff,
+                    nlen,
+                    ty: ty_index(col.ty),
+                    nullable: Word::new(col.nullable),
+                    used: Word::new(false),
+                });
+            }
+        }
+        (tabs, cols)
+    }
+    /// Appends `b` to the text pool and returns its range.
+    fn range(&mut self, b: &[u8]) -> (u64, u64) {
+        let off = self.text.len() as u64;
+        self.text.extend_from_slice(b);
+        (off, b.len() as u64)
     }
     fn expr(&mut self, e: &TypedExpr) {
         let tag = match &e.node {
@@ -469,8 +505,8 @@ pub(crate) fn prepare(
     params: &[ParamDef],
     limits: Limits,
 ) -> Result<PreparedQuery> {
-    let mut e = Enc::sized(64, 64);
-    e.catalog(catalog);
+    let mut e = Enc::sized(16, 64);
+    let (tabs, cols) = e.catalog_mirrors(catalog);
     e.w(params.len() as u64);
     for p in params {
         e.s(&p.name);
@@ -478,6 +514,8 @@ pub(crate) fn prepare(
         e.w(u64::from(p.nullable));
     }
     let q = checked(binding::prepare(
+        &tabs,
+        &cols,
         &e.words,
         &e.text,
         sql.as_bytes(),
