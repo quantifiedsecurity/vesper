@@ -1643,3 +1643,1252 @@ pub fn fuzzer_corpus_entry(in f: Fuzzer, e: u64) -> ChunkSeq[u64] {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// Systematic schedule search (src/dpor.rs `explore`): exhaustive search and
+// persistent-set DPOR with sleep sets, the preemption bound and the state
+// cache, as a step machine. The Rust wrapper keeps the SimPulse machine, the
+// fibers and the observer: it re-executes the prefix (`search_prefix`),
+// reports each new state (`search_root`, `search_child`, `search_key`) and
+// executes the process `search_choose` picks. `search_backtrack` moves to
+// the next unexplored alternative.
+//
+// Processes are encoded so that their order is kept: Task(i) = i,
+// Io{task, seq, choice} = 1 << 62 | task << 40 | seq << 8 | choice and
+// Timer{task, seq} = 2 << 62 | task << 32 | seq. A fiber's next transition
+// is the id of its footprint (`search_footprint`, interned by the wrapper);
+// deliveries and timers have transition 0. `search_choose` codes: 0 run
+// `value`, 1 every enabled process sleeps, 2 the machine quiesced. State
+// keys are ids interned by the wrapper (`none` when not caching).
+
+fn none() -> u64 {
+    max_u64()
+}
+
+fn proc_tag(p: u64) -> u64 {
+    p >> 62
+}
+
+fn proc_task(p: u64) -> u64 {
+    let tag = p >> 62;
+    if tag == 0 {
+        p
+    } else if tag == 1 {
+        (p >> 40) & 0x3fffff
+    } else {
+        (p >> 32) & 0x3fffffff
+    }
+}
+
+// Whether two transitions can ever be enabled together (explore.rs
+// `may_co_enable`).
+fn may_co_enable(a: u64, b: u64) -> bool {
+    let ta = proc_tag(a);
+    let tb = proc_tag(b);
+    if (ta == 0 && tb == 2) || (ta == 2 && tb == 0) {
+        return false;
+    }
+    if (ta == 0 && tb == 1) || (ta == 1 && tb == 0) {
+        return proc_task(a) != proc_task(b);
+    }
+    true
+}
+
+// The first position in `lo..hi` of the sorted range of `s` not below `x`.
+fn lower_bound_in(in s: Slice[u64], lo0: u64, hi0: u64, x: u64) -> u64 {
+    let mut lo = lo0;
+    let mut hi = hi0;
+    loop {
+        if lo >= hi {
+            break lo;
+        }
+        let mid = wrapping_add(lo, wrapping_sub(hi, lo) >> 1);
+        if at(in s, mid) < x {
+            lo = inc(mid);
+        } else {
+            hi = mid;
+        }
+    }
+}
+
+fn range_has(in s: Slice[u64], lo: u64, hi: u64, x: u64) -> bool {
+    let pos = lower_bound_in(in s, lo, hi, x);
+    pos < hi && at(in s, pos) == x
+}
+
+// Whether the sorted ranges `a0..a1` of `a` and `b0..b1` of `b` meet.
+fn ranges_meet(in a: Slice[u64], a0: u64, a1: u64, in b: Slice[u64], b0: u64, b1: u64) -> bool {
+    let mut i = a0;
+    let mut j = b0;
+    loop {
+        if i >= a1 || j >= b1 {
+            break false;
+        }
+        let x = at(in a, i);
+        let y = at(in b, j);
+        if x < y {
+            i = inc(i);
+        } else if x > y {
+            j = inc(j);
+        } else {
+            break true;
+        }
+    }
+}
+
+fn seq_has(in s: Slice[u64], x: u64) -> bool {
+    let mut found = false;
+    for i in 0..s.len() {
+        if at(in s, i) == x {
+            found = true;
+        }
+    }
+    found
+}
+
+// Whether the sorted range `a0..a1` of `a` is a subset of `b0..b1` of `b`.
+fn range_subset(in a: Slice[u64], a0: u64, a1: u64, in b: Slice[u64], b0: u64, b1: u64) -> bool {
+    let mut j = b0;
+    let mut ok = true;
+    for i in a0..a1 {
+        let x = at(in a, i);
+        loop {
+            if j >= b1 || at(in b, j) >= x {
+                break;
+            }
+            j = inc(j);
+        }
+        if j >= b1 || at(in b, j) != x {
+            ok = false;
+        }
+    }
+    ok
+}
+
+pub copy struct SearchStats {
+    sleep_blocked: u64,
+    cache_hits: u64,
+    bound_pruned: u64
+}
+
+pub struct Search {
+    dpor: bool,
+    bounded: bool,
+    sleeping: bool,
+    has_bound: bool,
+    bound: u64,
+    caching: bool,
+    stats: SearchStats,
+    p_proc: u64,
+    p_next: u64,
+    p_pre: u64,
+    p_mark: u64,
+    fp_r_off: ChunkSeq[u64],
+    fp_r: ChunkSeq[u64],
+    fp_w_off: ChunkSeq[u64],
+    fp_w: ChunkSeq[u64],
+    fp_c_off: ChunkSeq[u64],
+    fp_c: ChunkSeq[u64],
+    n_en: ChunkSeq[u64],
+    n_en_len: ChunkSeq[u64],
+    n_nx: ChunkSeq[u64],
+    n_nx_len: ChunkSeq[u64],
+    n_pc: ChunkSeq[u64],
+    n_pc_len: ChunkSeq[u64],
+    n_sl: ChunkSeq[u64],
+    n_sl_len: ChunkSeq[u64],
+    n_sm: ChunkSeq[u64],
+    n_cl: ChunkSeq[u64],
+    n_chosen: ChunkSeq[u64],
+    n_running: ChunkSeq[u64],
+    n_pre: ChunkSeq[u64],
+    n_key: ChunkSeq[u64],
+    en: ChunkSeq[u64],
+    en_ord: ChunkSeq[u64],
+    nx_proc: ChunkSeq[u64],
+    nx_next: ChunkSeq[u64],
+    pc_proc: ChunkSeq[u64],
+    pc_off: ChunkSeq[u64],
+    pc_len: ChunkSeq[u64],
+    cl_proc: ChunkSeq[u64],
+    cl_val: ChunkSeq[u64],
+    sl: ChunkSeq[u64],
+    sm_proc: ChunkSeq[u64],
+    sm_next: ChunkSeq[u64],
+    ev_proc: ChunkSeq[u64],
+    ev_next: ChunkSeq[u64],
+    ev_cl: ChunkSeq[u64],
+    ev_cl_len: ChunkSeq[u64],
+    ca_sl_off: ChunkSeq[u64],
+    ca_sl_len: ChunkSeq[u64],
+    ca_sm_off: ChunkSeq[u64],
+    ca_sm_len: ChunkSeq[u64],
+    ca_sl: ChunkSeq[u64],
+    ca_smp: ChunkSeq[u64],
+    ca_smn: ChunkSeq[u64],
+    p_sleep: ChunkSeq[u64],
+    t1: ChunkSeq[u64],
+    t2: ChunkSeq[u64],
+    t3: ChunkSeq[u64],
+    t4: ChunkSeq[u64],
+    fp_spawn: ChunkSeq[bool],
+    n_hit: ChunkSeq[bool],
+    en_bt: ChunkSeq[bool],
+    en_done: ChunkSeq[bool],
+    en_slept: ChunkSeq[bool],
+    ca_set: ChunkSeq[bool]
+}
+
+pub fn search_new(dpor: bool, has_bound: bool, bound: u64, caching: bool) -> Search {
+    let mut fp_r_off: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    fp_r_off.push(0);
+    let mut fp_w_off: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    fp_w_off.push(0);
+    let mut fp_c_off: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    fp_c_off.push(0);
+    Search {
+        dpor: dpor,
+        bounded: has_bound && dpor,
+        sleeping: dpor && !has_bound,
+        has_bound: has_bound,
+        bound: bound,
+        caching: caching,
+        stats: SearchStats {
+            sleep_blocked: 0,
+            cache_hits: 0,
+            bound_pruned: 0
+        },
+        p_proc: 0,
+        p_next: 0,
+        p_pre: 0,
+        p_mark: 0,
+        fp_r_off: fp_r_off,
+        fp_r: ChunkSeq::new[u64](),
+        fp_w_off: fp_w_off,
+        fp_w: ChunkSeq::new[u64](),
+        fp_c_off: fp_c_off,
+        fp_c: ChunkSeq::new[u64](),
+        n_en: ChunkSeq::new[u64](),
+        n_en_len: ChunkSeq::new[u64](),
+        n_nx: ChunkSeq::new[u64](),
+        n_nx_len: ChunkSeq::new[u64](),
+        n_pc: ChunkSeq::new[u64](),
+        n_pc_len: ChunkSeq::new[u64](),
+        n_sl: ChunkSeq::new[u64](),
+        n_sl_len: ChunkSeq::new[u64](),
+        n_sm: ChunkSeq::new[u64](),
+        n_cl: ChunkSeq::new[u64](),
+        n_chosen: ChunkSeq::new[u64](),
+        n_running: ChunkSeq::new[u64](),
+        n_pre: ChunkSeq::new[u64](),
+        n_key: ChunkSeq::new[u64](),
+        en: ChunkSeq::new[u64](),
+        en_ord: ChunkSeq::new[u64](),
+        nx_proc: ChunkSeq::new[u64](),
+        nx_next: ChunkSeq::new[u64](),
+        pc_proc: ChunkSeq::new[u64](),
+        pc_off: ChunkSeq::new[u64](),
+        pc_len: ChunkSeq::new[u64](),
+        cl_proc: ChunkSeq::new[u64](),
+        cl_val: ChunkSeq::new[u64](),
+        sl: ChunkSeq::new[u64](),
+        sm_proc: ChunkSeq::new[u64](),
+        sm_next: ChunkSeq::new[u64](),
+        ev_proc: ChunkSeq::new[u64](),
+        ev_next: ChunkSeq::new[u64](),
+        ev_cl: ChunkSeq::new[u64](),
+        ev_cl_len: ChunkSeq::new[u64](),
+        ca_sl_off: ChunkSeq::new[u64](),
+        ca_sl_len: ChunkSeq::new[u64](),
+        ca_sm_off: ChunkSeq::new[u64](),
+        ca_sm_len: ChunkSeq::new[u64](),
+        ca_sl: ChunkSeq::new[u64](),
+        ca_smp: ChunkSeq::new[u64](),
+        ca_smn: ChunkSeq::new[u64](),
+        p_sleep: ChunkSeq::new[u64](),
+        t1: ChunkSeq::new[u64](),
+        t2: ChunkSeq::new[u64](),
+        t3: ChunkSeq::new[u64](),
+        t4: ChunkSeq::new[u64](),
+        fp_spawn: ChunkSeq::new[bool](),
+        n_hit: ChunkSeq::new[bool](),
+        en_bt: ChunkSeq::new[bool](),
+        en_done: ChunkSeq::new[bool](),
+        en_slept: ChunkSeq::new[bool](),
+        ca_set: ChunkSeq::new[bool]()
+    }
+}
+
+// Register a footprint (sorted reads, writes and cancellation targets);
+// returns its id.
+pub fn search_footprint(
+    inout s: Search,
+    in reads: Slice[u64],
+    in writes: Slice[u64],
+    spawns: bool,
+    in cancels: Slice[u64]
+) -> u64 {
+    let id = s.fp_spawn.len();
+    for i in 0..reads.len() {
+        s.fp_r.push(at(in reads, i));
+    }
+    let r = s.fp_r.len();
+    s.fp_r_off.push(r);
+    for i in 0..writes.len() {
+        s.fp_w.push(at(in writes, i));
+    }
+    let w = s.fp_w.len();
+    s.fp_w_off.push(w);
+    for i in 0..cancels.len() {
+        s.fp_c.push(at(in cancels, i));
+    }
+    let c = s.fp_c.len();
+    s.fp_c_off.push(c);
+    s.fp_spawn.push(spawns);
+    id
+}
+
+// Dependence and footprints.
+impl Search {
+    fn conflicts(in self, a: u64, b: u64) -> bool {
+        let ar0 = at(in self.fp_r_off.as_slice(), a);
+        let ar1 = at(in self.fp_r_off.as_slice(), inc(a));
+        let aw0 = at(in self.fp_w_off.as_slice(), a);
+        let aw1 = at(in self.fp_w_off.as_slice(), inc(a));
+        let br0 = at(in self.fp_r_off.as_slice(), b);
+        let br1 = at(in self.fp_r_off.as_slice(), inc(b));
+        let bw0 = at(in self.fp_w_off.as_slice(), b);
+        let bw1 = at(in self.fp_w_off.as_slice(), inc(b));
+        if ranges_meet(in self.fp_w.as_slice(), aw0, aw1, in self.fp_w.as_slice(), bw0, bw1) {
+            return true;
+        }
+        if ranges_meet(in self.fp_w.as_slice(), aw0, aw1, in self.fp_r.as_slice(), br0, br1) {
+            return true;
+        }
+        if ranges_meet(in self.fp_r.as_slice(), ar0, ar1, in self.fp_w.as_slice(), bw0, bw1) {
+            return true;
+        }
+        atb(in self.fp_spawn.as_slice(), a) && atb(in self.fp_spawn.as_slice(), b)
+    }
+
+    fn cancels(in self, f: u64, task: u64) -> bool {
+        let c0 = at(in self.fp_c_off.as_slice(), f);
+        let c1 = at(in self.fp_c_off.as_slice(), inc(f));
+        range_has(in self.fp_c.as_slice(), c0, c1, task)
+    }
+
+    // explore.rs `dependent`.
+    fn dep(in self, pa: u64, na: u64, pb: u64, nb: u64) -> bool {
+        let ta = proc_tag(pa);
+        let tb = proc_tag(pb);
+        if ta == 2 || tb == 2 {
+            return true;
+        }
+        if ta == 0 && tb == 0 {
+            return pa
+                == pb
+                || self
+                .conflicts(na, nb)
+                || self
+                .cancels(na, pb)
+                || self
+                .cancels(nb, pa);
+        }
+        if ta == 0 && tb == 1 {
+            return pa == proc_task(pb);
+        }
+        if ta == 1 && tb == 0 {
+            return proc_task(pa) == pb;
+        }
+        if ta == 1 && tb == 1 {
+            return proc_task(pa) == proc_task(pb);
+        }
+        true
+    }
+}
+
+// Node lookups.
+impl Search {
+    fn en_start(in self, n: u64) -> u64 {
+        at(in self.n_en.as_slice(), n)
+    }
+
+    fn en_end(in self, n: u64) -> u64 {
+        wrapping_add(at(in self.n_en.as_slice(), n), at(in self.n_en_len.as_slice(), n))
+    }
+
+    // The position of `q` in node `n`'s enabled list, or `none`.
+    fn en_find(in self, n: u64, q: u64) -> u64 {
+        let start = self.en_start(n);
+        let end = self.en_end(n);
+        let mut i = start;
+        loop {
+            if i >= end {
+                break none();
+            }
+            if at(in self.en.as_slice(), i) == q {
+                break i;
+            }
+            i = inc(i);
+        }
+    }
+
+    // The position of `q` in node `n`'s next transitions, or `none`.
+    fn nx_find(in self, n: u64, q: u64) -> u64 {
+        let start = at(in self.n_nx.as_slice(), n);
+        let end = wrapping_add(start, at(in self.n_nx_len.as_slice(), n));
+        let mut i = start;
+        loop {
+            if i >= end {
+                break none();
+            }
+            if at(in self.nx_proc.as_slice(), i) == q {
+                break i;
+            }
+            i = inc(i);
+        }
+    }
+
+    // The position of `q` among the process clocks `start..end`, or `none`.
+    fn pc_find_in(in self, start: u64, end: u64, q: u64) -> u64 {
+        let pos = lower_bound_in(in self.pc_proc.as_slice(), start, end, q);
+        if pos < end && at(in self.pc_proc.as_slice(), pos) == q {
+            pos
+        } else {
+            none()
+        }
+    }
+
+    fn pc_find(in self, n: u64, q: u64) -> u64 {
+        let start = at(in self.n_pc.as_slice(), n);
+        let end = wrapping_add(start, at(in self.n_pc_len.as_slice(), n));
+        self.pc_find_in(start, end, q)
+    }
+
+    // `clock[q]` of the clock block `off..off + len` (0 when absent).
+    fn clock_get(in self, off: u64, len: u64, q: u64) -> u64 {
+        let end = wrapping_add(off, len);
+        let pos = lower_bound_in(in self.cl_proc.as_slice(), off, end, q);
+        if pos < end && at(in self.cl_proc.as_slice(), pos) == q {
+            at(in self.cl_val.as_slice(), pos)
+        } else {
+            0
+        }
+    }
+
+    fn in_sleep(in self, n: u64, q: u64) -> bool {
+        let start = at(in self.n_sl.as_slice(), n);
+        let end = wrapping_add(start, at(in self.n_sl_len.as_slice(), n));
+        if range_has(in self.sl.as_slice(), start, end, q) {
+            return true;
+        }
+        let i = self.en_find(n, q);
+        i != none() && atb(in self.en_slept.as_slice(), i)
+    }
+
+    fn preempts(in self, n: u64, p: u64) -> bool {
+        let r = at(in self.n_running.as_slice(), n);
+        if r == none() || proc_tag(p) != 0 {
+            return false;
+        }
+        p != r && self.en_find(n, r) != none()
+    }
+
+    fn allowed(in self, n: u64, p: u64) -> bool {
+        if !self.has_bound {
+            return true;
+        }
+        let extra: u64 = if self.preempts(n, p) {
+            1
+        } else {
+            0
+        };
+        wrapping_add(at(in self.n_pre.as_slice(), n), extra) <= self.bound
+    }
+
+    fn bt_insert(inout self, n: u64, q: u64) {
+        let i = self.en_find(n, q);
+        if i != none() {
+            self.en_bt.try_set(i, true);
+        }
+    }
+
+    fn bt_all(inout self, n: u64) {
+        let start = self.en_start(n);
+        let end = self.en_end(n);
+        for i in start..end {
+            self.en_bt.try_set(i, true);
+        }
+    }
+}
+
+// Choosing (dpor.rs `pick`, `add_siblings`).
+impl Search {
+    fn add_siblings(inout self, n: u64, p: u64) {
+        if proc_tag(p) != 1 {
+            return;
+        }
+        let start = self.en_start(n);
+        let end = self.en_end(n);
+        for i in start..end {
+            let q = at(in self.en.as_slice(), i);
+            if (q >> 8) == (p >> 8) {
+                self.en_bt.try_set(i, true);
+            }
+        }
+    }
+
+    // The next unexplored, awake, allowed process of node `n`, from its
+    // enabled list or (in order) its backtrack set; `none` when there is
+    // none.
+    fn pick(inout self, n: u64, from_bt: bool) -> u64 {
+        let start = self.en_start(n);
+        let len = at(in self.n_en_len.as_slice(), n);
+        let mut k: u64 = 0;
+        loop {
+            if k >= len {
+                break none();
+            }
+            let i = if from_bt {
+                wrapping_add(start, at(in self.en_ord.as_slice(), wrapping_add(start, k)))
+            } else {
+                wrapping_add(start, k)
+            };
+            k = inc(k);
+            let p = at(in self.en.as_slice(), i);
+            let skip = (from_bt && !atb(in self.en_bt.as_slice(), i))
+                || atb(in self.en_done.as_slice(), i)
+                || (self.dpor && self.in_sleep(n, p));
+            if !skip {
+                if !self.allowed(n, p) {
+                    self.en_done.try_set(i, true);
+                    self.stats.bound_pruned = inc(self.stats.bound_pruned);
+                } else {
+                    self.n_chosen.try_set(n, p);
+                    self.en_done.try_set(i, true);
+                    self.en_bt.try_set(i, true);
+                    if self.dpor {
+                        self.add_siblings(n, p);
+                        let r = at(in self.n_running.as_slice(), n);
+                        if self.has_bound && self.preempts(n, p) && r != none() {
+                            self.bt_insert(n, r);
+                        }
+                    }
+                    break p;
+                }
+            }
+        }
+    }
+}
+
+// Backtracking points (dpor.rs `add_at`, `backtrack_for`).
+impl Search {
+    // Add `p`'s backtracking points at node `n` for a race; `hb_off` and
+    // `hb_len` are `p`'s clock.
+    fn add_at(inout self, n: u64, p: u64, hb_off: u64, hb_len: u64) {
+        self.t3.clear();
+        if self.en_find(n, p) != none() {
+            self.t3.push(p);
+        }
+        let m = self.ev_proc.len();
+        for j in inc(n)..m {
+            let e = at(in self.ev_proc.as_slice(), j);
+            if self
+                .clock_get(hb_off, hb_len, e)
+                > j
+                && self
+                .en_find(n, e)
+                != none()
+                && !seq_has(in self.t3.as_slice(), e) {
+                self.t3.push(e);
+            }
+        }
+        let mut any = false;
+        for c in 0..self.t3.len() {
+            let q = at(in self.t3.as_slice(), c);
+            if (self.bounded || !any) && !self.in_sleep(n, q) {
+                self.bt_insert(n, q);
+                any = true;
+            }
+        }
+        if !any {
+            self.bt_all(n);
+        }
+    }
+
+    fn switches(in self, k: u64) -> bool {
+        let e = at(in self.ev_proc.as_slice(), k);
+        proc_tag(e) == 0 && at(in self.n_running.as_slice(), k) != e
+    }
+
+    fn backtrack_for(inout self, p: u64, next: u64, hb_off: u64, hb_len: u64, all: bool) {
+        let mut i = self.ev_proc.len();
+        loop {
+            if i == 0 {
+                break;
+            }
+            i = wrapping_sub(i, 1);
+            let e = at(in self.ev_proc.as_slice(), i);
+            let en = at(in self.ev_next.as_slice(), i);
+            let races = e
+                != p
+                && may_co_enable(e, p)
+                && self
+                .dep(e, en, p, next)
+                && !(self.clock_get(hb_off, hb_len, e) > i);
+            if races {
+                self.add_at(i, p, hb_off, hb_len);
+                if self.bounded {
+                    let mut b = i;
+                    loop {
+                        if b == 0 || self.switches(b) {
+                            break;
+                        }
+                        b = wrapping_sub(b, 1);
+                    }
+                    if b < i {
+                        self.add_at(b, p, hb_off, hb_len);
+                    }
+                }
+                if !all {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn backtrack_one(inout self, cur: u64, p: u64, next: u64, all: bool) {
+        let pci = self.pc_find(cur, p);
+        let (off, len) = if pci == none() {
+            (0, 0)
+        } else {
+            (at(in self.pc_off.as_slice(), pci), at(in self.pc_len.as_slice(), pci))
+        };
+        self.backtrack_for(p, next, off, len, all);
+    }
+
+    // Race-check every next transition of the newest node.
+    fn add_backtrack_points(inout self) {
+        let cur = self.ev_proc.len();
+        let start = at(in self.n_nx.as_slice(), cur);
+        let end = wrapping_add(start, at(in self.n_nx_len.as_slice(), cur));
+        for k in start..end {
+            let p = at(in self.nx_proc.as_slice(), k);
+            let next = at(in self.nx_next.as_slice(), k);
+            self.backtrack_one(cur, p, next, false);
+        }
+    }
+
+    // Race-check the newest node's cached subtree summary against every
+    // racing event.
+    fn add_summary_points(inout self) {
+        let cur = self.ev_proc.len();
+        let start = at(in self.n_sm.as_slice(), cur);
+        let end = self.sm_proc.len();
+        for k in start..end {
+            let p = at(in self.sm_proc.as_slice(), k);
+            let next = at(in self.sm_next.as_slice(), k);
+            self.backtrack_one(cur, p, next, true);
+        }
+    }
+}
+
+// Clocks and the summary arena.
+impl Search {
+    // `t1` (pairs) joined with the clock block `off..off + len`.
+    fn join_into(inout self, off: u64, len: u64) {
+        self.t2.clear();
+        let n1 = self.t1.len() >> 1;
+        let mut i: u64 = 0;
+        let mut j: u64 = 0;
+        loop {
+            if i >= n1 && j >= len {
+                break;
+            }
+            let ap = if i < n1 {
+                at(in self.t1.as_slice(), wrapping_add(i, i))
+            } else {
+                none()
+            };
+            let bp = if j < len {
+                at(in self.cl_proc.as_slice(), wrapping_add(off, j))
+            } else {
+                none()
+            };
+            let av = at(in self.t1.as_slice(), inc(wrapping_add(i, i)));
+            let bv = at(in self.cl_val.as_slice(), wrapping_add(off, j));
+            if i < n1 && (j >= len || ap < bp) {
+                self.t2.push(ap);
+                self.t2.push(av);
+                i = inc(i);
+            } else if i >= n1 || bp < ap {
+                self.t2.push(bp);
+                self.t2.push(bv);
+                j = inc(j);
+            } else {
+                self.t2.push(ap);
+                let v = if av > bv {
+                    av
+                } else {
+                    bv
+                };
+                self.t2.push(v);
+                i = inc(i);
+                j = inc(j);
+            }
+        }
+        self.t1.clear();
+        for k in 0..self.t2.len() {
+            let v = at(in self.t2.as_slice(), k);
+            self.t1.push(v);
+        }
+    }
+
+    // Set `t1[p] = v`.
+    fn t1_set(inout self, p: u64, v: u64) {
+        let n1 = self.t1.len() >> 1;
+        let mut pos = n1;
+        for i in 0..n1 {
+            if pos == n1 && at(in self.t1.as_slice(), wrapping_add(i, i)) >= p {
+                pos = i;
+            }
+        }
+        let at2 = wrapping_add(pos, pos);
+        if pos < n1 && at(in self.t1.as_slice(), at2) == p {
+            self.t1.try_set(inc(at2), v);
+        } else {
+            insert_at(inout self.t1, at2, v);
+            insert_at(inout self.t1, at2, p);
+        }
+    }
+
+    // Insert the process clock `q -> off, len` into the sorted entries from
+    // `start` (the newest node's) unless `q` has one.
+    fn pc_insert(inout self, start: u64, q: u64, off: u64, len: u64, replace: bool) {
+        let end = self.pc_proc.len();
+        let pos = lower_bound_in(in self.pc_proc.as_slice(), start, end, q);
+        if pos < end && at(in self.pc_proc.as_slice(), pos) == q {
+            if replace {
+                self.pc_off.try_set(pos, off);
+                self.pc_len.try_set(pos, len);
+            }
+        } else {
+            insert_at(inout self.pc_proc, pos, q);
+            insert_at(inout self.pc_off, pos, off);
+            insert_at(inout self.pc_len, pos, len);
+        }
+    }
+
+    // Insert `(p, next)` into the sorted summary entries from `start`.
+    fn sm_insert(inout self, start: u64, p: u64, next: u64) {
+        let end = self.sm_proc.len();
+        let mut pos = end;
+        let mut k = start;
+        loop {
+            if k >= end {
+                break;
+            }
+            let q = at(in self.sm_proc.as_slice(), k);
+            let nq = at(in self.sm_next.as_slice(), k);
+            if q == p && nq == next {
+                return;
+            }
+            if q > p || (q == p && nq > next) {
+                pos = k;
+                break;
+            }
+            k = inc(k);
+        }
+        insert_at(inout self.sm_proc, pos, p);
+        insert_at(inout self.sm_next, pos, next);
+    }
+}
+
+// Nodes.
+impl Search {
+    fn push_node(
+        inout self,
+        in enabled: Slice[u64],
+        in nexts: Slice[u64],
+        running: u64,
+        pre: u64,
+        mark: u64
+    ) {
+        let start = self.en.len();
+        self.n_en.push(start);
+        self.n_en_len.push(enabled.len());
+        for i in 0..enabled.len() {
+            let p = at(in enabled, i);
+            self.en.push(p);
+            self.en_bt.push(false);
+            self.en_done.push(false);
+            self.en_slept.push(false);
+            // Insertion sort of the positions by process.
+            let mut pos = i;
+            for k in 0..i {
+                let o = at(in self.en_ord.as_slice(), wrapping_add(start, k));
+                if pos == i && at(in enabled, o) > p {
+                    pos = k;
+                }
+            }
+            insert_at(inout self.en_ord, wrapping_add(start, pos), i);
+        }
+        let nx_start = self.nx_proc.len();
+        self.n_nx.push(nx_start);
+        let pairs = nexts.len() >> 1;
+        self.n_nx_len.push(pairs);
+        for i in 0..pairs {
+            self.nx_proc.push(at(in nexts, wrapping_add(i, i)));
+            self.nx_next.push(at(in nexts, inc(wrapping_add(i, i))));
+        }
+        let sl_start = self.sl.len();
+        self.n_sl.push(sl_start);
+        self.n_sl_len.push(self.p_sleep.len());
+        for i in 0..self.p_sleep.len() {
+            let q = at(in self.p_sleep.as_slice(), i);
+            self.sl.push(q);
+        }
+        self.p_sleep.clear();
+        self.n_cl.push(mark);
+        self.n_chosen.push(none());
+        self.n_running.push(running);
+        self.n_pre.push(pre);
+        self.n_key.push(none());
+        self.n_hit.push(false);
+        let sm_start = self.sm_proc.len();
+        self.n_sm.push(sm_start);
+        if self.caching {
+            for i in 0..pairs {
+                let p = at(in nexts, wrapping_add(i, i));
+                let next = at(in nexts, inc(wrapping_add(i, i)));
+                self.sm_insert(sm_start, p, next);
+            }
+        }
+    }
+
+    fn ev_truncate(inout self, k: u64) {
+        self.ev_proc.truncate(k);
+        self.ev_next.truncate(k);
+        self.ev_cl.truncate(k);
+        self.ev_cl_len.truncate(k);
+    }
+
+    // Record node `n` (the newest) in the cache.
+    fn cache_insert(inout self, n: u64) {
+        let key = at(in self.n_key.as_slice(), n);
+        if key == none() || atb(in self.n_hit.as_slice(), n) {
+            return;
+        }
+        loop {
+            if self.ca_set.len() > key {
+                break;
+            }
+            self.ca_set.push(false);
+            self.ca_sl_off.push(0);
+            self.ca_sl_len.push(0);
+            self.ca_sm_off.push(0);
+            self.ca_sm_len.push(0);
+        }
+        let sl0 = at(in self.n_sl.as_slice(), n);
+        let sl1 = wrapping_add(sl0, at(in self.n_sl_len.as_slice(), n));
+        let c0 = at(in self.ca_sl_off.as_slice(), key);
+        let c1 = wrapping_add(c0, at(in self.ca_sl_len.as_slice(), key));
+        let replace = !atb(in self.ca_set.as_slice(), key)
+            || range_subset(in self.sl.as_slice(), sl0, sl1, in self.ca_sl.as_slice(), c0, c1);
+        if !replace {
+            return;
+        }
+        self.ca_set.try_set(key, true);
+        let off = self.ca_sl.len();
+        self.ca_sl_off.try_set(key, off);
+        self.ca_sl_len.try_set(key, wrapping_sub(sl1, sl0));
+        for i in sl0..sl1 {
+            let q = at(in self.sl.as_slice(), i);
+            self.ca_sl.push(q);
+        }
+        let sm0 = at(in self.n_sm.as_slice(), n);
+        let sm1 = self.sm_proc.len();
+        let soff = self.ca_smp.len();
+        self.ca_sm_off.try_set(key, soff);
+        self.ca_sm_len.try_set(key, wrapping_sub(sm1, sm0));
+        for i in sm0..sm1 {
+            let p = at(in self.sm_proc.as_slice(), i);
+            let next = at(in self.sm_next.as_slice(), i);
+            self.ca_smp.push(p);
+            self.ca_smn.push(next);
+        }
+    }
+
+    // Merge the newest node's summary into its parent's (the block below).
+    fn merge_summary(inout self, n: u64) {
+        let a = at(in self.n_sm.as_slice(), wrapping_sub(n, 1));
+        let b = at(in self.n_sm.as_slice(), n);
+        let end = self.sm_proc.len();
+        self.t2.clear();
+        let mut i = a;
+        let mut j = b;
+        loop {
+            if i >= b && j >= end {
+                break;
+            }
+            let ip = at(in self.sm_proc.as_slice(), i);
+            let inx = at(in self.sm_next.as_slice(), i);
+            let jp = at(in self.sm_proc.as_slice(), j);
+            let jnx = at(in self.sm_next.as_slice(), j);
+            let take_i = j >= end || (i < b && (ip < jp || (ip == jp && inx <= jnx)));
+            if take_i {
+                self.t2.push(ip);
+                self.t2.push(inx);
+                if j < end && ip == jp && inx == jnx {
+                    j = inc(j);
+                }
+                i = inc(i);
+            } else {
+                self.t2.push(jp);
+                self.t2.push(jnx);
+                j = inc(j);
+            }
+        }
+        self.sm_proc.truncate(a);
+        self.sm_next.truncate(a);
+        let pairs = self.t2.len() >> 1;
+        for k in 0..pairs {
+            let p = at(in self.t2.as_slice(), wrapping_add(k, k));
+            let next = at(in self.t2.as_slice(), inc(wrapping_add(k, k)));
+            self.sm_proc.push(p);
+            self.sm_next.push(next);
+        }
+    }
+
+    fn pop_node(inout self) {
+        let n = wrapping_sub(self.n_chosen.len(), 1);
+        if self.caching {
+            self.cache_insert(n);
+            if n > 0 {
+                self.merge_summary(n);
+            } else {
+                self.sm_proc.truncate(0);
+                self.sm_next.truncate(0);
+            }
+        }
+        let en0 = self.en_start(n);
+        self.en.truncate(en0);
+        self.en_bt.truncate(en0);
+        self.en_done.truncate(en0);
+        self.en_slept.truncate(en0);
+        self.en_ord.truncate(en0);
+        let nx0 = at(in self.n_nx.as_slice(), n);
+        self.nx_proc.truncate(nx0);
+        self.nx_next.truncate(nx0);
+        let pc0 = at(in self.n_pc.as_slice(), n);
+        self.pc_proc.truncate(pc0);
+        self.pc_off.truncate(pc0);
+        self.pc_len.truncate(pc0);
+        let sl0 = at(in self.n_sl.as_slice(), n);
+        self.sl.truncate(sl0);
+        let cl0 = at(in self.n_cl.as_slice(), n);
+        self.cl_proc.truncate(cl0);
+        self.cl_val.truncate(cl0);
+        self.n_en.truncate(n);
+        self.n_en_len.truncate(n);
+        self.n_nx.truncate(n);
+        self.n_nx_len.truncate(n);
+        self.n_pc.truncate(n);
+        self.n_pc_len.truncate(n);
+        self.n_sl.truncate(n);
+        self.n_sl_len.truncate(n);
+        self.n_sm.truncate(n);
+        self.n_cl.truncate(n);
+        self.n_chosen.truncate(n);
+        self.n_running.truncate(n);
+        self.n_pre.truncate(n);
+        self.n_key.truncate(n);
+        self.n_hit.truncate(n);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The search loop (src/dpor.rs `explore`).
+
+pub fn search_nodes(in s: Search) -> u64 {
+    s.n_chosen.len()
+}
+
+// The processes of the recorded prefix, to re-execute.
+pub fn search_prefix(in s: Search) -> ChunkSeq[u64] {
+    copy_of(in s.ev_proc.as_slice())
+}
+
+// The first state: its enabled processes, its `(process, transition)`
+// pairs and its key.
+pub fn search_root(inout s: Search, in enabled: Slice[u64], in nexts: Slice[u64], key: u64) {
+    s.p_sleep.clear();
+    s.n_pc.push(0);
+    s.n_pc_len.push(0);
+    s.push_node(in enabled, in nexts, none(), 0, 0);
+    s.n_key.try_set(0, key);
+}
+
+// Whether the re-executed prefix reached the recorded enabled processes.
+pub fn search_same_enabled(in s: Search, in enabled: Slice[u64]) -> bool {
+    let d = s.ev_proc.len();
+    let start = s.en_start(d);
+    let len = at(in s.n_en_len.as_slice(), d);
+    if len != enabled.len() {
+        return false;
+    }
+    let mut same = true;
+    for i in 0..len {
+        if at(in s.en.as_slice(), wrapping_add(start, i)) != at(in enabled, i) {
+            same = false;
+        }
+    }
+    same
+}
+
+// The process to run at the current state (see the codes above). On code
+// 0 the event is recorded; execute it, then call `search_child`.
+pub fn search_choose(inout s: Search) -> Draw {
+    let d = s.ev_proc.len();
+    let mut p = at(in s.n_chosen.as_slice(), d);
+    if p == none() {
+        p = s.pick(d, false);
+    }
+    if p == none() {
+        if at(in s.n_en_len.as_slice(), d) == 0 {
+            return Draw {
+                code: 2,
+                value: 0
+            };
+        }
+        s.stats.sleep_blocked = inc(s.stats.sleep_blocked);
+        return Draw {
+            code: 1,
+            value: 0
+        };
+    }
+    let next = at(in s.nx_next.as_slice(), s.nx_find(d, p));
+    // The child's sleep set: sleeping processes independent of `p`.
+    s.p_sleep.clear();
+    if s.sleeping {
+        let sl0 = at(in s.n_sl.as_slice(), d);
+        let sl1 = wrapping_add(sl0, at(in s.n_sl_len.as_slice(), d));
+        for i in sl0..sl1 {
+            let q = at(in s.sl.as_slice(), i);
+            s.sleep_keep(d, q, p, next);
+        }
+        let start = s.en_start(d);
+        let end = s.en_end(d);
+        for i in start..end {
+            if atb(in s.en_slept.as_slice(), i) {
+                let q = at(in s.en.as_slice(), i);
+                s.sleep_keep(d, q, p, next);
+            }
+        }
+    }
+    let extra: u64 = if s.preempts(d, p) {
+        1
+    } else {
+        0
+    };
+    s.p_pre = wrapping_add(at(in s.n_pre.as_slice(), d), extra);
+    // The happens-before clock of the new event.
+    s.t1.clear();
+    let pci = s.pc_find(d, p);
+    if pci != none() {
+        let off = at(in s.pc_off.as_slice(), pci);
+        let len = at(in s.pc_len.as_slice(), pci);
+        for k in off..wrapping_add(off, len) {
+            let q = at(in s.cl_proc.as_slice(), k);
+            let v = at(in s.cl_val.as_slice(), k);
+            s.t1.push(q);
+            s.t1.push(v);
+        }
+    }
+    for e in 0..d {
+        let ep = at(in s.ev_proc.as_slice(), e);
+        let en = at(in s.ev_next.as_slice(), e);
+        if s.dep(ep, en, p, next) {
+            let off = at(in s.ev_cl.as_slice(), e);
+            let len = at(in s.ev_cl_len.as_slice(), e);
+            s.join_into(off, len);
+        }
+    }
+    s.t1_set(p, inc(d));
+    let mark = s.cl_proc.len();
+    let pairs = s.t1.len() >> 1;
+    for k in 0..pairs {
+        let q = at(in s.t1.as_slice(), wrapping_add(k, k));
+        let v = at(in s.t1.as_slice(), inc(wrapping_add(k, k)));
+        s.cl_proc.push(q);
+        s.cl_val.push(v);
+    }
+    s.ev_proc.push(p);
+    s.ev_next.push(next);
+    s.ev_cl.push(mark);
+    s.ev_cl_len.push(pairs);
+    s.p_proc = p;
+    s.p_next = next;
+    s.p_mark = mark;
+    Draw {
+        code: 0,
+        value: p
+    }
+}
+
+impl Search {
+    fn sleep_keep(inout self, d: u64, q: u64, p: u64, next: u64) {
+        if q == p {
+            return;
+        }
+        let i = self.nx_find(d, q);
+        if i == none() {
+            return;
+        }
+        let nq = at(in self.nx_next.as_slice(), i);
+        if !self.dep(q, nq, p, next) {
+            set_insert(inout self.p_sleep, q);
+        }
+    }
+}
+
+// The state after the chosen process ran: whether the fiber that ran is
+// still ready, and the new enabled processes and transitions.
+pub fn search_child(
+    inout s: Search,
+    still_ready: bool,
+    in enabled: Slice[u64],
+    in nexts: Slice[u64]
+) {
+    let d = wrapping_sub(s.ev_proc.len(), 1);
+    let p = s.p_proc;
+    let running = if proc_tag(p) == 0 {
+        if still_ready {
+            p
+        } else {
+            none()
+        }
+    } else {
+        at(in s.n_running.as_slice(), d)
+    };
+    // Process clocks: the parent's, `p`'s new clock, and the new clock for
+    // every process the step created.
+    let start = s.pc_proc.len();
+    let p0 = at(in s.n_pc.as_slice(), d);
+    let p1 = wrapping_add(p0, at(in s.n_pc_len.as_slice(), d));
+    for k in p0..p1 {
+        let q = at(in s.pc_proc.as_slice(), k);
+        let off = at(in s.pc_off.as_slice(), k);
+        let len = at(in s.pc_len.as_slice(), k);
+        s.pc_proc.push(q);
+        s.pc_off.push(off);
+        s.pc_len.push(len);
+    }
+    let coff = at(in s.ev_cl.as_slice(), d);
+    let clen = at(in s.ev_cl_len.as_slice(), d);
+    s.pc_insert(start, p, coff, clen, true);
+    let pairs = nexts.len() >> 1;
+    for i in 0..pairs {
+        let q = at(in nexts, wrapping_add(i, i));
+        if s.nx_find(d, q) == none() {
+            s.pc_insert(start, q, coff, clen, false);
+        }
+    }
+    s.n_pc.push(start);
+    let pc_count = wrapping_sub(s.pc_proc.len(), start);
+    s.n_pc_len.push(pc_count);
+    let pre = s.p_pre;
+    let mark = s.p_mark;
+    s.push_node(in enabled, in nexts, running, pre, mark);
+}
+
+// The newest state's running fiber (`none` when none) and preemptions, for
+// its key.
+pub fn search_running(in s: Search) -> u64 {
+    at(in s.n_running.as_slice(), wrapping_sub(s.n_running.len(), 1))
+}
+
+pub fn search_preemptions(in s: Search) -> u64 {
+    at(in s.n_pre.as_slice(), wrapping_sub(s.n_pre.len(), 1))
+}
+
+// The newest state's key; adds the backtracking points. True when the
+// state was already explored (abandon the execution).
+pub fn search_key(inout s: Search, key: u64) -> bool {
+    let n = s.ev_proc.len();
+    s.n_key.try_set(n, key);
+    let mut hit = false;
+    if key != none() && s.caching && key < s.ca_set.len() && atb(in s.ca_set.as_slice(), key) {
+        let sl0 = at(in s.n_sl.as_slice(), n);
+        let sl1 = wrapping_add(sl0, at(in s.n_sl_len.as_slice(), n));
+        let c0 = at(in s.ca_sl_off.as_slice(), key);
+        let c1 = wrapping_add(c0, at(in s.ca_sl_len.as_slice(), key));
+        hit = !s
+            .dpor
+            || (
+            !s.bounded && range_subset(in s.ca_sl.as_slice(), c0, c1, in s.sl.as_slice(), sl0, sl1)
+        );
+    }
+    if hit {
+        s.n_hit.try_set(n, true);
+        let sm0 = at(in s.n_sm.as_slice(), n);
+        s.sm_proc.truncate(sm0);
+        s.sm_next.truncate(sm0);
+        let off = at(in s.ca_sm_off.as_slice(), key);
+        let len = at(in s.ca_sm_len.as_slice(), key);
+        for k in off..wrapping_add(off, len) {
+            let p = at(in s.ca_smp.as_slice(), k);
+            let next = at(in s.ca_smn.as_slice(), k);
+            s.sm_proc.push(p);
+            s.sm_next.push(next);
+        }
+    }
+    if s.dpor {
+        s.add_backtrack_points();
+    }
+    if hit {
+        s.stats.cache_hits = inc(s.stats.cache_hits);
+        if s.dpor {
+            s.add_summary_points();
+        }
+    }
+    hit
+}
+
+// Move to the deepest state with an unexplored alternative; false when
+// the search is over.
+pub fn search_backtrack(inout s: Search) -> bool {
+    loop {
+        let n = s.n_chosen.len();
+        if n == 0 {
+            break false;
+        }
+        let last = wrapping_sub(n, 1);
+        let prev = at(in s.n_chosen.as_slice(), last);
+        if prev != none() {
+            s.n_chosen.try_set(last, none());
+            if s.sleeping {
+                let i = s.en_find(last, prev);
+                if i != none() {
+                    s.en_slept.try_set(i, true);
+                }
+            }
+        }
+        let found = if atb(in s.n_hit.as_slice(), last) {
+            none()
+        } else {
+            let dpor = s.dpor;
+            s.pick(last, dpor)
+        };
+        if found != none() {
+            s.ev_truncate(last);
+            break true;
+        }
+        s.pop_node();
+        s.ev_truncate(sat_sub(last, 1));
+    }
+}
+
+pub fn search_stats(in s: Search) -> SearchStats {
+    s.stats
+}
