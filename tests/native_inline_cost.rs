@@ -232,3 +232,21 @@ fn written_parameters_are_not_folded() {
     let expected = evaluate(&w, false);
     agree(&source, &expected);
 }
+
+/// Copies of `f` that arrive inside an inlined wrapper count against `f`'s
+/// cap too.
+#[test]
+fn callee_growth_counts_nested_copies() {
+    let source = "fn f(x: u64) -> u64 { wrapping_add(wrapping_mul(x, 3), rotate_left(x, 7)) } \
+        fn w(x: u64) -> u64 { wrapping_add(f(x), 1) } \
+        fn main() -> u64 { wrapping_add(wrapping_add(w(1), w(2)), wrapping_add(w(3), w(4))) }";
+    agree(source, &evaluate(&world(source), false));
+    let budget = Budget {
+        callee_growth: 3 * ir_inline_cost_of_f(source),
+        ..Budget::default()
+    };
+    let (report, program) = inlined_with(source, &budget);
+    // One copy of `f` inside `w`, then two copies of `w` into `main`: three.
+    assert!(report.growth["f"] <= budget.callee_growth, "{report:?}");
+    assert_eq!(calls(&program, "main", "w"), 2, "{report:?}");
+}
