@@ -1,0 +1,205 @@
+// Module wide of @vesper/bench (see lib.ves): 128-bit integers as two
+// words. Vesper has no `i128`/`u128`, and the Rust crate computes its
+// exact endpoints, cross products and binomial tails in them. A `W` is the
+// two's-complement bit pattern (`hi`, `lo`); the same pattern is read as
+// `u128` by the unsigned helpers (`w_ult`, `w_udivrem`) and as `i128` by
+// the signed ones (`w_slt`, `w_is_neg`). Addition, subtraction, negation
+// and multiplication wrap modulo 2^128: every Rust computation they replace
+// is exact in `i128`/`u128`, so the wrapped result is the exact one.
+use self::W;
+
+pub fn w(hi: u64, lo: u64) -> W {
+    W {
+        hi: hi,
+        lo: lo
+    }
+}
+
+pub fn w_zero() -> W {
+    w(0, 0)
+}
+
+pub fn w_u64(x: u64) -> W {
+    w(0, x)
+}
+
+pub fn w_i64(x: i64) -> W {
+    if x < 0 {
+        w(18446744073709551615, wrapping_u64(x))
+    } else {
+        w(0, wrapping_u64(x))
+    }
+}
+
+pub fn w_add(a: W, b: W) -> W {
+    let lo = wrapping_add(a.lo, b.lo);
+    let mut hi = wrapping_add(a.hi, b.hi);
+    if lo < a.lo {
+        hi = wrapping_add(hi, 1);
+    }
+    w(hi, lo)
+}
+
+pub fn w_sub(a: W, b: W) -> W {
+    let lo = wrapping_sub(a.lo, b.lo);
+    let mut hi = wrapping_sub(a.hi, b.hi);
+    if a.lo < b.lo {
+        hi = wrapping_sub(hi, 1);
+    }
+    w(hi, lo)
+}
+
+pub fn w_neg(a: W) -> W {
+    w_sub(w_zero(), a)
+}
+
+pub fn w_eq(a: W, b: W) -> bool {
+    a.hi == b.hi && a.lo == b.lo
+}
+
+pub fn w_is_zero(a: W) -> bool {
+    a.hi == 0 && a.lo == 0
+}
+
+pub fn w_is_neg(a: W) -> bool {
+    a.hi >= 9223372036854775808
+}
+
+// Unsigned a < b.
+pub fn w_ult(a: W, b: W) -> bool {
+    a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo)
+}
+
+// Signed a < b: flipping the sign bit of the high word makes the signed
+// order the unsigned one.
+pub fn w_slt(a: W, b: W) -> bool {
+    let ah = a.hi ^ 9223372036854775808;
+    let bh = b.hi ^ 9223372036854775808;
+    ah < bh || (ah == bh && a.lo < b.lo)
+}
+
+// -1, 0 or 1 for unsigned a against b.
+pub fn w_ucmp(a: W, b: W) -> i64 {
+    if w_ult(a, b) {
+        -1
+    } else if w_eq(a, b) {
+        0
+    } else {
+        1
+    }
+}
+
+// `unsigned_abs` of a signed value, as an unsigned W.
+pub fn w_uabs(a: W) -> W {
+    if w_is_neg(a) {
+        w_neg(a)
+    } else {
+        a
+    }
+}
+
+pub fn w_twice(a: W) -> W {
+    w_add(a, a)
+}
+
+// The full product of two words.
+pub fn w_mul_u64(a: u64, b: u64) -> W {
+    let (lo, hi) = mul_wide(a, b);
+    w(hi, lo)
+}
+
+// a * m modulo 2^128.
+pub fn w_mul_small(a: W, m: u64) -> W {
+    let (lo, carry) = mul_wide(a.lo, m);
+    w(wrapping_add(wrapping_mul(a.hi, m), carry), lo)
+}
+
+// a << 1 with the bit shifted out of the top.
+fn w_shl1(a: W) -> W {
+    w((a.hi << 1) | (a.lo >> 63), a.lo << 1)
+}
+
+// Unsigned (a / d, a % d) for d > 0, by shift and subtract. The remainder
+// stays below d, so when its doubled value would pass 2^128 it is above d
+// and one subtraction brings it back.
+pub fn w_udivrem(a: W, d: W) -> (W, W) {
+    if a.hi == 0 && d.hi == 0 && d.lo != 0 {
+        return handle Fail[RuntimeError] in {
+            (w_u64(a.lo / d.lo), w_u64(a.lo % d.lo))
+        } with {
+            return v => v,
+            raise(e, k) => (w_zero(), w_zero()),
+        };
+    }
+    if d.hi == 0 && d.lo != 0 && d.lo <= 4294967295 {
+        return handle Fail[RuntimeError] in {
+            w_udivrem_small(a, d.lo)
+        } with {
+            return v => v,
+            raise(e, k) => (w_zero(), w_zero()),
+        };
+    }
+    let mut q = w_zero();
+    let mut r = w_zero();
+    let mut i: u64 = 128;
+    loop {
+        if i == 0 {
+            break;
+        }
+        i = wrapping_sub(i, 1);
+        let top = r.hi >> 63;
+        let bit = if i >= 64 {
+            wrapping_shr_u64(a.hi, wrapping_u32(i)) & 1
+        } else {
+            wrapping_shr_u64(a.lo, wrapping_u32(i)) & 1
+        };
+        let s = w_shl1(r);
+        r = w(s.hi, s.lo | bit);
+        q = w_shl1(q);
+        if top == 1 || !w_ult(r, d) {
+            r = w_sub(r, d);
+            q = w(q.hi, q.lo | 1);
+        }
+    }
+    (q, r)
+}
+
+// Schoolbook division by a divisor below 2^32, one 32-bit limb at a time:
+// each partial remainder is below the divisor, so every step fits a u64.
+fn w_udivrem_small(a: W, d: u64) -> (W, W) eff [Fail[RuntimeError]] {
+    let q3 = wrapping_shr_u64(a.hi, wrapping_u32(32)) / d;
+    let r3 = wrapping_shr_u64(a.hi, wrapping_u32(32)) % d;
+    let x2 = wrapping_shl_u64(r3, wrapping_u32(32)) | (a.hi & 4294967295);
+    let q2 = x2 / d;
+    let x1 = wrapping_shl_u64(x2 % d, wrapping_u32(32)) | wrapping_shr_u64(a.lo, wrapping_u32(32));
+    let q1 = x1 / d;
+    let x0 = wrapping_shl_u64(x1 % d, wrapping_u32(32)) | (a.lo & 4294967295);
+    let q0 = x0 / d;
+    (
+        w(wrapping_shl_u64(q3, wrapping_u32(32)) | q2, wrapping_shl_u64(q1, wrapping_u32(32)) | q0),
+        w_u64(x0 % d)
+    )
+}
+
+// Floor division of a signed value by d > 0 (`i128::div_euclid` and
+// `rem_euclid` for a positive divisor): the remainder is in [0, d).
+pub fn w_floor_divrem(a: W, d: W) -> (W, W) {
+    if !w_is_neg(a) {
+        return w_udivrem(a, d);
+    }
+    let (q, r) = w_udivrem(w_neg(a), d);
+    if w_is_zero(r) {
+        (w_neg(q), r)
+    } else {
+        (w_sub(w_neg(q), w_u64(1)), w_sub(d, r))
+    }
+}
+
+// Whether a signed W is an i64.
+pub fn w_fits_i64(a: W) -> bool {
+    if a.lo >= 9223372036854775808 {
+        a.hi == 18446744073709551615
+    } else {
+        a.hi == 0
+    }
+}

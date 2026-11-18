@@ -6,7 +6,9 @@ license = "MIT OR Apache-2.0"
 description = "Owned hardware-counter observations (Linux perf group read and RDPMC, macOS kpc) for safe benchmark windows"
 
 [dependencies]
-vesper-bench = { path = "../vesper-bench" }
+# Inside the compiler's closure (the root links this crate), so it links
+# the frozen Rust seed copy of vesper-bench (#1040).
+vesper-bench = { path = "../vesper-bench/seed", package = "vesper-bench-seed" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
