@@ -60,7 +60,7 @@ fn parser<'a>(source: &'a str, tokens: Vec<Token>, limits: Limits) -> Parser<'a>
         diagnostics: vec![],
         no_struct: false,
         row_names: Default::default(),
-        bound_values: item_names,
+        bound_values: item_names.into(),
         model_uses: vec![],
         trait_bounds: vec![],
         uses: vec![],
@@ -869,7 +869,7 @@ pub(crate) fn parse_body_fragment(
         limits,
     );
     p.row_names = context.context.row_names.clone();
-    p.bound_values = context.context.bound_values.clone();
+    p.bound_values = context.context.bound_values.clone().into();
     p.no_struct = context.context.no_struct;
     p.block();
     if !p.at(K::Eof)

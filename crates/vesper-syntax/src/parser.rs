@@ -28,6 +28,7 @@ pub const ERROR_NODE: SyntaxKind = SyntaxKind(206);
 pub const INCOMPLETE: SyntaxKind = SyntaxKind(207);
 mod macro_driver;
 mod recovery_driver;
+mod scope;
 pub(crate) use macro_driver::{parse_source_header, parse_source_item};
 #[allow(
     unused_imports,
@@ -169,7 +170,7 @@ pub fn parse_with_limits(source: &str, limits: ParseLimits) -> Result<Parse, lex
         diagnostics,
         no_struct: false,
         row_names: Default::default(),
-        bound_values: item_names,
+        bound_values: item_names.into(),
         model_uses: vec![],
         trait_bounds: vec![],
         uses: vec![],
@@ -223,7 +224,7 @@ struct Parser<'a> {
     diagnostics: Vec<Diagnostic>,
     no_struct: bool,
     row_names: std::collections::BTreeSet<String>,
-    bound_values: std::collections::BTreeSet<String>,
+    bound_values: scope::ScopedNames,
     model_uses: Vec<ModelUse>,
     trait_bounds: Vec<TraitBoundSyntax>,
     /// Item-level `use` imports (resolved by the package loader).
@@ -1029,7 +1030,7 @@ impl Parser<'_> {
     fn function(&mut self, op: bool, fip: bool) -> Function {
         let diagnostics_before = self.diagnostics.len();
         let old_rows = self.row_names.clone();
-        let old_values = self.bound_values.clone();
+        let old_values = self.bound_values.mark();
         let header = self.function_header();
         let crate::macro_source::FunctionHeader {
             name,
@@ -1048,7 +1049,7 @@ impl Parser<'_> {
                 clean: self.diagnostics.len() == diagnostics_before,
                 nongeneric: generics.is_empty(),
                 row_names: self.row_names.clone(),
-                bound_values: self.bound_values.clone(),
+                bound_values: self.bound_values.to_set(),
             });
         }
         let body = if op {
@@ -1058,7 +1059,7 @@ impl Parser<'_> {
             Some(self.block())
         };
         self.row_names = old_rows;
-        self.bound_values = old_values;
+        self.bound_values.restore(old_values);
         Function {
             name,
             fip,
@@ -1721,7 +1722,7 @@ impl Parser<'_> {
             self.trivia();
             self.builder.start_node(BLOCK);
         }
-        let outer_values = self.bound_values.clone();
+        let outer_values = self.bound_values.mark();
         let start = self.start();
         self.expect(K::LBrace);
         let mut statements = vec![];
@@ -1795,7 +1796,7 @@ impl Parser<'_> {
             }
         }
         self.expect(K::RBrace);
-        self.bound_values = outer_values;
+        self.bound_values.restore(outer_values);
         let span = start..self.end();
         for u in &mut self.model_uses {
             if u.scope == (start..start) {
@@ -1889,10 +1890,10 @@ impl Parser<'_> {
             first
         };
         self.no_struct = old;
-        let outer_values = self.bound_values.clone();
+        let outer_values = self.bound_values.mark();
         pattern_bindings(&pat, &mut self.bound_values);
         let body = Box::new(self.block());
-        self.bound_values = outer_values;
+        self.bound_values.restore(outer_values);
         Expr {
             kind: ExprKind::For {
                 pat,
@@ -1972,11 +1973,11 @@ impl Parser<'_> {
             let before = self.pos;
             let pat = self.pattern();
             self.expect(K::FatArrow);
-            let outer_values = self.bound_values.clone();
+            let outer_values = self.bound_values.mark();
             pattern_bindings(&pat, &mut self.bound_values);
             let body = self.expr();
             let block_body = matches!(body.kind, ExprKind::Block { .. });
-            self.bound_values = outer_values;
+            self.bound_values.restore(outer_values);
             arms.push((pat, body));
             if !self.eat(K::Comma) && !self.at(K::RBrace) && !(block_body && self.pos > before) {
                 self.error("expected ',' between match arms");
@@ -2007,11 +2008,11 @@ impl Parser<'_> {
         };
         let infer_effects = !self.at(K::Eff);
         let effects = self.effects();
-        let outer_values = self.bound_values.clone();
+        let outer_values = self.bound_values.mark();
         self.bound_values
             .extend(params.iter().map(|p| p.name.clone()));
         let body = Box::new(self.expr());
-        self.bound_values = outer_values;
+        self.bound_values.restore(outer_values);
         Expr {
             kind: ExprKind::Closure {
                 params,
@@ -2050,14 +2051,14 @@ impl Parser<'_> {
         self.expect(K::Return);
         let pat = self.pattern();
         self.expect(K::FatArrow);
-        let outer_values = self.bound_values.clone();
+        let outer_values = self.bound_values.mark();
         pattern_bindings(&pat, &mut self.bound_values);
         let ret = Box::new(Clause {
             name: "return".into(),
             pats: vec![pat],
             body: self.expr(),
         });
-        self.bound_values = outer_values;
+        self.bound_values.restore(outer_values);
         self.eat(K::Comma);
         let mut ops = vec![];
         while !self.at(K::RBrace) && !self.at(K::Eof) {
@@ -2066,12 +2067,12 @@ impl Parser<'_> {
             let pats = self.pattern_list(K::RParen);
             self.expect(K::RParen);
             self.expect(K::FatArrow);
-            let outer_values = self.bound_values.clone();
+            let outer_values = self.bound_values.mark();
             for p in &pats {
                 pattern_bindings(p, &mut self.bound_values);
             }
             let body = self.expr();
-            self.bound_values = outer_values;
+            self.bound_values.restore(outer_values);
             ops.push(Clause { name, pats, body });
             self.eat(K::Comma);
         }
@@ -2606,7 +2607,7 @@ impl Parser<'_> {
     }
 }
 
-fn pattern_bindings(p: &Pattern, names: &mut std::collections::BTreeSet<String>) {
+fn pattern_bindings(p: &Pattern, names: &mut scope::ScopedNames) {
     match &p.kind {
         PatternKind::Bind(n) => {
             names.insert(n.clone());
