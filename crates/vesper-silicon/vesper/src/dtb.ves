@@ -1,0 +1,532 @@
+// Module dtb of @vesper/silicon (see lib.ves): DeviceTree::parse of
+// src/dtb.rs. Every length, offset, alignment, string terminator, token and
+// nesting level of a version 16 or 17 flattened devicetree is checked here,
+// in the Rust build's order, and the result is a tape of offsets into the
+// blob that the Rust wrapper (src/dtb/port.rs) turns into nodes and
+// properties. Failures are DtbFault codes (see lib.ves).
+use self::{
+    DtbFault,
+    Fdt
+};
+
+fn truncated(what: u64) -> Never eff [Fail[DtbFault]] {
+    Fail::raise(DtbFault::Truncated(what))
+}
+
+fn out_of_bounds(block: u64) -> Never eff [Fail[DtbFault]] {
+    Fail::raise(DtbFault::BlockOutOfBounds(block))
+}
+
+fn bad_structure(what: u64) -> Never eff [Fail[DtbFault]] {
+    Fail::raise(DtbFault::BadStructure(what))
+}
+
+// The big-endian u32 at `at` of the block `[base, base + len)` of `b`;
+// Truncated(`what`) when it does not fit in the block.
+fn be32(in b: Slice[u8], base: u64, len: u64, at: u64, what: u64) -> u64 eff [Fail[DtbFault]] {
+    if at > len || wrapping_sub(len, at) < 4 {
+        truncated(what);
+    }
+    match b.try_read_u32_be(wrapping_add(base, at)) {
+        Option::Some(v) => widen_u64(v),
+        Option::None => truncated(what),
+    }
+}
+
+fn align4(n: u64) -> u64 {
+    wrapping_add(n, 3) & ~3
+}
+
+// Whether `s[start..end]` is UTF-8 as `std::str::from_utf8` accepts it: no
+// overlong forms, surrogates or code points above U+10FFFF.
+fn utf8_ok(in s: Slice[u8], start: u64, end: u64) -> bool {
+    let mut i = start;
+    loop {
+        if i >= end {
+            return true;
+        }
+        let c = byte(in s, i);
+        if c < 128 {
+            i = wrapping_add(i, 1);
+        } else {
+            let mut n: u64 = 0;
+            let mut lo: u64 = 128;
+            let mut hi: u64 = 191;
+            if c >= 194 && c <= 223 {
+                n = 1;
+            } else if c == 224 {
+                n = 2;
+                lo = 160;
+            } else if (c >= 225 && c <= 236) || c == 238 || c == 239 {
+                n = 2;
+            } else if c == 237 {
+                n = 2;
+                hi = 159;
+            } else if c == 240 {
+                n = 3;
+                lo = 144;
+            } else if c >= 241 && c <= 243 {
+                n = 3;
+            } else if c == 244 {
+                n = 3;
+                hi = 143;
+            } else {
+                return false;
+            }
+            if wrapping_add(i, n) >= end {
+                return false;
+            }
+            let first = byte(in s, wrapping_add(i, 1));
+            if first < lo || first > hi {
+                return false;
+            }
+            let mut k: u64 = 2;
+            loop {
+                if k > n {
+                    break;
+                }
+                let x = byte(in s, wrapping_add(i, k));
+                if x < 128 || x > 191 {
+                    return false;
+                }
+                k = wrapping_add(k, 1);
+            }
+            i = wrapping_add(wrapping_add(i, n), 1);
+        }
+    }
+}
+
+fn byte(in s: Slice[u8], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => widen_u64(v),
+        Option::None => 0,
+    }
+}
+
+// The length of the NUL-terminated UTF-8 string at `at` of the block
+// `[base, base + len)` (errors at block offset `at`, reported at
+// `origin + at`).
+fn cstr(in b: Slice[u8], base: u64, len: u64, at: u64, origin: u64) -> u64 eff [Fail[DtbFault]] {
+    let offset = wrapping_add(origin, at);
+    if at > len {
+        Fail::raise(DtbFault::UnterminatedString(offset));
+    }
+    let start = wrapping_add(base, at);
+    let end = wrapping_add(base, len);
+    let mut i = start;
+    loop {
+        if i >= end {
+            Fail::raise(DtbFault::UnterminatedString(offset));
+        }
+        if byte(in b, i) == 0 {
+            break;
+        }
+        i = wrapping_add(i, 1);
+    }
+    if !utf8_ok(in b, start, i) {
+        Fail::raise(DtbFault::NotUtf8(offset));
+    }
+    wrapping_sub(i, start)
+}
+
+fn word(in s: ChunkSeq[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+// Which phandle property a name is: 1 `phandle`, 2 `linux,phandle`, else 0.
+fn phandle_kind(in b: Slice[u8], at: u64, n: u64) -> u64 {
+    if n == 7 {
+        if byte(in b, at)
+            == 112
+            && byte(in b, wrapping_add(at, 1))
+            == 104
+            && byte(in b, wrapping_add(at, 2))
+            == 97
+            && byte(in b, wrapping_add(at, 3))
+            == 110
+            && byte(in b, wrapping_add(at, 4))
+            == 100
+            && byte(in b, wrapping_add(at, 5))
+            == 108
+            && byte(in b, wrapping_add(at, 6))
+            == 101 {
+            return 1;
+        }
+        return 0;
+    }
+    if n == 13 {
+        // "linux," then "phandle".
+        if byte(in b, at)
+            == 108
+            && byte(in b, wrapping_add(at, 1))
+            == 105
+            && byte(in b, wrapping_add(at, 2))
+            == 110
+            && byte(in b, wrapping_add(at, 3))
+            == 117
+            && byte(in b, wrapping_add(at, 4))
+            == 120
+            && byte(in b, wrapping_add(at, 5))
+            == 44
+            && phandle_kind(in b, wrapping_add(at, 6), 7)
+            == 1 {
+            return 2;
+        }
+    }
+    0
+}
+
+// Stable bottom-up merge sort of `v` (whole words).
+fn sort_words(inout v: ChunkSeq[u64]) {
+    let n = v.len();
+    let mut tmp: ChunkSeq[u64] = ChunkSeq::new();
+    for i in 0..n {
+        tmp.push(0);
+    }
+    let mut width: u64 = 1;
+    loop {
+        if width >= n {
+            break;
+        }
+        let mut lo: u64 = 0;
+        loop {
+            if lo >= n {
+                break;
+            }
+            let mid = if wrapping_add(lo, width) < n {
+                wrapping_add(lo, width)
+            } else {
+                n
+            };
+            let hi = if wrapping_add(mid, width) < n {
+                wrapping_add(mid, width)
+            } else {
+                n
+            };
+            let mut a = lo;
+            let mut b = mid;
+            let mut k = lo;
+            loop {
+                if k >= hi {
+                    break;
+                }
+                let x = word(in v, a);
+                let y = word(in v, b);
+                if a < mid && (b >= hi || x <= y) {
+                    let _ = tmp.try_set(k, x);
+                    a = wrapping_add(a, 1);
+                } else {
+                    let _ = tmp.try_set(k, y);
+                    b = wrapping_add(b, 1);
+                }
+                k = wrapping_add(k, 1);
+            }
+            lo = hi;
+        }
+        for i in 0..n {
+            let x = word(in tmp, i);
+            let _ = v.try_set(i, x);
+        }
+        width = wrapping_mul(width, 2);
+    }
+}
+
+// The phandle table, in the Rust build's order: node by node, `phandle`
+// then `linux,phandle` (the first property of each name). The first
+// malformed property or the first phandle already held by another node
+// ends the table and is recorded in `ph_fault`.
+fn phandles(in b: Slice[u8], inout t: Fdt) {
+    let n = t.nodes.len() / 3;
+    // The first property of each kind per node, as a property index + 1.
+    let mut first: ChunkSeq[u64] = ChunkSeq::new();
+    for i in 0..n {
+        first.push(0);
+        first.push(0);
+    }
+    let np = t.props.len() / 5;
+    for p in 0..np {
+        let base = wrapping_mul(p, 5);
+        let kind = phandle_kind(
+            in b,
+            word(in t.props, wrapping_add(base, 1)),
+            word(in t.props, wrapping_add(base, 2))
+        );
+        if kind != 0 {
+            let slot = wrapping_add(wrapping_mul(word(in t.props, base), 2), wrapping_sub(kind, 1));
+            if word(in first, slot) == 0 {
+                let _ = first.try_set(slot, wrapping_add(p, 1));
+            }
+        }
+    }
+    // Entries (phandle << 32 | position) and their nodes, up to the first
+    // malformed property.
+    let mut keys: ChunkSeq[u64] = ChunkSeq::new();
+    let mut owner: ChunkSeq[u64] = ChunkSeq::new();
+    let mut bad = false;
+    let mut bad_node: u64 = 0;
+    let mut bad_kind: u64 = 0;
+    let mut bad_len: u64 = 0;
+    let mut id: u64 = 0;
+    loop {
+        if id >= n || bad {
+            break;
+        }
+        for k in 0..two() {
+            let p = word(in first, wrapping_add(wrapping_mul(id, 2), k));
+            if p != 0 && !bad {
+                let base = wrapping_mul(wrapping_sub(p, 1), 5);
+                let at = word(in t.props, wrapping_add(base, 3));
+                let len = word(in t.props, wrapping_add(base, 4));
+                if len != 4 {
+                    bad = true;
+                    bad_node = id;
+                    bad_kind = k;
+                    bad_len = len;
+                } else {
+                    let ph = match b.try_read_u32_be(at) {
+                        Option::Some(v) => widen_u64(v),
+                        Option::None => 0,
+                    };
+                    keys.push((ph << 32) | owner.len());
+                    owner.push(id);
+                }
+            }
+        }
+        id = wrapping_add(id, 1);
+    }
+    // The first entry whose phandle an earlier entry of another node holds.
+    let mut sorted: ChunkSeq[u64] = ChunkSeq::new();
+    sorted.extend(in keys.as_slice());
+    sort_words(inout sorted);
+    let none: u64 = 18446744073709551615;
+    let mut dup = none;
+    let mut i: u64 = 0;
+    let m = sorted.len();
+    loop {
+        if i >= m {
+            break;
+        }
+        let key = word(in sorted, i);
+        let ph = key >> 32;
+        let n0 = word(in owner, key & 4294967295);
+        let mut j = wrapping_add(i, 1);
+        loop {
+            if j >= m {
+                break;
+            }
+            let kj = word(in sorted, j);
+            if (kj >> 32) != ph {
+                break;
+            }
+            let pos = kj & 4294967295;
+            if word(in owner, pos) != n0 && pos < dup {
+                dup = pos;
+            }
+            j = wrapping_add(j, 1);
+        }
+        i = j;
+    }
+    if dup != none {
+        t.ph_fault = 2;
+        t.ph_a = word(in keys, dup) >> 32;
+    } else if bad {
+        t.ph_fault = 1;
+        t.ph_a = bad_node;
+        t.ph_b = bad_kind;
+        t.ph_c = bad_len;
+    }
+    let count = if dup != none {
+        dup
+    } else {
+        keys.len()
+    };
+    for e in 0..count {
+        t.phandles.push(word(in keys, e) >> 32);
+        t.phandles.push(word(in owner, e));
+    }
+}
+
+fn two() -> u64 {
+    2
+}
+
+pub fn m_parse(in b: Slice[u8]) -> Fdt eff [Fail[DtbFault]] {
+    let blen = b.len();
+    if blen < 36 {
+        truncated(0);
+    }
+    let magic = be32(in b, 0, blen, 0, 0);
+    if magic != 3490578157 {
+        Fail::raise(DtbFault::BadMagic(magic));
+    }
+    let total = be32(in b, 0, blen, 4, 0);
+    let off_struct = be32(in b, 0, blen, 8, 0);
+    let off_strings = be32(in b, 0, blen, 12, 0);
+    let off_rsv = be32(in b, 0, blen, 16, 0);
+    let version = be32(in b, 0, blen, 20, 0);
+    let last = be32(in b, 0, blen, 24, 0);
+    let boot = be32(in b, 0, blen, 28, 0);
+    let size_strings = be32(in b, 0, blen, 32, 0);
+    if version < 16 || last > 17 || last > version {
+        Fail::raise(
+            DtbFault::UnsupportedVersion {
+                version: version,
+                last_compatible: last
+            }
+        );
+    }
+    let header: u64 = if version >= 17 {
+        40
+    } else {
+        36
+    };
+    if total < header || total > blen {
+        truncated(1);
+    }
+    let size_struct = if version >= 17 {
+        be32(in b, 0, blen, 36, 0)
+    } else {
+        if total < off_struct {
+            out_of_bounds(0);
+        }
+        wrapping_sub(total, off_struct)
+    };
+    if (off_struct & 3) != 0 {
+        Fail::raise(DtbFault::Misaligned(0));
+    }
+    if (off_rsv & 7) != 0 {
+        Fail::raise(DtbFault::Misaligned(1));
+    }
+    if off_struct < header || wrapping_add(off_struct, size_struct) > total {
+        out_of_bounds(0);
+    }
+    if off_strings < header || wrapping_add(off_strings, size_strings) > total {
+        out_of_bounds(1);
+    }
+    let mut t = Fdt {
+        version: version,
+        boot_cpuid: boot,
+        rsv: ChunkSeq::new(),
+        nodes: ChunkSeq::new(),
+        props: ChunkSeq::new(),
+        phandles: ChunkSeq::new(),
+        ph_fault: 0,
+        ph_a: 0,
+        ph_b: 0,
+        ph_c: 0
+    };
+    // Memory reservation block: (address, size) pairs up to (0, 0).
+    if off_rsv < header {
+        out_of_bounds(2);
+    }
+    let mut at = off_rsv;
+    loop {
+        let bh = be32(in b, 0, total, at, 2);
+        let bl = be32(in b, 0, total, wrapping_add(at, 4), 2);
+        let sh = be32(in b, 0, total, wrapping_add(at, 8), 2);
+        let sl = be32(in b, 0, total, wrapping_add(at, 12), 2);
+        at = wrapping_add(at, 16);
+        let base = (bh << 32) | bl;
+        let size = (sh << 32) | sl;
+        if base == 0 && size == 0 {
+            break;
+        }
+        if t.rsv.len() == 2048 {
+            Fail::raise(DtbFault::TooManyReservations);
+        }
+        t.rsv.push(base);
+        t.rsv.push(size);
+    }
+    // Structure block.
+    let mut stack: ChunkSeq[u64] = ChunkSeq::new();
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    let mut root_done = false;
+    loop {
+        let token = be32(in b, off_struct, size_struct, i, 3);
+        let tok_at = i;
+        i = wrapping_add(i, 4);
+        if token == 4 {
+            // FDT_NOP
+        } else if token == 1 {
+            if root_done {
+                bad_structure(0);
+            }
+            let n = cstr(in b, off_struct, size_struct, i, off_struct);
+            let name = wrapping_add(off_struct, i);
+            i = align4(wrapping_add(wrapping_add(i, n), 1));
+            if stack.len() == 64 {
+                Fail::raise(DtbFault::TooDeep);
+            }
+            if count == 65536 {
+                Fail::raise(DtbFault::TooManyNodes);
+            }
+            let depth = stack.len();
+            if depth == 0 && n != 0 {
+                bad_structure(1);
+            }
+            let parent = if depth == 0 {
+                0
+            } else {
+                wrapping_add(word(in stack, wrapping_sub(depth, 1)), 1)
+            };
+            t.nodes.push(name);
+            t.nodes.push(n);
+            t.nodes.push(parent);
+            stack.push(count);
+            count = wrapping_add(count, 1);
+        } else if token == 2 {
+            let depth = stack.len();
+            if depth == 0 {
+                bad_structure(2);
+            }
+            stack.truncate(wrapping_sub(depth, 1));
+            if depth == 1 {
+                root_done = true;
+            }
+        } else if token == 3 {
+            let len = be32(in b, off_struct, size_struct, i, 5);
+            let nameoff = be32(in b, off_struct, size_struct, wrapping_add(i, 4), 5);
+            i = wrapping_add(i, 8);
+            let end = wrapping_add(i, len);
+            if end > size_struct {
+                truncated(6);
+            }
+            let value = wrapping_add(off_struct, i);
+            i = align4(end);
+            if nameoff >= size_strings {
+                out_of_bounds(3);
+            }
+            let n = cstr(in b, off_strings, size_strings, nameoff, off_strings);
+            let depth = stack.len();
+            if depth == 0 {
+                bad_structure(3);
+            }
+            t.props.push(word(in stack, wrapping_sub(depth, 1)));
+            t.props.push(wrapping_add(off_strings, nameoff));
+            t.props.push(n);
+            t.props.push(value);
+            t.props.push(len);
+        } else if token == 9 {
+            if stack.len() != 0 || !root_done {
+                bad_structure(4);
+            }
+            break;
+        } else {
+            Fail::raise(
+                DtbFault::BadToken {
+                    offset: wrapping_add(off_struct, tok_at),
+                    token: token
+                }
+            );
+        }
+    }
+    if count == 0 {
+        bad_structure(5);
+    }
+    phandles(in b, inout t);
+    t
+}

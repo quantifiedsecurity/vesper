@@ -51,6 +51,7 @@ members = [
     "crates/vesper-aether",
     "crates/vesper-fiber-abi",
     "crates/vesper-pact",
+    "crates/vesper-pact/seed",
     "crates/vesper-pact-bridge",
     "crates/vesper-pact-binding",
     "crates/vesper-loom-cas",
@@ -71,6 +72,7 @@ members = [
     "crates/vesper-resonance",
     "crates/vesper-warp-tls",
     "crates/vesper-silicon",
+    "crates/vesper-silicon/seed",
     "crates/vesper-ebpf",
     "crates/vesper-ebpf/seed",
     "crates/vesper-chrono",
@@ -144,6 +146,7 @@ default-members = [
     "crates/vesper-aether",
     "crates/vesper-fiber-abi",
     "crates/vesper-pact",
+    "crates/vesper-pact/seed",
     "crates/vesper-pact-bridge",
     "crates/vesper-pact-binding",
     "crates/vesper-loom-cas",
@@ -164,6 +167,7 @@ default-members = [
     "crates/vesper-resonance",
     "crates/vesper-warp-tls",
     "crates/vesper-silicon",
+    "crates/vesper-silicon/seed",
     "crates/vesper-ebpf",
     "crates/vesper-ebpf/seed",
     "crates/vesper-chrono",
@@ -199,6 +203,8 @@ rowan = "0.16"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 io-uring = "0.7"
+crossbeam-deque = "=0.8.8"
+core_affinity = "=0.8.3"
 aes = { version = "=0.8.4", features = ["zeroize"] }
 aes-gcm = { version = "=0.10.3", default-features = false, features = ["aes", "zeroize"] }
 chacha20 = { version = "=0.9.1", features = ["zeroize"] }
@@ -261,7 +267,7 @@ vesper-loom-admission = { path = "crates/vesper-loom-admission" }
 # The compiler links the frozen Rust seed copy of vesper-loom-audit (#1039).
 vesper-loom-audit = { path = "crates/vesper-loom-audit/seed", package = "vesper-loom-audit-seed" }
 vesper-loom-cas = { path = "crates/vesper-loom-cas" }
-vesper-pact = { path = "crates/vesper-pact" }
+vesper-pact = { path = "crates/vesper-pact/seed", package = "vesper-pact-seed" }
 vesper-pact-binding = { path = "crates/vesper-pact-binding" }
 # Integration B (#136): wave-five verifiers and tools wired into the CLI.
 # The compiler links the frozen Rust seed copy (seed-copy rule); the Vesper
@@ -278,7 +284,9 @@ vesper-kinetic = { path = "crates/vesper-kinetic" }
 vesper-ffi = { path = "crates/vesper-ffi" }
 vesper-migrate = { path = "crates/vesper-migrate" }
 vesper-resonance = { path = "crates/vesper-resonance" }
-vesper-silicon = { path = "crates/vesper-silicon" }
+# The compiler links the frozen Rust seed copy (seed-copy rule); the Vesper
+# port is the package crates/vesper-silicon (#1042).
+vesper-silicon = { path = "crates/vesper-silicon/seed", package = "vesper-silicon-seed" }
 vesper-vault = { path = "crates/vesper-vault" }
 # Source Strata regions (wave seven lane 29) run on the host region allocator.
 # The compiler links the frozen Rust seed copy (seed-copy rule); the Vesper

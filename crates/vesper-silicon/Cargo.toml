@@ -5,10 +5,34 @@ edition = "2024"
 description = "Vesper Silicon (§26): Cranelift stack-depth analysis (x86_64, AArch64, riscv64), SVD MMIO hazards and typestate accessor generation, devicetree input, IrqGuard and DMA/page-frame conservation models with Zicbom"
 license = "MIT OR Apache-2.0"
 publish = false
+build = "build.rs"
+
+# This is the port-backed build: build.rs links the Vesper package in vesper/
+# and sets cfg(vesper_port). The compiler and every other dependent use the
+# frozen Rust seed copy, crates/vesper-silicon/seed (package
+# vesper-silicon-seed, same library name), until the port reaches
+# performance parity; see "Crates the compiler links" in
+# docs/maintenance/porting-a-crate.md and docs/parallel-results/port-p3-silicon.md.
+
+[features]
+# Deliberately wrong Vesper builds (EDITS in build.rs, one per ported area):
+# crates/vesper-silicon/port/check.sh asserts which test catches each.
+vesper-port-divergent = []
 
 [dependencies]
 cranelift-codegen = { version = "0.125", features = ["arm64", "riscv64", "x86"] }
 svd-parser = { version = "=0.14.10", features = ["expand"] }
+vesper-port-abi = { path = "../vesper-port-abi" }
 
 [dev-dependencies]
 cranelift-frontend = "0.125"
+# The ABBA benchmark (examples/abba.rs) and the differential tests
+# (tests/parity.rs) run the frozen Rust build next to the port.
+vesper-bench = { path = "../vesper-bench" }
+vesper-silicon-rust = { path = "seed", package = "vesper-silicon-seed" }
+
+[build-dependencies]
+vesper-port-harness = { path = "../vesper-port-harness" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(vesper_port)"] }

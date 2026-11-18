@@ -335,6 +335,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("crates/vesper-loom-calculus/vesper")
                     // Port P1 lane 17 (#914): `use` (#880).
                     || path.ends_with("crates/vesper-loom-solver/vesper")
+                    // Port P3a lane 3 (#1038): `use` (#880).
+                    || path.ends_with("crates/vesper-pact/vesper")
                     // Port P3a lane 4 (#1039): `use` (#880).
                     || path.ends_with("crates/vesper-loom-audit/vesper")
                     || path.ends_with("crates/vesper-prism/vesper")
@@ -368,6 +370,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("crates/vesper-aegis/vesper")
                     // Port P3a lane 6 (#1041): the eBPF port uses `use` (#880).
                     || path.ends_with("crates/vesper-ebpf/vesper")
+                    // Port P3a lane 7 (#1042): the Silicon port uses `use` (#880).
+                    || path.ends_with("crates/vesper-silicon/vesper")
                 {
                     continue;
                 }
