@@ -13,17 +13,10 @@ fn sort_seq[T: mod copy](inout s: ChunkSeq[T]) where T: Ord {
     if n < 2 {
         return;
     }
-    let mut src: ChunkSeq[T] = ChunkSeq::new[T]();
-    let mut dst: ChunkSeq[T] = ChunkSeq::new[T]();
-    for i in 0..n {
-        match s.try_get(i) {
-            Option::Some(v) => {
-                src.push(v);
-                dst.push(v);
-            },
-            Option::None => (),
-        }
-    }
+    let mut src: ChunkSeq[T] = ChunkSeq::with_capacity[T](n);
+    src.extend(in s.as_slice());
+    let mut dst: ChunkSeq[T] = ChunkSeq::with_capacity[T](n);
+    dst.extend(in src.as_slice());
     let mut width: u64 = 1;
     loop {
         if width >= n {
@@ -84,24 +77,11 @@ fn sort_seq[T: mod copy](inout s: ChunkSeq[T]) where T: Ord {
             }
             lo = hi;
         }
-        for x in 0..n {
-            match dst.try_get(x) {
-                Option::Some(v) => {
-                    src.try_set(x, v);
-                },
-                Option::None => (),
-            }
-        }
+        // Same lengths: the total copy cannot refuse.
+        let _copied = src.try_copy_from(0, in dst.as_slice());
         width = wrapping_mul(width, 2);
     }
-    for x in 0..n {
-        match src.try_get(x) {
-            Option::Some(v) => {
-                s.try_set(x, v);
-            },
-            Option::None => (),
-        }
-    }
+    let _copied = s.try_copy_from(0, in src.as_slice());
 }
 
 // Sorts and removes adjacent duplicates (a `BTreeSet` in the Rust code).
