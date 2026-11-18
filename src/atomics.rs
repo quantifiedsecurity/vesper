@@ -501,9 +501,10 @@ fn check_expr(types: &TypeMap, e: &Expr, out: &mut Vec<Diagnostic>) {
     }
 }
 
-/// The private cell on Place IR, where every read names its root's type:
-/// no function outside the prelude reads or projects `cell` of an
-/// `Atomic[T]` (`E0822`).
+/// The private cell on Place IR, where every read and write names its
+/// root's type: no function outside the prelude reads, writes or projects
+/// `cell` of an `Atomic[T]` (`E0822`), so the cell always holds the one
+/// element the native lowering dereferences.
 pub fn check_program(world: &World, program: &crate::ir::Program) -> Vec<Diagnostic> {
     use crate::ir::Op;
     let mut out = vec![];
@@ -524,6 +525,11 @@ pub fn check_program(world: &World, program: &crate::ir::Program) -> Vec<Diagnos
                 Op::Read { root, path, .. } => {
                     path.first().is_some_and(|p| p == CELL)
                         && root_type(root).and_then(cell_type).is_some()
+                }
+                Op::Write { place, .. } => {
+                    let mut path = place.split('.');
+                    let root = path.next().unwrap_or_default();
+                    path.next() == Some(CELL) && root_type(root).and_then(cell_type).is_some()
                 }
                 Op::Project(v, field) => {
                     field == CELL && f.values.get(v).and_then(cell_type).is_some()

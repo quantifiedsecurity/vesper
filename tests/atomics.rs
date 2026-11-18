@@ -555,6 +555,11 @@ fn invalid_orders_kinds_and_the_private_cell_are_refused() {
         "private to its operations",
     );
     rejects(
+        "fn main() -> u64 {\n    let mut c: Atomic[u64] = Atomic::new(5);\n    c.cell = ChunkSeq::new[u64]();\n    c.load(MemoryOrder::Relaxed)\n}\n",
+        "E0822",
+        "private to its operations",
+    );
+    rejects(
         "fn main() -> u64 {\n    let c = Atomic { cell: ChunkSeq::new[u64]() };\n    0\n}\n",
         "E0822",
         "built by 'Atomic::new'",
