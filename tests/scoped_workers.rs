@@ -86,11 +86,19 @@ fn differential(name: &str, source: &str, expected: u64) {
             .run("main", vec![])
             .unwrap_or_else(|e| panic!("{name}: evaluator (optimize {optimize}) failed: {e}"))
             .to_string();
-        assert_eq!(value, expected.to_string(), "{name}: evaluator (optimize {optimize})");
+        assert_eq!(
+            value,
+            expected.to_string(),
+            "{name}: evaluator (optimize {optimize})"
+        );
         let jit = native::jit_with_options(&c.world, "main", optimize)
             .unwrap_or_else(|e| panic!("{name}: JIT (optimize {optimize}) failed: {e}"))
             .to_string();
-        assert_eq!(jit, expected.to_string(), "{name}: JIT (optimize {optimize})");
+        assert_eq!(
+            jit,
+            expected.to_string(),
+            "{name}: JIT (optimize {optimize})"
+        );
     }
     for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
         native::object_for_target(&c.world, "main", Some(target))
@@ -207,7 +215,10 @@ fn main() -> u64 {
         let jit = native::jit_with_options(&c.world, "main", optimize)
             .unwrap()
             .to_string();
-        assert_eq!(jit, "2", "both iterations saw each other (optimize {optimize})");
+        assert_eq!(
+            jit, "2",
+            "both iterations saw each other (optimize {optimize})"
+        );
     }
 }
 
@@ -235,7 +246,11 @@ fn the_runtime_joins_every_iteration() {
     for n in [0u64, 1, 2, 7, 1000] {
         HITS.store(0, Ordering::SeqCst);
         assert_eq!(vesper_parallel_for(body, 3, n), 0);
-        assert_eq!(HITS.load(Ordering::SeqCst), (0..n).map(|i| 3 + i).sum::<u64>(), "n = {n}");
+        assert_eq!(
+            HITS.load(Ordering::SeqCst),
+            (0..n).map(|i| 3 + i).sum::<u64>(),
+            "n = {n}"
+        );
     }
     if parallel_hardware() {
         let threads = SEEN.lock().unwrap().len();
@@ -376,7 +391,9 @@ fn main() -> u64 {{
     let run = |reps: u64, parallel: bool| {
         let c = accepted(&program(reps, parallel));
         let start = std::time::Instant::now();
-        let got = native::jit_with_options(&c.world, "main", true).unwrap().to_string();
+        let got = native::jit_with_options(&c.world, "main", true)
+            .unwrap()
+            .to_string();
         let elapsed = start.elapsed().as_secs_f64();
         assert_eq!(got, one.wrapping_mul(reps).to_string());
         elapsed

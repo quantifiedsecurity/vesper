@@ -5279,7 +5279,11 @@ impl<M: Module> Codegen<'_, '_, M> {
     /// `vesper_parallel_for`, which returns once every iteration has run.
     /// `None` when the body or data does not fit that word ABI, so the call
     /// falls back to the prelude's sequential loop.
-    fn parallel_for_call(&mut self, args: &[Arg], site: &Expr) -> Result<Option<ir::Value>, String> {
+    fn parallel_for_call(
+        &mut self,
+        args: &[Arg],
+        site: &Expr,
+    ) -> Result<Option<ir::Value>, String> {
         // The body is a top-level function value without captures (the
         // optimize path hands it over as a renamed operand, so resolve the
         // value rather than the name).
@@ -5317,12 +5321,16 @@ impl<M: Module> Codegen<'_, '_, M> {
         let fun = self.m.declare_func_in_func(id, self.b.func);
         let sig = &self.b.func.dfg.signatures[self.b.func.dfg.ext_funcs[fun].signature];
         let word = AbiParam::new(types::I64);
-        if sig.params != [word, word] || sig.returns.len() > 1 || sig.returns.iter().any(|r| *r != word) {
+        if sig.params != [word, word]
+            || sig.returns.len() > 1
+            || sig.returns.iter().any(|r| *r != word)
+        {
             return Ok(None);
         }
         // From here on the call is committed: `data` and `n` are evaluated
         // once, in order.
-        let data = if layout.aggregate() && crate::check::Place::from_expr(&args[0].expr).is_some() {
+        let data = if layout.aggregate() && crate::check::Place::from_expr(&args[0].expr).is_some()
+        {
             self.address(&args[0].expr)?
         } else {
             self.expr(&args[0].expr)?

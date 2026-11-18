@@ -429,9 +429,9 @@ pub(crate) fn prelude(module: &Module, after: usize) -> Module {
 pub fn is_prelude_function(world: &World, name: &str) -> bool {
     (world.workers_prelude && name == PARALLEL_FOR)
         || world.atomic_prelude
-        && name
-            .strip_prefix("Atomic::")
-            .is_some_and(|m| matches!(m, "new" | "into_inner") || AtomicOp::of_method(m).is_some())
+            && name.strip_prefix("Atomic::").is_some_and(|m| {
+                matches!(m, "new" | "into_inner") || AtomicOp::of_method(m).is_some()
+            })
 }
 
 /// Whether the call `callee` in `world` is an intercepted atomic operation.
@@ -516,7 +516,11 @@ fn check_workers(world: &World, e: &Expr, out: &mut Vec<Diagnostic>) {
         _ => false,
     };
     if shared_inout || body_inout {
-        let at = if shared_inout { &args[0].expr.span } else { &body.span };
+        let at = if shared_inout {
+            &args[0].expr.span
+        } else {
+            &body.span
+        };
         out.push(
             diagnostic(
                 "E0824",
