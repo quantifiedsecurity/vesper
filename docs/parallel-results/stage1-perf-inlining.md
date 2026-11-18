@@ -207,6 +207,14 @@ as JIT and library builds. `--no-opt` objects are unchanged.
   `constant_time_callees` entry names a callee the function no longer calls,
   the report says so and suggests `--no-opt`; checking the inlined body can
   only add findings, never hide one.
+* **Inline provenance.** `ir_inline::Report::inlined_into` and
+  `EmittedFunction::inlined` list every body copied into a function
+  (transitively). The realtime verifier adds a helper's declared
+  `realtime.effects` to each function holding its copy, so inlining cannot
+  turn a forbidden effect into an accepted root (test: `clean_main` with
+  `forward: ["Alloc"]` is rejected with and without `--no-opt`). Attested
+  `loop_bounds` are not carried over: an inlined loop is then unbounded in
+  the caller, which can only reject.
 * **Instrument hooks** (`object_instrumented`) see the same inlined code, so
   an inert hook still leaves the bytes unchanged. `vesper fuzz
   --native-coverage` builds its JIT unoptimized and is not affected.

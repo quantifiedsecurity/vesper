@@ -268,6 +268,9 @@ fn objects_inline_when_optimized() {
             }
             let main = emitted.iter().find(|f| f.key == "main").unwrap();
             assert_eq!(main.optimized, optimize);
+            let provenance: Vec<_> = main.inlined.iter().map(String::as_str).collect();
+            let expected: &[&str] = if optimize { &["add3", "f", "sq"] } else { &[] };
+            assert_eq!(provenance, expected, "{target}");
             let calls_helper = main
                 .callees
                 .iter()

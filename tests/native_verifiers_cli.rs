@@ -252,6 +252,29 @@ fn realtime_rejects_recursion_and_undeclared_imports_and_accepts_a_confined_root
         ],
         "realtime",
     );
+    // Effects declared for a helper still count once the optimized build
+    // inlines it into the root (#959), and with `--no-opt` through the call.
+    let alloc = temp.policy(
+        "rt-alloc.json",
+        r#"{"schema":"vesper.native-verifiers/1","realtime":{"roots":{"clean_main":null},"effects":{"forward":["Alloc"]}}}"#,
+    );
+    for no_opt in [false, true] {
+        let mut flags = vec![
+            "--verify-realtime",
+            "--verify-policy",
+            alloc.to_str().unwrap(),
+        ];
+        if no_opt {
+            flags.push("--no-opt");
+        }
+        rejects(
+            &temp,
+            "clean_main",
+            &flags,
+            "realtime/rt-forbidden-effect",
+            "clean_main",
+        );
+    }
 }
 
 #[test]

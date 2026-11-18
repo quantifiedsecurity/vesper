@@ -755,13 +755,16 @@ fn compile_entry<M: Module>(
     }
     let instances = instances_for_entry(world, entry, trace_ok)?;
     let mut program = crate::ir::lower_world(world);
+    let mut inlined_into = BTreeMap::new();
     if optimize {
         crate::ir_opt::optimize(world, &mut program)?;
         // Executable objects inline too (#959). The decision depends only on
         // the world, never on the observer or instrument hooks, so a
         // verified build stays byte-identical to the plain one and the
         // verifiers check the code that ships.
-        crate::ir_inline::inline(world, &mut program, &crate::ir_inline::Budget::default());
+        inlined_into =
+            crate::ir_inline::inline(world, &mut program, &crate::ir_inline::Budget::default())
+                .inlined_into;
     } else {
         crate::ir_opt::fip_reuse_pass(world, &mut program)?;
     }
@@ -774,6 +777,25 @@ fn compile_entry<M: Module>(
     let (ids, trace_entry_id) =
         declare_instances_with_trace(m, world, entry, &instances, linkage, trace_ok, &abi)?;
     let trace_entry = trace_entry_id.map(|id| (entry, id));
+    // Observers learn which bodies each function holds (inline provenance).
+    let observed = observer.is_some();
+    let mut observer = observer;
+    let mut with_provenance = |mut f: EmittedFunction| {
+        if let Some(into) = inlined_into
+            .get(&f.key)
+            .or_else(|| inlined_into.get(&f.source))
+        {
+            f.inlined = into.clone();
+        }
+        if let Some(observe) = observer.as_mut() {
+            observe(f);
+        }
+    };
+    let observer: Option<&mut dyn FnMut(EmittedFunction)> = if observed {
+        Some(&mut with_provenance)
+    } else {
+        None
+    };
     let clif = define_instances_observed_with_trace(
         m,
         world,
@@ -850,6 +872,10 @@ pub struct EmittedFunction {
     /// function at Cranelift `opt_level=speed` ([`object_isa_optimized`]).
     /// The stack verifier recompiles with the same ISA (#959).
     pub optimized: bool,
+    /// Functions whose bodies the inliner copied into this one, directly or
+    /// through other inlined callees ([`crate::ir_inline::Report`]). Policy
+    /// facts declared for them apply to this function too (#959).
+    pub inlined: std::collections::BTreeSet<String>,
 }
 impl EmittedFunction {
     /// The source function with this instance's generic arguments
@@ -1208,6 +1234,7 @@ fn define_instances_observed_with_trace<M: Module>(
                 callees,
                 vars: generic_vars.clone(),
                 optimized: operands_only,
+                inlined: Default::default(),
             });
         }
         m.define_function(define_id, &mut ctx)

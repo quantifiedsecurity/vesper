@@ -678,6 +678,19 @@ pub fn verify_emitted(
                 effects.iter().map(|e| effect(e)).collect(),
             );
         }
+        // An optimized build may have inlined a function with declared
+        // effects; the function holding the copy performs them too (#959).
+        for f in functions {
+            for inlined in &f.inlined {
+                if let Some(effects) = policy.realtime.effects.get(inlined) {
+                    table
+                        .defined_effects
+                        .entry(f.key.clone())
+                        .or_default()
+                        .extend(effects.iter().map(|e| effect(e)));
+                }
+            }
+        }
         table.loop_bounds = policy.realtime.loop_bounds.clone();
         let input: Vec<(String, cranelift_codegen::ir::Function)> = functions
             .iter()
