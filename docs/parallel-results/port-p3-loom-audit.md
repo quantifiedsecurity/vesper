@@ -8,7 +8,7 @@ deleted (owner rule).
 ## What was ported
 
 The Vesper package `crates/vesper-loom-audit/vesper` (`@vesper/loom-audit`,
-about 1,600 lines in six modules) imports `@vesper/loom-calculus` and runs that
+about 2,000 lines in seven modules) imports `@vesper/loom-calculus` and runs that
 package's decoder, SemVer order and solution validator on the calculus state
 it holds.
 
