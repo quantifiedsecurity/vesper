@@ -346,6 +346,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("crates/vesper-ignis/vesper")
                     // Port P1 lane 19 (#916): the serde port uses `use` (#880).
                     || path.ends_with("crates/vesper-serde/vesper")
+                    // Port P1 lane 15 (#912): the semver port uses `use` (#880).
+                    || path.ends_with("crates/vesper-semver/vesper")
                     // Port P1 lane 8 (#905): the Tensor port uses `use` (#880).
                     || path.ends_with("crates/vesper-tensor/vesper")
                     // Port P1 lane 6 (#903): the Strata port, a Loom package
