@@ -5549,7 +5549,7 @@ dependencies = [
  "vesper-fiber-abi",
  "vesper-fmt",
  "vesper-forge",
- "vesper-grammar",
+ "vesper-grammar-seed",
  "vesper-highlight",
  "vesper-kinetic",
  "vesper-lean-syntax",
@@ -5878,6 +5878,18 @@ dependencies = [
 [[package]]
 name = "vesper-grammar"
 version = "0.1.0"
+dependencies = [
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
+
+[[package]]
+name = "vesper-grammar-seed"
+version = "0.1.0"
+dependencies = [
+ "vesper-bench",
+]
 
 [[package]]
 name = "vesper-highlight"
