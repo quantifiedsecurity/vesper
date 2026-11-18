@@ -47,6 +47,9 @@ pub struct World {
     /// Names of the string prelude functions this module received
     /// (`String::push_char`, `Str::next_char`, ...; §13 strings).
     pub string_prelude: BTreeSet<String>,
+    /// Whether the module received the atomic prelude (`Atomic[T]`,
+    /// `MemoryOrder`; [`crate::atomics`]).
+    pub atomic_prelude: bool,
     /// Second-class trait objects: `dyn` parameters, vtable stubs and the
     /// vtables the program needs (empty without `dyn`; §7.1).
     pub dyn_objects: crate::dyn_trait::DynObjects,
@@ -83,6 +86,15 @@ impl World {
                 .max(crate::integer_widths::module_end(&width_prelude))
                 .max(crate::integer_widths::module_end(&float_prelude)),
         );
+        // Atomic cells and memory orders used by the module (`atomics`).
+        let atomic_prelude = crate::atomics::prelude(
+            module,
+            crate::integer_widths::module_end(&secret_prelude)
+                .max(crate::integer_widths::module_end(&width_prelude))
+                .max(crate::integer_widths::module_end(&float_prelude))
+                .max(crate::integer_widths::module_end(&string_prelude)),
+        );
+        w.atomic_prelude = !atomic_prelude.items.is_empty();
         w.string_prelude = crate::strings::prelude_function_names(&string_prelude);
         w.float_prelude = float_prelude
             .items
@@ -100,6 +112,7 @@ impl World {
             .chain(width_prelude.items.iter())
             .chain(float_prelude.items.iter())
             .chain(string_prelude.items.iter())
+            .chain(atomic_prelude.items.iter())
             .enumerate()
         {
             match item {
@@ -624,16 +637,16 @@ pub(crate) fn check_core(
         // Slice placement is independent of every other judgment.
         diagnostics.extend(crate::seq::check_world(&world));
         diagnostics.extend(crate::strings::check_world(&world));
+        diagnostics.extend(crate::atomics::check_world(&world));
     }
     if diagnostics.is_empty() && traits.is_none() {
         diagnostics.extend(crate::regions::check_world(&world));
         diagnostics.extend(crate::fip::check_world(&world));
     }
     if diagnostics.is_empty() && traits.is_none() {
-        diagnostics.extend(crate::ir_check::validate(
-            &world,
-            &crate::ir::lower_world(&world),
-        ));
+        let program = crate::ir::lower_world(&world);
+        diagnostics.extend(crate::ir_check::validate(&world, &program));
+        diagnostics.extend(crate::atomics::check_program(&world, &program));
     }
     let mut seen = BTreeSet::new();
     diagnostics

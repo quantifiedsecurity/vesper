@@ -1,0 +1,308 @@
+// Vesper port of vesper-silicon (port wave P3a lane 7, #1042).
+//
+// Ported here: the RISC-V AIA register models of src/aia.rs (module aia)
+// and the flattened-devicetree reader of DeviceTree::parse in src/dtb.rs
+// (module dtb). The Rust crate keeps its public types; its wrappers in
+// src/port/ call this library and convert what comes back. The Rust build
+// stays the default (the compiler links the seed copy, seed/) until the
+// port reaches performance parity.
+//
+// @export abi 3
+use self::aia::{
+    m_aplic_claimi,
+    m_aplic_contains,
+    m_aplic_copy,
+    m_aplic_make,
+    m_aplic_delegated_to,
+    m_aplic_idc_asserted,
+    m_aplic_is_delegated_here,
+    m_aplic_is_pending,
+    m_aplic_make,
+    m_aplic_mode,
+    m_aplic_read32,
+    m_aplic_rectified,
+    m_aplic_set_active_here,
+    m_aplic_set_wire,
+    m_aplic_take_msis,
+    m_aplic_topi,
+    m_aplic_write32,
+    m_imsic_asserted,
+    m_imsic_bit_eie,
+    m_imsic_bit_eip,
+    m_imsic_claim,
+    m_imsic_copy,
+    m_imsic_csr_read,
+    m_imsic_csr_write,
+    m_imsic_make,
+    m_imsic_mmio_write32,
+    m_imsic_same,
+    m_imsic_seteipnum,
+    m_imsic_top,
+    m_imsic_topei,
+    m_msi_address
+};
+use self::dtb::{
+    m_parse
+};
+
+// ---------------------------------------------------------------- AIA types
+
+// aia::AiaError; NoDeliveryMode gets the domain's path in the wrapper.
+pub copy enum AiaFault {
+    Unmapped(u64),
+    Misaligned(u64),
+    BadIselect(u64),
+    BadIdCount(u64),
+    BadSourceCount(u64),
+    WindowTooSmall {
+        size: u64,
+        needed: u64
+    },
+    NoDeliveryMode
+}
+
+// aia::MsiAddrCfg.
+pub copy struct MsiCfg {
+    m_ppn: u64,
+    s_ppn: u64,
+    hhxs: u64,
+    lhxs_m: u64,
+    lhxs_s: u64,
+    hhxw: u64,
+    lhxw: u64,
+    locked: bool
+}
+
+// aia::Msi.
+pub copy struct Msi {
+    addr: u64,
+    data: u64
+}
+
+// aia::ImsicFile: `eip` and `eie` hold 64 identities per word.
+pub struct Imsic {
+    ids: u64,
+    delivery: u64,
+    external: bool,
+    threshold: u64,
+    eip: ChunkSeq[u64],
+    eie: ChunkSeq[u64]
+}
+
+// aia::AplicDomain: one entry per source (index 0 unused) and one per IDC.
+pub struct Aplic {
+    base: u64,
+    sources: u64,
+    supervisor: bool,
+    root: bool,
+    msi_capable: bool,
+    direct_capable: bool,
+    children: u64,
+    ie: bool,
+    dm: bool,
+    sourcecfg: ChunkSeq[u64],
+    active_here: ChunkSeq[bool],
+    raw: ChunkSeq[bool],
+    pending: ChunkSeq[bool],
+    enabled: ChunkSeq[bool],
+    target: ChunkSeq[u64],
+    idc_delivery: ChunkSeq[bool],
+    idc_force: ChunkSeq[bool],
+    idc_threshold: ChunkSeq[u64],
+    msicfg: MsiCfg,
+    outbox: ChunkSeq[Msi]
+}
+
+// ---------------------------------------------------------------- AIA exports
+
+// ImsicFile::new (`external` false) and ::with_external_delivery.
+pub fn imsic_new(ids: u64, external: bool) -> Imsic eff [Fail[AiaFault]] {
+    m_imsic_make(ids, external)
+}
+
+pub fn imsic_clone(in f: Imsic) -> Imsic {
+    m_imsic_copy(in f)
+}
+
+pub fn imsic_eq(in f: Imsic, in g: Imsic) -> bool {
+    m_imsic_same(in f, in g)
+}
+
+pub fn imsic_is_pending(in f: Imsic, id: u64) -> bool {
+    m_imsic_bit_eip(in f, id)
+}
+
+pub fn imsic_is_enabled(in f: Imsic, id: u64) -> bool {
+    m_imsic_bit_eie(in f, id)
+}
+
+pub fn imsic_seteipnum(inout f: Imsic, id: u64) {
+    m_imsic_seteipnum(inout f, id)
+}
+
+pub fn imsic_mmio_write32(inout f: Imsic, off: u64, v: u64) {
+    m_imsic_mmio_write32(inout f, off, v)
+}
+
+pub fn imsic_csr_read(in f: Imsic, isel: u64) -> u64 eff [Fail[AiaFault]] {
+    m_imsic_csr_read(in f, isel)
+}
+
+pub fn imsic_csr_write(inout f: Imsic, isel: u64, v: u64) eff [Fail[AiaFault]] {
+    m_imsic_csr_write(inout f, isel, v)
+}
+
+pub fn imsic_top(in f: Imsic) -> u64 {
+    m_imsic_top(in f)
+}
+
+pub fn imsic_topei(in f: Imsic) -> u64 {
+    m_imsic_topei(in f)
+}
+
+pub fn imsic_claim(inout f: Imsic) -> u64 {
+    m_imsic_claim(inout f)
+}
+
+pub fn imsic_asserted(in f: Imsic) -> bool {
+    m_imsic_asserted(in f)
+}
+
+pub fn msi_address(c: MsiCfg, supervisor: bool, hart: u64, guest: u64) -> u64 {
+    m_msi_address(c, supervisor, hart, guest)
+}
+
+// AplicDomain::new without the path (NoDeliveryMode carries none).
+pub fn aplic_new(
+    base: u64,
+    size: u64,
+    sources: u64,
+    idcs: u64,
+    msi_capable: bool,
+    root: bool,
+    supervisor: bool,
+    children: u64
+) -> Aplic eff [Fail[AiaFault]] {
+    m_aplic_make(base, size, sources, idcs, msi_capable, root, supervisor, children)
+}
+
+pub fn aplic_clone(in a: Aplic) -> Aplic {
+    m_aplic_copy(in a)
+}
+
+pub fn aplic_contains(in a: Aplic, addr: u64) -> bool {
+    m_aplic_contains(in a, addr)
+}
+
+// The source mode's `sourcecfg.SM` code.
+pub fn aplic_mode(in a: Aplic, src: u64) -> u64 {
+    m_aplic_mode(in a, src)
+}
+
+pub fn aplic_delegated_to(in a: Aplic, src: u64) -> Option[u64] {
+    m_aplic_delegated_to(in a, src)
+}
+
+pub fn aplic_is_delegated_here(in a: Aplic, src: u64) -> bool {
+    m_aplic_is_delegated_here(in a, src)
+}
+
+pub fn aplic_set_active_here(inout a: Aplic, src: u64, active: bool) {
+    m_aplic_set_active_here(inout a, src, active)
+}
+
+pub fn aplic_is_pending(in a: Aplic, src: u64) -> bool {
+    m_aplic_is_pending(in a, src)
+}
+
+pub fn aplic_rectified(in a: Aplic, src: u64) -> bool {
+    m_aplic_rectified(in a, src)
+}
+
+pub fn aplic_set_wire(inout a: Aplic, src: u64, high: bool) {
+    m_aplic_set_wire(inout a, src, high)
+}
+
+pub fn aplic_set_msi_cfg(inout a: Aplic, c: MsiCfg) {
+    a.msicfg = c;
+}
+
+pub fn aplic_topi(in a: Aplic, idc: u64) -> u64 {
+    m_aplic_topi(in a, idc)
+}
+
+pub fn aplic_claimi(inout a: Aplic, idc: u64) -> u64 {
+    m_aplic_claimi(inout a, idc)
+}
+
+pub fn aplic_idc_asserted(in a: Aplic, idc: u64) -> bool {
+    m_aplic_idc_asserted(in a, idc)
+}
+
+pub fn aplic_take_msis(inout a: Aplic) -> ChunkSeq[Msi] {
+    m_aplic_take_msis(inout a)
+}
+
+pub fn aplic_read32(inout a: Aplic, addr: u64) -> u64 eff [Fail[AiaFault]] {
+    m_aplic_read32(inout a, addr)
+}
+
+pub fn aplic_write32(inout a: Aplic, addr: u64, v: u64) eff [Fail[AiaFault]] {
+    m_aplic_write32(inout a, addr, v)
+}
+
+// ---------------------------------------------------------------- devicetree
+
+// dtb::DtbError of DeviceTree::parse. The `&'static str` details are codes:
+// Truncated 0 header, 1 totalsize, 2 memory reservation, 3 structure token,
+// 4 node name, 5 property header, 6 property value; BlockOutOfBounds 0
+// structure, 1 strings, 2 memory reservation, 3 property name; Misaligned 0
+// structure block, 1 memory reservation block; BadStructure 0 second root
+// node, 1 root node has a name, 2 unbalanced end node, 3 property outside a
+// node, 4 FDT_END inside a node, 5 no root node.
+pub copy enum DtbFault {
+    Truncated(u64),
+    BadMagic(u64),
+    UnsupportedVersion {
+        version: u64,
+        last_compatible: u64
+    },
+    BlockOutOfBounds(u64),
+    Misaligned(u64),
+    BadToken {
+        offset: u64,
+        token: u64
+    },
+    UnterminatedString(u64),
+    NotUtf8(u64),
+    TooDeep,
+    TooManyNodes,
+    TooManyReservations,
+    BadStructure(u64)
+}
+
+// A checked devicetree as offsets into the blob: `rsv` holds (address,
+// size) pairs; `nodes` three words per node (name start, name length,
+// parent index + 1 or 0 for the root); `props` five words per property
+// (node, name start, name length, value start, value length); `phandles`
+// (phandle, node) pairs in the Rust build's insertion order. `ph_fault` is
+// 0, or 1 for a phandle property that is not one cell (`ph_a` node, `ph_b`
+// 0 `phandle` or 1 `linux,phandle`, `ph_c` its length in bytes), or 2 for
+// a phandle two nodes hold (`ph_a`).
+pub struct Fdt {
+    version: u64,
+    boot_cpuid: u64,
+    rsv: ChunkSeq[u64],
+    nodes: ChunkSeq[u64],
+    props: ChunkSeq[u64],
+    phandles: ChunkSeq[u64],
+    ph_fault: u64,
+    ph_a: u64,
+    ph_b: u64,
+    ph_c: u64
+}
+
+// DeviceTree::parse.
+pub fn dtb_parse(in blob: Slice[u8]) -> Fdt eff [Fail[DtbFault]] {
+    m_parse(in blob)
+}
