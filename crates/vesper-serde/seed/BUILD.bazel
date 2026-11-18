@@ -45,6 +45,8 @@ rust_test(
                 "simd_stage2",
             ] else []
         ),
+        # float_lemire reads src/pow5.rs with include_str!.
+        compile_data = ["//crates/vesper-serde:rust_srcs"],
         crate_root = "//crates/vesper-serde:tests/%s.rs" % t,
         edition = "2024",
         deps = [":seed"],
