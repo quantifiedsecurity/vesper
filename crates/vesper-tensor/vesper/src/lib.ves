@@ -66,6 +66,18 @@ use self::tokens::{
     encode as t_encode,
     lookup as t_lookup
 };
+use self::pool::{
+    kv_append as p_kv_append,
+    kv_begin as p_kv_begin,
+    kv_checkpoint as p_kv_checkpoint,
+    kv_layout as p_kv_layout,
+    kv_len as p_kv_len,
+    kv_read as p_kv_read,
+    kv_read_page as p_kv_read_page,
+    kv_release as p_kv_release,
+    kv_rollback as p_kv_rollback,
+    kv_stats as p_kv_stats
+};
 use self::sampling::{
     add_assign as s_add_assign,
     argmax as s_argmax,
@@ -330,6 +342,126 @@ pub fn encode_prompt(
         inout work,
         inout key
     )
+}
+
+// The paged K/V pool (src/kv.rs); see pool.ves for the tables and codes.
+pub fn kv_layout(in config: Slice[u64], inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    p_kv_layout(in config, inout out)
+}
+
+pub fn kv_len(in slots: Slice[u64], slot: u64, generation: u64, inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    p_kv_len(in slots, slot, generation, inout out)
+}
+
+pub fn kv_stats(in pages: Slice[u64], in slots: Slice[u64], inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    p_kv_stats(in pages, in slots, inout out)
+}
+
+pub fn kv_begin(inout slots: Slice[u64], inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    p_kv_begin(inout slots, inout out)
+}
+
+pub fn kv_append(
+    inout storage: Slice[u8],
+    inout pages: Slice[u64],
+    inout slots: Slice[u64],
+    inout leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64,
+    position: u64,
+    format_ok: bool,
+    shape_ok: bool,
+    in key: Slice[u8],
+    in value: Slice[u8]
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    p_kv_append(
+        inout storage,
+        inout pages,
+        inout slots,
+        inout leases,
+        in cfg,
+        slot,
+        generation,
+        position,
+        format_ok,
+        shape_ok,
+        in key,
+        in value
+    )
+}
+
+pub fn kv_read(
+    in pages: Slice[u64],
+    in slots: Slice[u64],
+    in leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64,
+    position: u64,
+    inout out: Slice[u64]
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    p_kv_read(in pages, in slots, in leases, in cfg, slot, generation, position, inout out)
+}
+
+pub fn kv_read_page(
+    in pages: Slice[u64],
+    in slots: Slice[u64],
+    in leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64,
+    index: u64,
+    inout out: Slice[u64]
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    p_kv_read_page(in pages, in slots, in leases, in cfg, slot, generation, index, inout out)
+}
+
+pub fn kv_checkpoint(in slots: Slice[u64], slot: u64, generation: u64, inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    p_kv_checkpoint(in slots, slot, generation, inout out)
+}
+
+pub fn kv_rollback(
+    inout storage: Slice[u8],
+    inout pages: Slice[u64],
+    inout slots: Slice[u64],
+    in leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64,
+    same_owner: bool,
+    epoch: u64,
+    tokens: u64
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    p_kv_rollback(
+        inout storage,
+        inout pages,
+        inout slots,
+        in leases,
+        in cfg,
+        slot,
+        generation,
+        same_owner,
+        epoch,
+        tokens
+    )
+}
+
+pub fn kv_release(
+    inout storage: Slice[u8],
+    inout pages: Slice[u64],
+    inout slots: Slice[u64],
+    in leases: Slice[u64],
+    in cfg: Slice[u64],
+    slot: u64,
+    generation: u64
+) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    p_kv_release(inout storage, inout pages, inout slots, in leases, in cfg, slot, generation)
 }
 
 // Sampling (src/sampling.rs).

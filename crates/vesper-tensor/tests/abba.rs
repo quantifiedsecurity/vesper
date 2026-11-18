@@ -583,3 +583,259 @@ fn abba_gguf_header() {
         },
     );
 }
+
+macro_rules! kv_script {
+    ($krate:ident, $ops:expr, $format:expr) => {{
+        use $krate::kv::*;
+        let format = if $format {
+            KvFormat::F32
+        } else {
+            KvFormat::Bf16
+        };
+        let mut pool = KvPool::with_format(
+            KvConfig {
+                heads: 2,
+                head_dim: 2,
+                pages: 4,
+                max_sequences: 3,
+                max_tokens_per_sequence: 20,
+                max_bytes: 1 << 16,
+            },
+            format,
+        )
+        .unwrap();
+        let mut log = Vec::new();
+        let mut live: Vec<Option<Sequence>> = vec![None, None, None];
+        let mut marks: Vec<Checkpoint> = Vec::new();
+        for &(op, which, arg) in $ops {
+            let which = which % 3;
+            let entry = match op % 8 {
+                0 => match pool.begin() {
+                    Ok(s) => {
+                        let old = live[which].replace(s);
+                        if let Some(old) = old {
+                            format!("{:?}", pool.release(old).map_err(|f| f.error))
+                        } else {
+                            "begin".into()
+                        }
+                    }
+                    Err(e) => format!("{e:?}"),
+                },
+                1..=3 => match live[which].as_mut() {
+                    Some(s) => {
+                        let position = if arg % 7 == 0 {
+                            arg % 50
+                        } else {
+                            pool.len(s).unwrap()
+                        };
+                        let fill = (arg % 251) as u8;
+                        let r = if $format {
+                            let v = [f32::from_bits(arg as u32 | 1); 4];
+                            pool.append_f32(s, position, &v, &v)
+                        } else {
+                            let bytes = [fill; 8];
+                            let step = Bf16Step {
+                                heads: 2,
+                                head_dim: if arg % 13 == 0 { 3 } else { 2 },
+                                bytes: &bytes,
+                            };
+                            pool.append(s, position, step, step)
+                        };
+                        format!("{r:?}")
+                    }
+                    None => "none".into(),
+                },
+                4 => match live[which].as_ref() {
+                    Some(s) => {
+                        let len = pool.len(s).unwrap();
+                        let mut out = format!("len {len} pages {:?}", pool.page_count(s));
+                        for p in 0..len + 1 {
+                            out.push_str(&format!(
+                                " {:?}",
+                                pool.read(s, p).map(|t| (t.key.to_vec(), t.value.to_vec()))
+                            ));
+                        }
+                        for i in 0..pool.page_count(s).unwrap() + 1 {
+                            out.push_str(&format!(
+                                " {:?}",
+                                pool.read_page(s, i).map(|p| (
+                                    p.first_position,
+                                    p.tokens,
+                                    p.keys.to_vec()
+                                ))
+                            ));
+                        }
+                        out.push_str(&format!(
+                            " {:?}",
+                            pool.read_head(s, 0, arg % 3).map(|t| t.key.to_vec())
+                        ));
+                        out
+                    }
+                    None => "none".into(),
+                },
+                5 => match live[which].as_ref() {
+                    Some(s) => match pool.checkpoint(s) {
+                        Ok(c) => {
+                            marks.push(c);
+                            "mark".into()
+                        }
+                        Err(e) => format!("{e:?}"),
+                    },
+                    None => "none".into(),
+                },
+                6 => match (live[which].as_mut(), marks.len()) {
+                    (Some(s), n) if n > 0 => {
+                        let m = &marks[arg % n];
+                        format!("{:?}", pool.rollback(s, m))
+                    }
+                    (Some(s), _) => format!("{:?}", pool.truncate(s, arg % 20)),
+                    _ => "none".into(),
+                },
+                _ => match live[which].take() {
+                    Some(s) => match pool.release(s) {
+                        Ok(()) => "released".into(),
+                        Err(f) => {
+                            live[which] = Some(f.sequence);
+                            format!("{:?}", f.error)
+                        }
+                    },
+                    None => "none".into(),
+                },
+            };
+            log.push(format!("{entry} {:?}", pool.stats()));
+        }
+        log
+    }};
+}
+
+#[test]
+fn both_builds_run_the_same_kv_scripts() {
+    let mut x = 17u64;
+    let mut seen = Vec::new();
+    for script in 0..60 {
+        // Each script starts by filling two sequences past their token limit
+        // and the pool's pages, then appending to a third.
+        let fill = [0, 1, 2].into_iter().flat_map(|which| {
+            std::iter::once((0, which, 1)).chain(std::iter::repeat_n((1, which, 1), 22))
+        });
+        let ops: Vec<(usize, usize, usize)> = fill
+            .chain((0..300).map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (
+                    (x >> 40) as usize % 8,
+                    (x >> 20) as usize % 3,
+                    (x >> 4) as usize % 1000,
+                )
+            }))
+            .collect();
+        let f32_pool = script % 2 == 1;
+        let rust = kv_script!(seed, &ops, f32_pool);
+        assert_eq!(
+            rust,
+            kv_script!(vesper_tensor, &ops, f32_pool),
+            "script {script}"
+        );
+        seen.extend(rust);
+    }
+    // The scripts reach every outcome they can.
+    let all = seen.join("\n");
+    for outcome in [
+        "Ok(())",
+        "released",
+        "mark",
+        "Position",
+        "TokenLimit",
+        "OutOfPages",
+        "SequenceLimit",
+        "StaleCheckpoint",
+        "Shape",
+        "Ok((",
+    ] {
+        assert!(all.contains(outcome), "no {outcome}");
+    }
+    // Configuration checks.
+    for (heads, head_dim, pages, sequences, tokens, bytes) in [
+        (0, 1, 1, 1, 1, 64),
+        (1, 1, 4097, 1, 1, 1 << 20),
+        (usize::MAX, 2, 1, 1, 1, 64),
+        (64, 64, 64, 1, 16, 1 << 20),
+        (1, 1, 2, 1, 33, 1 << 10),
+        (1, 1, 4096, 1024, 65_536, 1 << 26),
+        (1, 1, 2, 2, 32, 128),
+    ] {
+        let config = |k: &str| {
+            format!(
+                "{k} {:?}",
+                (heads, head_dim, pages, sequences, tokens, bytes)
+            )
+        };
+        let r = seed::kv::KvPool::new(seed::kv::KvConfig {
+            heads,
+            head_dim,
+            pages,
+            max_sequences: sequences,
+            max_tokens_per_sequence: tokens,
+            max_bytes: bytes,
+        })
+        .map(|p| p.stats());
+        let v = vesper_tensor::kv::KvPool::new(vesper_tensor::kv::KvConfig {
+            heads,
+            head_dim,
+            pages,
+            max_sequences: sequences,
+            max_tokens_per_sequence: tokens,
+            max_bytes: bytes,
+        })
+        .map(|p| p.stats());
+        assert_eq!(
+            format!("{:?}", r),
+            format!("{:?}", v),
+            "{}",
+            config("config")
+        );
+    }
+}
+
+#[test]
+#[ignore = "benchmark; run in release with --ignored --nocapture"]
+fn abba_kv_append_read() {
+    macro_rules! run {
+        ($krate:ident) => {{
+            use $krate::kv::*;
+            let mut pool = KvPool::with_format(
+                KvConfig {
+                    heads: 8,
+                    head_dim: 64,
+                    pages: 64,
+                    max_sequences: 1,
+                    max_tokens_per_sequence: 1024,
+                    max_bytes: 64 << 20,
+                },
+                KvFormat::F32,
+            )
+            .unwrap();
+            let step = values(9, 8 * 64);
+            move || {
+                let mut s = pool.begin().unwrap();
+                let mut sum = 0u64;
+                for p in 0..1024 {
+                    pool.append_f32(&mut s, p, &step, &step).unwrap();
+                    sum += u64::from(pool.read(&s, p).unwrap().key[0]);
+                }
+                for i in 0..pool.page_count(&s).unwrap() {
+                    sum += pool.read_page(&s, i).unwrap().tokens as u64;
+                }
+                pool.truncate(&mut s, 100).unwrap();
+                pool.release(s).unwrap();
+                sum
+            }
+        }};
+    }
+    abba(
+        "K/V pool: 1,024 FP32 appends and reads, 8x64 heads",
+        run!(seed),
+        run!(vesper_tensor),
+    );
+}
