@@ -462,7 +462,102 @@ fn register_locals(
                         || matches!(name.as_str(), "f32" | "f64" | "bool")))
         })
         .map(|(n, _)| n.clone())
+        .chain(in_param_registers(world, f, generics))
         .collect()
+}
+/// The `in` parameters of `f` whose word (a sequence, string or other
+/// handle; aggregates already arrive as pointers) can stay in the incoming
+/// argument register instead of a home slot (port speed lane 3, #1023).
+///
+/// An `in` parameter is a shared borrow for the whole call: the checker
+/// rejects every write to it and every `inout` or `sink` use of it, and
+/// while the caller lends it as `in` no other path may change it either. So
+/// the word read at entry is the word at every later read, and a use that
+/// needs an address gets a scratch copy ([`Codegen::address`]), which is
+/// never written. A name that the body rebinds, writes, moves or lends
+/// mutably, or that a closure or handler captures, keeps its slot, and so
+/// does every parameter of a function that calls.
+fn in_param_registers<'a>(
+    world: &'a World,
+    f: &'a crate::ir::FunctionIr,
+    generics: &'a BTreeMap<String, Type>,
+) -> impl Iterator<Item = String> + 'a {
+    use crate::ir::Op;
+    let mut kept = BTreeSet::new();
+    let lent = |args: &[crate::ir::Argument], kept: &mut BTreeSet<String>| {
+        for a in args {
+            if a.pass != Pass::In
+                && let Some(p) = &a.place
+            {
+                kept.insert(p.root.clone());
+            }
+        }
+    };
+    for inst in f.blocks.iter().flat_map(|b| &b.instructions) {
+        match &inst.op {
+            Op::Write { place, .. } => {
+                kept.insert(place.split('.').next().unwrap_or(place).to_owned());
+            }
+            Op::Bind { pattern, .. } => bound_names(pattern, &mut kept),
+            Op::Read { root, pass, .. } if *pass != Pass::In => {
+                kept.insert(root.clone());
+            }
+            Op::Call { args, .. }
+            | Op::Indirect { args, .. }
+            | Op::Tiled { args, .. }
+            | Op::Fip { args, .. }
+            | Op::Seq { args, .. } => lent(args, &mut kept),
+            Op::Closure {
+                expr,
+                aliases,
+                moves,
+            }
+            | Op::Handle {
+                expr,
+                aliases,
+                moves,
+                ..
+            } => {
+                kept.extend(crate::check::free_names(expr));
+                kept.extend(aliases.keys().cloned());
+                kept.extend(aliases.values().cloned());
+                kept.extend(moves.iter().map(|p| p.root.clone()));
+            }
+            _ => {}
+        }
+    }
+    // Only in a function that calls nothing: across a call the incoming
+    // word would need a callee-saved register (saved and restored around
+    // the whole body) or a spill, which costs more than the home slot's
+    // store and reloads (Quarry's planner ran 0.07% more instructions).
+    if f.blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|i| crate::bounds_hoist::calls_out(&i.op))
+    {
+        kept.extend(f.params.iter().map(|p| p.name.clone()));
+    }
+    f.params.iter().filter_map(move |p| {
+        let ty = crate::numeric::default_type(&substitute(&p.ty, generics));
+        (p.pass == Pass::In
+            && !kept.contains(&p.name)
+            && f.locals.contains_key(&p.name)
+            && !matches!(ty, Type::Function { .. })
+            && Layout::of(world, &ty).is_ok_and(|l| !l.aggregate()))
+        .then(|| p.name.clone())
+    })
+}
+fn bound_names(p: &Pattern, out: &mut BTreeSet<String>) {
+    match &p.kind {
+        PatternKind::Bind(n) => {
+            out.insert(n.clone());
+        }
+        PatternKind::Tuple(ps) => ps.iter().for_each(|p| bound_names(p, out)),
+        PatternKind::Constructor { fields, .. } => {
+            fields.iter().for_each(|(_, p)| bound_names(p, out))
+        }
+        PatternKind::Wild | PatternKind::Literal(_) => {}
+    }
 }
 fn fail_only(world: &World, f: &Function) -> bool {
     f.effects.tail.is_none()
