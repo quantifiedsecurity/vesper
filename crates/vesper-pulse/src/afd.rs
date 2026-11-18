@@ -147,7 +147,7 @@ pub(crate) fn socket_of(file: &File) -> Option<(SOCKET, SOCKET)> {
     (rc != SOCKET_ERROR && base != 0).then_some((socket, base))
 }
 
-fn set_mode(socket: SOCKET, nonblocking: bool) -> io::Result<()> {
+pub(crate) fn set_mode(socket: SOCKET, nonblocking: bool) -> io::Result<()> {
     let mut on = u32::from(nonblocking);
     // SAFETY: FIONBIO reads one u32 from a live local.
     if unsafe { ioctlsocket(socket, FIONBIO, &mut on) } == SOCKET_ERROR {
@@ -156,21 +156,26 @@ fn set_mode(socket: SOCKET, nonblocking: bool) -> io::Result<()> {
     Ok(())
 }
 
-/// Requests in flight per socket, across every IOCP driver in the process:
-/// a socket may be used by several drivers at once, and must stay
-/// non-blocking until the last of them is done with it.
+/// Requests in flight per base socket, across every IOCP driver in the
+/// process: a socket may be used by several drivers at once, and must stay
+/// non-blocking until the last of them is done with it. Keyed by the base
+/// provider socket (`SIO_BASE_HANDLE`), so layered handles of one socket
+/// count together. Handles duplicated with `DuplicateHandle` or
+/// `WSADuplicateSocket` may not be recognised as the same socket; this is
+/// why restoring blocking mode is opt-in (see
+/// `IocpDriver::restore_blocking_sockets`).
 fn nonblocking_users() -> &'static Mutex<HashMap<SOCKET, usize>> {
     static USERS: OnceLock<Mutex<HashMap<SOCKET, usize>>> = OnceLock::new();
     USERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Put the socket in non-blocking mode for one request. Every successful
-/// call is paired with [`release_nonblocking`].
-pub(crate) fn acquire_nonblocking(socket: SOCKET) -> io::Result<()> {
+/// call is paired with [`release_nonblocking`] with the same `base`.
+pub(crate) fn acquire_nonblocking(socket: SOCKET, base: SOCKET) -> io::Result<()> {
     let mut users = nonblocking_users()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let n = users.entry(socket).or_insert(0);
+    let n = users.entry(base).or_insert(0);
     if *n == 0 {
         set_mode(socket, true)?;
     }
@@ -183,16 +188,16 @@ pub(crate) fn acquire_nonblocking(socket: SOCKET) -> io::Result<()> {
 /// it synchronously afterwards is not surprised by `WSAEWOULDBLOCK`.
 /// Winsock cannot report a socket's previous mode, so a socket the caller
 /// had made non-blocking comes back blocking too.
-pub(crate) fn release_nonblocking(socket: SOCKET) {
+pub(crate) fn release_nonblocking(socket: SOCKET, base: SOCKET) {
     let mut users = nonblocking_users()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let Some(n) = users.get_mut(&socket) else {
+    let Some(n) = users.get_mut(&base) else {
         return;
     };
     *n -= 1;
     if *n == 0 {
-        users.remove(&socket);
+        users.remove(&base);
         // A socket closed meanwhile just fails the call.
         let _ = set_mode(socket, false);
     }

@@ -84,8 +84,8 @@ fn the_pollable_descriptor_wakes_an_outside_loop_for_each_completion() {
         .map_err(|(e, _)| e)
         .unwrap();
         assert!(!d.has_ready(), "{kind}: an empty pipe is not ready");
-        // io_uring needs a poll to push the submission to the kernel.
-        let _ = d.poll(false).unwrap();
+        // No poll between submit and the wait: the driver must already have
+        // handed the request to the kernel.
         assert!(
             !readable(d.pollable_fd().unwrap(), 50),
             "{kind}: readable before any data"
@@ -105,6 +105,28 @@ fn the_pollable_descriptor_wakes_an_outside_loop_for_each_completion() {
             !readable(d.pollable_fd().unwrap(), 50),
             "{kind}: still readable after harvesting"
         );
+        assert_eq!(d.pending(), 0);
+        // A cancellation is a completion too: it must wake the loop
+        // without a poll in between.
+        let (r, _w) = pipe();
+        let id = d
+            .submit(Request {
+                file: r,
+                buffer: vec![0; 4],
+                continuation: 8,
+                operation: Operation::Read,
+                offset: 0,
+            })
+            .map_err(|(e, _)| e)
+            .unwrap();
+        assert!(d.cancel(id).unwrap());
+        assert!(
+            d.has_ready() || readable(d.pollable_fd().unwrap(), 5000),
+            "{kind}: a cancellation did not wake the loop"
+        );
+        let got = harvest(&mut d);
+        assert_eq!(got.len(), 1, "{kind}");
+        assert_eq!(got[0].0, 8);
         assert_eq!(d.pending(), 0);
     }
 }

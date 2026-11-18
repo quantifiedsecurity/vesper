@@ -149,9 +149,15 @@ main context, for lane 23) can wait on it and then call `poll(false)`:
 * IOCP has none: a completion port cannot be waited on with
   `WaitForMultipleObjects`, and the default returns `ErrorKind::Unsupported`.
 
+* io_uring `submit` and `cancel` hand their entries to the kernel at once
+  while the eventfd is in use, since an outside loop waits instead of
+  calling `poll`; a failed flush signals the eventfd so the next `poll`
+  reports it.
+
 Tests: `tests/pollable.rs` on every Unix driver (not readable before data,
-readable after the peer writes, quiet again once harvested; `has_ready` for
-a zero-length read).
+readable after the peer writes with no `poll` in between, quiet again once
+harvested; a cancellation wakes the loop; `has_ready` for a zero-length
+read).
 
 ### Socket sends and blocking mode (IOCP)
 
@@ -159,11 +165,16 @@ a zero-length read).
   takes them, so a huge buffer never asks Winsock to lock it all at once
   (`WSAENOBUFS`). It completes with the bytes sent once the socket would
   block, like a short `write(2)` on the other drivers.
-* Sockets come back in blocking mode. A process-wide count of in-flight
-  requests per socket (a socket may be used by several drivers at once) keeps
-  it non-blocking until the last request leaves the driver's table, then
-  clears `FIONBIO`. Winsock cannot report a socket's previous mode, so one the
-  caller had made non-blocking also comes back blocking.
+* Sockets can come back in blocking mode, opt-in through
+  `IocpDriver::restore_blocking_sockets(true)`. A process-wide count of
+  in-flight requests per base socket (a socket may be used by several
+  drivers at once) keeps it non-blocking until the last request leaves a
+  driver's table, then clears `FIONBIO`; while the option is on the driver
+  re-asserts non-blocking mode before every transfer. It is off by default
+  because Winsock cannot report a socket's previous mode, and handles
+  duplicated with `DuplicateHandle` or `WSADuplicateSocket` share the mode
+  but may not be recognised as one socket (Codex review): restoring then
+  could make another request's transfer block a worker.
 
 ### Offload thread cap (IOCP)
 

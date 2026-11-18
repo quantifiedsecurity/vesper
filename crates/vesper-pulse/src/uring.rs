@@ -197,7 +197,20 @@ impl<T> IoDriver<T> {
                 request,
             ));
         }
+        self.flush_for_outside_loop();
         Ok(id)
+    }
+    /// With an outside loop waiting on the eventfd, nothing else would hand
+    /// queued entries to the kernel before it waits: submit them now. If
+    /// that fails the entries stay queued, and the eventfd is signalled so
+    /// the loop's next `poll` submits them again and reports the error.
+    fn flush_for_outside_loop(&mut self) {
+        let Some(fd) = self.eventfd.get() else {
+            return;
+        };
+        if self.ring.submit().is_err() {
+            signal(fd);
+        }
     }
     fn push(&mut self, entry: &squeue::Entry) -> io::Result<()> {
         if self.ring.submission().is_full() {
@@ -217,6 +230,7 @@ impl<T> IoDriver<T> {
         self.push(&entry)?;
         self.ledger.cancellations.insert(id);
         self.ledger.cancel_requested.insert(id);
+        self.flush_for_outside_loop();
         Ok(true)
     }
     pub fn cancel_all(&mut self) -> io::Result<()> {

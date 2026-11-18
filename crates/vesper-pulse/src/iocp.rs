@@ -115,9 +115,10 @@ struct Entry<T> {
     state: State,
     /// Counted in the handle's [`Binding::in_flight`].
     bound: bool,
-    /// A socket this request switched to non-blocking mode; released (and
-    /// restored to blocking once nobody uses it) when the entry leaves.
-    nonblocking: Option<SOCKET>,
+    /// `(socket, base)` this request holds in non-blocking mode when the
+    /// driver restores blocking mode; released (and restored once nobody
+    /// uses the socket) when the entry leaves.
+    nonblocking: Option<(SOCKET, SOCKET)>,
 }
 
 /// Which Pulse IOCP port a handle value was last bound to, and how many
@@ -202,6 +203,8 @@ pub struct IocpDriver<T> {
     offloaders: Vec<Offloader>,
     /// At most this many offload threads; see [`IocpDriver::set_offload_limit`].
     offload_limit: usize,
+    /// See [`IocpDriver::restore_blocking_sockets`].
+    restore_blocking: bool,
     done_tx: mpsc::Sender<Done>,
     done_rx: mpsc::Receiver<Done>,
     finished: HashMap<u64, Done>,
@@ -350,6 +353,7 @@ impl<T> IocpDriver<T> {
             afd_polls: 0,
             offloaders: vec![],
             offload_limit: DEFAULT_OFFLOAD_LIMIT,
+            restore_blocking: false,
             done_tx,
             done_rx,
             finished: HashMap::new(),
@@ -382,6 +386,19 @@ impl<T> IocpDriver<T> {
     /// threads already started. The default is [`DEFAULT_OFFLOAD_LIMIT`].
     pub fn set_offload_limit(&mut self, limit: usize) {
         self.offload_limit = limit.max(1);
+    }
+    /// Give sockets back in blocking mode (the Winsock default) once no
+    /// request in this process uses them, instead of leaving them
+    /// non-blocking like the readiness drivers leave `O_NONBLOCK`. Off by
+    /// default: Winsock cannot report a socket's mode, so a socket the
+    /// caller made non-blocking comes back blocking, and handles duplicated
+    /// with `DuplicateHandle` or `WSADuplicateSocket` share the mode but may
+    /// not be recognised as one socket. Use it only when every concurrent
+    /// request on a socket goes through the same handle (or its base
+    /// socket). While it is on, the driver re-asserts non-blocking mode
+    /// before every transfer.
+    pub fn restore_blocking_sockets(&mut self, on: bool) {
+        self.restore_blocking = on;
     }
     pub fn offload_limit(&self) -> usize {
         self.offload_limit
@@ -634,8 +651,8 @@ impl<T> IocpDriver<T> {
         if entry.bound {
             release(handle(&entry.request.file));
         }
-        if let Some(socket) = entry.nonblocking {
-            afd::release_nonblocking(socket);
+        if let Some((socket, base)) = entry.nonblocking {
+            afd::release_nonblocking(socket, base);
         }
         Ok(entry)
     }
@@ -682,6 +699,11 @@ impl<T> IocpDriver<T> {
                 ERROR_INVALID_HANDLE as i32,
             )))
         } else {
+            if entry.nonblocking.is_some() {
+                // Another handle of this socket may have restored blocking
+                // mode; a failed call leaves the transfer to report it.
+                let _ = afd::set_mode(socket, true);
+            }
             match afd::transfer(socket, entry.request.operation, &mut entry.request.buffer) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     if cancelling {
@@ -808,16 +830,23 @@ impl<T> CompletionDriver<T> for IocpDriver<T> {
         let mut bound = false;
         let mut nonblocking = None;
         let state = if let Some((socket, base)) = afd::socket_of(&request.file) {
-            if let Err(e) = afd::acquire_nonblocking(socket) {
+            let held = if self.restore_blocking {
+                afd::acquire_nonblocking(socket, base)
+            } else {
+                afd::set_mode(socket, true)
+            };
+            if let Err(e) = held {
                 return Err((e, request));
             }
             match self.start_socket(&mut request, &mut slot, socket, base) {
                 Ok(state) => {
-                    nonblocking = Some(socket);
+                    nonblocking = self.restore_blocking.then_some((socket, base));
                     state
                 }
                 Err(e) => {
-                    afd::release_nonblocking(socket);
+                    if self.restore_blocking {
+                        afd::release_nonblocking(socket, base);
+                    }
                     return Err((e, request));
                 }
             }

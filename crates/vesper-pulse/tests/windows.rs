@@ -519,6 +519,7 @@ fn sockets_come_back_in_blocking_mode() {
     let _guard = watchdog("blocking restore");
     let (server, mut client) = stream_pair();
     let mut driver = IocpDriver::<u8>::new(8).unwrap();
+    driver.restore_blocking_sockets(true);
     driver
         .submit(request(server, Operation::Read, vec![0; 8], 1))
         .map_err(|(e, _)| e)
