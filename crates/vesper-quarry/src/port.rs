@@ -88,7 +88,7 @@ const JOINS: [JoinKind; 4] = [
     JoinKind::Full,
 ];
 
-fn limit_words(l: Limits) -> Vec<u64> {
+fn limit_words(l: Limits) -> [u64; 16] {
     [
         l.sql_bytes,
         l.tokens,
@@ -107,9 +107,7 @@ fn limit_words(l: Limits) -> Vec<u64> {
         size_of::<Value>(),
         size_of::<Vec<Value>>(),
     ]
-    .iter()
-    .map(|&x| x as u64)
-    .collect()
+    .map(|x| x as u64)
 }
 
 /// An input under construction: words plus the text pool they point into.
@@ -119,6 +117,14 @@ struct Enc {
     text: Vec<u8>,
 }
 impl Enc {
+    /// An encoder with room for a typical call, so that small inputs do not
+    /// grow the buffers word by word.
+    fn sized(words: usize, text: usize) -> Self {
+        Self {
+            words: Vec::with_capacity(words),
+            text: Vec::with_capacity(text),
+        }
+    }
     fn w(&mut self, x: u64) {
         self.words.push(x);
     }
@@ -273,13 +279,18 @@ impl Dec<'_> {
     fn b(&mut self) -> bool {
         self.w() != 0
     }
-    fn raw(&mut self) -> Vec<u8> {
+    fn bytes(&mut self) -> &[u8] {
         let off = self.n();
         let len = self.n();
-        self.pool.get(off..off + len).unwrap_or_default().to_vec()
+        self.pool.get(off..off + len).unwrap_or_default()
     }
+    fn raw(&mut self) -> Vec<u8> {
+        self.bytes().to_vec()
+    }
+    /// One allocation per string: the port only returns valid UTF-8, so
+    /// the lossy conversion borrows and `into_owned` copies once.
     fn s(&mut self) -> String {
-        String::from_utf8_lossy(&self.raw()).into_owned()
+        String::from_utf8_lossy(self.bytes()).into_owned()
     }
     fn ty(&mut self) -> ScalarType {
         TYPES[self.n().min(5)]
@@ -393,16 +404,13 @@ impl Dec<'_> {
 
 /// The error of a failed call, or the handle of a successful one.
 fn checked(q: binding::Q) -> Result<binding::Q> {
-    let (err, message) = {
-        let r = q.as_ref();
-        (
-            r.err(),
-            String::from_utf8_lossy(&r.msg().to_vec()).into_owned(),
-        )
-    };
-    match err {
+    let r = q.as_ref();
+    match r.err() {
         0 => Ok(q),
-        k => Err(Error::new(KINDS[(k as usize - 1).min(9)], message)),
+        k => Err(Error::new(
+            KINDS[(k as usize - 1).min(9)],
+            String::from_utf8_lossy(&r.msg().to_vec()).into_owned(),
+        )),
     }
 }
 
@@ -461,7 +469,7 @@ pub(crate) fn prepare(
     params: &[ParamDef],
     limits: Limits,
 ) -> Result<PreparedQuery> {
-    let mut e = Enc::default();
+    let mut e = Enc::sized(64, 64);
     e.catalog(catalog);
     e.w(params.len() as u64);
     for p in params {
@@ -524,7 +532,7 @@ pub(crate) fn prepare(
 
 /// `RelPlan::optimize` through the port.
 pub(crate) fn optimize(plan: &RelPlan) -> RelPlan {
-    let mut e = Enc::default();
+    let mut e = Enc::sized(64, 0);
     e.plan(plan);
     let q = binding::optimize(&e.words);
     let words = q.as_ref().words().to_vec();

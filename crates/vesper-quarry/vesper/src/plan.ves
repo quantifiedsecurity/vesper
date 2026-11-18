@@ -50,9 +50,28 @@ use self::check::{
 
 pub fn copy_expr(inout q: Q, p: u64) {
     let end = ex_end(in q, p);
-    for i in p..end {
-        let w = ex(in q, i);
-        q.words.push(w);
+    copy_ex(inout q, p, end);
+}
+
+// `dst.extend(src[p..end])`. A separate function, because `extend` on one
+// field of `q` from a view of another is refused as a self-read (E0301).
+pub fn append(inout dst: ChunkSeq[u64], in src: ChunkSeq[u64], p: u64, end: u64) {
+    dst.extend(in src[p..end]);
+}
+
+// Appends `ex[p..end]` to `words` in one block copy. Words past the end of
+// `ex` read as 0, as `ex` reads them.
+pub fn copy_ex(inout q: Q, p: u64, end: u64) {
+    let n = q.ex.len();
+    if end <= n {
+        if p < end {
+            append(inout q.words, in q.ex, p, end);
+        }
+    } else {
+        for i in p..end {
+            let w = ex(in q, i);
+            q.words.push(w);
+        }
     }
 }
 
@@ -64,10 +83,7 @@ pub fn emit_plan(inout q: Q, n: u64) {
         q.words.push(x.b);
         q.words.push(x.c);
         q.words.push(x.e);
-        for k in 0..x.e {
-            let w = ex(in q, wrapping_add(x.d, k));
-            q.words.push(w);
-        }
+        copy_ex(inout q, x.d, wrapping_add(x.d, x.e));
         let at = q.words.len();
         q.words.push(0);
         let mut count: u64 = 0;
