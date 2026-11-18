@@ -21,6 +21,7 @@ members = [
     "crates/vesper-ffi",
     "crates/vesper-forge",
     "crates/vesper-loom-calculus",
+    "crates/vesper-loom-calculus/seed",
     "crates/vesper-lean-syntax",
     "crates/vesper-simpulse",
     "crates/vesper-simpulse/seed",
@@ -109,6 +110,7 @@ default-members = [
     "crates/vesper-ffi",
     "crates/vesper-forge",
     "crates/vesper-loom-calculus",
+    "crates/vesper-loom-calculus/seed",
     "crates/vesper-lean-syntax",
     "crates/vesper-simpulse",
     "crates/vesper-simpulse/seed",
@@ -242,7 +244,8 @@ vesper-serde = { path = "crates/vesper-serde/seed", package = "vesper-serde-seed
 vesper-pulse = { path = "crates/vesper-pulse" }
 vesper-fiber-abi = { path = "crates/vesper-fiber-abi" }
 vesper-semver = { path = "crates/vesper-semver/seed", package = "vesper-semver-seed" }
-vesper-loom-calculus = { path = "crates/vesper-loom-calculus" }
+# The compiler links the frozen Rust seed copy of vesper-loom-calculus (#913).
+vesper-loom-calculus = { path = "crates/vesper-loom-calculus/seed", package = "vesper-loom-calculus-seed" }
 vesper-loom-solver = { path = "crates/vesper-loom-solver" }
 vesper-loom-trust = { path = "crates/vesper-loom-trust" }
 vesper-loom-admission = { path = "crates/vesper-loom-admission" }

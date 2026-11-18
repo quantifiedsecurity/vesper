@@ -331,6 +331,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("crates/vesper-quarry/vesper")
                     || path.ends_with("crates/vesper-port-build/vesper")
                     || path.ends_with("crates/vesper-beacon/vesper")
+                    // Port P1 lane 16 (#913): `use` (#880).
+                    || path.ends_with("crates/vesper-loom-calculus/vesper")
                     || path.ends_with("crates/vesper-prism/vesper")
                     || path.ends_with("crates/vesper-aura/vesper")
                     // The Grammar port (#906) is one package of modules
