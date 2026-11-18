@@ -4,27 +4,33 @@
 impl WheelCore {
     // Place a detached entry relative to the cursor.
     fn place(inout self, index: u64) {
-        let tick = at(in self.e_tick.as_slice(), index);
+        let tick = at(in self.e_tick, index);
         if tick < self.cursor {
             self.insert_ready_sorted(index);
             return;
         }
         let diff = tick ^ self.cursor;
-        let level = if diff == 0 {
-            0
-        } else {
-            div(high_bit(diff), self.slot_bits)
-        };
-        if level >= self.levels {
-            self.overflow_min_tick = min(self.overflow_min_tick, tick);
-            let list = self.overflow_list();
-            self.push_back(list, index);
-            return;
+        // The level is `(63 - leading_zeros(diff)) / slot_bits`: the first
+        // level whose span `2^((level + 1) * slot_bits)` exceeds `diff`, or
+        // `levels` (overflow) when none does. Comparing against the
+        // precomputed spans needs no bit scan, shift or division.
+        let mut level: u64 = 0;
+        loop {
+            if level >= self.levels || diff < at(in self.l_span, level) {
+                break;
+            }
+            level = wrapping_add(level, 1);
         }
-        let slot = shr(tick, wrapping_mul(level, self.slot_bits)) & self.slot_mask();
-        let bits = at(in self.occupied.as_slice(), level);
-        self.occupied.try_set(level, bits | shl(1, slot));
-        let list = wrapping_add(wrapping_mul(level, self.slots), slot);
+        // One `push_back` call site, so the inliner takes it.
+        let list = if level >= self.levels {
+            self.overflow_min_tick = min(self.overflow_min_tick, tick);
+            self.overflow_list()
+        } else {
+            let slot = shr(tick, wrapping_mul(level, self.slot_bits)) & self.slot_mask();
+            let bits = at(in self.occupied, level);
+            self.occupied.try_set(level, bits | shl(1, slot));
+            wrapping_add(wrapping_mul(level, self.slots), slot)
+        };
         self.push_back(list, index);
     }
 
@@ -44,7 +50,7 @@ impl WheelCore {
     fn unlink(inout self, index: u64) {
         let prev = self.prev_of(index);
         let next = self.next_of(index);
-        let list = at(in self.e_list.as_slice(), index);
+        let list = at(in self.e_list, index);
         if prev == nil() {
             self.l_head.try_set(list, next);
         } else {
@@ -115,7 +121,7 @@ impl WheelCore {
         let mut best = u64_max();
         let mut found = false;
         for level in 0..self.levels {
-            let bitmap = at(in self.occupied.as_slice(), level);
+            let bitmap = at(in self.occupied, level);
             if bitmap != 0 {
                 let low = wrapping_mul(level, self.slot_bits);
                 // rotation <= 63 by the configuration check.
@@ -124,7 +130,7 @@ impl WheelCore {
                 let base = shl(shr(c, rotation), rotation);
                 let ahead = bitmap & shl(u64_max(), position);
                 if ahead != 0 {
-                    let slot = low_bit(ahead);
+                    let slot = self.low_bit(ahead);
                     let t = max(wrapping_add(base, shl(slot, low)), c);
                     if !found || t < best {
                         best = t;
@@ -134,7 +140,7 @@ impl WheelCore {
                     // Unreachable under the placement invariant (occupied
                     // slots are never behind the cursor); handled
                     // conservatively, as the Rust build does.
-                    let slot = low_bit(bitmap);
+                    let slot = self.low_bit(bitmap);
                     let block = wrapping_add(base, shl(1, rotation));
                     if block >= base {
                         let t = wrapping_add(block, shl(slot, low));

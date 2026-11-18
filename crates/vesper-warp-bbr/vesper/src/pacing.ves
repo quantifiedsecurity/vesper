@@ -143,6 +143,6 @@ pub fn splitmix_next(inout seed: u64) -> u64 {
 // Uniform in 0..bound (bound > 0), by multiply-high.
 pub fn splitmix_below(inout seed: u64, bound: u64) -> u64 {
     let x = splitmix_next(inout seed);
-    let (hi, lo) = mul_full(x, bound);
+    let (lo, hi) = mul_wide(x, bound);
     hi
 }

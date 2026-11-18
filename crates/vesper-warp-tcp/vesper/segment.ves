@@ -1,8 +1,22 @@
+// `bytes[at..at + 8]` as a big-endian word; the caller checked the room.
+fn hdr64(in bytes: Slice[u8], at: u64) -> u64 {
+    match bytes.try_read_u64_be(at) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
 pub fn segment_parse(in bytes: Slice[u8]) -> Result[Parsed, WireError] {
     if bytes.len() < 20 {
         return Result::Err(WireError::Truncated);
     }
-    let header_len = wrapping_mul(widen_u64(rd8(in bytes, 12) >> 4), 4);
+    // The fixed header as three wide reads: ports and sequence number;
+    // acknowledgment, data offset, flags and window; checksum and urgent
+    // pointer (the last read ends at byte 20).
+    let w0 = hdr64(in bytes, 0);
+    let w1 = hdr64(in bytes, 8);
+    let w2 = hdr64(in bytes, 12);
+    let header_len = wrapping_mul(w1 >> 28 & 15, 4);
     if header_len < 20 || header_len > bytes.len() {
         return Result::Err(WireError::BadDataOffset);
     }
@@ -10,14 +24,14 @@ pub fn segment_parse(in bytes: Slice[u8]) -> Result[Parsed, WireError] {
         Result::Err(e) => Result::Err(e),
         Result::Ok(options) => Result::Ok(
             Parsed {
-                src_port: rd16(in bytes, 0),
-                dst_port: rd16(in bytes, 2),
-                seq: rd32(in bytes, 4),
-                ack: rd32(in bytes, 8),
-                flags: rd8(in bytes, 13),
-                window: rd16(in bytes, 14),
-                checksum: rd16(in bytes, 16),
-                urgent: rd16(in bytes, 18),
+                src_port: wrapping_u16(w0 >> 48),
+                dst_port: wrapping_u16(w0 >> 32),
+                seq: wrapping_u32(w0),
+                ack: wrapping_u32(w1 >> 32),
+                flags: wrapping_u8(w1 >> 16),
+                window: wrapping_u16(w1),
+                checksum: wrapping_u16(w2 >> 16),
+                urgent: wrapping_u16(w2),
                 header_len: header_len,
                 options: options
             }
@@ -152,30 +166,16 @@ fn words16_64(x: u64) -> u64 {
 }
 
 // The one's-complement sum of `bytes[from..to]` as big-endian 16-bit
-// words, an odd trailing byte padded with zero (raw form: reads raise).
-fn sum_range_raw(acc: u64, in bytes: Slice[u8], from: u64, to: u64)
-    -> u64 eff [Fail[RuntimeError]] {
-    let mut a = acc;
-    let mut i = from;
-    loop {
-        if wrapping_add(i, 1) >= to {
-            break;
-        }
-        a = wrapping_add(a, widen_u64(bytes[i]) << 8 | widen_u64(bytes[wrapping_add(i, 1)]));
-        i = wrapping_add(i, 2);
-    }
-    if i < to {
-        a = wrapping_add(a, widen_u64(bytes[i]) << 8);
-    }
-    a
-}
-
+// words, an odd trailing byte padded with zero; `to` is clamped to the
+// slice and an empty range adds nothing. One vectorized `sum_be16` scan.
 fn sum_range(acc: u64, in bytes: Slice[u8], from: u64, to: u64) -> u64 {
     let end = min64(to, bytes.len());
-    handle Fail[RuntimeError] in {
-        sum_range_raw(acc, in bytes, from, end)
-    } with {
-        return v => v,
-        raise(e, k) => 0
+    if from >= end {
+        return acc;
     }
+    wrapping_add(acc, sum_view(in bytes[from..end]))
+}
+
+fn sum_view(in s: Slice[u8]) -> u64 {
+    s.sum_be16()
 }
