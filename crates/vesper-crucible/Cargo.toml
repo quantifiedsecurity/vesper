@@ -7,6 +7,6 @@ publish = false
 
 [dependencies]
 vesper-alloc = { path = "../vesper-alloc/seed", package = "vesper-alloc-seed" }
-vesper-simpulse = { path = "../vesper-simpulse" }
+vesper-simpulse = { path = "../vesper-simpulse/seed", package = "vesper-simpulse-seed" }
 
 [dev-dependencies]

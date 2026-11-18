@@ -1,3 +1,66 @@
 load("//tools/bazel:defs.bzl", "vesper_crate")
+load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_package", "vesper_port_object")
 
-vesper_crate()
+# The port-backed package (seed-copy rule, docs/maintenance/porting-a-crate.md):
+# build.rs links the object built here from the Loom package in vesper/ and
+# checks port/binding.rs against the generated binding. Crates the compiler
+# links (and vesper-nexus, a dev-dependency of //:vesper) use the Rust seed
+# copy, //crates/vesper-simpulse/seed; vesper-chorus and vesper-flux link
+# this port
+# (docs/parallel-results/port-p1-simpulse.md).
+vesper_package(
+    name = "port_package",
+    srcs = glob(["vesper/src/**/*.ves"]),
+    manifest = "vesper/Loom.toml",
+)
+
+vesper_port_object(
+    name = "simpulse_vesper",
+    library = "simpulse",
+    package = ":port_package",
+    target = VESPER_TARGET,
+)
+
+filegroup(
+    name = "simpulse_vesper_binding",
+    srcs = [":simpulse_vesper"],
+    output_group = "rust_binding",
+)
+
+# The divergent build (the Cargo `vesper-port-divergent` feature applies the
+# same edit from build.rs) must keep compiling; scripts/test-port-harness.sh
+# asserts which kernel test catches it.
+vesper_port_object(
+    name = "simpulse_vesper_divergent",
+    edit_src = "vesper/src/lib.ves",
+    edits = {"        k.t_seen.try_set(i, true);\n": "        k.t_seen.try_set(i, false);\n"},
+    library = "simpulse",
+    package = ":port_package",
+    target = VESPER_TARGET,
+)
+
+vesper_crate(
+    build_script_data = [
+        ":simpulse_vesper",
+        ":simpulse_vesper_binding",
+    ],
+    build_script_env = {
+        # rules_rust already makes these execpaths absolute.
+        "VESPER_PORT_OBJECT": "$(execpath :simpulse_vesper)",
+        "VESPER_PORT_GENERATED_BINDING": "$(execpath :simpulse_vesper_binding)",
+    },
+)
+
+# The seed package (seed/) builds these same Rust sources without the port.
+exports_files(glob([
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "workload/**/*.rs",
+    "README.md",
+]))
+
+filegroup(
+    name = "rust_srcs",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/vesper-simpulse/seed:__pkg__"],
+)
