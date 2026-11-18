@@ -64,7 +64,8 @@ claims and the policy as word and byte slices (layout documented at
 | `gate.rs` | ChaCha20-Poly1305 AEAD, plus `&mut dyn FnMut` evaluators/observers (10 of the 11 `dyn` sites). | Part 2: port the frame/ring logic, return request bytes, consume the reply (`dyn` stays in the Rust adapter). |
 | `chain.rs` `CHAIN_ALGS` (`&dyn SignatureVerificationAlgorithm`, the 11th site) | A static table of webpki algorithms. | Stays Rust. |
 | `cca.rs`, `corim.rs` | CBOR/COSE token and CoRIM structure (2.4k lines). | Part 2 (CBOR reader in Vesper; COSE signatures stay Rust). |
-| `claims.rs` other items, `gpa.rs`, `host.rs`, `linear.rs` | Not parsing; claim extraction depends on CCA. | Part 2. |
+| `claims.rs` other items, `gpa.rs`, `host.rs` | Not parsing; claim extraction depends on CCA. | Part 2. |
+| `linear.rs` | It keeps a global `AtomicU64` for issuer identities and an `Arc<Ledger>` with atomic leak counters, updated on `Obligation::drop`, which `gpa.rs` checks. | Stays Rust until the source-atomics lane (#1037) lands. A `gpa.rs` port takes issuer identities as values. |
 | Encoders (`encode`, `signed_bytes`) | Serialize trusted structs; no untrusted input. | Part 2 if wanted. |
 | `sgx.rs` TCB info JSON (`serde_json`) | JSON collateral. | Serde port lane. |
 
