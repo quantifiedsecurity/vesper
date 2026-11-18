@@ -181,16 +181,14 @@ pub fn bbrv3_new(config: BbrConfig, now_ns: u64) -> Result[Bbrv3, BbrFault] {
 // Validation helpers.
 
 // The event time must not precede the latest one.
-pub fn check_time(last_ns: u64, now_ns: u64) -> Result[Unit, BbrFault] {
+pub fn check_time(last_ns: u64, now_ns: u64) eff [Fail[BbrFault]] {
     if now_ns < last_ns {
-        Result::Err(
+        Fail::raise(
             BbrFault::TimeWentBackwards {
                 last_ns: last_ns,
                 now_ns: now_ns
             }
-        )
-    } else {
-        Result::Ok(())
+        );
     }
 }
 

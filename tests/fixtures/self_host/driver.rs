@@ -341,6 +341,9 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("crates/vesper-warp-wheel/vesper")
                     // Port P1 lane 12 (#909): its fragments need `use` (#880).
                     || path.ends_with("crates/vesper-ignis/vesper")
+                    // Port P1 lane 6 (#903): the Strata port, a Loom package
+                    // like the others; joins with them once #880 lands.
+                    || path.ends_with("crates/vesper-alloc/vesper")
                     // Port P1 lane 5 (#902): its package needs `use` (#880).
                     || path.ends_with("crates/vesper-simpulse/vesper")
                 {

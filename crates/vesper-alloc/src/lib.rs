@@ -81,6 +81,13 @@
 //! static guarantees of [T-RegionAlloc]/[T-RegionScope] (escape freedom, exact
 //! consumption of linear payloads and watermarks) remain compiler obligations.
 mod backing;
+// The port-backed build (package vesper-alloc): the generated binding of the
+// Vesper port in vesper/. It is committed outside src/ so formatters, which
+// check every file under src/, never reflow it (see the porting recipe).
+#[cfg(vesper_port)]
+#[rustfmt::skip]
+#[path = "../port/binding.rs"]
+mod port_binding;
 mod cache_btree;
 mod capability;
 mod error;
@@ -101,6 +108,11 @@ pub use region::{
     RegionConfig, RegionFlatTable, RegionId, RegionRef, RegionSlice, RegionSlotArena, RegionStats,
     RegionStr, RegionString, RegionTiled2, RegionVec, TiledError, Watermark,
 };
+
+/// Which build this is: `"vesper"` for the port-backed package
+/// `vesper-alloc`, whose region bookkeeping is the Vesper port, and `"rust"`
+/// for the seed copy `vesper-alloc-seed` that the compiler links.
+pub const IMPLEMENTATION: &str = if cfg!(vesper_port) { "vesper" } else { "rust" };
 
 /// Version of the proposed Alloc/Region lowering contract.
 /// Experimental; not yet consumed by the compiler.
