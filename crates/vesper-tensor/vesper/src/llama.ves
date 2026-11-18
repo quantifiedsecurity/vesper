@@ -1,0 +1,313 @@
+// Module llama of @vesper/tensor (see lib.ves): the checks of src/llama.rs
+// that are pure over bytes and numbers: `Config::validate`, the llama2.c
+// checkpoint and `tokenizer.bin` readers, and the bytes `Tokenizer::decode`
+// prints. The Rust wrapper builds the model's vectors and the tokenizer's
+// pieces from the checked input.
+//
+// Every function returns a code: 0 on success, else
+// - 1 + f: Malformed(field f), 10 + f: Limit(field f), with fields 0 dim,
+//   1 hidden_dim, 2 layers, 3 heads, 4 kv_heads, 5 vocab, 6 seq_len;
+// - 20 Shape("dim must be a multiple of heads"), 21 Shape("invalid GQA
+//   ratio"), 22 Shape("RoPE needs an even head width"), 23 Shape("rope
+//   base"), 24 InvalidEpsilon;
+// - 30 Malformed("truncated input"), 31 NonFinite, 33 Malformed("trailing
+//   bytes after checkpoint"), 34 Limit("checkpoint bytes"), 35
+//   Malformed("vocab");
+// - 37 Malformed("max_token_length"), 38 Limit("max_token_length"), 39
+//   Malformed("token length"), 40 Limit("token length"), 41
+//   Malformed("trailing bytes after tokenizer").
+use self::num::{
+    finite_bits,
+    u64_zero
+};
+
+fn max_dim() -> u64 {
+    8192
+}
+
+// The ceiling of field `f` (`MAX_DIM`, `MAX_LAYERS`, `MAX_VOCAB`,
+// `MAX_SEQ_LEN`).
+fn ceiling(f: u64) -> u64 eff [Fail[ArithOverflow]] {
+    if f == 1 {
+        return 4 * max_dim();
+    }
+    if f == 2 {
+        return 256;
+    }
+    if f == 5 {
+        return 1048576;
+    }
+    if f == 6 {
+        return 65536;
+    }
+    max_dim()
+}
+
+// `Config::validate`: `dims` holds the seven fields in order.
+pub fn validate(in dims: Slice[u64], rope_base: u32, rms_epsilon: u32)
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    for f in u64_zero()..7 {
+        if dims[f] == 0 {
+            return 1 + f;
+        }
+        if dims[f] > ceiling(f) {
+            return 10 + f;
+        }
+    }
+    let dim = dims[0];
+    let heads = dims[3];
+    let kv_heads = dims[4];
+    if dim % heads != 0 {
+        return 20;
+    }
+    if heads % kv_heads != 0 {
+        return 21;
+    }
+    if (dim / heads) % 2 != 0 {
+        return 22;
+    }
+    let base = from_bits_f32(rope_base);
+    if !(finite_bits(rope_base) && base > 1.0) {
+        return 23;
+    }
+    let epsilon = from_bits_f32(rms_epsilon);
+    if !(finite_bits(rms_epsilon) && epsilon > 0.0) {
+        return 24;
+    }
+    0
+}
+
+// A positive `i32` field read as `u32`: the code of `positive(v, f)`, or 0.
+fn positive(v: u32, f: u64) -> u64 eff [Fail[ArithOverflow]] {
+    if v == 0 || v >= 2147483648 {
+        return 1 + f;
+    }
+    if widen_u64(v) > ceiling(f) {
+        return 10 + f;
+    }
+    0
+}
+
+// A run of `n` floats at `at`: 30 when it does not fit, 31 when one is not
+// finite.
+fn floats(in b: Slice[u8], at: u64, n: u64) -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    if 4 * n > b.len() - at {
+        return 30;
+    }
+    for i in u64_zero()..n {
+        if !finite_bits(b.read_u32_le(at + 4 * i)) {
+            return 31;
+        }
+    }
+    0
+}
+
+// `Model::from_llama2c`'s checks, in the Rust build's order: the header,
+// `Config::validate`, every weight run (present, then finite), the legacy
+// RoPE tables and the exact length. Writes the seven fields and whether
+// the classifier is shared to `out`.
+pub fn check_checkpoint(in b: Slice[u8], rope_base: u32, rms_epsilon: u32, inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    if b.len() > 1073741824 {
+        return 34;
+    }
+    let mut shared = false;
+    for f in u64_zero()..7 {
+        if 4 * f + 4 > b.len() {
+            return 30;
+        }
+        let mut v = b.read_u32_le(4 * f);
+        if f == 5 {
+            if v == 2147483648 {
+                return 35;
+            }
+            if v > 2147483648 {
+                v = wrapping_u32(4294967296 - widen_u64(v));
+            } else {
+                shared = v > 0;
+            }
+        }
+        let code = positive(v, f);
+        if code != 0 {
+            return code;
+        }
+        out.set(f, widen_u64(v));
+    }
+    let code = validate(in out[0..7], rope_base, rms_epsilon);
+    if code != 0 {
+        return code;
+    }
+    out
+        .set(
+        7,
+        if shared {
+            1
+        } else {
+            0
+        }
+    );
+    let dim = out[0];
+    let hidden = out[1];
+    let layers = out[2];
+    let kv_dim = out[4] * (dim / out[3]);
+    let vocab = out[5];
+    let mut at: u64 = 28;
+    let embedding = floats(in b, at, vocab * dim);
+    if embedding != 0 {
+        return embedding;
+    }
+    at = at + 4 * vocab * dim;
+    // Per layer: rms_attention, wq, wk, wv, wo, rms_ffn, w1, w2, w3.
+    for s in u64_zero()..9 {
+        let n = if s == 0 || s == 5 {
+            dim
+        } else if s == 1 || s == 4 {
+            dim * dim
+        } else if s == 2 || s == 3 {
+            kv_dim * dim
+        } else {
+            hidden * dim
+        };
+        for l in u64_zero()..layers {
+            let code = floats(in b, at, n);
+            if code != 0 {
+                return code;
+            }
+            at = at + 4 * n;
+        }
+    }
+    let last = floats(in b, at, dim);
+    if last != 0 {
+        return last;
+    }
+    at = at + 4 * dim;
+    let rope = out[6] * (dim / out[3]) * 4;
+    if rope > b.len() - at {
+        return 30;
+    }
+    at = at + rope;
+    if !shared {
+        let classifier = floats(in b, at, vocab * dim);
+        if classifier != 0 {
+            return classifier;
+        }
+        at = at + 4 * vocab * dim;
+    }
+    if at != b.len() {
+        return 33;
+    }
+    0
+}
+
+// `Tokenizer::from_llama2c`'s checks: writes the maximum token length to
+// `out[0]`, then each entry's score bits, piece offset and length.
+pub fn check_tokenizer(in b: Slice[u8], vocab: u64, inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    if vocab == 0 || vocab > 1048576 {
+        return 15;
+    }
+    if b.len() < 4 {
+        return 30;
+    }
+    let max_len = b.read_u32_le(0);
+    if max_len == 0 || max_len >= 2147483648 {
+        return 37;
+    }
+    if max_len > 1024 {
+        return 38;
+    }
+    out.set(0, widen_u64(max_len));
+    let mut at: u64 = 4;
+    for e in u64_zero()..vocab {
+        if 4 > b.len() - at {
+            return 30;
+        }
+        let score = b.read_u32_le(at);
+        if !finite_bits(score) {
+            return 31;
+        }
+        if 4 > b.len() - at - 4 {
+            return 30;
+        }
+        let len = b.read_u32_le(at + 4);
+        if len == 0 || len >= 2147483648 {
+            return 39;
+        }
+        if len > max_len {
+            return 40;
+        }
+        let n = widen_u64(len);
+        if n > b.len() - at - 8 {
+            return 30;
+        }
+        out.set(1 + 3 * e, widen_u64(score));
+        out.set(2 + 3 * e, at + 8);
+        out.set(3 + 3 * e, n);
+        at = at + 8 + n;
+    }
+    if at != b.len() {
+        return 41;
+    }
+    0
+}
+
+fn hex_digit(c: u8) -> u64 eff [Fail[ArithOverflow]] {
+    if c >= 48 && c <= 57 {
+        return widen_u64(c) - 48;
+    }
+    if c >= 65 && c <= 70 {
+        return widen_u64(c) - 55;
+    }
+    if c >= 97 && c <= 102 {
+        return widen_u64(c) - 87;
+    }
+    16
+}
+
+// What `Tokenizer::decode` prints for `piece`: 0 for the piece from `out[1]`
+// with length `out[2]`, 1 for the single byte `out[1]`, 2 for nothing.
+pub fn decode_piece(in piece: Slice[u8], after_bos: bool, inout out: Slice[u64])
+    -> u64 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    let mut start: u64 = 0;
+    if after_bos && piece.len() > 0 && piece[0] == 32 {
+        start = 1;
+    }
+    let n = piece.len() - start;
+    // `<0xHH>`: '<' 60, '0' 48, 'x' 120, '>' 62.
+    if n
+        == 6
+        && piece[start]
+        == 60
+        && piece[start + 1]
+        == 48
+        && piece[start + 2]
+        == 120
+        && piece[start + 5]
+        == 62 {
+        // `u8::from_str_radix` also takes a leading `+`.
+        let lo = hex_digit(piece[start + 4]);
+        if piece[start + 3] == 43 && lo < 16 {
+            return single(lo, inout out);
+        }
+        let hi = hex_digit(piece[start + 3]);
+        if hi < 16 && lo < 16 {
+            return single(16 * hi + lo, inout out);
+        }
+    }
+    if n == 1 {
+        return single(widen_u64(piece[start]), inout out);
+    }
+    out.set(1, start);
+    out.set(2, n);
+    0
+}
+
+// A one-byte piece: printed if graphic or whitespace (`is_ascii_graphic`,
+// `is_ascii_whitespace`: tab, newline, form feed, carriage return, space).
+fn single(b: u64, inout out: Slice[u64]) -> u64 eff [Fail[RuntimeError]] {
+    if (b >= 33 && b <= 126) || b == 9 || b == 10 || b == 12 || b == 13 || b == 32 {
+        out.set(1, b);
+        return 1;
+    }
+    2
+}

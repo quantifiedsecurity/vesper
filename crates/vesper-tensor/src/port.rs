@@ -27,6 +27,68 @@ pub(crate) mod shim {
     }
 }
 
+/// The `.vsys` library `WeightFile` that `vesper/src/lib.ves` imports: the
+/// file `Mapping::open` opened, stat'ed and mapped for the port's
+/// `open_weights`, which decides what to do with it (src/mmap.rs). The file
+/// and its mapping live in a per-thread slot for the one synchronous call.
+pub(crate) mod files {
+    use std::cell::RefCell;
+    use std::fs::File;
+
+    thread_local! {
+        static SLOT: RefCell<(Option<File>, Option<memmap2::Mmap>)> =
+            const { RefCell::new((None, None)) };
+    }
+
+    /// Runs `open_weights` on `file`; returns its code and the mapping.
+    pub(crate) fn with_file(file: File) -> (u64, Option<memmap2::Mmap>) {
+        SLOT.with(|s| *s.borrow_mut() = (Some(file), None));
+        let code = super::binding::open_weights();
+        let map = SLOT.with(|s| {
+            let mut s = s.borrow_mut();
+            s.0 = None;
+            s.1.take()
+        });
+        (code, map)
+    }
+
+    /// The file's length, or `u64::MAX` when it cannot be stat'ed.
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn vesper_tensor_file_len() -> u64 {
+        SLOT.with(|s| {
+            s.borrow()
+                .0
+                .as_ref()
+                .and_then(|f| f.metadata().ok())
+                .map_or(u64::MAX, |m| m.len())
+        })
+    }
+
+    /// 0 when the file is mapped, 1 when it cannot be.
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn vesper_tensor_file_map() -> u64 {
+        SLOT.with(|s| {
+            let mut s = s.borrow_mut();
+            let Some(file) = s.0.as_ref() else {
+                return 1;
+            };
+            // SAFETY: a read-only private mapping of the file `Mapping::open`
+            // just opened; the contract (no concurrent truncation or
+            // modification) is the caller's, as in the Rust build, and all
+            // access goes through bounds-checked slices.
+            match unsafe { memmap2::Mmap::map(file) } {
+                Ok(map) => {
+                    s.1 = Some(map);
+                    0
+                }
+                Err(_) => 1,
+            }
+        })
+    }
+}
+
 pub(crate) fn bits(x: &[f32]) -> &[u32] {
     bytemuck::cast_slice(x)
 }
@@ -74,6 +136,7 @@ macro_rules! failures {
 }
 failures! {
     AddAssignError [RuntimeError, Fault],
+    AttendError [ArithOverflow, RuntimeError, Fault],
     ArgmaxError [RuntimeError, Fault],
     CheckQ4KBlockError [ArithOverflow, RuntimeError],
     DecodePieceError [ArithOverflow, RuntimeError],
@@ -95,6 +158,10 @@ failures! {
     KvReleaseError [ArithOverflow, RuntimeError],
     KvRollbackError [ArithOverflow, RuntimeError],
     KvStatsError [ArithOverflow, RuntimeError],
+    LlamaCheckpointError [ArithOverflow, RuntimeError],
+    LlamaDecodeError [ArithOverflow, RuntimeError],
+    LlamaTokenizerError [ArithOverflow, RuntimeError],
+    LlamaValidateError [ArithOverflow, RuntimeError],
     MakeQkx2QuantsError [ArithOverflow, RuntimeError],
     ParseGgufError [ArithOverflow, RuntimeError, Fault],
     ParseJsonError [ArithOverflow, RuntimeError],

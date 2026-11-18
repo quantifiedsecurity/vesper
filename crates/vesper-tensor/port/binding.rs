@@ -71,6 +71,7 @@ unsafe extern "C" {
     fn vesper_tensor_live_allocations() -> i64;
     fn vesper_tensor_add_assign(acc: *mut u64, x: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_argmax(x: *mut u64, fail: *mut u64) -> i64;
+    fn vesper_tensor_attend(storage: *mut u64, pages: *mut u64, slots: *mut u64, leases: *mut u64, cfg: *mut u64, slot: i64, generation: i64, query: *mut u64, scores: *mut u64, block: *mut u64, out: *mut u64, page: *mut u64, query_heads: i64, tokens: i64, online: i64, words: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_check_mxfp4_block(block: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_check_q4_k_block(block: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_decode_bf16(bits: i64, fail: *mut u64) -> i64;
@@ -99,8 +100,13 @@ unsafe extern "C" {
     fn vesper_tensor_kv_release(storage: *mut u64, pages: *mut u64, slots: *mut u64, leases: *mut u64, cfg: *mut u64, slot: i64, generation: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_kv_rollback(storage: *mut u64, pages: *mut u64, slots: *mut u64, leases: *mut u64, cfg: *mut u64, slot: i64, generation: i64, same_owner: i64, epoch: i64, tokens: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_kv_stats(pages: *mut u64, slots: *mut u64, out: *mut u64, fail: *mut u64) -> i64;
+    fn vesper_tensor_llama_checkpoint(b: *mut u64, rope_base: i64, rms_epsilon: i64, out: *mut u64, fail: *mut u64) -> i64;
+    fn vesper_tensor_llama_decode(piece: *mut u64, after_bos: i64, out: *mut u64, fail: *mut u64) -> i64;
+    fn vesper_tensor_llama_tokenizer(b: *mut u64, vocab: i64, out: *mut u64, fail: *mut u64) -> i64;
+    fn vesper_tensor_llama_validate(dims: *mut u64, rope_base: i64, rms_epsilon: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_make_qkx2_quants(result: *mut u64, nmax: i64, x: *mut u64, weights: *mut u64, l: *mut u64, laux: *mut u64, rmin: i64, rdelta: i64, nstep: i64, use_mad: i64, fail: *mut u64) -> i64;
     fn vesper_tensor_nearest_int(value: i64, fail: *mut u64) -> i64;
+    fn vesper_tensor_open_weights() -> i64;
     fn vesper_tensor_parse_gguf(bytes: *mut u64, alignment_key: *mut u64, tape: *mut u64, names: *mut u64, status: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_parse_json(bytes: *mut u64, tape: *mut u64, keys: *mut u64, strs: *mut u64, levels: *mut u64, fail: *mut u64) -> i64;
     fn vesper_tensor_q4_k_scale_min(result: *mut u64, j: i64, scales: *mut u64, fail: *mut u64) -> i64;
@@ -177,6 +183,32 @@ pub fn argmax(x: &[u32]) -> Result<u64, ArgmaxError> {
         1 => Err(ArgmaxError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
         2 => Err(ArgmaxError::Fault(<Fault as Abi>::get(&fail[1..]))),
         status => panic!("invalid failure status {status} from vesper_tensor_argmax"),
+    }
+}
+
+/// The errors `attend` can raise, in status order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AttendError {
+    ArithOverflow(vesper_port_abi::ArithOverflow),
+    RuntimeError(vesper_port_abi::RuntimeError),
+    Fault(Fault),
+}
+
+/// Calls `attend` of the Vesper library `tensor` (`vesper_tensor_attend`).
+pub fn attend(storage: &[u8], pages: &[u64], slots: &[u64], leases: &[u64], cfg: &[u64], slot: u64, generation: u64, query: &[u32], scores: &mut [u32], block: &mut [u32], out: &mut [u32], page: &mut [u64], query_heads: u64, tokens: u64, online: bool, words: bool) -> Result<u64, AttendError> {
+    // Keep the crate's `Libm` symbols linked: the Vesper object calls them.
+    let _ = core::hint::black_box([crate::port::shim::vesper_tensor_expf as *const ()]);
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_attend` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(storage, |view_storage| vesper_port_abi::with_slice(pages, |view_pages| vesper_port_abi::with_slice(slots, |view_slots| vesper_port_abi::with_slice(leases, |view_leases| vesper_port_abi::with_slice(cfg, |view_cfg| vesper_port_abi::with_slice(query, |view_query| vesper_port_abi::with_slice_mut(scores, |view_scores| vesper_port_abi::with_slice_mut(block, |view_block| vesper_port_abi::with_slice_mut(out, |view_out| vesper_port_abi::with_slice_mut(page, |view_page| unsafe { vesper_tensor_attend(view_storage, view_pages, view_slots, view_leases, view_cfg, slot as i64, generation as i64, view_query, view_scores, view_block, view_out, view_page, query_heads as i64, tokens as i64, online as i64, words as i64, fail.as_mut_ptr()) }))))))))));
+    match fail[0] {
+        0 => Ok(raw as u64),
+        1 => Err(AttendError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
+        2 => Err(AttendError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
+        3 => Err(AttendError::Fault(<Fault as Abi>::get(&fail[1..]))),
+        status => panic!("invalid failure status {status} from vesper_tensor_attend"),
     }
 }
 
@@ -734,6 +766,94 @@ pub fn kv_stats(pages: &[u64], slots: &[u64], out: &mut [u64]) -> Result<u64, Kv
     }
 }
 
+/// The errors `llama_checkpoint` can raise, in status order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LlamaCheckpointError {
+    ArithOverflow(vesper_port_abi::ArithOverflow),
+    RuntimeError(vesper_port_abi::RuntimeError),
+}
+
+/// Calls `llama_checkpoint` of the Vesper library `tensor` (`vesper_tensor_llama_checkpoint`).
+pub fn llama_checkpoint(b: &[u8], rope_base: u32, rms_epsilon: u32, out: &mut [u64]) -> Result<u64, LlamaCheckpointError> {
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_llama_checkpoint` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(b, |view_b| vesper_port_abi::with_slice_mut(out, |view_out| unsafe { vesper_tensor_llama_checkpoint(view_b, rope_base as i64, rms_epsilon as i64, view_out, fail.as_mut_ptr()) }));
+    match fail[0] {
+        0 => Ok(raw as u64),
+        1 => Err(LlamaCheckpointError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
+        2 => Err(LlamaCheckpointError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
+        status => panic!("invalid failure status {status} from vesper_tensor_llama_checkpoint"),
+    }
+}
+
+/// The errors `llama_decode` can raise, in status order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LlamaDecodeError {
+    ArithOverflow(vesper_port_abi::ArithOverflow),
+    RuntimeError(vesper_port_abi::RuntimeError),
+}
+
+/// Calls `llama_decode` of the Vesper library `tensor` (`vesper_tensor_llama_decode`).
+pub fn llama_decode(piece: &[u8], after_bos: bool, out: &mut [u64]) -> Result<u64, LlamaDecodeError> {
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_llama_decode` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(piece, |view_piece| vesper_port_abi::with_slice_mut(out, |view_out| unsafe { vesper_tensor_llama_decode(view_piece, after_bos as i64, view_out, fail.as_mut_ptr()) }));
+    match fail[0] {
+        0 => Ok(raw as u64),
+        1 => Err(LlamaDecodeError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
+        2 => Err(LlamaDecodeError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
+        status => panic!("invalid failure status {status} from vesper_tensor_llama_decode"),
+    }
+}
+
+/// The errors `llama_tokenizer` can raise, in status order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LlamaTokenizerError {
+    ArithOverflow(vesper_port_abi::ArithOverflow),
+    RuntimeError(vesper_port_abi::RuntimeError),
+}
+
+/// Calls `llama_tokenizer` of the Vesper library `tensor` (`vesper_tensor_llama_tokenizer`).
+pub fn llama_tokenizer(b: &[u8], vocab: u64, out: &mut [u64]) -> Result<u64, LlamaTokenizerError> {
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_llama_tokenizer` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(b, |view_b| vesper_port_abi::with_slice_mut(out, |view_out| unsafe { vesper_tensor_llama_tokenizer(view_b, vocab as i64, view_out, fail.as_mut_ptr()) }));
+    match fail[0] {
+        0 => Ok(raw as u64),
+        1 => Err(LlamaTokenizerError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
+        2 => Err(LlamaTokenizerError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
+        status => panic!("invalid failure status {status} from vesper_tensor_llama_tokenizer"),
+    }
+}
+
+/// The errors `llama_validate` can raise, in status order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LlamaValidateError {
+    ArithOverflow(vesper_port_abi::ArithOverflow),
+    RuntimeError(vesper_port_abi::RuntimeError),
+}
+
+/// Calls `llama_validate` of the Vesper library `tensor` (`vesper_tensor_llama_validate`).
+pub fn llama_validate(dims: &[u64], rope_base: u32, rms_epsilon: u32) -> Result<u64, LlamaValidateError> {
+    let mut fail = [0u64; 2];
+    // SAFETY: `vesper_tensor_llama_validate` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(dims, |view_dims| unsafe { vesper_tensor_llama_validate(view_dims, rope_base as i64, rms_epsilon as i64, fail.as_mut_ptr()) });
+    match fail[0] {
+        0 => Ok(raw as u64),
+        1 => Err(LlamaValidateError::ArithOverflow(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..]))),
+        2 => Err(LlamaValidateError::RuntimeError(<vesper_port_abi::RuntimeError as Abi>::get(&fail[1..]))),
+        status => panic!("invalid failure status {status} from vesper_tensor_llama_validate"),
+    }
+}
+
 /// The errors `make_qkx2_quants` can raise, in status order.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MakeQkx2QuantsError {
@@ -769,6 +889,17 @@ pub fn nearest_int(value: u32) -> Result<i32, vesper_port_abi::ArithOverflow> {
         1 => Err(<vesper_port_abi::ArithOverflow as Abi>::get(&fail[1..])),
         status => panic!("invalid failure status {status} from vesper_tensor_nearest_int"),
     }
+}
+
+/// Calls `open_weights` of the Vesper library `tensor` (`vesper_tensor_open_weights`).
+pub fn open_weights() -> u64 {
+    // Keep the crate's `WeightFile` symbols linked: the Vesper object calls them.
+    let _ = core::hint::black_box([crate::port::files::vesper_tensor_file_len as *const (), crate::port::files::vesper_tensor_file_map as *const ()]);
+    // SAFETY: `vesper_tensor_open_weights` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = unsafe { vesper_tensor_open_weights() };
+    raw as u64
 }
 
 /// The errors `parse_gguf` can raise, in status order.
