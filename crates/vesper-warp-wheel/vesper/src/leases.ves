@@ -64,10 +64,7 @@ impl LeaseCore {
     // Empty slot `hole` and backward-shift its probe run. Returns the wheel
     // handle `(index, generation)` the slot held.
     fn remove_at(inout self, hole0: u64) -> (u64, u64) {
-        let removed = (
-            at(in self.s_index, hole0),
-            at(in self.s_generation, hole0)
-        );
+        let removed = (at(in self.s_index, hole0), at(in self.s_generation, hole0));
         self.s_space.try_set(hole0, 0);
         let mut hole = hole0;
         let mut j = hole0;

@@ -175,10 +175,7 @@ impl WheelCore {
         if index >= self.capacity {
             return Option::Some(HandleError::Foreign);
         }
-        if at(in self.e_list, index)
-            == nil()
-            || at(in self.e_generation, index)
-            != generation {
+        if at(in self.e_list, index) == nil() || at(in self.e_generation, index) != generation {
             return Option::Some(HandleError::Stale);
         }
         Option::None
