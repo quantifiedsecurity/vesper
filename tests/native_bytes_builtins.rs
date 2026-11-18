@@ -246,7 +246,20 @@ fn total_forms_report_short_buffers() {
     // `try_` reads are None and `try_` writes are false (writing nothing)
     // when the bytes do not all fit, including offsets near u64::MAX.
     let source = program(
-        "fn run() -> u64 eff [Fail[RuntimeError]] {
+        "// A slice that starts past 0, at offsets near u64::MAX.
+fn far(in s: Slice[u8]) -> u64 {
+    let mut n: u64 = 0;
+    match s.try_read_u16_le(wrapping_sub(0, 1)) {
+        Option::Some(_) => n = 1,
+        Option::None => (),
+    }
+    match s.try_read_u64_be(wrapping_sub(0, 3)) {
+        Option::Some(_) => n = wrapping_add(n, 1),
+        Option::None => (),
+    }
+    n
+}
+fn run() -> u64 eff [Fail[RuntimeError]] {
     let mut s = bytes(7);
     let mut acc: u64 = 0;
     let mut at: u64 = 0;
@@ -279,6 +292,7 @@ fn total_forms_report_short_buffers() {
         Option::Some(_) => 4,
         Option::None => 0,
     });
+    acc = wrapping_add(acc, far(in s[1..7]));
     if s.try_write_u16_le(5, 0x0102) {
         acc = wrapping_add(acc, 8);
     }

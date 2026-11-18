@@ -282,7 +282,9 @@ impl Runtime<'_> {
         let n = usize::from(wide.bytes);
         let bits = u32::from(wide.bytes) * 8;
         let inside = fits(len, at, n);
-        let at = start + at as usize;
+        // Only an in-bounds offset is made absolute: `at` may be near
+        // `u64::MAX`.
+        let at = if inside { start + at as usize } else { 0 };
         if wide.write {
             if inside {
                 let v = index(arg(2)?)?;
