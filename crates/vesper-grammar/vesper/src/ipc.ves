@@ -1,0 +1,912 @@
+// Module ipc of @vesper/grammar (see lib.ves): src/ipc.rs, Arrow IPC
+// streams of flat signed i64 fields.
+//
+// Error kinds are ipc::ErrorKind indices: Configuration 0, InputLimit 1,
+// MetadataLimit 2, CountLimit 3, NameLimit 4, DepthLimit 5, WorkLimit 6,
+// AllocationLimit 7, Overflow 9, UnexpectedEof 10, Framing 11,
+// Flatbuffer 12, Alignment 13, Aliasing 14, Utf8 15, Schema 16,
+// MissingSchema 17, UnsupportedVersion 18, UnsupportedHeader 19,
+// UnsupportedType 20, UnsupportedEndian 21, UnsupportedDictionary 22,
+// UnsupportedCompression 23, UnsupportedMetadata 24, UnsupportedFeature 25,
+// UnsupportedNested 26, UnsupportedVariadic 27, Descriptor 28,
+// NonNullable 29, and Column 31 with `a` the crate::ErrorKind index.
+//
+// Limits (`lim`): the twelve ipc::Limits fields in declaration order, then
+// the Rust sizes of Region, Field, I64Column, Range<usize> and Batch (the
+// metadata vectors the Rust parser reserves), the input's host address and
+// the alignment profile.
+//
+// The result stream: the schema's metadata version and field count, three
+// words per field (name start, name length, nullable), the batch count,
+// per batch its rows, body start, body length, metadata version and seven
+// ArCol words per column (ranges relative to the body), then the work
+// used, the metadata allocation bytes and the consumed length.
+use self::{
+    ArCol,
+    ArReq,
+    GErr,
+    P2,
+    P4
+};
+use self::common::{
+    add_or,
+    fail,
+    fail2,
+    le16,
+    le32,
+    le64,
+    min,
+    mul_or,
+    none,
+    pair,
+    sb,
+    sw
+};
+use self::arrow::{
+    checked_buffer_range,
+    validate
+};
+use self::utf8::{
+    valid_up_to
+};
+
+// The Budget: remaining work, requested metadata bytes, metadata length.
+pub copy struct Bud {
+    remaining: u64,
+    allocation: u64,
+    metadata: u64
+}
+
+// One FlatBuffer: its offset in the input, its length, region capacity.
+pub copy struct Fb {
+    base: u64,
+    len: u64,
+    cap: u64
+}
+
+pub copy struct Table {
+    pos: u64,
+    vtable: u64,
+    slots: u64
+}
+
+fn work(inout b: Bud, n: u64) -> Unit eff [Fail[GErr]] {
+    if n > b.remaining {
+        fail(6, 0);
+    }
+    b.remaining = wrapping_sub(b.remaining, n);
+}
+
+// Budget::reserve of `count` elements of `size` bytes.
+fn reserve(inout b: Bud, in lim: Slice[u64], count: u64, size: u64) -> Unit eff [Fail[GErr]] {
+    let bytes = mul_or(count, size, 9, count);
+    b.allocation = add_or(b.allocation, bytes, 9, b.allocation);
+    if b.allocation > sw(in lim, 11) {
+        fail(7, 0);
+    }
+    work(inout b, bytes);
+}
+
+fn nonnegative(n: u64, at: u64) -> u64 eff [Fail[GErr]] {
+    if n >= 9223372036854775808 {
+        fail(28, at);
+    }
+    n
+}
+
+fn ffail(f: Fb, kind: u64, at: u64) -> Never eff [Fail[GErr]] {
+    if at > wrapping_sub(none(), f.base) {
+        fail(kind, f.base);
+    }
+    fail(kind, wrapping_add(f.base, at))
+}
+
+// Fb::bytes: the input position of `[at, at + len)` of the buffer.
+fn fbytes(f: Fb, inout b: Bud, at: u64, len: u64) -> u64 eff [Fail[GErr]] {
+    let end = add_or(at, len, 9, at);
+    work(inout b, len);
+    if end > f.len {
+        ffail(f, 12, at);
+    }
+    wrapping_add(f.base, at)
+}
+
+fn fu8(in input: Slice[u8], f: Fb, inout b: Bud, at: u64) -> u64 eff [Fail[GErr]] {
+    sb(in input, fbytes(f, inout b, at, 1))
+}
+
+fn fu16(in input: Slice[u8], f: Fb, inout b: Bud, at: u64) -> u64 eff [Fail[GErr]] {
+    le16(in input, fbytes(f, inout b, at, 2))
+}
+
+fn fu32(in input: Slice[u8], f: Fb, inout b: Bud, at: u64) -> u64 eff [Fail[GErr]] {
+    le32(in input, fbytes(f, inout b, at, 4))
+}
+
+fn fi64(in input: Slice[u8], f: Fb, inout b: Bud, at: u64) -> u64 eff [Fail[GErr]] {
+    le64(in input, fbytes(f, inout b, at, 8))
+}
+
+// Region roles: Root 0, Table(kind) 1 + kind, Vtable 6, String 8 and
+// Vector(width) 16 + width. Kinds: Message 0, Schema 1, Field 2, Int 3,
+// RecordBatch 4.
+fn claim(
+    f: Fb,
+    inout b: Bud,
+    inout regs: ChunkSeq[u64],
+    in lim: Slice[u64],
+    start: u64,
+    len: u64,
+    role: u64
+) -> Unit eff [Fail[GErr]] {
+    let end = add_or(start, len, 9, start);
+    if end > f.len {
+        ffail(f, 12, start);
+    }
+    let n = regs.len() / 3;
+    for i in 0..n {
+        work(inout b, 1);
+        let rs = cw(in regs, wrapping_mul(i, 3));
+        let re = cw(in regs, wrapping_add(wrapping_mul(i, 3), 1));
+        let rr = cw(in regs, wrapping_add(wrapping_mul(i, 3), 2));
+        if start < re && rs < end {
+            if start == rs && end == re && (role == rr || (len == 4 && role >= 16 && rr >= 16)) {
+                return;
+            }
+            ffail(f, 14, start);
+        }
+    }
+    if n >= sw(in lim, 8) || n >= f.cap {
+        ffail(f, 3, start);
+    }
+    regs.push(start);
+    regs.push(end);
+    regs.push(role);
+}
+
+fn cw(in s: ChunkSeq[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+fn offset(in input: Slice[u8], f: Fb, inout b: Bud, at: u64) -> u64 eff [Fail[GErr]] {
+    let value = fu32(in input, f, inout b, at);
+    if value < 4 {
+        ffail(f, 12, at);
+    }
+    let target = add_or(at, value, 9, at);
+    if target & 3 != 0 {
+        ffail(f, 12, at);
+    }
+    if add_or(target, 4, 9, target) > f.len {
+        ffail(f, 12, at);
+    }
+    target
+}
+
+// Kind::width: the slot widths of each table kind; 0 is an unknown slot.
+fn kwidth(kind: u64, index: u64) -> u64 {
+    if kind == 0 {
+        if index == 0 {
+            2
+        } else if index == 1 {
+            1
+        } else if index == 2 || index == 4 {
+            4
+        } else if index == 3 {
+            8
+        } else {
+            0
+        }
+    } else if kind == 1 {
+        if index == 0 {
+            2
+        } else if index <= 3 {
+            4
+        } else {
+            0
+        }
+    } else if kind == 2 {
+        if index == 1 || index == 2 {
+            1
+        } else if index <= 6 {
+            4
+        } else {
+            0
+        }
+    } else if kind == 3 {
+        if index == 0 {
+            4
+        } else if index == 1 {
+            1
+        } else {
+            0
+        }
+    } else if index == 0 {
+        8
+    } else if index <= 4 {
+        4
+    } else {
+        0
+    }
+}
+
+fn table(
+    in input: Slice[u8],
+    f: Fb,
+    inout b: Bud,
+    inout regs: ChunkSeq[u64],
+    in lim: Slice[u64],
+    pos: u64,
+    kind: u64,
+    depth: u64
+) -> Table eff [Fail[GErr]] {
+    if depth > sw(in lim, 9) {
+        ffail(f, 5, pos);
+    }
+    if pos & 3 != 0 {
+        ffail(f, 13, pos);
+    }
+    let distance = fu32(in input, f, inout b, pos);
+    let vtable = if distance >= 2147483648 {
+        add_or(pos, wrapping_sub(4294967296, distance), 9, pos)
+    } else {
+        if distance > pos {
+            ffail(f, 12, pos);
+        }
+        wrapping_sub(pos, distance)
+    };
+    if vtable & 1 != 0 {
+        ffail(f, 13, vtable);
+    }
+    let length = fu16(in input, f, inout b, vtable);
+    let object = fu16(in input, f, inout b, add_or(vtable, 2, 9, vtable));
+    if length < 4 || length & 1 != 0 || length > 68 || object < 4 {
+        ffail(f, 12, vtable);
+    }
+    claim(f, inout b, inout regs, in lim, vtable, length, 6);
+    claim(f, inout b, inout regs, in lim, pos, object, wrapping_add(kind, 1));
+    let slots = wrapping_sub(length, 4) / 2;
+    for index in 0..slots {
+        let slot = wrapping_add(wrapping_add(vtable, 4), wrapping_mul(index, 2));
+        let off = fu16(in input, f, inout b, slot);
+        if off != 0 {
+            let width = kwidth(kind, index);
+            if width == 0 {
+                ffail(f, 24, slot);
+            }
+            let align = min(width, 8);
+            if off
+                < 4
+                || add_or(off, width, 9, off)
+                > object
+                || add_or(pos, off, 9, pos)
+                & wrapping_sub(align, 1)
+                != 0 {
+                ffail(f, 12, wrapping_add(pos, off));
+            }
+            for prior in 0..index {
+                let pslot = wrapping_add(wrapping_add(vtable, 4), wrapping_mul(prior, 2));
+                let previous = fu16(in input, f, inout b, pslot);
+                if previous != 0 {
+                    let old = kwidth(kind, prior);
+                    if old == 0 {
+                        ffail(f, 24, pslot);
+                    }
+                    if off < wrapping_add(previous, old) && previous < wrapping_add(off, width) {
+                        ffail(f, 14, wrapping_add(pos, off));
+                    }
+                }
+            }
+        }
+    }
+    Table {
+        pos: pos,
+        vtable: vtable,
+        slots: slots
+    }
+}
+
+// Fb::field: the buffer position of slot `index`, or none().
+fn field(in input: Slice[u8], f: Fb, inout b: Bud, t: Table, index: u64) -> u64 eff [Fail[GErr]] {
+    if index >= t.slots {
+        return none();
+    }
+    let off = fu16(
+        in input,
+        f,
+        inout b,
+        wrapping_add(wrapping_add(t.vtable, 4), wrapping_mul(index, 2))
+    );
+    if off == 0 {
+        none()
+    } else {
+        wrapping_add(t.pos, off)
+    }
+}
+
+fn scalar8(in input: Slice[u8], f: Fb, inout b: Bud, t: Table, index: u64, default: u64)
+    -> u64 eff [Fail[GErr]] {
+    let at = field(in input, f, inout b, t, index);
+    if at == none() {
+        default
+    } else {
+        fu8(in input, f, inout b, at)
+    }
+}
+
+fn scalar16(in input: Slice[u8], f: Fb, inout b: Bud, t: Table, index: u64, default: u64)
+    -> u64 eff [Fail[GErr]] {
+    let at = field(in input, f, inout b, t, index);
+    if at == none() {
+        default
+    } else {
+        fu16(in input, f, inout b, at)
+    }
+}
+
+fn scalar64(in input: Slice[u8], f: Fb, inout b: Bud, t: Table, index: u64, default: u64)
+    -> u64 eff [Fail[GErr]] {
+    let at = field(in input, f, inout b, t, index);
+    if at == none() {
+        default
+    } else {
+        fi64(in input, f, inout b, at)
+    }
+}
+
+// Fb::vector: (start, count).
+fn vector(
+    in input: Slice[u8],
+    f: Fb,
+    inout b: Bud,
+    inout regs: ChunkSeq[u64],
+    in lim: Slice[u64],
+    at: u64,
+    width: u64,
+    alignment: u64,
+    max: u64
+) -> P2 eff [Fail[GErr]] {
+    if at == none() {
+        return pair(0, 0);
+    }
+    let target = offset(in input, f, inout b, at);
+    let count = fu32(in input, f, inout b, target);
+    if count > max {
+        ffail(f, 3, target);
+    }
+    let start = add_or(target, 4, 9, target);
+    if count != 0 && start & wrapping_sub(alignment, 1) != 0 {
+        ffail(f, 13, start);
+    }
+    let len = add_or(4, mul_or(count, width, 9, count), 9, 4);
+    claim(f, inout b, inout regs, in lim, target, len, wrapping_add(16, width));
+    pair(start, count)
+}
+
+fn empty_metadata(
+    in input: Slice[u8],
+    f: Fb,
+    inout b: Bud,
+    inout regs: ChunkSeq[u64],
+    in lim: Slice[u64],
+    t: Table,
+    index: u64
+) -> Unit eff [Fail[GErr]] {
+    let at = field(in input, f, inout b, t, index);
+    let v = vector(in input, f, inout b, inout regs, in lim, at, 4, 4, sw(in lim, 3));
+    if v.b != 0 {
+        ffail(f, 24, t.pos);
+    }
+}
+
+// Fb::string: (input position, length).
+fn string(
+    in input: Slice[u8],
+    f: Fb,
+    inout b: Bud,
+    inout regs: ChunkSeq[u64],
+    in lim: Slice[u64],
+    at: u64
+) -> P2 eff [Fail[GErr]] {
+    if at == none() {
+        return pair(0, 0);
+    }
+    let target = offset(in input, f, inout b, at);
+    let len = fu32(in input, f, inout b, target);
+    if len > sw(in lim, 7) {
+        ffail(f, 4, target);
+    }
+    let start = add_or(target, 4, 9, target);
+    claim(f, inout b, inout regs, in lim, target, add_or(5, len, 9, 5), 8);
+    let nul = add_or(start, len, 9, start);
+    if fu8(in input, f, inout b, nul) != 0 {
+        ffail(f, 12, nul);
+    }
+    let from = fbytes(f, inout b, start, len);
+    let to = wrapping_add(from, len);
+    if valid_up_to(in input, from, to) != to {
+        ffail(f, 15, start);
+    }
+    pair(from, len)
+}
+
+fn header(
+    in input: Slice[u8],
+    f: Fb,
+    inout b: Bud,
+    inout regs: ChunkSeq[u64],
+    in lim: Slice[u64],
+    message: Table,
+    kind: u64
+) -> Table eff [Fail[GErr]] {
+    let at = field(in input, f, inout b, message, 2);
+    if at == none() {
+        ffail(f, 12, message.pos);
+    }
+    let target = offset(in input, f, inout b, at);
+    table(in input, f, inout b, inout regs, in lim, target, kind, 2)
+}
+
+// schema(): appends three words per field to `fields`.
+fn schema(
+    in input: Slice[u8],
+    f: Fb,
+    inout b: Bud,
+    inout regs: ChunkSeq[u64],
+    in lim: Slice[u64],
+    message: Table,
+    inout fields: ChunkSeq[u64]
+) -> Unit eff [Fail[GErr]] {
+    let t = header(in input, f, inout b, inout regs, in lim, message, 1);
+    if scalar16(in input, f, inout b, t, 0, 0) != 0 {
+        ffail(f, 21, t.pos);
+    }
+    empty_metadata(in input, f, inout b, inout regs, in lim, t, 2);
+    let features_at = field(in input, f, inout b, t, 3);
+    let features = vector(in input, f, inout b, inout regs, in lim, features_at, 8, 8, 64);
+    for i in 0..features.b {
+        let at = wrapping_add(features.a, wrapping_mul(i, 8));
+        if fi64(in input, f, inout b, at) != 0 {
+            ffail(f, 25, at);
+        }
+    }
+    let list_at = field(in input, f, inout b, t, 1);
+    let list = vector(in input, f, inout b, inout regs, in lim, list_at, 4, 4, sw(in lim, 3));
+    reserve(inout b, in lim, list.b, sw(in lim, 13));
+    for i in 0..list.b {
+        let at = offset(in input, f, inout b, wrapping_add(list.a, wrapping_mul(i, 4)));
+        let ft = table(in input, f, inout b, inout regs, in lim, at, 2, 3);
+        if field(in input, f, inout b, ft, 4) != none() {
+            ffail(f, 22, at);
+        }
+        let children_at = field(in input, f, inout b, ft, 5);
+        let children = vector(
+            in input,
+            f,
+            inout b,
+            inout regs,
+            in lim,
+            children_at,
+            4,
+            4,
+            sw(in lim, 3)
+        );
+        if children.b != 0 {
+            ffail(f, 26, at);
+        }
+        empty_metadata(in input, f, inout b, inout regs, in lim, ft, 6);
+        if scalar8(in input, f, inout b, ft, 2, 0) != 2 {
+            ffail(f, 20, at);
+        }
+        let int_at = field(in input, f, inout b, ft, 3);
+        if int_at == none() {
+            ffail(f, 12, at);
+        }
+        let int_pos = offset(in input, f, inout b, int_at);
+        let it = table(in input, f, inout b, inout regs, in lim, int_pos, 3, 4);
+        let width_at = field(in input, f, inout b, it, 0);
+        let width = if width_at == none() {
+            0
+        } else {
+            fu32(in input, f, inout b, width_at)
+        };
+        if width != 64 {
+            ffail(f, 20, it.pos);
+        }
+        if scalar8(in input, f, inout b, it, 1, 0) != 1 {
+            ffail(f, 20, it.pos);
+        }
+        let nullable = scalar8(in input, f, inout b, ft, 1, 0);
+        if nullable > 1 {
+            ffail(f, 12, at);
+        }
+        let name_at = field(in input, f, inout b, ft, 0);
+        let name = string(in input, f, inout b, inout regs, in lim, name_at);
+        fields.push(name.a);
+        fields.push(name.b);
+        fields.push(nullable);
+    }
+}
+
+// A range check whose arrow failure becomes Column(kind) at `body_at`
+// plus its offset: (start, end).
+fn column_range(total: u64, offset_bytes: u64, byte_length: u64, body_at: u64)
+    -> P2 eff [Fail[GErr]] {
+    let r = handle Fail[GErr] in {
+        let p = checked_buffer_range(total, offset_bytes, byte_length, 8);
+        P4 {
+            a: 0,
+            b: p.a,
+            c: p.b,
+            d: 0
+        }
+    } with {
+        return v => v,
+        raise(e, k) => P4 {
+            a: 1,
+            b: e.kind,
+            c: e.offset,
+            d: 0
+        }
+    };
+    if r.a != 0 {
+        column_fail(r.b, r.c, body_at);
+    }
+    pair(r.b, r.c)
+}
+
+fn column_fail(kind: u64, at: u64, body_at: u64) -> Never eff [Fail[GErr]] {
+    let offset = if at > wrapping_sub(none(), body_at) {
+        body_at
+    } else {
+        wrapping_add(body_at, at)
+    };
+    fail2(31, offset, kind, 0)
+}
+
+// I64Column::validate with the same remapping; a failure is marked by
+// `values_start == none()` with the kind and offset in rows and nulls.
+fn column(in body: Slice[u8], r: ArReq, body_at: u64) -> ArCol eff [Fail[GErr]] {
+    let c = handle Fail[GErr] in {
+        validate(in body, r)
+    } with {
+        return v => v,
+        raise(e, k) => ArCol {
+            values_start: none(),
+            values_end: 0,
+            has_validity: false,
+            validity_start: 0,
+            validity_end: 0,
+            rows: e.kind,
+            nulls: e.offset
+        }
+    };
+    if c.values_start == none() {
+        column_fail(c.rows, c.nulls, body_at);
+    }
+    c
+}
+
+// batch(): appends the batch words to `out`; returns its rows.
+fn batch(
+    in input: Slice[u8],
+    f: Fb,
+    inout b: Bud,
+    inout regs: ChunkSeq[u64],
+    in lim: Slice[u64],
+    message: Table,
+    body_at: u64,
+    body_len: u64,
+    in fields: ChunkSeq[u64],
+    version: u64,
+    remaining_rows: u64,
+    inout out: ChunkSeq[u64]
+) -> u64 eff [Fail[GErr]] {
+    let t = header(in input, f, inout b, inout regs, in lim, message, 4);
+    if field(in input, f, inout b, t, 3) != none() {
+        ffail(f, 23, t.pos);
+    }
+    let variadic_at = field(in input, f, inout b, t, 4);
+    let variadic = vector(
+        in input,
+        f,
+        inout b,
+        inout regs,
+        in lim,
+        variadic_at,
+        8,
+        8,
+        sw(in lim, 3)
+    );
+    if variadic.b != 0 {
+        ffail(f, 27, t.pos);
+    }
+    let rows = nonnegative(scalar64(in input, f, inout b, t, 0, 0), wrapping_add(f.base, t.pos));
+    if rows > sw(in lim, 5) || rows > remaining_rows {
+        ffail(f, 3, t.pos);
+    }
+    let nodes_at = field(in input, f, inout b, t, 1);
+    let nodes = vector(in input, f, inout b, inout regs, in lim, nodes_at, 16, 8, sw(in lim, 3));
+    let buffers_at = field(in input, f, inout b, t, 2);
+    let max_buffers = mul_or(sw(in lim, 3), 2, 9, sw(in lim, 3));
+    let buffers = vector(in input, f, inout b, inout regs, in lim, buffers_at, 16, 8, max_buffers);
+    let nf = fields.len() / 3;
+    if nodes.b != nf || buffers.b != mul_or(nf, 2, 9, nf) || (nf == 0 && body_len != 0) {
+        ffail(f, 28, t.pos);
+    }
+    reserve(inout b, in lim, nf, sw(in lim, 14));
+    reserve(inout b, in lim, buffers.b, sw(in lim, 15));
+    let body_address = add_or(sw(in lim, 17), body_at, 9, sw(in lim, 17));
+    let profile = sw(in lim, 18);
+    let mut ranges = ChunkSeq::new[u64]();
+    for i in 0..buffers.b {
+        let at = wrapping_add(buffers.a, wrapping_mul(i, 16));
+        let offset_bytes = fi64(in input, f, inout b, at);
+        let byte_length = fi64(in input, f, inout b, wrapping_add(at, 8));
+        let range = column_range(body_len, offset_bytes, byte_length, body_at);
+        for j in 0..i {
+            work(inout b, 1);
+            let os = cw(in ranges, wrapping_mul(j, 2));
+            let oe = cw(in ranges, wrapping_add(wrapping_mul(j, 2), 1));
+            if range.a != range.b && os != oe && range.a < oe && os < range.b {
+                fail(14, wrapping_add(body_at, range.a));
+            }
+        }
+        if range.a != range.b && (profile == 2 || profile == 3) {
+            if range.a & 63 != 0 {
+                fail(13, wrapping_add(body_at, range.a));
+            }
+            if profile == 3 && add_or(body_address, range.a, 9, body_address) & 63 != 0 {
+                fail(13, wrapping_add(body_at, range.a));
+            }
+        }
+        ranges.push(range.a);
+        ranges.push(range.b);
+    }
+    out.push(rows);
+    out.push(body_at);
+    out.push(body_len);
+    out.push(version);
+    let body_end = wrapping_add(body_at, body_len);
+    for i in 0..nf {
+        let at = wrapping_add(nodes.a, wrapping_mul(i, 16));
+        let row_length = fi64(in input, f, inout b, at);
+        let null_count = fi64(in input, f, inout b, wrapping_add(at, 8));
+        if nonnegative(row_length, wrapping_add(f.base, at)) != rows {
+            ffail(f, 28, at);
+        }
+        if cw(in fields, wrapping_add(wrapping_mul(i, 3), 2)) == 0 && null_count != 0 {
+            ffail(f, 29, at);
+        }
+        work(inout b, rows);
+        let vs = cw(in ranges, wrapping_mul(i, 4));
+        let ve = cw(in ranges, wrapping_add(wrapping_mul(i, 4), 1));
+        let ws = cw(in ranges, wrapping_add(wrapping_mul(i, 4), 2));
+        let we = cw(in ranges, wrapping_add(wrapping_mul(i, 4), 3));
+        let request = ArReq {
+            row_length: row_length,
+            null_count: null_count,
+            validity_offset: vs,
+            validity_length: wrapping_sub(ve, vs),
+            values_offset: ws,
+            values_length: wrapping_sub(we, ws),
+            profile: 1,
+            body_address: body_address,
+            max_body_bytes: sw(in lim, 0),
+            max_rows: sw(in lim, 5),
+            max_work: rows
+        };
+        let c = column(in input[body_at..body_end], request, body_at);
+        out.push(c.values_start);
+        out.push(c.values_end);
+        out
+            .push(
+            if c.has_validity {
+                1
+            } else {
+                0
+            }
+        );
+        out.push(c.validity_start);
+        out.push(c.validity_end);
+        out.push(c.rows);
+        out.push(c.nulls);
+    }
+    rows
+}
+
+fn validate_limits(in lim: Slice[u64]) -> Unit eff [Fail[GErr]] {
+    if sw(in lim, 0)
+        > 134217728
+        || sw(in lim, 1)
+        > 4194304
+        || sw(in lim, 2)
+        > 16777216
+        || sw(in lim, 3)
+        > 1024
+        || sw(in lim, 4)
+        > 4096
+        || sw(in lim, 5)
+        > 8388608
+        || sw(in lim, 6)
+        > 16777216
+        || sw(in lim, 7)
+        > 4096
+        || sw(in lim, 8)
+        > 8192
+        || sw(in lim, 10)
+        > 536870912
+        || sw(in lim, 11)
+        > 67108864 {
+        fail(0, 0);
+    }
+    if sw(in lim, 9) == 0 || sw(in lim, 9) > 32 {
+        fail(0, 0);
+    }
+}
+
+fn read_u32(in input: Slice[u8], at: u64, inout b: Bud) -> u64 eff [Fail[GErr]] {
+    let end = add_or(at, 4, 9, at);
+    if end > input.len() {
+        fail(10, at);
+    }
+    work(inout b, 4);
+    le32(in input, at)
+}
+
+// parse_prefix_with_alignment (the profile is `lim[18]`).
+pub fn parse_prefix(in input: Slice[u8], in lim: Slice[u64]) -> ChunkSeq[u64] eff [Fail[GErr]] {
+    validate_limits(in lim);
+    let n = input.len();
+    if n > sw(in lim, 0) {
+        fail(1, 0);
+    }
+    let mut b = Bud {
+        remaining: sw(in lim, 10),
+        allocation: 0,
+        metadata: 0
+    };
+    work(inout b, n);
+    let mut pos: u64 = 0;
+    let mut have_schema = false;
+    let mut schema_version: u64 = 0;
+    let mut fields = ChunkSeq::new[u64]();
+    let mut batches = ChunkSeq::new[u64]();
+    let mut count: u64 = 0;
+    let mut total_rows: u64 = 0;
+    // 0 unset, 1 legacy, 2 modern.
+    let mut framing: u64 = 0;
+    loop {
+        let first = read_u32(in input, pos, inout b);
+        let modern = first == 4294967295;
+        let prefix: u64 = if modern {
+            8
+        } else {
+            4
+        };
+        let length = if modern {
+            read_u32(in input, add_or(pos, 4, 9, pos), inout b)
+        } else {
+            first
+        };
+        let frame: u64 = if modern {
+            2
+        } else {
+            1
+        };
+        if framing != 0 && framing != frame {
+            fail(11, pos);
+        }
+        if length == 0 {
+            if !have_schema {
+                fail(17, pos);
+            }
+            let consumed = add_or(pos, prefix, 9, pos);
+            let mut out = ChunkSeq::new[u64]();
+            out.push(schema_version);
+            out.push(fields.len() / 3);
+            for i in 0..fields.len() {
+                out.push(cw(in fields, i));
+            }
+            out.push(count);
+            for i in 0..batches.len() {
+                out.push(cw(in batches, i));
+            }
+            out.push(wrapping_sub(sw(in lim, 10), b.remaining));
+            out.push(b.allocation);
+            out.push(consumed);
+            return out;
+        }
+        if length > 2147483647 {
+            fail(11, pos);
+        }
+        if length > sw(in lim, 1) {
+            fail(2, pos);
+        }
+        b.metadata = add_or(b.metadata, length, 9, b.metadata);
+        if b.metadata > sw(in lim, 2) {
+            fail(2, pos);
+        }
+        let metadata_at = add_or(pos, prefix, 9, pos);
+        let body_at = add_or(metadata_at, length, 9, metadata_at);
+        if body_at & 7 != 0 {
+            fail(13, body_at);
+        }
+        if body_at > n {
+            fail(10, metadata_at);
+        }
+        let cap = min(sw(in lim, 8), wrapping_add(length / 4, 1));
+        reserve(inout b, in lim, cap, sw(in lim, 12));
+        let f = Fb {
+            base: metadata_at,
+            len: length,
+            cap: cap
+        };
+        let mut regs = ChunkSeq::new[u64]();
+        claim(f, inout b, inout regs, in lim, 0, 4, 0);
+        let root_at = offset(in input, f, inout b, 0);
+        let message = table(in input, f, inout b, inout regs, in lim, root_at, 0, 1);
+        let version = scalar16(in input, f, inout b, message, 0, 0);
+        if version != 3 && version != 4 {
+            ffail(f, 18, message.pos);
+        }
+        empty_metadata(in input, f, inout b, inout regs, in lim, message, 4);
+        let body_len = nonnegative(
+            scalar64(in input, f, inout b, message, 3, 0),
+            wrapping_add(metadata_at, message.pos)
+        );
+        if body_len & 7 != 0 {
+            fail(13, body_at);
+        }
+        let end = add_or(body_at, body_len, 9, body_at);
+        if end > n {
+            fail(10, body_at);
+        }
+        let h = scalar8(in input, f, inout b, message, 1, 0);
+        if h == 1 {
+            if have_schema || body_len != 0 {
+                fail(16, pos);
+            }
+            schema(in input, f, inout b, inout regs, in lim, message, inout fields);
+            have_schema = true;
+            schema_version = version;
+            reserve(inout b, in lim, min(sw(in lim, 4), wrapping_add(n / 8, 1)), sw(in lim, 16));
+            framing = frame;
+        } else if h == 3 {
+            if !have_schema {
+                fail(17, pos);
+            }
+            if count >= sw(in lim, 4) {
+                fail(3, pos);
+            }
+            let remaining = wrapping_sub(sw(in lim, 6), total_rows);
+            let rows = batch(
+                in input,
+                f,
+                inout b,
+                inout regs,
+                in lim,
+                message,
+                body_at,
+                body_len,
+                in fields,
+                version,
+                remaining,
+                inout batches
+            );
+            total_rows = add_or(total_rows, rows, 9, total_rows);
+            if total_rows > sw(in lim, 6) {
+                fail(3, pos);
+            }
+            count = wrapping_add(count, 1);
+        } else if h == 2 {
+            fail(22, pos);
+        } else {
+            fail(19, pos);
+        }
+        pos = end;
+    }
+}

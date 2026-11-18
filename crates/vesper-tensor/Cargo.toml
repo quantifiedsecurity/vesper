@@ -4,8 +4,36 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
-description = "Bounded host tensor planning, paged KV cache and greedy CPU inference for small Llama-architecture models"
+description = "Bounded host tensor planning, paged KV cache and greedy CPU inference for small Llama-architecture models (port-backed build)"
+build = "build.rs"
+
+# This is the port-backed build (port wave P1 lane 8, #905): build.rs links
+# the Vesper package in vesper/ and sets cfg(vesper_port), and the ported
+# functions forward to it (src/port.rs). The compiler and, under the owner's
+# parity rule, every other dependent use the frozen Rust seed copy,
+# crates/vesper-tensor/seed (package vesper-tensor-seed, same library name);
+# see "Crates the compiler links" in docs/maintenance/porting-a-crate.md.
+
+[features]
+# A deliberately wrong Vesper build (one edit per ported module, DIVERGENT in
+# build.rs): the port's tests must fail.
+vesper-port-divergent = []
 
 [dependencies]
 # Already in Cargo.lock (cranelift-jit uses it); read-only weight mapping.
 memmap2 = "=0.2.3"
+# Lends `&[f32]` to the port as `&[u32]` without a copy (the export ABI has
+# no f32). Already in Cargo.lock (vesper-kinetic uses it).
+bytemuck = "=1.25.2"
+vesper-port-abi = { path = "../vesper-port-abi" }
+
+[build-dependencies]
+vesper-port-harness = { path = "../vesper-port-harness" }
+
+[dev-dependencies]
+# tests/abba.rs compares the port with the Rust seed copy in one process.
+seed = { path = "seed", package = "vesper-tensor-seed" }
+vesper-bench = { path = "../vesper-bench" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(vesper_port)"] }

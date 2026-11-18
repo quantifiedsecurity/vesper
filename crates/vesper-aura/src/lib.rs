@@ -25,19 +25,10 @@ mod session;
 mod sim_aura;
 mod view;
 
-// The implementation: the frozen Rust build, or the Vesper build of
-// the Loom package in vesper/ behind thin wrappers (port wave P1 lane 13, #910).
-#[cfg(not(feature = "vesper-port"))]
-mod reference;
-#[cfg(not(feature = "vesper-port"))]
-pub use reference::{
-    CloseDecision, PreparedUpdate, RecordingBackend, Session, SimAura, audit_view_tree,
-    encode_view_tree,
-};
-
-#[cfg(feature = "vesper-port")]
+// The implementation: the Vesper build of the Loom package in vesper/ behind
+// thin wrappers (port wave P1 lane 13, #910). It replaced the Rust
+// implementation in #979.
 mod ported;
-#[cfg(feature = "vesper-port")]
 pub use ported::{
     CloseDecision, PreparedUpdate, RecordingBackend, Session, SimAura, audit_view_tree,
     encode_view_tree,

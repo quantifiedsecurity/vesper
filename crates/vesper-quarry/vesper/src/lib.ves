@@ -11,6 +11,12 @@
 // (src/port.rs) rebuilds the crate's own types from them. The encodings are
 // documented in src/port.rs.
 //
+// The library uses export ABI v3: `prepare` takes the catalog as in-place
+// slices of the `CTab` and `CCol` mirrors, which the Vesper build copies in
+// one block each instead of decoding a word stream. The directive is in
+// check.ves, because the compiler reads `@export` directives from the
+// package's first file in path order, not from this root module.
+//
 // Errors are sticky: the first `fail` wins, and every step returns early
 // once `err` is set. Fail[E] cannot be used here, because an abortable
 // effect may not cross an active `inout` parameter (E0402).
@@ -211,23 +217,21 @@ pub struct Q {
     plan: ChunkSeq[Node],
     links: ChunkSeq[Link],
     rows: ChunkSeq[u64],
-    rowset: ChunkSeq[u64],
-    flags: ChunkSeq[bool],
     work: u64,
     brows: u64,
-    bbytes: u64,
+    bbytes: u64
+}
+
+// The row executor's and the access planner's state, kept out of `Q` so
+// that the front end and the optimizer do not allocate it: every sequence
+// costs an allocation and a free per call.
+pub struct D {
+    rowset: ChunkSeq[u64],
     dtabs: ChunkSeq[CTab],
     decls: ChunkSeq[CCol],
     stats: ChunkSeq[Stat],
     vals: ChunkSeq[Val],
-    counts: ChunkSeq[u64],
-    // Scratch sequences. Locals are not freed by native code yet, so
-    // every function-local sequence lives here.
-    aux: ChunkSeq[u64],
-    aux2: ChunkSeq[u64],
-    aux3: ChunkSeq[u64],
-    aux4: ChunkSeq[u64],
-    bits: ChunkSeq[bool]
+    counts: ChunkSeq[u64]
 }
 
 // The exported API. Each entry point is documented where it is implemented.
@@ -246,9 +250,15 @@ pub fn optimize(in plan: Slice[u64]) -> Q {
     optimize_q(in plan)
 }
 
-pub fn prepare(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in limits: Slice[u64])
-    -> Q {
-    prepare_q(in meta, in text, in sql, in limits)
+pub fn prepare(
+    in tabs: Slice[CTab],
+    in cols: Slice[CCol],
+    in meta: Slice[u64],
+    in text: Slice[u8],
+    in sql: Slice[u8],
+    in limits: Slice[u64]
+) -> Q {
+    prepare_q(in tabs, in cols, in meta, in text, in sql, in limits)
 }
 
 pub fn execute(in prog: Slice[u64], in text: Slice[u8]) -> Q {

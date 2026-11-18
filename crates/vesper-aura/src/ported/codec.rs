@@ -210,7 +210,11 @@ pub(crate) fn backend_error(fault: BackendFault) -> BackendError {
 }
 
 /// The plan's patches; slot values are cloned from the input tree.
-pub(crate) fn patches(session: u64, ops: &[Op], input: Option<&ViewTree>) -> Vec<Patch> {
+pub(crate) fn patches(
+    session: u64,
+    ops: impl Iterator<Item = Op>,
+    input: Option<&ViewTree>,
+) -> Vec<Patch> {
     let widget = |serial| WidgetId { session, serial };
     let slot = |serial| SlotId { session, serial };
     let value_at = |node: u64, name: u64| -> Value {
@@ -220,64 +224,63 @@ pub(crate) fn patches(session: u64, ops: &[Op], input: Option<&ViewTree>) -> Vec
             .cloned()
             .unwrap_or(Value::Bool(false))
     };
-    ops.iter()
-        .map(|o| match o.tag {
-            0 => Patch::SetRoot((o.a == 1).then(|| widget(o.b))),
-            1 => Patch::Create {
-                widget: widget(o.a),
-                kind: kind_of(o.b),
+    ops.map(|o| match o.tag {
+        0 => Patch::SetRoot((o.a == 1).then(|| widget(o.b))),
+        1 => Patch::Create {
+            widget: widget(o.a),
+            kind: kind_of(o.b),
+        },
+        2 => Patch::Destroy {
+            widget: widget(o.a),
+        },
+        3 => Patch::BindSlot {
+            widget: widget(o.a),
+            property: property_of(o.b),
+            slot: slot(o.c),
+            value: value_at(o.d, o.b),
+        },
+        4 => Patch::SetSlot {
+            slot: slot(o.a),
+            value: value_at(o.d, o.b),
+        },
+        5 => Patch::UnbindSlot {
+            widget: widget(o.a),
+            property: property_of(o.b),
+            slot: slot(o.c),
+        },
+        6 => Patch::Subscribe {
+            widget: widget(o.a),
+            event: event_of(o.b),
+            handler: HandlerKey(o.c),
+            subscription: SubscriptionId {
+                session,
+                serial: o.d,
             },
-            2 => Patch::Destroy {
-                widget: widget(o.a),
+        },
+        7 => Patch::Disconnect {
+            subscription: SubscriptionId {
+                session,
+                serial: o.a,
             },
-            3 => Patch::BindSlot {
-                widget: widget(o.a),
-                property: property_of(o.b),
-                slot: slot(o.c),
-                value: value_at(o.d, o.b),
-            },
-            4 => Patch::SetSlot {
-                slot: slot(o.a),
-                value: value_at(o.d, o.b),
-            },
-            5 => Patch::UnbindSlot {
-                widget: widget(o.a),
-                property: property_of(o.b),
-                slot: slot(o.c),
-            },
-            6 => Patch::Subscribe {
-                widget: widget(o.a),
-                event: event_of(o.b),
-                handler: HandlerKey(o.c),
-                subscription: SubscriptionId {
-                    session,
-                    serial: o.d,
-                },
-            },
-            7 => Patch::Disconnect {
-                subscription: SubscriptionId {
-                    session,
-                    serial: o.a,
-                },
-            },
-            8 => Patch::RemoveChild {
-                parent: widget(o.a),
-                child: widget(o.b),
-                index: o.c as usize,
-            },
-            9 => Patch::InsertChild {
-                parent: widget(o.a),
-                child: widget(o.b),
-                index: o.c as usize,
-            },
-            _ => Patch::MoveChild {
-                parent: widget(o.a),
-                child: widget(o.b),
-                from: o.c as usize,
-                to: o.d as usize,
-            },
-        })
-        .collect()
+        },
+        8 => Patch::RemoveChild {
+            parent: widget(o.a),
+            child: widget(o.b),
+            index: o.c as usize,
+        },
+        9 => Patch::InsertChild {
+            parent: widget(o.a),
+            child: widget(o.b),
+            index: o.c as usize,
+        },
+        _ => Patch::MoveChild {
+            parent: widget(o.a),
+            child: widget(o.b),
+            from: o.c as usize,
+            to: o.d as usize,
+        },
+    })
+    .collect()
 }
 
 /// Ten words per patch (see `apply_patch` in the Loom package in vesper/): the tag, and

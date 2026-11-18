@@ -10,7 +10,8 @@ use self::plan::{
     mounted_prop,
     mounted_sub,
     plan,
-    prepared_empty
+    prepared_empty,
+    prepared_for
 };
 use self::{
     CloseRequest,
@@ -28,6 +29,8 @@ use self::util::{
 };
 use self::view::{
     decode,
+    decode_cap,
+    tree_sized,
     validate
 };
 
@@ -57,28 +60,39 @@ pub fn do_reconciler_prepare(
     in words: Slice[u64],
     in text: Slice[u8]
 ) -> Prepared {
-    let mut p = prepared_empty(r.session, r.revision, r.serial);
+    // Each path builds the one Prepared it returns (a dropped local handle
+    // does not free its sequences natively).
     if r.close == 2 {
+        let mut p = prepared_empty(r.session, r.revision, r.serial);
         p.fault = Option::Some(ViewFault::Closed);
         return p;
     }
     if r.revision == max_u64() {
+        let mut p = prepared_empty(r.session, r.revision, r.serial);
         p.fault = Option::Some(ViewFault::IdentityExhausted);
         return p;
     }
-    p.next = inc(r.revision);
     if has_tree {
-        decode(inout p.tree, in words);
-        match validate(inout p.tree, r.lim, in text) {
+        let mut tree = tree_sized(decode_cap(in words));
+        decode(inout tree, in words);
+        let fault = validate(inout tree, r.lim, in text);
+        let mut q = prepared_for(r.session, r.revision, r.serial, tree, text.len());
+        q.next = inc(r.revision);
+        match fault {
             Option::Some(f) => {
-                p.fault = Option::Some(f);
-                return p;
+                q.fault = Option::Some(f);
+                return q;
             },
             Option::None => (),
         }
+        plan(in r.m, inout q, true, in text, r.lim.patches);
+        q
+    } else {
+        let mut p = prepared_empty(r.session, r.revision, r.serial);
+        p.next = inc(r.revision);
+        plan(in r.m, inout p, false, in text, r.lim.patches);
+        p
     }
-    plan(in r.m, inout p, has_tree, in text, r.lim.patches);
-    p
 }
 
 // Identities a plan reserved are never handed out again, whether or not
@@ -197,13 +211,8 @@ pub fn do_prepared_fault(in p: Prepared) -> Option[ViewFault] {
 }
 
 pub fn do_prepared_ops(in p: Prepared) -> ChunkSeq[Op] {
-    let mut out: ChunkSeq[Op] = ChunkSeq::new[Op]();
-    for i in 0..p.ops.len() {
-        match p.ops.try_get(i) {
-            Option::Some(o) => out.push(o),
-            Option::None => (),
-        }
-    }
+    let mut out: ChunkSeq[Op] = ChunkSeq::with_capacity[Op](p.ops.len());
+    out.extend(in p.ops.as_slice());
     out
 }
 

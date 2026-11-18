@@ -7,7 +7,10 @@
 // Sections: D3D12 barrier vocabulary, graph declarations, the hazard
 // planner, multi-backend lowering, the lifecycle fence protocol and the
 // recording backend. Bit sets (`Sync`, `Access`) cross the boundary as
-// their raw D3D12 `u32` patterns.
+// their raw D3D12 `u32` patterns. Export ABI v3 lends the copy-struct
+// slices of `graph_add_pass` and `lower_plan` in place (#954).
+//
+// @export abi 3
 
 // ---------------------------------------------------------------------------
 // D3D12 enhanced-barrier vocabulary (src/d3d12.rs)

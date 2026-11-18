@@ -8,5 +8,7 @@ publish = false
 
 [dependencies]
 egglog = { version = "=3.0.0", default-features = false }
-vesper-tensor = { path = "../vesper-tensor" }
+# The Rust seed copy: the Vesper port of vesper-tensor stays non-default
+# until it reaches performance parity (port wave P1 lane 8, #905).
+vesper-tensor = { path = "../vesper-tensor/seed", package = "vesper-tensor-seed" }
 vesper-resonance = { path = "../vesper-resonance" }

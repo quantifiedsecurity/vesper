@@ -1,0 +1,158 @@
+// Module ocp of @vesper/tensor (see lib.ves): OCP FP8 E4M3FN / E5M2 element
+// codes, the MXFP4 E8M0 scale and GGML's `nearest_int` (src/formats.rs).
+use self::num::{
+    clz32,
+    is_finite,
+    is_nan
+};
+
+// `2^k` as an f64, exact for `-1022 <= k <= 1023`.
+pub fn pow2(k: i32) -> f64 eff [Fail[ArithOverflow]] {
+    from_bits_f64(wrapping_u64(widen_i64(k) + 1023) << 52)
+}
+
+// `floor(log2(v))` for finite `v > 0`, exact (from the exponent bits).
+pub fn floor_log2(v: f32) -> i32 eff [Fail[ArithOverflow]] {
+    let bits = to_bits_f32(v);
+    let exp = wrapping_i32((bits >> 23) & 255);
+    if exp == 0 {
+        let mantissa = bits & 8388607;
+        31 - wrapping_i32(clz32(mantissa)) - 149
+    } else {
+        exp - 127
+    }
+}
+
+// GGML `nearest_int`: add `1.5 * 2^23` in FP32 and read the low bits.
+pub fn nearest_int(v: f32) -> i32 eff [Fail[ArithOverflow]] {
+    let bits = wrapping_i32(to_bits_f32(v + 12582912.0));
+    (bits & 8388607) - 4194304
+}
+
+// `2^(e - 128)` exactly (GGML `ggml_e8m0_to_fp32_half`), for `e < 255`.
+pub fn e8m0_half(e: u8) -> f32 eff [Fail[ArithOverflow]] {
+    let bits: u32 = if e < 2 {
+        2097152 << widen_u32(e)
+    } else {
+        widen_u32(e - 1) << 23
+    };
+    from_bits_f32(bits)
+}
+
+fn mantissa_bits(e5m2: bool) -> i32 {
+    if e5m2 {
+        2
+    } else {
+        3
+    }
+}
+
+fn bias(e5m2: bool) -> i32 {
+    if e5m2 {
+        15
+    } else {
+        7
+    }
+}
+
+pub fn max_finite(e5m2: bool) -> f32 {
+    if e5m2 {
+        57344.0
+    } else {
+        448.0
+    }
+}
+
+// `Fp8::decode_exact`: NaN codes give the quiet NaN, E5M2 infinity codes
+// give infinities.
+pub fn fp8_decode(e5m2: bool, code: u8) -> f32 eff [Fail[ArithOverflow]] {
+    let neg = code & 128 != 0;
+    let m_bits = mantissa_bits(e5m2);
+    let e_bits = 7 - m_bits;
+    let one: i32 = 1;
+    let exp = widen_i32((code & 127) >> m_bits);
+    let mant_max = (one << m_bits) - 1;
+    let mant = widen_i32(code) & mant_max;
+    let e_max = (one << e_bits) - 1;
+    if !e5m2 && exp == e_max && mant == mant_max {
+        return from_bits_f32(2143289344);
+    }
+    if e5m2 && exp == e_max {
+        if mant != 0 {
+            return from_bits_f32(2143289344);
+        }
+        if neg {
+            return from_bits_f32(4286578688);
+        }
+        return from_bits_f32(2139095040);
+    }
+    let value = if exp == 0 {
+        nearest_f64(mant) * pow2(1 - bias(e5m2) - m_bits)
+    } else {
+        (1.0 + nearest_f64(mant) / nearest_f64(one << m_bits)) * pow2(exp - bias(e5m2))
+    };
+    if neg {
+        nearest_f32(-value)
+    } else {
+        nearest_f32(value)
+    }
+}
+
+// `Fp8::encode_saturating`: round to nearest even; NaN becomes the canonical
+// NaN code and magnitudes past the largest finite value saturate to it.
+pub fn fp8_encode(e5m2: bool, value: f32) -> u8 eff [Fail[ArithOverflow]] {
+    let sign: u8 = if to_bits_f32(value) >> 31 == 1 {
+        128
+    } else {
+        0
+    };
+    if is_nan(value) {
+        if e5m2 {
+            return 126 | sign;
+        }
+        return 127 | sign;
+    }
+    let a = widen_f64(abs(value));
+    let m_bits = mantissa_bits(e5m2);
+    let emin = 1 - bias(e5m2);
+    let max = widen_f64(max_finite(e5m2));
+    let rounded = if a == 0.0 {
+        0.0
+    } else if !is_finite(value) {
+        max
+    } else {
+        let lg = floor_log2(abs(value));
+        let e = if lg > emin {
+            lg
+        } else {
+            emin
+        };
+        let quantum = pow2(e - m_bits);
+        let scaled = a / quantum;
+        let mut r = floor(scaled);
+        let frac = scaled - r;
+        if frac > 0.5 || (frac == 0.5 && r % 2.0 == 1.0) {
+            r = r + 1.0;
+        }
+        let q = r * quantum;
+        if q < max {
+            q
+        } else {
+            max
+        }
+    };
+    if rounded == 0.0 {
+        return sign;
+    }
+    let min_normal = pow2(emin);
+    let bits = if rounded < min_normal {
+        saturating_u8(rounded / pow2(emin - m_bits))
+    } else {
+        let e = floor_log2(nearest_f32(rounded));
+        let field = wrapping_u8(e + bias(e5m2));
+        let mant = saturating_i32(rounded / pow2(e - m_bits))
+            - (widen_i32(wrapping_u8(1)) << m_bits);
+        (field << m_bits) | wrapping_u8(mant)
+    };
+    sign | bits
+}

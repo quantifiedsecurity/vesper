@@ -130,7 +130,7 @@ impl SimAura {
     }
 
     pub fn focused(&self, thread: &UiThread) -> Result<Option<WidgetId>, BackendError> {
-        self.inner.snapshot(thread)?;
+        self.inner.check_thread(thread)?;
         Ok(self.focused)
     }
 
@@ -140,14 +140,14 @@ impl SimAura {
 
     /// Evaluates WCAG 4.1.2 accessible-label compliance on the currently mounted tree.
     pub fn audit_wcag(&self, thread: &UiThread) -> Result<WcagReport, BackendError> {
-        self.inner.snapshot(thread)?;
+        self.inner.check_thread(thread)?;
         Ok(audit_recorder(&self.inner))
     }
 
     /// Returns depth-first pre-order focusable interactive controls (`Button` and
     /// `Input` that are visible and enabled).
     pub fn focusable_order(&self, thread: &UiThread) -> Result<Vec<WidgetId>, BackendError> {
-        self.inner.snapshot(thread)?;
+        self.inner.check_thread(thread)?;
         let session = self.session();
         Ok(binding::sim_focusable(&self.inner.rec)
             .items()
@@ -173,7 +173,7 @@ impl SimAura {
         widget: WidgetId,
         event: Event,
     ) -> Result<HandlerKey, SimAuraError> {
-        self.inner.snapshot(thread)?;
+        self.inner.check_thread(thread)?;
         let same = widget.session == self.session();
         let q = binding::sim_trigger(&self.inner.rec, same, widget.serial, codec::event(event));
         let (code, _, _, _, handler, _) = q.answer();
@@ -197,7 +197,7 @@ impl SimAura {
     }
 
     fn focus_step(&mut self, thread: &UiThread, forward: bool) -> Result<WidgetId, SimAuraError> {
-        self.inner.snapshot(thread)?;
+        self.inner.check_thread(thread)?;
         let session = self.session();
         let current = self.focused.filter(|f| f.session == session);
         let q = binding::sim_focus(
@@ -251,7 +251,7 @@ impl Backend for SimAura {
             self.inner.apply(thread, transaction)?;
         }
         if let Some(focused) = self.focused {
-            self.inner.snapshot(thread)?;
+            self.inner.check_thread(thread)?;
             let still = focused.session == self.session()
                 && binding::sim_still_focusable(&self.inner.rec, focused.serial)
                     .answer()
