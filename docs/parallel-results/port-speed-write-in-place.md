@@ -121,7 +121,24 @@ and `vesper_function_56` 7.15 M to 6.41 M, the functions that write
 `Option` and state fields of the controller. `vesper_function_126` (15% of
 the run) and `_106` did not change.
 
-WALL_CLOCK
+Wall clock: each port's committed ABBA driver against its Rust build, run
+in the order main, branch, main, branch (BBR `abba <rust> <port> 16 200000`,
+Quarry `driver`, Ignis `compare <rust> <port> 15 100`). The 95% interval
+of the median ratio is in parentheses. Quarry's driver prints only the
+median regression.
+
+| Port, workload | Main, run 1 | Branch, run 1 | Main, run 2 | Branch, run 2 |
+|---|---|---|---|---|
+| BBR | (2.79-3.00) | (2.50-2.87) | (2.85-3.04) | (2.39-2.79) |
+| Quarry | 1.90x | 1.90x | 1.89x | 1.94x |
+| Ignis build 64 / 256 | 2.59x / 2.61x | 2.54x / 2.52x | 2.63x / 2.67x | 2.57x / 2.53x |
+| Ignis plan 64 / 256 | 1.36x / 0.70x | 1.35x / 0.68x | 1.27x / 0.70x | 1.38x / 0.68x |
+| Ignis lower 64 / 256 | 3.44x / 2.78x | 3.38x / 2.69x | 3.40x / 2.74x | 3.37x / 2.75x |
+
+BBR's branch intervals sit below main's in both runs, in line with its
+instruction drop. The Quarry and Ignis changes are inside this host's noise
+(up to 30% for one binary). BBR's wall-clock ratio here is higher than its
+instruction ratio, as in the re-score.
 
 ## Tests
 
@@ -154,7 +171,8 @@ WALL_CLOCK
 
 No file in the guarded set changed (`src/verified_codegen/**`, `src/ir.rs`,
 `ir_opt::optimize`, `lean/**`, `bootstrap/**`, `packages/vesper-compiler/**`).
-STAGE1
+The bootstrap-stage1 workflow was dispatched on this branch; see the PR
+for its run.
 
 ## What is left
 
