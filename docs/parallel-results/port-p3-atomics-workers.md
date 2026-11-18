@@ -110,7 +110,28 @@ cloud host, 2,000,000 `fetch_add(1, Relaxed)` per thread, three rounds:
 The gap is the cell indirection: each operation loads the struct word, then
 the sequence header's data pointer, before the atomic. Cranelift does not
 hoist those loads out of the loop. 
-BENCH_PLACEHOLDER
+
+### 4-worker parallel sum
+
+`cargo test --release --test scoped_workers -- --ignored --nocapture measure`,
+same 4-vCPU host, `VESPER_WORKERS=4`: the sum of 2^24 `u64`s split into four
+iterations, against Rust summing the same `Vec<u64>` on four scoped threads.
+A Vesper time per sum is (20 sums - 0 sums) / 20 in one JIT run, so the fill
+and the compile cancel out. Three rounds:
+
+| | 4 workers | 1 thread | Speedup |
+|--|--:|--:|--:|
+| Vesper (optimized JIT) | 13.9-17.9 ms | 29.2-30.1 ms | 1.7-2.1x |
+| Rust (`fold`) | 3.9-4.2 ms | 10.4-10.5 ms | 2.5-2.6x |
+| Ratio | 3.5-4.2x | 2.8-2.9x | |
+
+The pool adds little: the parallel gap (3.5-4.2x) is mostly the
+single-thread gap (2.8x), which is the loop body, not the workers. Rust's
+`fold` over a slice is vectorized with no bounds checks, while the Vesper
+loop does one `try_get` (bounds check plus header load) per element, the
+same gap the bench port reports (no bounds-check elimination or fixed
+arrays). The rest is the shared memory bandwidth of four workers on a
+4-vCPU guest, which Rust's faster loop saturates sooner.
 
 ## Decisions
 
@@ -185,7 +206,7 @@ Measurement: see "4-worker parallel sum" below.
   instead of two), or loop-invariant hoisting of the header load, would close
   most of the 1.1-1.25x gap.
 - **What the P3b crates still need:** Kinetic's threaded `RigidWorld` and
-  Flux's multi-worker executor need the scoped workers. Resonance's rings
+  Flux's multi-worker executor can start on `parallel_for`. Resonance's rings
   need atomics on elements of a sequence (`ChunkSeq[Atomic[u64]]` works but
   costs one allocation per element; a `AtomicSeq[T]` with indexed operations
   would not). Quarry's latches need `compare_exchange` (here) plus a
