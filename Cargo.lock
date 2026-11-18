@@ -5568,7 +5568,7 @@ dependencies = [
  "vesper-pulse",
  "vesper-resonance",
  "vesper-semver",
- "vesper-serde",
+ "vesper-serde-seed",
  "vesper-silicon",
  "vesper-simd",
  "vesper-span",
@@ -6075,7 +6075,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "vesper-serde",
+ "vesper-serde-seed",
  "vesper-span",
 ]
 
@@ -6221,6 +6221,15 @@ dependencies = [
 
 [[package]]
 name = "vesper-serde"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
+
+[[package]]
+name = "vesper-serde-seed"
 version = "0.1.0"
 dependencies = [
  "serde_json",
