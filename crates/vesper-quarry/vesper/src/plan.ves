@@ -16,7 +16,7 @@ use self::util::{
     link,
     load_catalog,
     load_limits,
-    new_q,
+    new_q_sized,
     node,
     none,
     param,
@@ -306,7 +306,8 @@ pub fn optimize_node(inout q: Q, n: u64) -> u64 {
 
 // `PreparedQuery::optimized` on a plan stream. Text ranges pass through.
 pub fn optimize_q(in plan: Slice[u64]) -> Q {
-    let mut q = new_q();
+    let n = plan.len();
+    let mut q = new_q_sized(0, wrapping_add(n, 8), n, 0, 4);
     q.ex.extend(in plan);
     let (root, end) = decode_plan(inout q, 0);
     let top = optimize_node(inout q, root);
@@ -323,7 +324,17 @@ pub fn optimize_q(in plan: Slice[u64]) -> Q {
 // with ranges into pool.
 pub fn prepare_q(in meta: Slice[u64], in text: Slice[u8], in sql: Slice[u8], in limits: Slice[u64])
     -> Q {
-    let mut q = new_q();
+    // Sized from the planner golden cases: the pool holds the input text,
+    // the SQL and the lowercased identifiers, and the expression and output
+    // words grow with the SQL.
+    let n = sql.len();
+    let mut q = new_q_sized(
+        wrapping_add(wrapping_add(text.len(), wrapping_mul(n, 2)), 32),
+        wrapping_add(wrapping_mul(n, 2), 48),
+        wrapping_add(n, 16),
+        wrapping_add(n / 2, 8),
+        8
+    );
     q.pool.extend(in text);
     if !load_limits(inout q, limits) {
         return q;

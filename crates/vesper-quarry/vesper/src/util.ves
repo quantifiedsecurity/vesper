@@ -23,13 +23,22 @@ pub fn none() -> u64 {
 }
 
 pub fn new_q() -> Q {
+    new_q_sized(0, 0, 0, 0, 0)
+}
+
+// A `Q` whose largest sequences start with room for a call's usual sizes,
+// so that they do not grow element by element: `pool` bytes, `words` output
+// words, `ex` expression words, `toks` tokens and `nodes` plan nodes. The
+// small sequences start empty, since an allocation they may not need costs
+// more than a growth.
+pub fn new_q_sized(pool: u64, words: u64, ex: u64, toks: u64, nodes: u64) -> Q {
     Q {
         err: 0,
         msg: ChunkSeq::new[u8](),
-        words: ChunkSeq::new[u64](),
-        pool: ChunkSeq::new[u8](),
+        words: ChunkSeq::with_capacity[u64](words),
+        pool: ChunkSeq::with_capacity[u8](pool),
         lim: ChunkSeq::new[u64](),
-        toks: ChunkSeq::new[Tok](),
+        toks: ChunkSeq::with_capacity[Tok](toks),
         pos: 0,
         nodes: 0,
         raw: ChunkSeq::new[Raw](),
@@ -42,8 +51,8 @@ pub fn new_q() -> Q {
         bcols: ChunkSeq::new[BCol](),
         aliases: ChunkSeq::new[Rng](),
         nbindings: 0,
-        ex: ChunkSeq::new[u64](),
-        plan: ChunkSeq::new[Node](),
+        ex: ChunkSeq::with_capacity[u64](ex),
+        plan: ChunkSeq::with_capacity[Node](nodes),
         links: ChunkSeq::new[Link](),
         rows: ChunkSeq::new[u64](),
         work: 0,
