@@ -144,11 +144,46 @@ the owner rule keeps this lane off port branches.
 
 ## What is left
 
-- The `vesper-syntax` parser's scope-set copies are quadratic in the number of
-  locals of one function; the formatter refuses that shape with `WorkLimit`.
+- ~~The `vesper-syntax` parser's scope-set copies are quadratic in the number
+  of locals of one function; the formatter refuses that shape with
+  `WorkLimit`.~~ Done in #960: see "Follow-up: many locals" below.
 
 - The macro-profile, recovery and proof-profile token caps (8,192) need
   linear parsers in `vesper-syntax` first.
 - The parser's 65,536-token default in `parser::parse` still applies to other
   callers (LSP, `vesper build`); `vesper build` on a file over that is a
   separate question for the compiler driver.
+
+## Follow-up: many locals in one function (#960)
+
+The ordinary parser kept the bound names of the current scope in a
+`BTreeSet<String>`, cloned it on entry to every function, block, `for`, match
+arm, closure and handler clause, and put the clone back on exit. Scopes only
+add names before they are restored, so `vesper-syntax` now keeps them in
+`parser::scope::ScopedNames`: a hash map of binding counts plus an undo trail.
+Entering a scope records the trail length; leaving it pops exactly the names
+added since. Membership answers are the same as the restored clone's, so the
+CST, AST and diagnostics cannot change. Editor header notes and recovery
+contexts still store a `BTreeSet`, built once per function.
+
+With the parser linear, the `ScopeCopies` charge in the `vesper-fmt`
+preflight is gone, and one function with thousands of locals formats instead
+of returning `WorkLimit`.
+
+Parse time (release, one cloud core) for one function of N
+`let xN = { 0 };` statements:
+
+| Locals | Before | After |
+|---:|---:|---:|
+| 2,000 | 60 ms | 8 ms |
+| 4,000 | 249 ms | 15 ms |
+| 8,000 | 1,168 ms | 31 ms |
+| 16,000 | 8,060 ms | 61 ms |
+
+Identity: all 677 tracked `.ves` files were run through both origin/main
+(69c79b9) and this branch, hashing the `parse_with_limits` module,
+diagnostics and CST, the `parse_recovery` result, the macro-profile parse,
+`format_source` and `format_recovery_source` (output or error). All 677 rows
+are identical. `quadratic_parser_scope_copies_are_charged` became
+`many_locals_in_one_function_format_in_linear_time`: 8,000 block-initialized
+locals in one function now format to themselves.

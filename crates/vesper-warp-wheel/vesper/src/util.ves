@@ -26,7 +26,7 @@ fn max_packet_number() -> u64 {
     4611686018427387904
 }
 
-fn at(in s: Slice[u64], i: u64) -> u64 {
+fn at(in s: ChunkSeq[u64], i: u64) -> u64 {
     match s.try_get(i) {
         Option::Some(v) => v,
         Option::None => 0,
@@ -49,43 +49,37 @@ fn max(a: u64, b: u64) -> u64 {
     }
 }
 
-// `x << s` for `s < 64` (every caller's amount is below 64).
+// `x << s` and `x >> s`, 0 for `s >= 64` (every caller's amount is below
+// 64). A shift by a variable amount may raise `Fail[ArithOverflow]`, and a
+// handler would keep these out of the inliner, so they are written with
+// the total `rotate_left`/`rotate_right`: `rotate_left(1, s)` is
+// `2^s`, `x << s` is `x` rotated left with the `s` wrapped-around low bits
+// cleared, and `x >> s` is `x` with its low `s` bits cleared rotated right.
 fn shl(x: u64, s: u64) -> u64 {
-    if s >= 64 {
-        return 0;
-    }
-    handle Fail[ArithOverflow] in {
-        x << s
-    } with {
-        return v => v,
-        raise(e, k) => 0,
+    if s < 64 {
+        rotate_left(x, s) & wrapping_sub(0, rotate_left(1, s))
+    } else {
+        0
     }
 }
 
-// `x >> s` for `s < 64`.
 fn shr(x: u64, s: u64) -> u64 {
-    if s >= 64 {
-        return 0;
-    }
-    handle Fail[ArithOverflow] in {
-        x >> s
-    } with {
-        return v => v,
-        raise(e, k) => 0,
+    if s < 64 {
+        rotate_right(x & wrapping_sub(0, rotate_left(1, s)), s)
+    } else {
+        0
     }
 }
 
 // `a / b` for `b > 0` (every divisor is a validated tick width or slot
-// width).
+// width), and 0 for `b == 0`.
+// The `b != 0` test lets the checker prove the division total, so there is
+// no handler and the inliner takes it.
 fn div(a: u64, b: u64) -> u64 {
-    if b == 0 {
-        return 0;
-    }
-    handle Fail[RuntimeError] in {
+    if b != 0 {
         a / b
-    } with {
-        return v => v,
-        raise(e, k) => 0,
+    } else {
+        0
     }
 }
 
@@ -109,39 +103,10 @@ fn saturating_mul(a: u64, b: u64) -> u64 {
     }
 }
 
-// Index of the highest set bit of a non-zero `x` (63 - leading_zeros).
-fn high_bit(x: u64) -> u64 {
-    let mut v = x;
-    let mut n: u64 = 0;
-    if v >= 4294967296 {
-        v = v >> 32;
-        n = wrapping_add(n, 32);
-    }
-    if v >= 65536 {
-        v = v >> 16;
-        n = wrapping_add(n, 16);
-    }
-    if v >= 256 {
-        v = v >> 8;
-        n = wrapping_add(n, 8);
-    }
-    if v >= 16 {
-        v = v >> 4;
-        n = wrapping_add(n, 4);
-    }
-    if v >= 4 {
-        v = v >> 2;
-        n = wrapping_add(n, 2);
-    }
-    if v >= 2 {
-        n = wrapping_add(n, 1);
-    }
-    n
-}
-
-// Index of the lowest set bit of a non-zero `x` (trailing_zeros).
-fn low_bit(x: u64) -> u64 {
-    high_bit(x & wrapping_sub(0, x))
+// The de Bruijn sequence behind `WheelCore::low_bit`: for `k < 64`, the top
+// six bits of `2^k * debruijn()` are distinct.
+fn debruijn() -> u64 {
+    285870213051386505
 }
 
 // A sequence of `n` copies of `v`, allocated once.
