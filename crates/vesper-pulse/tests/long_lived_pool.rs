@@ -432,3 +432,49 @@ fn dropping_a_running_pool_shuts_it_down() {
     };
     assert!(matches!(spawner.spawn(late), Err((PoolError::Closed, _))));
 }
+
+#[test]
+fn a_spawn_racing_shutdown_either_runs_or_is_refused() {
+    let kind = kinds()[0];
+    for round in 0..200 {
+        let pool = Pool::new(PoolConfig::new(2).seed(round))
+            .unwrap()
+            .start(factory::<Spin>(kind))
+            .unwrap();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let spawner = pool.spawner();
+        let accepted = std::thread::scope(|s| {
+            let feeder = s.spawn(|| {
+                let mut accepted = 0;
+                loop {
+                    let fiber = Spin {
+                        n: 0,
+                        runs: Arc::clone(&runs),
+                        spawner: None,
+                    };
+                    match spawner.spawn(fiber) {
+                        Ok(_) => accepted += 1,
+                        Err((PoolError::Closed, _)) => return accepted,
+                        Err((e, _)) => panic!("{e}"),
+                    }
+                    if accepted % 3 == 0 {
+                        std::thread::yield_now();
+                    }
+                }
+            });
+            // Let the pool go idle now and then, so the race hits the
+            // zero-to-one reservation.
+            if round % 2 == 0 {
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            let out = pool.shutdown().unwrap();
+            assert_eq!(out.abandoned, 0);
+            feeder.join().unwrap()
+        });
+        assert_eq!(
+            runs.load(Ordering::Relaxed),
+            accepted,
+            "round {round}: every accepted spawn ran before shutdown returned"
+        );
+    }
+}

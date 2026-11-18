@@ -117,6 +117,9 @@ pub struct PoolConfig {
     pub keep_results: bool,
 }
 
+/// The bit of `Shared::live` that holds a long-lived pool open.
+const OPEN: usize = 1 << (usize::BITS - 1);
+
 /// Upper bound on [`PoolConfig::workers`].
 pub const MAX_WORKERS: usize = 1024;
 /// A worker gives up after this many consecutive failed polls.
@@ -382,9 +385,10 @@ struct Shared<C> {
     injector: Injector<Ready<C>>,
     lifo_slot: bool,
     keep_results: bool,
-    /// Held by a [`RunningPool`]: an idle pool keeps running and accepting
-    /// spawns until it is shut down.
-    open: AtomicBool,
+    /// Live fibers, plus the [`OPEN`] bit while a [`RunningPool`] holds the
+    /// pool open (an idle open pool keeps running and accepting spawns).
+    /// One word, so reserving the first slot and closing the pool are
+    /// ordered by the same compare-and-swap.
     live: AtomicUsize,
     active: AtomicUsize,
     next_id: AtomicU64,
@@ -473,11 +477,19 @@ impl<C> Shared<C> {
             .with(|c| c.get())
             .and_then(|(p, w)| (p == me).then_some(w))
     }
-    /// Reserve a live slot; fails once a started pool has drained.
+    /// Live fibers, without the [`OPEN`] bit.
+    fn live_count(&self) -> usize {
+        self.live.load(SeqCst) & !OPEN
+    }
+    fn set_open(&self) {
+        self.live.fetch_or(OPEN, SeqCst);
+    }
+    /// Reserve a live slot; fails once a started pool that is not held
+    /// open has drained.
     fn reserve(&self) -> bool {
         let mut n = self.live.load(SeqCst);
         loop {
-            if n == 0 && self.started.load(SeqCst) && !self.open.load(SeqCst) {
+            if n == 0 && self.started.load(SeqCst) {
                 return false;
             }
             match self.live.compare_exchange(n, n + 1, SeqCst, SeqCst) {
@@ -490,15 +502,18 @@ impl<C> Shared<C> {
         self.finish(1);
     }
     fn finish(&self, n: usize) {
-        if n > 0 && self.live.fetch_sub(n, SeqCst) == n && !self.open.load(SeqCst) {
+        // `== n` only when the count reaches zero with the pool not open.
+        if n > 0 && self.live.fetch_sub(n, SeqCst) == n {
             self.done.store(true, SeqCst);
             self.wake_all();
         }
     }
-    /// Close a long-lived pool: once no fiber is live the run ends.
+    /// Close a long-lived pool: once no fiber is live the run ends. A
+    /// spawn racing with this either reserved first (and shutdown waits for
+    /// its fiber) or sees the closed, empty pool and is refused.
     fn close_open(&self) {
-        self.open.store(false, SeqCst);
-        if self.live.load(SeqCst) == 0 && self.started.load(SeqCst) {
+        let before = self.live.fetch_and(!OPEN, SeqCst);
+        if before == OPEN && self.started.load(SeqCst) {
             self.done.store(true, SeqCst);
             self.wake_all();
         }
@@ -746,7 +761,6 @@ impl<C> Pool<C> {
                 injector: Injector::new(),
                 lifo_slot: config.lifo_slot,
                 keep_results: config.keep_results,
-                open: AtomicBool::new(false),
                 live: AtomicUsize::new(0),
                 active: AtomicUsize::new(0),
                 next_id: AtomicU64::new(1),
@@ -1418,7 +1432,7 @@ impl<C: Resume> Pool<C> {
         let setup: Mutex<Option<(usize, io::Error)>> = Mutex::new(None);
         shared.active.store(n, SeqCst);
         shared.started.store(true, SeqCst);
-        if shared.live.load(SeqCst) == 0 && !shared.open.load(SeqCst) {
+        if shared.live.load(SeqCst) == 0 {
             shared.done.store(true, SeqCst);
         }
         let results: Vec<_> = std::thread::scope(|scope| {
@@ -1630,7 +1644,7 @@ impl<C: Resume + Send + 'static> Pool<C> {
     {
         let shared = Arc::clone(&self.shared);
         let config = self.config.clone();
-        shared.open.store(true, SeqCst);
+        shared.set_open();
         let (tx, rx) = std::sync::mpsc::channel::<bool>();
         let supervisor = std::thread::Builder::new()
             .name("pulse-pool".into())
@@ -1643,7 +1657,7 @@ impl<C: Resume + Send + 'static> Pool<C> {
         let supervisor = match supervisor {
             Ok(handle) => handle,
             Err(error) => {
-                shared.open.store(false, SeqCst);
+                shared.live.fetch_and(!OPEN, SeqCst);
                 let pool = Pool { config, shared };
                 return Err(RunError::Setup {
                     worker: 0,
@@ -1669,7 +1683,7 @@ impl<C: Resume + Send + 'static> Pool<C> {
                 error,
                 pool,
             }) => {
-                pool.shared.open.store(false, SeqCst);
+                pool.shared.live.fetch_and(!OPEN, SeqCst);
                 Err(RunError::Setup {
                     worker,
                     error,
@@ -1711,7 +1725,7 @@ impl<C> RunningPool<C> {
     }
     /// Fibers spawned and not yet finished.
     pub fn live(&self) -> usize {
-        self.shared.live.load(SeqCst)
+        self.shared.live_count()
     }
     /// Stop taking new work once the live fibers have finished, wait for
     /// them (fibers may still spawn children until then), and return what

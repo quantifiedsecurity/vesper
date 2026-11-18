@@ -5590,8 +5590,8 @@ dependencies = [
  "vesper-lsp",
  "vesper-migrate",
  "vesper-nexus",
- "vesper-pact",
  "vesper-pact-binding",
+ "vesper-pact-seed",
  "vesper-pulse",
  "vesper-resonance",
  "vesper-semver-seed",
@@ -6228,6 +6228,9 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
 ]
 
 [[package]]
@@ -6238,7 +6241,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "vesper-core",
- "vesper-pact",
+ "vesper-pact-seed",
 ]
 
 [[package]]
@@ -6247,8 +6250,17 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "vesper",
- "vesper-pact",
  "vesper-pact-binding",
+ "vesper-pact-seed",
+]
+
+[[package]]
+name = "vesper-pact-seed"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vesper-bench",
 ]
 
 [[package]]
