@@ -27,6 +27,10 @@ path = "../tests/behavior.rs"
 name = "exponential"
 path = "../tests/exponential.rs"
 
+[[test]]
+name = "histogram"
+path = "../tests/histogram.rs"
+
 [lints.rust]
 # cfg(vesper_port) is set only by the port-backed package's build script.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(vesper_port)"] }

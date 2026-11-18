@@ -10,6 +10,9 @@ default = ["grpc"]
 # OTAP and OTLP over HTTP/2 gRPC (tonic). Without it the crate still encodes,
 # decodes and frames OTAP/OTLP messages.
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:tokio", "dep:subtle", "dep:rustls"]
+# Link Beacon's Vesper port instead of its Rust build (port wave P1 lane 4,
+# #901). Off by default until the port reaches performance parity.
+vesper-port = ["vesper-beacon/vesper-port"]
 
 [dependencies]
 vesper-beacon = { path = "../vesper-beacon" }

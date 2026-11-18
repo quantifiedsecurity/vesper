@@ -1,0 +1,1012 @@
+// Vesper port of vesper-simpulse (port wave P1 lane 5, #902): the seeded
+// SimPulse scheduling kernel of manuscript §14.6 (src/reference.rs is the
+// model). One module, as the Rust crate has one.
+//
+// `Kernel` holds every scheduling decision: the run queue and its rounds,
+// the virtual clock, the timers and injected completions, cancellation
+// flags, the SplitMix64 choice, and the record/replay check. The Rust
+// `Simulator<T>` wrapper (src/ported.rs) keeps only what Vesper cannot
+// hold: the generic payloads (a token slab indexed by task id), the
+// simulator instance identity that makes a token foreign, and the serde
+// `Journal` it fills from `out`, so trace bytes stay those of the Rust
+// build.
+//
+// Ids are dense: task `t` is entry `t - 1` of every `t_*` sequence and
+// completion `c` is entry `c - 1` of every `p_*` sequence, because neither
+// is ever reused. Scheduled timers and injected completions live in a
+// binary min-heap keyed by `(deadline, completion)`, the order of the Rust
+// build's `BTreeMap`; an entry whose completion is no longer pending is
+// stale and is dropped when it reaches the top.
+//
+// Codes shared with the wrapper:
+// - `Ret.code`: 0 ok, 1 UnknownTask, 2 UnknownCompletion, 3 TaskFinished,
+//   4 TaskStillRunning, 5 InvalidToken, 6 ForeignToken, 7 IdExhausted,
+//   8 ClockOverflow, 9 RoundOverflow, 10 ReplayMismatch (`value` is the id
+//   or the event index; `kernel_mismatch` is the event computed).
+// - Task state: 0 Ready, 1 Running, 2 Sleeping, 3 WaitingIo, 4 Finished.
+// - Wake reason: 0 Start, 1 Yield, 2 Timer, 3 Io.
+// - I/O result: 0 Success (`rv` bytes), 1 Error (`rv` is the i32 code
+//   sign-extended), 2 Cancelled.
+// - Event kind: 0 Spawn, 1 Dispatch, 2 Yield, 3 Sleep, 4 SubmitIo,
+//   5 ClockAdvance, 6 TimerElapsed, 7 IoCompleted, 8 CancelRequested,
+//   9 Finish. Unused fields are 0, so equal events are equal words.
+
+// A trace event. `a` is the time (`at_ns`, `deadline_ns`, the scheduled
+// time of SubmitIo, `from_ns`), `b` the round of Dispatch, `to_ns` of
+// ClockAdvance, or 1 when SubmitIo is scheduled.
+pub copy struct Ev {
+    kind: u64,
+    task: u64,
+    completion: u64,
+    a: u64,
+    b: u64,
+    rk: u64,
+    rv: u64
+}
+
+impl Eq for Ev {}
+
+// The result of an operation: `code` 0 and the result in `value`, or an
+// error code and its payload.
+pub copy struct Ret {
+    code: u64,
+    value: u64
+}
+
+// `next_task`: `task` 0 is None. The wake reason and cancellation flag
+// belong to the token the wrapper builds.
+pub copy struct Next {
+    code: u64,
+    task: u64,
+    wk: u64,
+    wc: u64,
+    wrk: u64,
+    wrv: u64,
+    cancel: bool
+}
+
+// `task_state`: `kind` 5 is None.
+pub copy struct St {
+    kind: u64,
+    completion: u64,
+    deadline: u64
+}
+
+pub struct Kernel {
+    now: u64,
+    rng: u64,
+    round: u64,
+    next_task: u64,
+    next_completion: u64,
+    // The checked-out task, or 0.
+    running: u64,
+    finished_n: u64,
+    pending_n: u64,
+    replay: bool,
+    cursor: u64,
+    expected: ChunkSeq[Ev],
+    // Events the last operation committed while recording.
+    out: ChunkSeq[Ev],
+    // Events of the operation in progress.
+    batch: ChunkSeq[Ev],
+    mismatch: Ev,
+    t_state: ChunkSeq[u64],
+    t_completion: ChunkSeq[u64],
+    t_deadline: ChunkSeq[u64],
+    t_wake: ChunkSeq[u64],
+    t_wake_completion: ChunkSeq[u64],
+    t_wake_rk: ChunkSeq[u64],
+    t_wake_rv: ChunkSeq[u64],
+    t_cancel: ChunkSeq[bool],
+    t_seen: ChunkSeq[bool],
+    // The task a completion is pending for, or 0 once it is not pending.
+    p_task: ChunkSeq[u64],
+    p_scheduled: ChunkSeq[bool],
+    p_time: ChunkSeq[u64],
+    // 0 timer, 1 injected I/O result.
+    p_io: ChunkSeq[bool],
+    p_rk: ChunkSeq[u64],
+    p_rv: ChunkSeq[u64],
+    h_time: ChunkSeq[u64],
+    h_completion: ChunkSeq[u64],
+    // Completions taken off the heap by the `next_task` in progress.
+    due: ChunkSeq[u64],
+    // Fenwick trees over task ids (entry 0 unused): `f_ready` counts the
+    // runnable tasks, `f_cand` those not yet dispatched this round, so the
+    // dispatch picks the `i`-th one in id order in O(log tasks). `in_*` is
+    // each task's membership and `*_total` the count.
+    f_ready: ChunkSeq[u64],
+    f_cand: ChunkSeq[u64],
+    in_ready: ChunkSeq[bool],
+    in_cand: ChunkSeq[bool],
+    // The tasks dispatched this round.
+    seen_list: ChunkSeq[u64],
+    ready_total: u64,
+    cand_total: u64
+}
+
+// ---------------------------------------------------------------------------
+// Helpers.
+
+fn max_u64() -> u64 {
+    18446744073709551615
+}
+
+fn at(in s: Slice[u64], i: u64) -> u64 {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+fn atb(in s: Slice[bool], i: u64) -> bool {
+    match s.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => false,
+    }
+}
+
+fn inc(x: u64) -> u64 {
+    wrapping_add(x, 1)
+}
+
+fn dec(x: u64) -> u64 {
+    wrapping_sub(x, 1)
+}
+
+// `a % b` for `b > 0`.
+fn rem(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        return 0;
+    }
+    handle Fail[RuntimeError] in {
+        a % b
+    } with {
+        return v => v,
+        raise(e, k) => 0,
+    }
+}
+
+fn ok(value: u64) -> Ret {
+    Ret {
+        code: 0,
+        value: value
+    }
+}
+
+fn err(code: u64, value: u64) -> Ret {
+    Ret {
+        code: code,
+        value: value
+    }
+}
+
+fn ev(kind: u64, task: u64, completion: u64, a: u64, b: u64) -> Ev {
+    Ev {
+        kind: kind,
+        task: task,
+        completion: completion,
+        a: a,
+        b: b,
+        rk: 0,
+        rv: 0
+    }
+}
+
+fn ev_io(kind: u64, task: u64, completion: u64, a: u64, b: u64, rk: u64, rv: u64) -> Ev {
+    Ev {
+        kind: kind,
+        task: task,
+        completion: completion,
+        a: a,
+        b: b,
+        rk: rk,
+        rv: rv
+    }
+}
+
+// SplitMix64.
+fn random(seedv: u64) -> u64 {
+    let mut z = seedv;
+    z = wrapping_mul(z ^ (z >> 30), 0xbf58476d1ce4e5b9);
+    z = wrapping_mul(z ^ (z >> 27), 0x94d049bb133111eb);
+    z ^ (z >> 31)
+}
+
+// ---------------------------------------------------------------------------
+// Fenwick trees of 0/1 counts, 1-based (`t[0]` is unused).
+
+fn low_bit(i: u64) -> u64 {
+    i & wrapping_sub(0, i)
+}
+
+fn fen_new() -> ChunkSeq[u64] {
+    let mut t: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    t.push(0);
+    t
+}
+
+// The sum of positions `1 ..= pos`.
+fn fen_prefix(in t: Slice[u64], pos: u64) -> u64 {
+    let mut sum: u64 = 0;
+    let mut i = pos;
+    loop {
+        if i == 0 {
+            break sum;
+        }
+        sum = wrapping_add(sum, at(in t, i));
+        i = wrapping_sub(i, low_bit(i));
+    }
+}
+
+// Add `d` (wrapping, so `max_u64()` subtracts one) at `pos`.
+fn fen_add(inout t: ChunkSeq[u64], pos: u64, d: u64) {
+    let n = t.len();
+    let mut i = pos;
+    loop {
+        if i == 0 || i >= n {
+            break;
+        }
+        let v = at(in t.as_slice(), i);
+        t.try_set(i, wrapping_add(v, d));
+        i = wrapping_add(i, low_bit(i));
+    }
+}
+
+// Append a position holding `v`.
+fn fen_push(inout t: ChunkSeq[u64], v: u64) {
+    let i = t.len();
+    let below = wrapping_sub(i, low_bit(i));
+    let covered = wrapping_sub(
+        fen_prefix(in t.as_slice(), dec(i)),
+        fen_prefix(in t.as_slice(), below)
+    );
+    t.push(wrapping_add(v, covered));
+}
+
+// The position of the one of rank `rank` (0 is the first), for
+// `rank < total`.
+fn fen_select(in t: Slice[u64], rank: u64) -> u64 {
+    let n = dec(t.len());
+    let mut step: u64 = 1;
+    loop {
+        if step > (n >> 1) {
+            break;
+        }
+        step = wrapping_add(step, step);
+    }
+    let mut pos: u64 = 0;
+    let mut rest = rank;
+    loop {
+        if step == 0 {
+            break;
+        }
+        let next = wrapping_add(pos, step);
+        if next <= n {
+            let v = at(in t, next);
+            if v <= rest {
+                pos = next;
+                rest = wrapping_sub(rest, v);
+            }
+        }
+        step = step >> 1;
+    }
+    inc(pos)
+}
+
+fn empty_kernel(seed: u64, replay: bool, sink expected: ChunkSeq[Ev]) -> Kernel {
+    Kernel {
+        now: 0,
+        rng: seed,
+        round: 0,
+        next_task: 1,
+        next_completion: 1,
+        running: 0,
+        finished_n: 0,
+        pending_n: 0,
+        replay: replay,
+        cursor: 0,
+        expected: expected,
+        out: ChunkSeq::new[Ev](),
+        batch: ChunkSeq::new[Ev](),
+        mismatch: ev(0, 0, 0, 0, 0),
+        t_state: ChunkSeq::new[u64](),
+        t_completion: ChunkSeq::new[u64](),
+        t_deadline: ChunkSeq::new[u64](),
+        t_wake: ChunkSeq::new[u64](),
+        t_wake_completion: ChunkSeq::new[u64](),
+        t_wake_rk: ChunkSeq::new[u64](),
+        t_wake_rv: ChunkSeq::new[u64](),
+        t_cancel: ChunkSeq::new[bool](),
+        t_seen: ChunkSeq::new[bool](),
+        p_task: ChunkSeq::new[u64](),
+        p_scheduled: ChunkSeq::new[bool](),
+        p_time: ChunkSeq::new[u64](),
+        p_io: ChunkSeq::new[bool](),
+        p_rk: ChunkSeq::new[u64](),
+        p_rv: ChunkSeq::new[u64](),
+        h_time: ChunkSeq::new[u64](),
+        h_completion: ChunkSeq::new[u64](),
+        due: ChunkSeq::new[u64](),
+        f_ready: fen_new(),
+        f_cand: fen_new(),
+        in_ready: ChunkSeq::new[bool](),
+        in_cand: ChunkSeq::new[bool](),
+        seen_list: ChunkSeq::new[u64](),
+        ready_total: 0,
+        cand_total: 0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reads.
+
+impl Kernel {
+    fn known(in self, task: u64) -> bool {
+        task >= 1 && task < self.next_task
+    }
+
+    fn state_of(in self, task: u64) -> u64 {
+        at(in self.t_state.as_slice(), dec(task))
+    }
+
+    fn task_completion(in self, task: u64) -> u64 {
+        at(in self.t_completion.as_slice(), dec(task))
+    }
+
+    fn pending_task(in self, completion: u64) -> u64 {
+        at(in self.p_task.as_slice(), dec(completion))
+    }
+
+    // The token check: 0, or the error code (ForeignToken, InvalidToken).
+    fn token_fault(in self, task: u64, own: bool) -> u64 {
+        if !own {
+            6
+        } else if self.running != task || !self.known(task) || self.state_of(task) != 1 {
+            5
+        } else {
+            0
+        }
+    }
+
+    // `(t_a, c_a) < (t_b, c_b)` for heap entries `a` and `b`.
+    fn heap_less(in self, a: u64, b: u64) -> bool {
+        let ta = at(in self.h_time.as_slice(), a);
+        let tb = at(in self.h_time.as_slice(), b);
+        if ta != tb {
+            ta < tb
+        } else {
+            at(in self.h_completion.as_slice(), a) < at(in self.h_completion.as_slice(), b)
+        }
+    }
+
+    // The batch matches the journal from the cursor on (always true while
+    // recording); on a mismatch, the index and the event are kept.
+    fn batch_fault(inout self) -> Ret {
+        if !self.replay {
+            return ok(0);
+        }
+        let n = self.batch.len();
+        let mut i: u64 = 0;
+        loop {
+            if i >= n {
+                break ok(0);
+            }
+            let index = wrapping_add(self.cursor, i);
+            let actual = match self.batch.try_get(i) {
+                Option::Some(e) => e,
+                Option::None => ev(0, 0, 0, 0, 0),
+            };
+            let same = match self.expected.try_get(index) {
+                Option::Some(e) => e == actual,
+                Option::None => false,
+            };
+            if !same {
+                self.mismatch = actual;
+                break err(10, index);
+            }
+            i = inc(i);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Updates.
+
+impl Kernel {
+    fn begin(inout self) {
+        self.out.clear();
+        self.batch.clear();
+    }
+
+    fn one(inout self, e: Ev) {
+        self.batch.clear();
+        self.batch.push(e);
+    }
+
+    // Commit the checked batch.
+    fn commit(inout self) {
+        let n = self.batch.len();
+        if self.replay {
+            self.cursor = wrapping_add(self.cursor, n);
+        } else {
+            for i in 0..n {
+                match self.batch.try_get(i) {
+                    Option::Some(e) => self.out.push(e),
+                    Option::None => (),
+                }
+            }
+        }
+    }
+
+    fn set_state(inout self, task: u64, to: u64) {
+        let i = dec(task);
+        self.mark(task, to == 0);
+        if to == 4 {
+            self.finished_n = inc(self.finished_n);
+        }
+        self.t_state.try_set(i, to);
+    }
+
+    // Make `task` runnable or not in the dispatch trees; it is a candidate
+    // when runnable and not yet dispatched this round.
+    fn mark(inout self, task: u64, ready: bool) {
+        let i = dec(task);
+        if ready != atb(in self.in_ready.as_slice(), i) {
+            self.in_ready.try_set(i, ready);
+            let d = if ready {
+                1
+            } else {
+                max_u64()
+            };
+            fen_add(inout self.f_ready, task, d);
+            self.ready_total = wrapping_add(self.ready_total, d);
+        }
+        let cand = ready && !atb(in self.t_seen.as_slice(), i);
+        if cand != atb(in self.in_cand.as_slice(), i) {
+            self.in_cand.try_set(i, cand);
+            let d = if cand {
+                1
+            } else {
+                max_u64()
+            };
+            fen_add(inout self.f_cand, task, d);
+            self.cand_total = wrapping_add(self.cand_total, d);
+        }
+    }
+
+    // A new round: no task has been dispatched in it. Every runnable task
+    // was dispatched in the last one, so only those need a look.
+    fn new_round(inout self) {
+        let n = self.seen_list.len();
+        for j in 0..n {
+            let task = at(in self.seen_list.as_slice(), j);
+            let i = dec(task);
+            self.t_seen.try_set(i, false);
+            let ready = atb(in self.in_ready.as_slice(), i);
+            self.mark(task, ready);
+        }
+        self.seen_list.clear();
+    }
+
+    // Undo the tentative wake-ups of a rejected dispatch.
+    fn unwake_due(inout self) {
+        let n = self.due.len();
+        for i in 0..n {
+            let c = at(in self.due.as_slice(), i);
+            let task = at(in self.p_task.as_slice(), dec(c));
+            self.mark(task, false);
+        }
+    }
+
+    fn set_wake(inout self, task: u64, wake: u64, completion: u64, rk: u64, rv: u64) {
+        let i = dec(task);
+        self.t_wake.try_set(i, wake);
+        self.t_wake_completion.try_set(i, completion);
+        self.t_wake_rk.try_set(i, rk);
+        self.t_wake_rv.try_set(i, rv);
+    }
+
+    fn heap_swap(inout self, a: u64, b: u64) {
+        let ta = at(in self.h_time.as_slice(), a);
+        let ca = at(in self.h_completion.as_slice(), a);
+        let tb = at(in self.h_time.as_slice(), b);
+        let cb = at(in self.h_completion.as_slice(), b);
+        self.h_time.try_set(a, tb);
+        self.h_completion.try_set(a, cb);
+        self.h_time.try_set(b, ta);
+        self.h_completion.try_set(b, ca);
+    }
+
+    fn heap_push(inout self, time: u64, completion: u64) {
+        self.h_time.push(time);
+        self.h_completion.push(completion);
+        let mut i = dec(self.h_time.len());
+        loop {
+            if i == 0 {
+                break;
+            }
+            let parent = (dec(i)) >> 1;
+            if !self.heap_less(i, parent) {
+                break;
+            }
+            self.heap_swap(i, parent);
+            i = parent;
+        }
+    }
+
+    // Remove the top entry.
+    fn heap_pop(inout self) {
+        let n = self.h_time.len();
+        if n == 0 {
+            return;
+        }
+        let last = dec(n);
+        let lt = at(in self.h_time.as_slice(), last);
+        let lc = at(in self.h_completion.as_slice(), last);
+        self.h_time.try_set(0, lt);
+        self.h_completion.try_set(0, lc);
+        self.h_time.truncate(last);
+        self.h_completion.truncate(last);
+        let mut i: u64 = 0;
+        loop {
+            let l = inc(wrapping_add(i, i));
+            if l >= last {
+                break;
+            }
+            let r = inc(l);
+            let mut m = l;
+            if r < last && self.heap_less(r, l) {
+                m = r;
+            }
+            if !self.heap_less(m, i) {
+                break;
+            }
+            self.heap_swap(i, m);
+            i = m;
+        }
+    }
+
+    // Drop stale entries at the top; the earliest live deadline, if any.
+    fn heap_top(inout self) -> Option[u64] {
+        loop {
+            if self.h_time.len() == 0 {
+                break Option::None;
+            }
+            let c = at(in self.h_completion.as_slice(), 0);
+            let i = dec(c);
+            if at(in self.p_task.as_slice(), i) != 0 && atb(in self.p_scheduled.as_slice(), i) {
+                break Option::Some(at(in self.h_time.as_slice(), 0));
+            }
+            self.heap_pop();
+        }
+    }
+
+    // Put the completions of `due` back on the heap (a rejected dispatch).
+    fn restore_due(inout self) {
+        let n = self.due.len();
+        for i in 0..n {
+            let c = at(in self.due.as_slice(), i);
+            let t = at(in self.p_time.as_slice(), dec(c));
+            self.heap_push(t, c);
+        }
+        self.due.clear();
+    }
+
+    // Park the running token: a timer (`scheduled`, not `io`), an injected
+    // completion (`scheduled` and `io`), or external I/O (neither).
+    fn park(
+        inout self,
+        task: u64,
+        own: bool,
+        scheduled: bool,
+        io: bool,
+        time: u64,
+        rk: u64,
+        rv: u64
+    ) -> Ret {
+        let completion = self.next_completion;
+        if completion == max_u64() {
+            return err(7, 0);
+        }
+        let token = self.token_fault(task, own);
+        if token != 0 {
+            return err(token, task);
+        }
+        if scheduled && !io {
+            self.one(ev(3, task, completion, time, 0));
+        } else if scheduled {
+            self.one(ev_io(4, task, completion, time, 1, rk, rv));
+        } else {
+            self.one(ev(4, task, completion, 0, 0));
+        }
+        let fault = self.batch_fault();
+        if fault.code != 0 {
+            return fault;
+        }
+        let i = dec(task);
+        if scheduled && !io {
+            self.set_state(task, 2);
+            self.t_deadline.try_set(i, time);
+        } else {
+            self.set_state(task, 3);
+            self.t_deadline.try_set(i, 0);
+        }
+        self.t_completion.try_set(i, completion);
+        self.p_task.push(task);
+        self.p_scheduled.push(scheduled);
+        self.p_time.push(time);
+        self.p_io.push(io);
+        self.p_rk.push(rk);
+        self.p_rv.push(rv);
+        self.pending_n = inc(self.pending_n);
+        if scheduled {
+            self.heap_push(time, completion);
+        }
+        self.next_completion = inc(completion);
+        self.running = 0;
+        self.commit();
+        ok(completion)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The exported kernel.
+
+pub fn kernel_new(seed: u64) -> Kernel {
+    empty_kernel(seed, false, ChunkSeq::new[Ev]())
+}
+
+// Replay `events` from a journal whose version the wrapper checked.
+pub fn kernel_replay(seed: u64, in events: Slice[Ev]) -> Kernel {
+    let n = events.len();
+    let mut expected: ChunkSeq[Ev] = ChunkSeq::with_capacity[Ev](n);
+    for i in 0..n {
+        match events.try_get(i) {
+            Option::Some(e) => expected.push(e),
+            Option::None => (),
+        }
+    }
+    empty_kernel(seed, true, expected)
+}
+
+pub fn kernel_now_ns(in k: Kernel) -> u64 {
+    k.now
+}
+
+pub fn kernel_task_state(in k: Kernel, task: u64) -> St {
+    if !k.known(task) {
+        return St {
+            kind: 5,
+            completion: 0,
+            deadline: 0
+        };
+    }
+    let i = dec(task);
+    St {
+        kind: at(in k.t_state.as_slice(), i),
+        completion: at(in k.t_completion.as_slice(), i),
+        deadline: at(in k.t_deadline.as_slice(), i)
+    }
+}
+
+// 0 false, 1 true, 2 unknown task.
+pub fn kernel_cancel_requested(in k: Kernel, task: u64) -> u64 {
+    if !k.known(task) {
+        2
+    } else if atb(in k.t_cancel.as_slice(), dec(task)) {
+        1
+    } else {
+        0
+    }
+}
+
+pub fn kernel_pending_count(in k: Kernel) -> u64 {
+    k.pending_n
+}
+
+pub fn kernel_is_complete(in k: Kernel) -> bool {
+    k.finished_n == dec(k.next_task)
+}
+
+// Journal events not yet consumed by a replay (0 while recording).
+pub fn kernel_unconsumed(in k: Kernel) -> u64 {
+    if k.replay {
+        wrapping_sub(k.expected.len(), k.cursor)
+    } else {
+        0
+    }
+}
+
+// The event a ReplayMismatch computed.
+pub fn kernel_mismatch(in k: Kernel) -> Ev {
+    k.mismatch
+}
+
+pub fn kernel_spawn(inout k: Kernel) -> Ret {
+    k.begin();
+    let task = k.next_task;
+    if task == max_u64() {
+        return err(7, 0);
+    }
+    let now = k.now;
+    k.one(ev(0, task, 0, now, 0));
+    let fault = k.batch_fault();
+    if fault.code != 0 {
+        return fault;
+    }
+    k.t_state.push(0);
+    fen_push(inout k.f_ready, 1);
+    fen_push(inout k.f_cand, 1);
+    k.in_ready.push(true);
+    k.in_cand.push(true);
+    k.ready_total = inc(k.ready_total);
+    k.cand_total = inc(k.cand_total);
+    k.t_completion.push(0);
+    k.t_deadline.push(0);
+    k.t_wake.push(0);
+    k.t_wake_completion.push(0);
+    k.t_wake_rk.push(0);
+    k.t_wake_rv.push(0);
+    k.t_cancel.push(false);
+    k.t_seen.push(false);
+    k.next_task = inc(task);
+    k.commit();
+    ok(task)
+}
+
+pub fn kernel_yield_task(inout k: Kernel, task: u64, own: bool) -> Ret {
+    k.begin();
+    let token = k.token_fault(task, own);
+    if token != 0 {
+        return err(token, task);
+    }
+    let now = k.now;
+    k.one(ev(2, task, 0, now, 0));
+    let fault = k.batch_fault();
+    if fault.code != 0 {
+        return fault;
+    }
+    k.set_state(task, 0);
+    k.set_wake(task, 1, 0, 0, 0);
+    k.running = 0;
+    k.commit();
+    ok(0)
+}
+
+pub fn kernel_finish(inout k: Kernel, task: u64, own: bool) -> Ret {
+    k.begin();
+    let token = k.token_fault(task, own);
+    if token != 0 {
+        return err(token, task);
+    }
+    let now = k.now;
+    k.one(ev(9, task, 0, now, 0));
+    let fault = k.batch_fault();
+    if fault.code != 0 {
+        return fault;
+    }
+    k.set_state(task, 4);
+    k.running = 0;
+    k.commit();
+    ok(0)
+}
+
+pub fn kernel_sleep(inout k: Kernel, task: u64, own: bool, duration_ns: u64) -> Ret {
+    k.begin();
+    let deadline = wrapping_add(k.now, duration_ns);
+    if deadline < k.now {
+        return err(8, 0);
+    }
+    k.park(task, own, true, false, deadline, 0, 0)
+}
+
+pub fn kernel_park_io(inout k: Kernel, task: u64, own: bool) -> Ret {
+    k.begin();
+    k.park(task, own, false, false, 0, 0, 0)
+}
+
+pub fn kernel_schedule_io(inout k: Kernel, task: u64, own: bool, delay_ns: u64, rk: u64, rv: u64)
+    -> Ret {
+    k.begin();
+    let deadline = wrapping_add(k.now, delay_ns);
+    if deadline < k.now {
+        return err(8, 0);
+    }
+    k.park(task, own, true, true, deadline, rk, rv)
+}
+
+// `value` 1 when this call recorded the request, 0 when it was already set.
+pub fn kernel_request_cancel(inout k: Kernel, task: u64) -> Ret {
+    k.begin();
+    if !k.known(task) {
+        return err(1, task);
+    }
+    if k.state_of(task) == 4 {
+        return err(3, task);
+    }
+    if atb(in k.t_cancel.as_slice(), dec(task)) {
+        return ok(0);
+    }
+    let now = k.now;
+    k.one(ev(8, task, 0, now, 0));
+    let fault = k.batch_fault();
+    if fault.code != 0 {
+        return fault;
+    }
+    k.t_cancel.try_set(dec(task), true);
+    k.commit();
+    ok(1)
+}
+
+pub fn kernel_complete_io(inout k: Kernel, completion: u64, rk: u64, rv: u64) -> Ret {
+    k.begin();
+    if completion == 0 || completion >= k.next_completion {
+        return err(2, completion);
+    }
+    let task = k.pending_task(completion);
+    if task == 0 || k.state_of(task) != 3 || k.task_completion(task) != completion {
+        return err(2, completion);
+    }
+    let now = k.now;
+    k.one(ev_io(7, task, completion, now, 0, rk, rv));
+    let fault = k.batch_fault();
+    if fault.code != 0 {
+        return fault;
+    }
+    k.p_task.try_set(dec(completion), 0);
+    k.pending_n = dec(k.pending_n);
+    k.set_state(task, 0);
+    k.set_wake(task, 3, completion, rk, rv);
+    k.commit();
+    ok(0)
+}
+
+// Deliver everything due, then dispatch one runnable task (see
+// `Simulator::next_task` in src/reference.rs).
+pub fn kernel_next_task(inout k: Kernel) -> Next {
+    k.begin();
+    let mut next = Next {
+        code: 0,
+        task: 0,
+        wk: 0,
+        wc: 0,
+        wrk: 0,
+        wrv: 0,
+        cancel: false
+    };
+    if k.running != 0 {
+        next.code = 4;
+        next.task = k.running;
+        return next;
+    }
+    let mut now = k.now;
+    if k.ready_total == 0 {
+        match k.heap_top() {
+            Option::Some(t) => {
+                now = t;
+            },
+            Option::None => (),
+        }
+    }
+    // Take every live entry due at `now` off the heap, in key order.
+    k.due.clear();
+    loop {
+        match k.heap_top() {
+            Option::Some(t) => {
+                if t > now {
+                    break;
+                }
+                let c = at(in k.h_completion.as_slice(), 0);
+                k.heap_pop();
+                k.due.push(c);
+            },
+            Option::None => {
+                break;
+            },
+        }
+    }
+    if now != k.now {
+        let from = k.now;
+        k.batch.push(ev(5, 0, 0, from, now));
+    }
+    let n_due = k.due.len();
+    for i in 0..n_due {
+        let c = at(in k.due.as_slice(), i);
+        let j = dec(c);
+        let task = at(in k.p_task.as_slice(), j);
+        if atb(in k.p_io.as_slice(), j) {
+            let rk = at(in k.p_rk.as_slice(), j);
+            let rv = at(in k.p_rv.as_slice(), j);
+            k.batch.push(ev_io(7, task, c, now, 0, rk, rv));
+        } else {
+            k.batch.push(ev(6, task, c, now, 0));
+        }
+        // Runnable for this dispatch; undone if it is rejected.
+        k.mark(task, true);
+    }
+    let mut round = k.round;
+    let reset = k.ready_total > 0 && k.cand_total == 0;
+    if reset {
+        if round == max_u64() {
+            k.unwake_due();
+            k.restore_due();
+            next.code = 9;
+            return next;
+        }
+        round = inc(round);
+    }
+    let count = if reset {
+        k.ready_total
+    } else {
+        k.cand_total
+    };
+    let mut rng = k.rng;
+    let mut selected: u64 = 0;
+    if count > 0 {
+        let threshold = rem(wrapping_sub(0, count), count);
+        let mut index: u64 = 0;
+        loop {
+            rng = wrapping_add(rng, 0x9e3779b97f4a7c15);
+            let value = random(rng);
+            if value >= threshold {
+                index = rem(value, count);
+                break;
+            }
+        }
+        selected = if reset {
+            fen_select(in k.f_ready.as_slice(), index)
+        } else {
+            fen_select(in k.f_cand.as_slice(), index)
+        };
+        k.batch.push(ev(1, selected, 0, now, round));
+    }
+    let fault = k.batch_fault();
+    if fault.code != 0 {
+        k.unwake_due();
+        k.restore_due();
+        next.code = fault.code;
+        next.task = fault.value;
+        return next;
+    }
+    // Commit: release the due completions and wake their tasks.
+    for i in 0..n_due {
+        let c = at(in k.due.as_slice(), i);
+        let j = dec(c);
+        let task = at(in k.p_task.as_slice(), j);
+        let io = atb(in k.p_io.as_slice(), j);
+        let rk = at(in k.p_rk.as_slice(), j);
+        let rv = at(in k.p_rv.as_slice(), j);
+        k.p_task.try_set(j, 0);
+        k.pending_n = dec(k.pending_n);
+        k.set_state(task, 0);
+        if io {
+            k.set_wake(task, 3, c, rk, rv);
+        } else {
+            k.set_wake(task, 2, c, 0, 0);
+        }
+    }
+    k.due.clear();
+    k.now = now;
+    k.rng = rng;
+    k.round = round;
+    if reset {
+        k.new_round();
+    }
+    k.commit();
+    if selected != 0 {
+        let i = dec(selected);
+        k.t_seen.try_set(i, true);
+        k.seen_list.push(selected);
+        k.mark(selected, false);
+        k.running = selected;
+        k.set_state(selected, 1);
+        next.task = selected;
+        next.wk = at(in k.t_wake.as_slice(), i);
+        next.wc = at(in k.t_wake_completion.as_slice(), i);
+        next.wrk = at(in k.t_wake_rk.as_slice(), i);
+        next.wrv = at(in k.t_wake_rv.as_slice(), i);
+        next.cancel = atb(in k.t_cancel.as_slice(), i);
+    }
+    next
+}

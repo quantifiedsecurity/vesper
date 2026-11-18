@@ -11,7 +11,7 @@ serde_json = { workspace = true }
 iced-x86 = { version = "=1.21.0", default-features = false, features = ["std", "decoder", "instr_info"] }
 vesper-ffi = { path = "../vesper-ffi" }
 vesper-fiber-abi = { path = "../vesper-fiber-abi" }
-vesper-simpulse = { path = "../vesper-simpulse" }
+vesper-simpulse = { path = "../vesper-simpulse/seed", package = "vesper-simpulse-seed" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"

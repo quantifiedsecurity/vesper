@@ -20,6 +20,27 @@ pub struct W3cSpanContext {
     trace_flags: u8,
 }
 impl W3cSpanContext {
+    /// The port build validates in Vesper (`span_context_new`).
+    #[cfg(vesper_port)]
+    pub fn new(trace_id: u128, span_id: u64, trace_flags: u8) -> Result<Self, TraceError> {
+        crate::port::span_context_new(
+            (trace_id >> 64) as u64,
+            trace_id as u64,
+            span_id,
+            trace_flags,
+        )
+        .map(|context| crate::port::validated(&context))
+    }
+    /// A context whose IDs the port already validated.
+    #[cfg(vesper_port)]
+    pub(crate) const fn from_validated(trace_id: u128, span_id: u64, trace_flags: u8) -> Self {
+        Self {
+            trace_id,
+            span_id,
+            trace_flags,
+        }
+    }
+    #[cfg(not(vesper_port))]
     pub fn new(trace_id: u128, span_id: u64, trace_flags: u8) -> Result<Self, TraceError> {
         if trace_id == 0 {
             return Err(TraceError::ZeroTraceId);
@@ -46,6 +67,14 @@ impl W3cSpanContext {
         self.trace_flags & 1 != 0
     }
     /// Writes exactly 55 canonical lowercase ASCII bytes, with no allocation or terminator.
+    #[cfg(vesper_port)]
+    pub fn to_traceparent(self) -> [u8; 55] {
+        let mut out = [0; 55];
+        crate::port::format_traceparent(&crate::port::context_mirror(self), &mut out);
+        out
+    }
+    /// Writes exactly 55 canonical lowercase ASCII bytes, with no allocation or terminator.
+    #[cfg(not(vesper_port))]
     pub fn to_traceparent(self) -> [u8; 55] {
         let mut out = *b"00-00000000000000000000000000000000-0000000000000000-00";
         write_hex(self.trace_id, &mut out[3..35]);
@@ -54,6 +83,7 @@ impl W3cSpanContext {
         out
     }
 }
+#[cfg(not(vesper_port))]
 fn nibble(byte: u8, offset: usize) -> Result<u8, TraceError> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),
@@ -61,11 +91,13 @@ fn nibble(byte: u8, offset: usize) -> Result<u8, TraceError> {
         _ => Err(TraceError::InvalidHex { offset }),
     }
 }
+#[cfg(not(vesper_port))]
 fn hex(bytes: &[u8], start: usize) -> Result<u128, TraceError> {
     bytes.iter().enumerate().try_fold(0, |value, (i, byte)| {
         Ok((value << 4) | u128::from(nibble(*byte, start + i)?))
     })
 }
+#[cfg(not(vesper_port))]
 fn write_hex(mut value: u128, bytes: &mut [u8]) {
     for byte in bytes.iter_mut().rev() {
         *byte = b"0123456789abcdef"[(value & 15) as usize];
@@ -74,6 +106,13 @@ fn write_hex(mut value: u128, bytes: &mut [u8]) {
 }
 /// Deterministic errors: length, separators left-to-right, version, trace ID, span ID, flags.
 /// Version `ff` and all future versions are outside this v00-only API.
+#[cfg(vesper_port)]
+pub fn parse_traceparent_55(raw: &[u8]) -> Result<W3cSpanContext, TraceError> {
+    crate::port::parse_traceparent_55(raw).map(|context| crate::port::validated(&context))
+}
+/// Deterministic errors: length, separators left-to-right, version, trace ID, span ID, flags.
+/// Version `ff` and all future versions are outside this v00-only API.
+#[cfg(not(vesper_port))]
 pub fn parse_traceparent_55(raw: &[u8]) -> Result<W3cSpanContext, TraceError> {
     if raw.len() != 55 {
         return Err(TraceError::InvalidLength { actual: raw.len() });
