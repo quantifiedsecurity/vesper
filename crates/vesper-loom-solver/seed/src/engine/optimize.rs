@@ -260,7 +260,9 @@ fn score_key(metrics: &SolutionMetrics, order: &[OptimizeObjective]) -> ScoreKey
         .collect()
 }
 
-pub(crate) fn resolve_optimized(request: &OptimizeRequest) -> Result<OptimizedResolution, ResolveError> {
+pub(crate) fn resolve_optimized(
+    request: &OptimizeRequest,
+) -> Result<OptimizedResolution, ResolveError> {
     if request.max_solutions == 0 {
         return Err(error(
             crate::ErrorKind::InvalidInput,

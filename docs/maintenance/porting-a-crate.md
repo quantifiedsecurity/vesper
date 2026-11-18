@@ -454,6 +454,36 @@ still depends on `vesper-port-harness` unconditionally, so the guard below
 counts it as port-backed either way (`IMPLEMENTATION` follows the feature,
 `crates/vesper-beacon-arrow/tests/beacon_build.rs`; full port: lane 4, #901).
 
+**Retiring the Rust build of a compiler-linked crate.** Once the user makes
+the port the only build of such a crate, its Rust engine cannot be deleted
+outright, because the compiler still links the seed. Move it into the seed
+instead, so the original package carries no Rust implementation (#1085:
+`vesper-loom-solver`, `vesper-simpulse`, `vesper-pact`):
+
+- The seed gets its own crate root, `seed/src/lib.rs`, which includes the
+  shared API as a module and adds the Rust engine beside it:
+
+  ```rust
+  #[path = "../../src/lib.rs"]
+  mod api;
+  pub use api::*;
+
+  mod engine; // seed/src/engine.rs: the frozen Rust implementation
+  ```
+
+  Modules that `src/lib.rs` declares still resolve next to it, because a
+  file loaded through `#[path]` finds its child modules in its own directory.
+- `src/` keeps only what both builds share: the public types, the
+  forwarding functions (which call `crate::engine::…`) and, under
+  `#[cfg(vesper_port)]`, the binding and `use port as engine;`. Items the
+  engine needs from the API become `pub(crate)`.
+- Never name a seed file from `src/`: `rustfmt` checks `src/` on its own
+  (in Bazel, without the seed's files) and fails on a module whose file is
+  missing, whatever its `cfg`.
+- The seed's `[lib] path` is `src/lib.rs`; its `BUILD.bazel` takes
+  `glob(["src/**/*.rs"])` plus the parent's `:rust_srcs`, with
+  `crate_root = "src/lib.rs"`.
+
 **The guard.** Two checks fail CI if a port-backed package (one whose build
 script runs `vesper-port-harness`) enters the normal or build dependency
 closure of `vesper` or of `vesper-codegen-verified` (which links no

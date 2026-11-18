@@ -138,4 +138,3 @@ pub fn validate_locked(request: &ResolveRequest, locked: &Solution) -> Result<()
 pub fn resolve(request: &ResolveRequest) -> Result<Solution, ResolveError> {
     crate::engine::resolve(request)
 }
-

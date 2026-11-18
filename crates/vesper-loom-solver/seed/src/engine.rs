@@ -274,7 +274,10 @@ fn solution(
     }
 }
 
-pub(crate) fn validate_locked(request: &ResolveRequest, locked: &Solution) -> Result<(), ResolveError> {
+pub(crate) fn validate_locked(
+    request: &ResolveRequest,
+    locked: &Solution,
+) -> Result<(), ResolveError> {
     let inputs = inputs(request)?;
     if let Some(policy) = unsupported_policy(&request.root) {
         return Err(error(ErrorKind::UnsupportedPolicy, 0, vec![policy]));
