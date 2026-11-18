@@ -807,7 +807,8 @@ fn clone_loop(
 ///
 /// Element accesses in a loop read the receiver's handle and its `{len,
 /// data}` words on every iteration, even when the loop cannot change them.
-/// [`header_hoists`] finds, for each loop, the receiver places that no
+/// [`header_hoists`] finds, for each loop (one receiver at most when it
+/// calls), the receiver places that no
 /// instruction of the loop writes, rebinds, moves, resizes or lends other
 /// than `in`; the native backend reads such a receiver and its header words
 /// once at the end of `preheader` and gives the loop's `reads` of it those
@@ -888,14 +889,27 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
             continue;
         }
         let insts = || blocks.iter().flat_map(|&b| f.blocks[b].instructions.iter());
-        if insts().any(|i| match &i.op {
-            Op::Closure { .. } | Op::Handle { .. } | Op::Indirect { .. } => true,
-            // An effect operation runs a handler outside the loop's view.
-            Op::Call { callee, .. } => callee.contains("::"),
-            _ => false,
+        if insts().any(|i| {
+            matches!(
+                i.op,
+                Op::Closure { .. } | Op::Handle { .. } | Op::Indirect { .. }
+            ) || matches!(&i.op, Op::Call { callee, .. } if callee.contains("::"))
         }) {
+            // An effect operation runs a handler outside the loop's view.
             continue;
         }
+        // A call (or a sequence operation that may call the allocator)
+        // clobbers the caller-saved registers, so in such a loop the hoisted
+        // words are spilled and reloaded anyway, and many of them push other
+        // values out of registers: such a loop hoists one receiver at most
+        // (Ignis's pass loops ran 4% more instructions with no cap).
+        let calls = insts().any(|i| match &i.op {
+            Op::Call { .. } | Op::Tiled { .. } | Op::Fip { .. } => true,
+            Op::Seq { op, .. } => {
+                !(keeps_length(*op) || matches!(op, SeqOp::Hoisted(_) | SeqOp::BoundsGuard { .. }))
+            }
+            _ => false,
+        });
         let mut places: BTreeMap<String, HeaderHoist> = BTreeMap::new();
         for i in insts() {
             let Op::Read {
@@ -949,6 +963,9 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
                 })
                 .reads
                 .insert(i.dest);
+        }
+        if calls && places.len() > 1 {
+            continue;
         }
         found.extend(places.into_values().map(|hoist| (blocks.len(), hoist)));
     }
