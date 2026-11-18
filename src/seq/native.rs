@@ -340,7 +340,43 @@ impl<M: Module> Codegen<'_, '_, M> {
     }
 
     fn seq_word(&mut self, ptr: ir::Value, offset: i32) -> ir::Value {
+        if let Some(word) = self
+            .exits
+            .last()
+            .and_then(|t| t.header_words.get(&(ptr, offset)))
+        {
+            return *word;
+        }
         self.b.ins().load(types::I64, MemFlags::new(), ptr, offset)
+    }
+
+    /// Reads the receiver at `place` and its header words once, before a
+    /// loop that cannot change them ([`crate::bounds_hoist::header_hoists`]):
+    /// the loop's accesses on the returned receiver reuse the words.
+    pub(super) fn seq_hoist_header(
+        &mut self,
+        place: &crate::check::Place,
+        ty: &Type,
+    ) -> Result<ir::Value, String> {
+        let e = ir_place_expr(place, 0..0);
+        let mut words = vec![];
+        let (receiver, handle) = if seq::is_slice_type(ty) {
+            let view = self.address(&e)?;
+            for offset in [0, 8, 16] {
+                words.push(((view, offset), self.seq_word(view, offset)));
+            }
+            (view, words[0].1)
+        } else {
+            let handle = self.expr(&e)?;
+            (handle, handle)
+        };
+        for offset in [LEN, DATA] {
+            words.push(((handle, offset), self.seq_word(handle, offset)));
+        }
+        if let Some(t) = self.exits.last_mut() {
+            t.header_words.extend(words);
+        }
+        Ok(receiver)
     }
 
     fn seq_set_word(&mut self, ptr: ir::Value, offset: i32, value: ir::Value) {
@@ -962,8 +998,9 @@ fn fused_pattern(p: &Pattern) -> bool {
     }
 }
 
-/// The `try_get` results of graph `f` that only its own block's `match` and
-/// that match's arm bindings consume (`Some(x)`, `Some(_)`, `None`, `_`).
+/// The `try_get` results of graph `f` (checked, or hoisted out of a counted
+/// loop's bounds checks) that only its own block's `match` and that match's
+/// arm bindings consume (`Some(x)`, `Some(_)`, `None`, `_`).
 pub(super) fn fused_reads(
     f: &crate::ir::FunctionIr,
 ) -> BTreeMap<crate::ir::ValueId, Option<FusedRead>> {
@@ -979,7 +1016,7 @@ pub(super) fn fused_reads(
         if !matches!(
             read.op,
             Op::Seq {
-                op: SeqOp::TryGet,
+                op: SeqOp::TryGet | SeqOp::Hoisted(crate::seq::Access::TryGet),
                 ..
             }
         ) || !arms.iter().all(|(p, _)| fused_pattern(p))
@@ -1024,6 +1061,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         dest: crate::ir::ValueId,
         [receiver, i]: [ir::Value; 2],
         receiver_type: &Type,
+        checked: bool,
     ) -> Result<ir::Value, String> {
         let elem = seq::elem(receiver_type)
             .cloned()
@@ -1031,8 +1069,12 @@ impl<M: Module> Codegen<'_, '_, M> {
         let elem = crate::numeric::default_type(&elem);
         let stride = self.seq_stride(&elem)?;
         let (h, start, len) = self.seq_view(receiver, receiver_type);
-        let valid = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
-        let valid = self.b.ins().uextend(types::I64, valid);
+        let valid = if checked {
+            let valid = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
+            self.b.ins().uextend(types::I64, valid)
+        } else {
+            self.b.ins().iconst(types::I64, 1)
+        };
         let addr = self.seq_elem_addr(h, start, i, stride);
         let valid_var = self.b.declare_var(types::I64);
         self.b.def_var(valid_var, valid);
@@ -1049,6 +1091,24 @@ impl<M: Module> Codegen<'_, '_, M> {
             );
         }
         Ok(self.zero())
+    }
+
+    /// Whether the arms `seen` of the `match` on fused read `value` cover
+    /// both outcomes of its bounds check (`Some` and `None`, or a `_`), so
+    /// the last of them needs no test of its own.
+    pub(super) fn seq_fused_exhaustive(
+        &self,
+        value: crate::ir::ValueId,
+        seen: &[&Pattern],
+    ) -> bool {
+        if !matches!(self.seq_fused(value), Some(Some(_))) {
+            return false;
+        }
+        let some = |p: &&Pattern| matches!(&p.kind, PatternKind::Constructor { name, .. } if name.ends_with("Some"));
+        let none = |p: &&Pattern| matches!(&p.kind, PatternKind::Constructor { name, .. } if !name.ends_with("Some"));
+        seen.last()
+            .is_some_and(|p| matches!(p.kind, PatternKind::Wild))
+            || (seen.iter().any(some) && seen.iter().any(none))
     }
 
     /// The condition of match arm `p` on fused read `value`.

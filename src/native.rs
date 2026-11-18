@@ -21,6 +21,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::{cell::RefCell, rc::Rc};
 
 /// `vesper build --lib`: C-ABI library objects (port P0 lane 6, #878).
+#[path = "native_aggregates.rs"]
+mod aggregates;
+
 #[path = "native_export.rs"]
 pub mod export;
 /// Foreign calls of imported `.vsys` libraries (§13, `crate::ffi_lowering`).
@@ -1880,6 +1883,9 @@ struct ExitTarget {
     /// `try_get` reads of this graph that its `match` consumes without an
     /// `Option` in memory ([`seq_native::fused_reads`]).
     fused: BTreeMap<crate::ir::ValueId, Option<seq_native::FusedRead>>,
+    /// Header words of sequences read once before a loop that keeps them
+    /// ([`crate::bounds_hoist::header_hoists`]), by handle and offset.
+    header_words: BTreeMap<(ir::Value, i32), ir::Value>,
 }
 struct Codegen<'a, 'b, M: Module> {
     b: FunctionBuilder<'a>,
@@ -2737,6 +2743,20 @@ impl<M: Module> Codegen<'_, '_, M> {
                 self.set_pointer(var, ptr);
             }
         }
+        // Where constructed aggregates are built (lane 7, #990).
+        let homes = if self.operands_only && !self.in_fip_fn {
+            aggregates::plan(self.world, f, &self.generic_vars)
+        } else {
+            BTreeMap::new()
+        };
+        let mut home_pointers = aggregates::HomePointers::new();
+        // Sequence headers read once before the loops that keep them.
+        let header_hoists = if self.operands_only && !self.in_fip_fn {
+            crate::bounds_hoist::header_hoists(f)
+        } else {
+            vec![]
+        };
+        let mut hoisted_reads = BTreeMap::new();
         let mut values = BTreeMap::new();
         // A resumption can return through a shared handler dispatcher. Keep
         // virtual registers in frontend SSA variables so return edges receive
@@ -2865,6 +2885,7 @@ impl<M: Module> Codegen<'_, '_, M> {
             drops,
             replace,
             fused: seq_native::fused_reads(f),
+            header_words: BTreeMap::new(),
         });
         for i in order {
             let block = &f.blocks[i];
@@ -2928,11 +2949,16 @@ impl<M: Module> Codegen<'_, '_, M> {
                             .copied()
                             .ok_or_else(|| format!("undefined native IR value %{value}"))?;
                         let ty = f.values.get(value).cloned().unwrap_or(Type::Infer);
-                        self.exit_to(owner, v, &ty)?;
+                        // A value built in the result buffer is not copied.
+                        let placed = aggregates::placed(&home_pointers, *value);
+                        self.exit_to(owner, v, &ty, placed)?;
                         self.zero()
                     }
                     Op::Constant(l) => self.expr(&make(ExprKind::Literal(l.clone())))?,
                     Op::Unit => self.zero(),
+                    Op::Read { .. } if hoisted_reads.contains_key(&inst.dest) => {
+                        hoisted_reads[&inst.dest]
+                    }
                     Op::Read {
                         root, path, pass, ..
                     } => {
@@ -3006,13 +3032,23 @@ impl<M: Module> Codegen<'_, '_, M> {
                             .iter()
                             .map(|id| self.ir_temp(*id, &values, &f.values))
                             .collect::<Result<Vec<_>, _>>()?;
-                        self.data(
+                        let into =
+                            self.home_pointer(inst.dest, &homes, &mut home_pointers, sret)?;
+                        let built = ids
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, id)| aggregates::placed(&home_pointers, **id))
+                            .map(|(i, _)| i.to_string())
+                            .collect();
+                        self.data_into(
                             None,
                             es.iter()
                                 .enumerate()
                                 .map(|(i, e)| (i.to_string(), e))
                                 .collect(),
                             &ty,
+                            into,
+                            &built,
                         )?
                     }
                     Op::Data(name, fields) => {
@@ -3020,10 +3056,19 @@ impl<M: Module> Codegen<'_, '_, M> {
                             .iter()
                             .map(|(n, id)| Ok((n.clone(), self.ir_temp(*id, &values, &f.values)?)))
                             .collect::<Result<Vec<_>, String>>()?;
-                        self.data(
+                        let into =
+                            self.home_pointer(inst.dest, &homes, &mut home_pointers, sret)?;
+                        let built = fields
+                            .iter()
+                            .filter(|(_, id)| aggregates::placed(&home_pointers, *id))
+                            .map(|(n, _)| n.clone())
+                            .collect();
+                        self.data_into(
                             Some(name),
                             es.iter().map(|(n, e)| (n.clone(), e)).collect(),
                             &ty,
+                            into,
+                            &built,
                         )?
                     }
                     Op::Project(base, field) => {
@@ -3074,7 +3119,9 @@ impl<M: Module> Codegen<'_, '_, M> {
                         let site = make(ExprKind::Tuple(vec![]));
                         if self.world.functions.contains_key(callee) {
                             self.current_call_slot = f.fip_call_slots.get(&inst.dest).cloned();
-                            let call_res = self.call_function(callee, &es, &site);
+                            let into =
+                                self.home_pointer(inst.dest, &homes, &mut home_pointers, sret)?;
+                            let call_res = self.call_function_into(callee, &es, &site, into);
                             self.current_call_slot = None;
                             call_res?
                         } else if let Some((effect, op)) = callee.split_once("::") {
@@ -3146,7 +3193,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                             .collect::<Result<Vec<_>, String>>()?;
                         self.tiled_op(op, &operands, capability.as_deref())?
                     }
-                    Op::Seq { args, .. } if self.seq_is_fused(inst.dest) => {
+                    Op::Seq { op, args } if self.seq_is_fused(inst.dest) => {
                         let receiver = args.first().ok_or("native try_get lacks a receiver")?;
                         let index = args.get(1).ok_or("native try_get lacks an index")?;
                         let operands = [values[&receiver.value], values[&index.value]];
@@ -3154,7 +3201,9 @@ impl<M: Module> Codegen<'_, '_, M> {
                             &f.values[&receiver.value],
                             &self.generic_vars,
                         ));
-                        self.seq_fused_try_get(inst.dest, operands, &receiver_type)?
+                        // A hoisted read is in bounds by its loop's guard.
+                        let checked = !matches!(op, crate::seq::SeqOp::Hoisted(_));
+                        self.seq_fused_try_get(inst.dest, operands, &receiver_type, checked)?
                     }
                     Op::Seq { op, args } if op.place_primitive() => {
                         // `swap` and `replace` write their `inout` places.
@@ -3285,6 +3334,12 @@ impl<M: Module> Codegen<'_, '_, M> {
                     self.emit_fip_drop(drop, &values, Span::default())?;
                 }
             }
+            for hoist in header_hoists.iter().filter(|h| h.preheader == i) {
+                let receiver = self.seq_hoist_header(&hoist.place, &hoist.ty)?;
+                for read in &hoist.reads {
+                    hoisted_reads.insert(*read, receiver);
+                }
+            }
             match &block.terminator {
                 Terminator::Return(id) => {
                     self.seq_drop_exit(self.exits.len() - 1)?;
@@ -3296,8 +3351,10 @@ impl<M: Module> Codegen<'_, '_, M> {
                         values[id]
                     };
                     let value = if let Some(output) = sret {
-                        let layout = Layout::of(self.world, &ty)?;
-                        self.copy_bytes(value, output, layout.size);
+                        if !aggregates::placed(&home_pointers, *id) {
+                            let layout = Layout::of(self.world, &ty)?;
+                            self.copy_bytes(value, output, layout.size);
+                        }
                         self.zero()
                     } else {
                         value
@@ -3376,7 +3433,18 @@ impl<M: Module> Codegen<'_, '_, M> {
                         &f.values[value],
                         &self.generic_vars,
                     ));
+                    let mut fused_arms = vec![];
+                    let mut closed = false;
                     for (p, target) in arms {
+                        // The last arm a fused read can reach takes the edge
+                        // without testing the bounds check again.
+                        fused_arms.push(p);
+                        let last = self.seq_fused_exhaustive(*value, &fused_arms);
+                        if last && !f.fip_join_slots.contains_key(target) {
+                            self.jump(blocks[*target], &[]);
+                            closed = true;
+                            break;
+                        }
                         let next = self.b.create_block();
                         let condition = match self.seq_fused_condition(*value, p) {
                             Some(condition) => condition,
@@ -3398,7 +3466,9 @@ impl<M: Module> Codegen<'_, '_, M> {
                         self.branch(condition, blocks[*target], &arm_args, next, &[]);
                         self.b.switch_to_block(next);
                     }
-                    self.b.ins().trap(ir::TrapCode::unwrap_user(1));
+                    if !closed {
+                        self.b.ins().trap(ir::TrapCode::unwrap_user(1));
+                    }
                 }
                 Terminator::Unreachable => {
                     self.b.ins().trap(ir::TrapCode::unwrap_user(1));
@@ -3409,7 +3479,13 @@ impl<M: Module> Codegen<'_, '_, M> {
         Ok(())
     }
     /// `return value` from the graph lowered as `owner` (`Op::Exit`).
-    fn exit_to(&mut self, owner: &str, value: ir::Value, ty: &Type) -> Result<(), String> {
+    fn exit_to(
+        &mut self,
+        owner: &str,
+        value: ir::Value,
+        ty: &Type,
+        placed: bool,
+    ) -> Result<(), String> {
         let target = self
             .exits
             .iter()
@@ -3429,8 +3505,10 @@ impl<M: Module> Codegen<'_, '_, M> {
             value
         };
         let value = if let Some(output) = target.sret {
-            let layout = Layout::of(self.world, &target.result)?;
-            self.copy_bytes(value, output, layout.size);
+            if !placed {
+                let layout = Layout::of(self.world, &target.result)?;
+                self.copy_bytes(value, output, layout.size);
+            }
             self.zero()
         } else {
             value
@@ -3860,6 +3938,19 @@ impl<M: Module> Codegen<'_, '_, M> {
         fields: Vec<(String, &Expr)>,
         ty: &Type,
     ) -> Result<ir::Value, String> {
+        self.data_into(name, fields, ty, None, &BTreeSet::new())
+    }
+    /// Builds constructor `name` of `ty` in `into` (fresh storage when
+    /// `None`); the fields in `built` were already built in place there
+    /// ([`aggregates::plan`]).
+    fn data_into(
+        &mut self,
+        name: Option<&str>,
+        fields: Vec<(String, &Expr)>,
+        ty: &Type,
+        into: Option<ir::Value>,
+        built: &BTreeSet<String>,
+    ) -> Result<ir::Value, String> {
         let layout = Layout::of(self.world, ty)?;
         if !layout.aggregate() {
             return Ok(self.zero());
@@ -3880,7 +3971,10 @@ impl<M: Module> Codegen<'_, '_, M> {
             // Zero only the words no field (or the tag) overwrites whole:
             // the unused payload of an enum variant, and the word of an
             // `f32` field, whose store writes only its low half.
-            let ptr = self.alloc_uninit(layout.size);
+            let ptr = match into {
+                Some(ptr) => ptr,
+                None => self.alloc_uninit(layout.size),
+            };
             let mut covered = BTreeSet::new();
             if tag.is_some() {
                 covered.insert(0);
@@ -3910,6 +4004,9 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.b.ins().store(ir::MemFlags::new(), tag, ptr, 0);
         }
         for (n, e) in fields {
+            if built.contains(&n) {
+                continue;
+            }
             let f = fs
                 .iter()
                 .find(|f| f.name == n)
@@ -5256,13 +5353,27 @@ impl<M: Module> Codegen<'_, '_, M> {
         args: &[Arg],
         site: &Expr,
     ) -> Result<ir::Value, String> {
+        self.call_function_into(name, args, site, None)
+    }
+    /// A call whose aggregate result is written to `into` when given
+    /// ([`aggregates::plan`]): the callee's output, or a copy into it.
+    fn call_function_into(
+        &mut self,
+        name: &str,
+        args: &[Arg],
+        site: &Expr,
+        into: Option<ir::Value>,
+    ) -> Result<ir::Value, String> {
         if name == crate::integer_widths::MUL_WIDE && args.len() == 2 {
             // The reserved prelude product (`integer_widths`): `(low, high)`.
             let a = self.expr(&args[0].expr)?;
             let b = self.expr(&args[1].expr)?;
             let low = self.b.ins().imul(a, b);
             let high = self.b.ins().umulhi(a, b);
-            let ptr = self.alloc(16);
+            let ptr = match into {
+                Some(out) => out,
+                None => self.alloc(16),
+            };
             self.b.ins().store(ir::MemFlags::new(), low, ptr, 0);
             self.b.ins().store(ir::MemFlags::new(), high, ptr, 8);
             return Ok(ptr);
@@ -5438,7 +5549,14 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.reuse_slots = reuse_scope;
             self.in_fip_fn = fip_scope;
             self.capabilities = capability_scope;
-            result?
+            let result = result?;
+            match into {
+                Some(out) if result_layout.aggregate() => {
+                    self.copy_bytes(result, out, result_layout.size);
+                    out
+                }
+                _ => result,
+            }
         } else {
             let key = instance_key(name, &vars);
             let id = match &self.trace_entry {
@@ -5453,7 +5571,15 @@ impl<M: Module> Codegen<'_, '_, M> {
                 // Register result: the callee returns the words.
                 None
             } else if result_layout.aggregate() {
-                Some(self.alloc(result_layout.size))
+                // The callee writes every word of its result; storage that
+                // holds no drop flag needs no zero (optimize path).
+                Some(match into {
+                    Some(out) => out,
+                    None if self.operands_only && aggregates::plain_data(self.world, &f.result) => {
+                        self.alloc_uninit(result_layout.size)
+                    }
+                    None => self.alloc(result_layout.size),
+                })
             } else {
                 None
             };
@@ -5504,7 +5630,10 @@ impl<M: Module> Codegen<'_, '_, M> {
             }
             let call = self.b.ins().call(fun, &values);
             let result = if let Some(words) = callee_abi.result_words {
-                let buffer = self.alloc_uninit(words * 8);
+                let buffer = match into {
+                    Some(out) => out,
+                    None => self.alloc_uninit(words * 8),
+                };
                 for word in 0..words {
                     let value = self.b.inst_results(call)[word as usize];
                     self.b
