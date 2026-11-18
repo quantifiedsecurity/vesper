@@ -1,0 +1,79 @@
+# The frozen Rust seed copy of vesper-tensor (package vesper-tensor-seed,
+# library vesper_tensor) that the compiler and, under the owner's parity
+# rule, every other dependent link: ../src built without the port, so
+# cfg(vesper_port) is off. Written by hand because its sources live in the
+# parent package; see "Crates the compiler links" in
+# docs/maintenance/porting-a-crate.md (port wave P1 lane 8, #905).
+load("@crates//vesper-tensor-seed:data.bzl", "all_crate_deps")
+load("@rules_rs//rs:rust_library.bzl", "rust_library")
+load("@rules_rs//rs:rust_test.bzl", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_clippy_test")
+
+PKG_ENV = {
+    "CARGO_PKG_NAME": "vesper-tensor-seed",
+    "CARGO_PKG_VERSION": "0.1.0",
+}
+
+rust_library(
+    name = "seed",
+    srcs = ["//crates/vesper-tensor:rust_srcs"],
+    crate_name = "vesper_tensor",
+    crate_root = "//crates/vesper-tensor:src/lib.rs",
+    edition = "2021",
+    rustc_env = PKG_ENV,
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "seed_unit_test",
+    crate = ":seed",
+    edition = "2021",
+)
+
+# The tests that read no files at run time; Cargo runs every test against
+# the seed on every platform (scripts/test-port-harness.sh,
+# crates/vesper-tensor/port/test-port.sh), including lean_kv, model_formats
+# and steady_state_alloc_batch.
+[
+    rust_test(
+        name = "seed_test_" + t,
+        srcs = ["//crates/vesper-tensor:tests/%s.rs" % t] + (
+            ["//crates/vesper-tensor:tests/common/mod.rs"] if t in [
+                "batching",
+                "simd_kernels",
+                "tokenizer_sampling",
+            ] else []
+        ),
+        compile_data = ["//crates/vesper-tensor:test_inputs"],
+        crate_root = "//crates/vesper-tensor:tests/%s.rs" % t,
+        edition = "2021",
+        rustc_env = PKG_ENV,
+        deps = [":seed"],
+    )
+    for t in [
+        "batching",
+        "build_kind",
+        "containers",
+        "execution",
+        "formats_interop",
+        "generation",
+        "inference_ops",
+        "kv",
+        "reference_fixtures",
+        "shapes",
+        "simd_kernels",
+        "steady_state_alloc",
+        "tokenizer_sampling",
+    ]
+]
+
+rust_clippy_test(
+    name = "clippy",
+    targets = [":seed"],
+    tags = [
+        "clippy",
+        "lint",
+    ],
+)

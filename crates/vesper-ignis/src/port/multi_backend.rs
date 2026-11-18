@@ -32,7 +32,7 @@ pub fn lower_to_target_barrier_for_queue(
     let n = v::lower_barrier(
         target,
         queue_kind,
-        barrier_rec(barrier),
+        &v::repr::BarrierRec::from_value(&barrier_rec(barrier)),
         split_event_id,
         false,
         0,
@@ -129,9 +129,9 @@ fn native(b: &Barrier, n: ffi::Native) -> Option<NativeBackendBarrier> {
 pub fn lower_plan(target: GpuApiTarget, plan: &Plan) -> LoweredPlan {
     let kinds: Vec<QueueKind> = plan.queues.iter().map(|q| q.kind).collect();
     let mut commands: Vec<&Command> = Vec::new();
-    let mut cmds: Vec<ffi::CmdRec> = Vec::new();
+    let mut cmds: Vec<v::repr::CmdRec> = Vec::new();
     let mut flat: Vec<&Barrier> = Vec::new();
-    let mut keyed: Vec<ffi::KeyedBarrier> = Vec::new();
+    let mut keyed: Vec<v::repr::KeyedBarrier> = Vec::new();
     for (stream, q) in plan.queues.iter().enumerate() {
         for c in &q.commands {
             let (tag, a, b) = match c {
@@ -140,10 +140,10 @@ pub fn lower_plan(target: GpuApiTarget, plan: &Plan) -> LoweredPlan {
                     let start = flat.len() as u64;
                     for b in bs {
                         flat.push(b);
-                        keyed.push(ffi::KeyedBarrier {
+                        keyed.push(v::repr::KeyedBarrier::from_value(&ffi::KeyedBarrier {
                             graph: resource_of(b).graph(),
                             barrier: barrier_rec(b),
-                        });
+                        }));
                     }
                     (1, start, bs.len() as u64)
                 }
@@ -151,12 +151,12 @@ pub fn lower_plan(target: GpuApiTarget, plan: &Plan) -> LoweredPlan {
                 Command::Signal { value } => (3, 0, *value),
             };
             commands.push(c);
-            cmds.push(ffi::CmdRec {
+            cmds.push(v::repr::CmdRec::from_value(&ffi::CmdRec {
                 queue: stream as u32,
                 tag,
                 a,
                 b,
-            });
+            }));
         }
     }
     let out = v::lower_plan(target, &kinds, &cmds, &keyed);

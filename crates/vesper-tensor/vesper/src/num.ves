@@ -1,0 +1,123 @@
+// Module num of @vesper/tensor (see lib.ves): IEEE binary16 and BF16
+// codecs and the float predicates every module shares. An f32 crosses the
+// boundary, and is stored in slices, as its bit pattern (`to_bits_f32`).
+
+// The number of leading zero bits of `x`.
+pub fn clz32(x: u32) -> u32 eff [Fail[ArithOverflow]] {
+    if x == 0 {
+        return 32;
+    }
+    let mut n: u32 = 0;
+    let mut v = x;
+    loop {
+        if v & 2147483648 != 0 {
+            break;
+        }
+        v = v << 1;
+        n = n + 1;
+    }
+    n
+}
+
+// Whether the f32 with bits `b` is finite.
+pub fn finite_bits(b: u32) -> bool {
+    b & 2139095040 != 2139095040
+}
+
+pub fn is_finite(v: f32) -> bool {
+    finite_bits(to_bits_f32(v))
+}
+
+pub fn is_nan(v: f32) -> bool {
+    let b = to_bits_f32(v);
+    b & 2139095040 == 2139095040 && b & 8388607 != 0
+}
+
+pub fn decode_fp16(bits: u16) -> f32 eff [Fail[ArithOverflow]] {
+    let sign = widen_u32(bits & 32768) << 16;
+    let exponent = widen_u32((bits >> 10) & 31);
+    let fraction = widen_u32(bits & 1023);
+    let out = if exponent == 0 {
+        if fraction == 0 {
+            sign
+        } else {
+            let shift = clz32(fraction) - 21;
+            let normalized = fraction << shift;
+            sign | ((113 - shift) << 23) | ((normalized & 1023) << 13)
+        }
+    } else if exponent == 31 {
+        sign | 2139095040 | (fraction << 13)
+    } else {
+        sign | ((exponent + 112) << 23) | (fraction << 13)
+    };
+    from_bits_f32(out)
+}
+
+// Round `value >> shift` to nearest, ties to even (`1 <= shift < 32`).
+fn round_shift(value: u32, shift: u32) -> u32 eff [Fail[ArithOverflow]] {
+    let kept = value >> shift;
+    let one: u32 = 1;
+    let rest = value & ((one << shift) - 1);
+    let half = one << (shift - 1);
+    if rest > half || (rest == half && kept & 1 == 1) {
+        kept + 1
+    } else {
+        kept
+    }
+}
+
+pub fn encode_fp16(value: f32) -> u16 eff [Fail[ArithOverflow]] {
+    let bits = to_bits_f32(value);
+    let sign = wrapping_u16((bits >> 16) & 32768);
+    let exponent = wrapping_i32((bits >> 23) & 255);
+    let mantissa = bits & 8388607;
+    if exponent == 255 {
+        if mantissa == 0 {
+            return sign | 31744;
+        }
+        return sign | 32256 | wrapping_u16(mantissa >> 13);
+    }
+    let e = exponent - 112;
+    if e >= 31 {
+        return sign | 31744;
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        let m = mantissa | 8388608;
+        let shift = wrapping_u32(14 - e);
+        return sign | wrapping_u16(round_shift(m, shift));
+    }
+    sign | wrapping_u16(round_shift((wrapping_u32(e) << 23) | mantissa, 13))
+}
+
+pub fn encode_bf16(value: f32) -> u16 eff [Fail[ArithOverflow]] {
+    let bits = to_bits_f32(value);
+    if is_nan(value) {
+        return wrapping_u16(bits >> 16) | 64;
+    }
+    let kept = bits >> 16;
+    let rest = bits & 65535;
+    let rounded = if rest > 32768 || (rest == 32768 && kept & 1 == 1) {
+        kept + 1
+    } else {
+        kept
+    };
+    wrapping_u16(rounded)
+}
+
+pub fn decode_bf16(bits: u16) -> f32 eff [Fail[ArithOverflow]] {
+    from_bits_f32(widen_u32(bits) << 16)
+}
+
+// A little-endian binary16 at `at` of `b`.
+pub fn half_at(in b: Slice[u8], at: u64) -> f32 eff [Fail[ArithOverflow], Fail[RuntimeError]] {
+    decode_fp16(widen_u16(b[at]) | (widen_u16(b[at + 1]) << 8))
+}
+
+// `0: u64`, so that `for i in u64_zero()..4` counts in u64 (a literal range
+// is i64).
+pub fn u64_zero() -> u64 {
+    0
+}

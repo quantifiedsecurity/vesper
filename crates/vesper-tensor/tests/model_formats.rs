@@ -17,9 +17,15 @@ const TOKENIZER: &[u8] = include_bytes!("../models/tok512.bin");
 const EXPECTED: &[u8] = include_bytes!("../models/stories260K-greedy-200.txt");
 
 fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("fixtures")
-        .join(name)
+    // The seed package (seed/) runs this file too; its fixtures are the
+    // crate's.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = if dir.ends_with("seed") {
+        dir.join("..")
+    } else {
+        dir
+    };
+    dir.join("fixtures").join(name)
 }
 fn temp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("vesper-tensor-models-{}", std::process::id()));

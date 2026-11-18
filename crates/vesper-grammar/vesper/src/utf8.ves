@@ -1,0 +1,71 @@
+// Module utf8 of @vesper/grammar (see lib.ves): the UTF-8 check of Rust's
+// `core::str::from_utf8`, with the same `valid_up_to`.
+use self::common::{
+    sb
+};
+
+fn cont(in s: Slice[u8], at: u64, end: u64, lo: u64, hi: u64) -> bool {
+    if at >= end {
+        return false;
+    }
+    let b = sb(in s, at);
+    b >= lo && b <= hi
+}
+
+// The offset of the first byte of `s[start..end]` that does not start a
+// complete valid UTF-8 sequence (RFC 3629: no overlongs, surrogates or
+// values past U+10FFFF), or `end` when the whole range is valid.
+pub fn valid_up_to(in s: Slice[u8], start: u64, end: u64) -> u64 {
+    let mut i = start;
+    loop {
+        if i >= end {
+            return end;
+        }
+        let b = sb(in s, i);
+        let i1 = wrapping_add(i, 1);
+        let i2 = wrapping_add(i, 2);
+        let i3 = wrapping_add(i, 3);
+        if b < 128 {
+            i = i1;
+        } else if b >= 194 && b <= 223 {
+            if !cont(in s, i1, end, 128, 191) {
+                return i;
+            }
+            i = i2;
+        } else if b >= 224 && b <= 239 {
+            let lo: u64 = if b == 224 {
+                160
+            } else {
+                128
+            };
+            let hi: u64 = if b == 237 {
+                159
+            } else {
+                191
+            };
+            if !cont(in s, i1, end, lo, hi) || !cont(in s, i2, end, 128, 191) {
+                return i;
+            }
+            i = i3;
+        } else if b >= 240 && b <= 244 {
+            let lo: u64 = if b == 240 {
+                144
+            } else {
+                128
+            };
+            let hi: u64 = if b == 244 {
+                143
+            } else {
+                191
+            };
+            if !cont(in s, i1, end, lo, hi)
+                || !cont(in s, i2, end, 128, 191)
+                || !cont(in s, i3, end, 128, 191) {
+                return i;
+            }
+            i = wrapping_add(i, 4);
+        } else {
+            return i;
+        }
+    }
+}

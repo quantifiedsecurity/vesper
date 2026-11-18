@@ -1,8 +1,10 @@
-//! ABBA comparison of the Rust build (baseline) and the Vesper port
-//! (candidate). The two builds cannot share a binary (the public error types
-//! name one `Session`), so this example is built twice and, in `compare` mode,
-//! runs the two executables as separate processes in Rust, port, port, Rust
-//! order per epoch, then analyzes the paired totals with vesper-bench. Run
+//! ABBA comparison of the replaced Rust implementation (baseline) and the
+//! Vesper port (candidate). The two builds cannot share a binary (the public
+//! error types name one `Session`), and the Rust implementation now lives only
+//! in history (#979), so this example is built twice, once at a commit that
+//! still has the Rust implementation, and, in `compare` mode, runs the two
+//! executables as separate processes in Rust, port, port, Rust order per
+//! epoch, then analyzes the paired totals with vesper-bench. Run
 //! `crates/vesper-aura/bench-abba.sh`.
 //!
 //! `abba measure <ops>` warms each workload up and prints its total
@@ -148,16 +150,42 @@ fn compare(rust: &str, port: &str, epochs: usize, ops: u64) {
             .collect();
         let lo = ratios.iter().copied().fold(f64::INFINITY, f64::min);
         let hi = ratios.iter().copied().fold(0.0, f64::max);
+        let (ci_lo, ci_hi) = median_interval(&ratios);
         let ratio = median(ratios);
         let analysis = analyze_pairs(pairs, 0).unwrap();
         let bp = |s: PairedSample| s.regression_bp_bounds().floor as f64 / 100.0;
         println!(
             "{name:<13} rust {rust_ns:>9.0} ns/op  port {port_ns:>9.0} ns/op  port/rust {ratio:.2}x \
-             (range {lo:.2}x..{hi:.2}x, sample median regression {:+.0}%..{:+.0}%, {epochs} epochs)",
+             (95% median interval {ci_lo:.2}x..{ci_hi:.2}x, range {lo:.2}x..{hi:.2}x, \
+             sample median regression {:+.0}%..{:+.0}%, {epochs} epochs)",
             bp(analysis.median_lower),
             bp(analysis.median_upper),
         );
     }
+}
+
+/// A distribution-free interval for the median of the per-epoch ratios:
+/// the `d`-th smallest and `d`-th largest ratio for the largest `d` with
+/// P(X <= d - 1) <= 2.5%, X ~ Binomial(n, 1/2), so the interval covers the
+/// median with at least 95% probability (the whole range when there are
+/// too few epochs for that). With 15 epochs `d` is 4 (96.5%).
+fn median_interval(ratios: &[f64]) -> (f64, f64) {
+    let mut v = ratios.to_vec();
+    v.sort_by(f64::total_cmp);
+    let n = v.len();
+    let total = 2f64.powi(n as i32);
+    // `term` is C(n, j); `tail` accumulates P(X <= j).
+    let (mut term, mut tail, mut d) = (1.0f64, 0.0f64, 0usize);
+    for j in 0..n / 2 {
+        tail += term / total;
+        if tail > 0.025 {
+            break;
+        }
+        d = j + 1;
+        term = term * (n - j) as f64 / (j + 1) as f64;
+    }
+    let k = d.saturating_sub(1);
+    (v[k], v[n - 1 - k])
 }
 
 fn main() {

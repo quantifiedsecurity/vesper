@@ -1,0 +1,1015 @@
+// Module der of @vesper/grammar (see lib.ves): src/der.rs.
+//
+// Error kinds are der::ErrorKind indices: InvalidLimits 0, InputLimit 1,
+// ValueLimit 2, NodeLimit 3, SchemaLimit 4, DepthLimit 5, WorkLimit 6,
+// MetadataLimit 7, OutputLimit 8, IntermediateLimit 9, Overflow 11,
+// UnexpectedEof 12, TrailingBytes 13, IndefiniteLength 14,
+// NonCanonicalTag 15, NonCanonicalLength 16, Constructed 17, Boolean 18,
+// Integer 19, BitString 20, ObjectIdentifier 21, Utf8String 22,
+// Ia5String 23, PrintableString 24, Null 25, SetOrder 26,
+// SchemaMismatch 27, SetSchemaRequired 28, EndOfContents 29,
+// OutputTooSmall 30, UnsupportedTag 31 (a = class, b = number).
+//
+// Limits (`lim`): max_input_bytes, max_value_bytes, max_nodes,
+// max_schema_nodes, max_depth, max_work, max_metadata_bytes,
+// max_output_bytes, max_intermediate_bytes, then the Rust sizes of the
+// private `Record` and of the encoder's per-node metadata.
+//
+// Kinds are der::Kind indices: Boolean 0, Integer 1, BitString 2,
+// OctetString 3, Null 4, ObjectIdentifier 5, Utf8String 6, Ia5String 7,
+// PrintableString 8, Sequence 9, SetOf 10.
+//
+// Schemas and values arrive as graphs (src/port.rs), shared nodes once:
+// word 0 is the node count, word 1 + i the offset of node i's record, and
+// node 0 is the root. Schema records: Any 0, Boolean 1, Integer 2,
+// BitString 3, OctetString 4, Null 5, ObjectIdentifier 6, Utf8String 7,
+// Ia5String 8, PrintableString 9 (no operands), Sequence 10 (count, field
+// ids), SequenceOf 11 (child id), SetOf 12 (child id). Value records: the
+// Kind index, then Boolean (b), BitString (unused bits, arena start,
+// length), Sequence and SetOf (count, child ids), other primitives (arena
+// start, length).
+//
+// Documents cross as six words per node: kind, start, content, end, next
+// (the index after the node's subtree) and depth.
+use self::{
+    GErr,
+    P2
+};
+use self::common::{
+    add_or,
+    fail,
+    fail2,
+    max,
+    mul_or,
+    none,
+    pair,
+    sb,
+    shl,
+    sw
+};
+use self::utf8::{
+    valid_up_to
+};
+
+pub copy struct Meter {
+    work: u64,
+    nodes: u64,
+    max_work: u64,
+    max_depth: u64,
+    max_nodes: u64,
+    max_value: u64,
+    max_schema: u64
+}
+
+fn bound(n: u64, max: u64, kind: u64) -> Unit eff [Fail[GErr]] {
+    if n > max {
+        fail(kind, 0);
+    }
+}
+
+fn add(a: u64, b: u64) -> u64 eff [Fail[GErr]] {
+    add_or(a, b, 11, 0)
+}
+
+fn validate_limits(in lim: Slice[u64]) -> Unit eff [Fail[GErr]] {
+    if sw(in lim, 0)
+        > 16777216
+        || sw(in lim, 1)
+        > 16777216
+        || sw(in lim, 7)
+        > 16777216
+        || sw(in lim, 2)
+        > 16384
+        || sw(in lim, 3)
+        > 4096
+        || sw(in lim, 4)
+        > 64
+        || sw(in lim, 5)
+        > 134217728
+        || sw(in lim, 6)
+        > 4194304
+        || sw(in lim, 8)
+        > 67108864 {
+        fail(0, 0);
+    }
+}
+
+fn new_meter(in lim: Slice[u64]) -> Meter {
+    Meter {
+        work: 0,
+        nodes: 0,
+        max_work: sw(in lim, 5),
+        max_depth: sw(in lim, 4),
+        max_nodes: sw(in lim, 2),
+        max_value: sw(in lim, 1),
+        max_schema: sw(in lim, 3)
+    }
+}
+
+fn charge(inout m: Meter, n: u64) -> Unit eff [Fail[GErr]] {
+    m.work = add(m.work, n);
+    bound(m.work, m.max_work, 6);
+}
+
+fn node(inout m: Meter, depth: u64) -> Unit eff [Fail[GErr]] {
+    charge(inout m, 1);
+    bound(depth, m.max_depth, 5);
+    m.nodes = add(m.nodes, 1);
+    bound(m.nodes, m.max_nodes, 3);
+}
+
+fn rec(in g: Slice[u64], id: u64) -> u64 {
+    sw(in g, wrapping_add(id, 1))
+}
+
+// The schema tag of node `id`; `none()` is Any.
+fn stag(in sch: Slice[u64], id: u64) -> u64 {
+    if id == none() {
+        0
+    } else {
+        sw(in sch, rec(in sch, id))
+    }
+}
+
+fn schema_check(in sch: Slice[u64], inout m: Meter) -> Unit eff [Fail[GErr]] {
+    let mut count: u64 = 0;
+    schema_visit(in sch, inout m, inout count, 0, 1);
+}
+
+fn schema_visit(in sch: Slice[u64], inout m: Meter, inout count: u64, id: u64, depth: u64)
+    -> Unit eff [Fail[GErr]] {
+    charge(inout m, 1);
+    bound(depth, m.max_depth, 5);
+    count = add(count, 1);
+    bound(count, m.max_schema, 4);
+    let off = rec(in sch, id);
+    let tag = sw(in sch, off);
+    let next = wrapping_add(depth, 1);
+    if tag == 10 {
+        let n = sw(in sch, wrapping_add(off, 1));
+        bound(n, m.max_schema, 4);
+        for i in 0..n {
+            schema_visit(
+                in sch,
+                inout m,
+                inout count,
+                sw(in sch, wrapping_add(wrapping_add(off, 2), i)),
+                next
+            );
+        }
+    } else if tag == 11 || tag == 12 {
+        schema_visit(in sch, inout m, inout count, sw(in sch, wrapping_add(off, 1)), next);
+    }
+}
+
+// matches_schema(kind, schema).
+fn matches(kind: u64, stag: u64) -> bool {
+    if stag == 0 {
+        return kind != 10;
+    }
+    if kind <= 8 {
+        return stag == wrapping_add(kind, 1);
+    }
+    if kind == 9 {
+        return stag == 10 || stag == 11;
+    }
+    stag == 12
+}
+
+// The child schema of field `field` under schema `sid` (none() is Any).
+fn child_schema(in sch: Slice[u64], sid: u64, field: u64, at: u64) -> u64 eff [Fail[GErr]] {
+    let t = stag(in sch, sid);
+    if t == 10 {
+        let off = rec(in sch, sid);
+        if field >= sw(in sch, wrapping_add(off, 1)) {
+            fail(27, at);
+        }
+        sw(in sch, wrapping_add(wrapping_add(off, 2), field))
+    } else if t == 11 || t == 12 {
+        sw(in sch, wrapping_add(rec(in sch, sid), 1))
+    } else {
+        none()
+    }
+}
+
+fn byte(in input: Slice[u8], inout pos: u64, end: u64, inout m: Meter) -> u64 eff [Fail[GErr]] {
+    charge(inout m, 1);
+    if pos >= end {
+        fail(12, pos);
+    }
+    let b = sb(in input, pos);
+    pos = wrapping_add(pos, 1);
+    b
+}
+
+// `n * 128 + low` or `n * 256 + low`, raising Overflow at `at`.
+fn shift_add(n: u64, scale: u64, low: u64, at: u64) -> u64 eff [Fail[GErr]] {
+    let (lo, hi) = mul_wide(n, scale);
+    if hi != 0 {
+        fail(11, at);
+    }
+    add_or(lo, low, 11, at)
+}
+
+// header: (kind, content start); the end is `hdr_end`.
+pub copy struct Hdr {
+    kind: u64,
+    content: u64,
+    finish: u64
+}
+
+fn header(in input: Slice[u8], start: u64, end: u64, inout m: Meter) -> Hdr eff [Fail[GErr]] {
+    let mut pos = start;
+    let first = byte(in input, inout pos, end, inout m);
+    let class = first >> 6;
+    let constructed = first & 32 != 0;
+    let mut number = first & 31;
+    if number == 31 {
+        number = 0;
+        let mut count: u64 = 0;
+        loop {
+            let b = byte(in input, inout pos, end, inout m);
+            let at = wrapping_sub(pos, 1);
+            if count == 0 && b & 127 == 0 {
+                fail(15, at);
+            }
+            number = shift_add(number, 128, b & 127, at);
+            count = wrapping_add(count, 1);
+            if b & 128 == 0 {
+                break;
+            }
+            if count >= 10 {
+                fail(11, at);
+            }
+        }
+        if number < 31 {
+            fail(15, start);
+        }
+    }
+    let length = byte(in input, inout pos, end, inout m);
+    let mut len = length;
+    if length >= 128 {
+        let count = length & 127;
+        if count == 0 {
+            fail(14, wrapping_sub(pos, 1));
+        }
+        if count > 8 {
+            fail(11, wrapping_sub(pos, 1));
+        }
+        len = 0;
+        for i in 0..count {
+            let b = byte(in input, inout pos, end, inout m);
+            let at = wrapping_sub(pos, 1);
+            if i == 0 && b == 0 {
+                fail(16, at);
+            }
+            len = shift_add(len, 256, b, at);
+        }
+        if len < 128 {
+            fail(16, start);
+        }
+    }
+    bound(len, m.max_value, 2);
+    let finish = add(pos, len);
+    if finish > end {
+        fail(12, end);
+    }
+    if class != 0 {
+        fail2(31, start, class, number);
+    }
+    if number == 0 {
+        fail(29, start);
+    }
+    let kind: u64 = if number == 1 {
+        0
+    } else if number == 2 {
+        1
+    } else if number == 3 {
+        2
+    } else if number == 4 {
+        3
+    } else if number == 5 {
+        4
+    } else if number == 6 {
+        5
+    } else if number == 12 {
+        6
+    } else if number == 19 {
+        8
+    } else if number == 22 {
+        7
+    } else if number == 16 {
+        9
+    } else if number == 17 {
+        10
+    } else {
+        fail2(31, start, class, number)
+    };
+    if constructed != (kind == 9 || kind == 10) {
+        fail(17, start);
+    }
+    Hdr {
+        kind: kind,
+        content: pos,
+        finish: finish
+    }
+}
+
+fn printable(b: u64) -> bool {
+    (b >= 48 && b <= 57)
+        || (b >= 65 && b <= 90)
+        || (b >= 97 && b <= 122)
+        || b
+        == 32
+        || b
+        == 39
+        || b
+        == 40
+        || b
+        == 41
+        || b
+        == 43
+        || b
+        == 44
+        || b
+        == 45
+        || b
+        == 46
+        || b
+        == 47
+        || b
+        == 58
+        || b
+        == 61
+        || b
+        == 63
+}
+
+// primitive: checks `s[start..end]` as content of `kind`; errors at `offset`.
+fn primitive(kind: u64, in s: Slice[u8], start: u64, end: u64, offset: u64, inout m: Meter)
+    -> Unit eff [Fail[GErr]] {
+    let len = wrapping_sub(end, start);
+    charge(inout m, len);
+    bound(len, m.max_value, 2);
+    let c0 = sb(in s, start);
+    let c1 = sb(in s, wrapping_add(start, 1));
+    let mut invalid = false;
+    if kind == 0 {
+        invalid = len != 1 || !(c0 == 0 || c0 == 255);
+    } else if kind == 1 {
+        invalid = len
+            == 0
+            || (len > 1 && ((c0 == 0 && c1 & 128 == 0) || (c0 == 255 && c1 & 128 != 0)));
+    } else if kind == 2 {
+        if len == 0 || c0 > 7 || (len == 1 && c0 != 0) {
+            invalid = true;
+        } else if len > 1 {
+            let last = sb(in s, wrapping_sub(end, 1));
+            invalid = last & wrapping_sub(shl(1, c0), 1) != 0;
+        }
+    } else if kind == 4 {
+        invalid = len != 0;
+    } else if kind == 6 {
+        invalid = valid_up_to(in s, start, end) != end;
+    } else if kind == 7 {
+        for i in start..end {
+            if sb(in s, i) >= 128 {
+                invalid = true;
+            }
+        }
+    } else if kind == 8 {
+        for i in start..end {
+            if !printable(sb(in s, i)) {
+                invalid = true;
+            }
+        }
+    } else if kind == 5 {
+        if len == 0 {
+            invalid = true;
+        } else {
+            let mut value: u64 = 0;
+            let mut first = true;
+            for i in start..end {
+                let b = sb(in s, i);
+                let at = wrapping_add(offset, wrapping_sub(i, start));
+                if first && b == 128 {
+                    fail(21, at);
+                }
+                value = shift_add(value, 128, b & 127, at);
+                if b & 128 == 0 {
+                    value = 0;
+                    first = true;
+                } else {
+                    first = false;
+                }
+            }
+            invalid = !first;
+        }
+    } else if kind == 9 || kind == 10 {
+        fail(27, offset);
+    }
+    if invalid {
+        let k: u64 = if kind == 0 {
+            18
+        } else if kind == 1 {
+            19
+        } else if kind == 2 {
+            20
+        } else if kind == 5 {
+            21
+        } else if kind == 6 {
+            22
+        } else if kind == 7 {
+            23
+        } else if kind == 8 {
+            24
+        } else if kind == 4 {
+            25
+        } else {
+            27
+        };
+        fail(k, offset);
+    }
+}
+
+// Lexicographic order of two byte ranges of one buffer (Rust slice order).
+fn less(in s: Slice[u8], a: u64, alen: u64, b: u64, blen: u64) -> bool {
+    let n = if alen < blen {
+        alen
+    } else {
+        blen
+    };
+    for i in 0..n {
+        let x = sb(in s, wrapping_add(a, i));
+        let y = sb(in s, wrapping_add(b, i));
+        if x != y {
+            return x < y;
+        }
+    }
+    alen < blen
+}
+
+fn parse_node(
+    in input: Slice[u8],
+    start: u64,
+    end: u64,
+    in sch: Slice[u64],
+    sid: u64,
+    depth: u64,
+    inout m: Meter,
+    inout out: ChunkSeq[u64]
+) -> u64 eff [Fail[GErr]] {
+    node(inout m, depth);
+    let h = header(in input, start, end, inout m);
+    let t = stag(in sch, sid);
+    if h.kind == 10 && t != 12 {
+        fail(28, start);
+    }
+    if !matches(h.kind, t) {
+        fail(27, start);
+    }
+    let index = out.len() / 6;
+    out.push(h.kind);
+    out.push(start);
+    out.push(h.content);
+    out.push(h.finish);
+    out.push(0);
+    out.push(depth);
+    if h.kind == 9 || h.kind == 10 {
+        let mut pos = h.content;
+        let mut field: u64 = 0;
+        let mut prev_start = none();
+        let mut prev_end: u64 = 0;
+        loop {
+            if pos >= h.finish {
+                break;
+            }
+            let cs = child_schema(in sch, sid, field, pos);
+            let next = parse_node(
+                in input,
+                pos,
+                h.finish,
+                in sch,
+                cs,
+                wrapping_add(depth, 1),
+                inout m,
+                inout out
+            );
+            if h.kind == 10 {
+                if prev_start != none() {
+                    let units = add(wrapping_sub(prev_end, prev_start), wrapping_sub(next, pos));
+                    charge(inout m, units);
+                    if less(
+                        in input,
+                        pos,
+                        wrapping_sub(next, pos),
+                        prev_start,
+                        wrapping_sub(prev_end, prev_start)
+                    ) {
+                        fail(26, pos);
+                    }
+                }
+                prev_start = pos;
+                prev_end = next;
+            }
+            pos = next;
+            field = wrapping_add(field, 1);
+        }
+        if t == 10 && field != sw(in sch, wrapping_add(rec(in sch, sid), 1)) {
+            fail(27, pos);
+        }
+    } else {
+        primitive(h.kind, in input, h.content, h.finish, h.content, inout m);
+    }
+    let after = out.len() / 6;
+    out.try_set(wrapping_add(wrapping_mul(index, 6), 4), after);
+    h.finish
+}
+
+// parse_prefix: the document records, then the consumed length.
+pub fn parse_prefix(in input: Slice[u8], in sch: Slice[u64], in lim: Slice[u64])
+    -> ChunkSeq[u64] eff [Fail[GErr]] {
+    validate_limits(in lim);
+    bound(input.len(), sw(in lim, 0), 1);
+    let mut m = new_meter(in lim);
+    schema_check(in sch, inout m);
+    let before = m.work;
+    let mut out = ChunkSeq::new[u64]();
+    let consumed = parse_node(in input, 0, input.len(), in sch, 0, 1, inout m, inout out);
+    // Both deterministic passes of the Rust parser are admitted before it
+    // allocates the records.
+    let parse_work = wrapping_sub(m.work, before);
+    bound(add(m.work, parse_work), m.max_work, 6);
+    bound(mul_or(m.nodes, sw(in lim, 9), 11, 0), sw(in lim, 6), 7);
+    out.push(consumed);
+    out
+}
+
+// Node(...).as_i64 on integer content bytes.
+pub fn as_i64(in bytes: Slice[u8]) -> u64 eff [Fail[GErr]] {
+    let n = bytes.len();
+    if n > 8 {
+        fail(11, 0);
+    }
+    let mut value: u64 = if sb(in bytes, 0) & 128 != 0 {
+        18446744073709551615
+    } else {
+        0
+    };
+    for i in 0..n {
+        value = shl(value, 8) | sb(in bytes, i);
+    }
+    value
+}
+
+// Encoding.
+
+fn vtag(in vals: Slice[u64], id: u64) -> u64 {
+    sw(in vals, rec(in vals, id))
+}
+
+fn vw(in vals: Slice[u64], id: u64, k: u64) -> u64 {
+    sw(in vals, wrapping_add(rec(in vals, id), k))
+}
+
+fn length_octets(len: u64) -> u64 {
+    if len < 128 {
+        return 1;
+    }
+    let mut n: u64 = 1;
+    let mut v = len;
+    loop {
+        if v == 0 {
+            break;
+        }
+        n = wrapping_add(n, 1);
+        v = v >> 8;
+    }
+    n
+}
+
+fn tlv_size(len: u64) -> u64 eff [Fail[GErr]] {
+    add(add(1, length_octets(len)), len)
+}
+
+// The measured state: meter plus the running intermediate sum.
+fn measure(
+    in vals: Slice[u64],
+    in arena: Slice[u8],
+    in sch: Slice[u64],
+    vid: u64,
+    sid: u64,
+    depth: u64,
+    inout m: Meter,
+    inout sum: u64,
+    max_intermediate: u64
+) -> u64 eff [Fail[GErr]] {
+    node(inout m, depth);
+    let kind = vtag(in vals, vid);
+    let t = stag(in sch, sid);
+    if kind == 10 && t != 12 {
+        fail(28, 0);
+    }
+    if !matches(kind, t) {
+        fail(27, 0);
+    }
+    let mut content: u64 = 0;
+    if kind == 0 {
+        charge(inout m, 1);
+        content = 1;
+    } else if kind == 4 {
+        content = 0;
+    } else if kind == 2 {
+        let unused = vw(in vals, vid, 1);
+        let start = vw(in vals, vid, 2);
+        let len = vw(in vals, vid, 3);
+        charge(inout m, len);
+        let last = sb(in arena, wrapping_add(start, wrapping_sub(len, 1)));
+        if unused
+            > 7
+            || (len == 0 && unused != 0)
+            || (len != 0 && last & wrapping_sub(shl(1, unused), 1) != 0) {
+            fail(20, 0);
+        }
+        content = add(1, len);
+    } else if kind == 9 || kind == 10 {
+        let n = vw(in vals, vid, 1);
+        bound(n, m.max_nodes, 3);
+        if t == 10 && sw(in sch, wrapping_add(rec(in sch, sid), 1)) != n {
+            fail(27, 0);
+        }
+        let mut size: u64 = 0;
+        for i in 0..n {
+            let cs = child_schema(in sch, sid, i, 0);
+            let child = vw(in vals, vid, wrapping_add(2, i));
+            size = add(
+                size,
+                measure(
+                    in vals,
+                    in arena,
+                    in sch,
+                    child,
+                    cs,
+                    wrapping_add(depth, 1),
+                    inout m,
+                    inout sum,
+                    max_intermediate
+                )
+            );
+        }
+        if kind == 10 {
+            let units = mul_or(n, add(size, n), 11, 0);
+            charge(inout m, units);
+        }
+        content = size;
+    } else {
+        let start = vw(in vals, vid, 1);
+        let len = vw(in vals, vid, 2);
+        primitive(kind, in arena, start, wrapping_add(start, len), 0, inout m);
+        content = len;
+    }
+    bound(content, m.max_value, 2);
+    let size = tlv_size(content);
+    sum = add(sum, size);
+    bound(sum, max_intermediate, 9);
+    size
+}
+
+// encoding_plan: (encoded bytes, nodes, metadata bytes, intermediate bytes).
+pub copy struct Plan {
+    encoded: u64,
+    nodes: u64,
+    metadata: u64,
+    intermediate: u64
+}
+
+pub fn encoding_plan(
+    in vals: Slice[u64],
+    in arena: Slice[u8],
+    in sch: Slice[u64],
+    in lim: Slice[u64]
+) -> Plan eff [Fail[GErr]] {
+    validate_limits(in lim);
+    let mut m = new_meter(in lim);
+    schema_check(in sch, inout m);
+    let mut intermediate: u64 = 0;
+    let size = measure(
+        in vals,
+        in arena,
+        in sch,
+        0,
+        0,
+        1,
+        inout m,
+        inout intermediate,
+        sw(in lim, 8)
+    );
+    bound(size, sw(in lim, 0), 1);
+    bound(size, sw(in lim, 7), 8);
+    let metadata = mul_or(m.nodes, sw(in lim, 10), 11, 0);
+    bound(metadata, sw(in lim, 6), 7);
+    charge(inout m, intermediate);
+    charge(inout m, size);
+    Plan {
+        encoded: size,
+        nodes: m.nodes,
+        metadata: metadata,
+        intermediate: intermediate
+    }
+}
+
+fn kind_tag(kind: u64) -> u64 {
+    if kind <= 5 {
+        wrapping_add(kind, 1)
+    } else if kind == 6 {
+        12
+    } else if kind == 7 {
+        22
+    } else if kind == 8 {
+        19
+    } else if kind == 9 {
+        48
+    } else {
+        49
+    }
+}
+
+// Writes the header of `kind` with `len` content bytes at `at`; returns
+// the content offset.
+fn put_header(inout out: Slice[u8], at: u64, kind: u64, len: u64) -> u64 {
+    out.try_set(at, wrapping_u8(kind_tag(kind)));
+    if len < 128 {
+        out.try_set(wrapping_add(at, 1), wrapping_u8(len));
+        return wrapping_add(at, 2);
+    }
+    let count = wrapping_sub(length_octets(len), 1);
+    out.try_set(wrapping_add(at, 1), wrapping_u8(128 | count));
+    for i in 0..count {
+        let shift = wrapping_mul(wrapping_sub(wrapping_sub(count, 1), i), 8);
+        out.try_set(wrapping_add(wrapping_add(at, 2), i), wrapping_u8(shr8(len, shift)));
+    }
+    wrapping_add(wrapping_add(at, 2), count)
+}
+
+fn shr8(x: u64, s: u64) -> u64 {
+    if s >= 64 {
+        0
+    } else {
+        handle Fail[ArithOverflow] in {
+            x >> s
+        } with {
+            return v => v,
+            raise(e, k) => 0
+        }
+    }
+}
+
+// The encoded size of value `vid` (sizes only; validated by `measure`).
+fn value_size(in vals: Slice[u64], vid: u64) -> u64 {
+    let kind = vtag(in vals, vid);
+    let content = if kind == 0 {
+        1
+    } else if kind == 4 {
+        0
+    } else if kind == 2 {
+        wrapping_add(vw(in vals, vid, 3), 1)
+    } else if kind == 9 || kind == 10 {
+        let n = vw(in vals, vid, 1);
+        let mut size: u64 = 0;
+        for i in 0..n {
+            size = wrapping_add(size, value_size(in vals, vw(in vals, vid, wrapping_add(2, i))));
+        }
+        size
+    } else {
+        vw(in vals, vid, 2)
+    };
+    wrapping_add(wrapping_add(1, length_octets(content)), content)
+}
+
+// Sorts the `n` encodings in `out[start..]` whose (start, length) pairs
+// are in `ranges`, by stable insertion (der.rs `build`), through `tmp`.
+fn sort_children(
+    inout out: Slice[u8],
+    inout ranges: ChunkSeq[u64],
+    inout tmp: ChunkSeq[u8],
+    start: u64,
+    end: u64
+) {
+    let n = ranges.len() / 2;
+    let one: u64 = 1;
+    for i in one..n {
+        let mut j = i;
+        loop {
+            if j == 0 {
+                break;
+            }
+            let a = rg(in ranges, wrapping_mul(j, 2));
+            let al = rg(in ranges, wrapping_add(wrapping_mul(j, 2), 1));
+            let b = rg(in ranges, wrapping_mul(wrapping_sub(j, 1), 2));
+            let bl = rg(in ranges, wrapping_add(wrapping_mul(wrapping_sub(j, 1), 2), 1));
+            if !less(in out, a, al, b, bl) {
+                break;
+            }
+            ranges.try_set(wrapping_mul(j, 2), b);
+            ranges.try_set(wrapping_add(wrapping_mul(j, 2), 1), bl);
+            ranges.try_set(wrapping_mul(wrapping_sub(j, 1), 2), a);
+            ranges.try_set(wrapping_add(wrapping_mul(wrapping_sub(j, 1), 2), 1), al);
+            j = wrapping_sub(j, 1);
+        }
+    }
+    tmp.clear();
+    for i in 0..n {
+        let a = rg(in ranges, wrapping_mul(i, 2));
+        let al = rg(in ranges, wrapping_add(wrapping_mul(i, 2), 1));
+        tmp.extend(in out[a..wrapping_add(a, al)]);
+    }
+    let mut at = start;
+    for i in 0..tmp.len() {
+        match tmp.try_get(i) {
+            Option::Some(b) => {
+                out.try_set(at, b);
+            },
+            Option::None => {},
+        }
+        at = wrapping_add(at, 1);
+    }
+}
+
+fn rg(in ranges: ChunkSeq[u64], i: u64) -> u64 {
+    match ranges.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+// Writes the encoding of value `vid` at `at`; returns its end.
+fn build(
+    in vals: Slice[u64],
+    in arena: Slice[u8],
+    inout out: Slice[u8],
+    inout tmp: ChunkSeq[u8],
+    vid: u64,
+    at: u64
+) -> u64 {
+    let kind = vtag(in vals, vid);
+    let size = value_size(in vals, vid);
+    if kind == 9 || kind == 10 {
+        let n = vw(in vals, vid, 1);
+        let mut content: u64 = 0;
+        for i in 0..n {
+            content = wrapping_add(
+                content,
+                value_size(in vals, vw(in vals, vid, wrapping_add(2, i)))
+            );
+        }
+        let start = put_header(inout out, at, kind, content);
+        let mut pos = start;
+        let mut ranges = ChunkSeq::new[u64]();
+        for i in 0..n {
+            let next = build(
+                in vals,
+                in arena,
+                inout out,
+                inout tmp,
+                vw(in vals, vid, wrapping_add(2, i)),
+                pos
+            );
+            ranges.push(pos);
+            ranges.push(wrapping_sub(next, pos));
+            pos = next;
+        }
+        if kind == 10 && n > 1 {
+            sort_children(inout out, inout ranges, inout tmp, start, pos);
+        }
+        return pos;
+    }
+    if kind == 0 {
+        let start = put_header(inout out, at, 0, 1);
+        out
+            .try_set(
+            start,
+            if vw(in vals, vid, 1) != 0 {
+                255
+            } else {
+                0
+            }
+        );
+        return wrapping_add(start, 1);
+    }
+    if kind == 4 {
+        return put_header(inout out, at, 4, 0);
+    }
+    if kind == 2 {
+        let len = vw(in vals, vid, 3);
+        let start = put_header(inout out, at, 2, wrapping_add(len, 1));
+        out.try_set(start, wrapping_u8(vw(in vals, vid, 1)));
+        let s = vw(in vals, vid, 2);
+        out.try_copy_from(wrapping_add(start, 1), in arena[s..wrapping_add(s, len)]);
+        return wrapping_add(wrapping_add(start, 1), len);
+    }
+    let s = vw(in vals, vid, 1);
+    let len = vw(in vals, vid, 2);
+    let start = put_header(inout out, at, kind, len);
+    out.try_copy_from(start, in arena[s..wrapping_add(s, len)]);
+    wrapping_add(at, size)
+}
+
+pub fn encode_into(
+    in vals: Slice[u64],
+    in arena: Slice[u8],
+    in sch: Slice[u64],
+    in lim: Slice[u64],
+    inout output: Slice[u8]
+) -> u64 eff [Fail[GErr]] {
+    let plan = encoding_plan(in vals, in arena, in sch, in lim);
+    if output.len() < plan.encoded {
+        fail(30, 0);
+    }
+    let mut tmp = ChunkSeq::new[u8]();
+    build(in vals, in arena, inout output, inout tmp, 0, 0)
+}
+
+// reencode_into over a document's records (six words each) and input.
+fn rw(in recs: Slice[u64], i: u64, k: u64) -> u64 {
+    sw(in recs, wrapping_add(wrapping_mul(i, 6), k))
+}
+
+fn node_size(in recs: Slice[u64], i: u64) -> u64 {
+    let kind = rw(in recs, i, 0);
+    let content = if kind == 9 || kind == 10 {
+        let mut size: u64 = 0;
+        let mut c = wrapping_add(i, 1);
+        let end = rw(in recs, i, 4);
+        loop {
+            if c >= end {
+                break;
+            }
+            size = wrapping_add(size, node_size(in recs, c));
+            c = rw(in recs, c, 4);
+        }
+        size
+    } else {
+        wrapping_sub(rw(in recs, i, 3), rw(in recs, i, 2))
+    };
+    wrapping_add(wrapping_add(1, length_octets(content)), content)
+}
+
+fn build_node(in recs: Slice[u64], in input: Slice[u8], inout out: Slice[u8], i: u64, at: u64)
+    -> u64 {
+    let kind = rw(in recs, i, 0);
+    if kind == 9 || kind == 10 {
+        let mut len: u64 = 0;
+        let mut c = wrapping_add(i, 1);
+        let end = rw(in recs, i, 4);
+        loop {
+            if c >= end {
+                break;
+            }
+            len = wrapping_add(len, node_size(in recs, c));
+            c = rw(in recs, c, 4);
+        }
+        let mut pos = put_header(inout out, at, kind, len);
+        c = wrapping_add(i, 1);
+        loop {
+            if c >= end {
+                break;
+            }
+            pos = build_node(in recs, in input, inout out, c, pos);
+            c = rw(in recs, c, 4);
+        }
+        return pos;
+    }
+    let s = rw(in recs, i, 2);
+    let e = rw(in recs, i, 3);
+    let start = put_header(inout out, at, kind, wrapping_sub(e, s));
+    out.try_copy_from(start, in input[s..e]);
+    wrapping_add(start, wrapping_sub(e, s))
+}
+
+pub fn reencode_into(
+    in recs: Slice[u64],
+    in input: Slice[u8],
+    in lim: Slice[u64],
+    inout output: Slice[u8]
+) -> u64 eff [Fail[GErr]] {
+    validate_limits(in lim);
+    let n = input.len();
+    bound(n, sw(in lim, 0), 1);
+    bound(n, sw(in lim, 7), 8);
+    let count = recs.len() / 6;
+    bound(count, sw(in lim, 2), 3);
+    let per = max(sw(in lim, 10), sw(in lim, 9));
+    bound(mul_or(count, per, 11, 0), sw(in lim, 6), 7);
+    let mut intermediate: u64 = 0;
+    for i in 0..count {
+        bound(rw(in recs, i, 5), sw(in lim, 4), 5);
+        bound(wrapping_sub(rw(in recs, i, 3), rw(in recs, i, 2)), sw(in lim, 1), 2);
+        intermediate = add(intermediate, wrapping_sub(rw(in recs, i, 3), rw(in recs, i, 1)));
+        bound(intermediate, sw(in lim, 8), 9);
+    }
+    bound(add(add(n, intermediate), count), sw(in lim, 5), 6);
+    if output.len() < n {
+        fail(30, 0);
+    }
+    build_node(in recs, in input, inout output, 0, 0)
+}

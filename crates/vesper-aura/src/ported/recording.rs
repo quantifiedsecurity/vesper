@@ -1,15 +1,16 @@
 //! `RecordingBackend` over the Vesper recorder (`recorder_*` in
 //! the Loom package in vesper/). The recorder stages, checks and publishes every
 //! transaction; this wrapper keeps the thread token and a copied
-//! [`RecordingSnapshot`] of the published state, refreshed after each
-//! change, so the accessors can lend references as before.
+//! [`RecordingSnapshot`] of the published state, built on first use after
+//! each change, so the accessors can lend references as before and a
+//! commit that nobody inspects does not rebuild it.
 
 use super::{binding, codec};
 use crate::{
     Backend, BackendError, HandlerKey, Limits, RecordingSnapshot, SlotId, SubscriptionId,
     Transaction, UiThread, Value, WidgetId, WidgetSnapshot,
 };
-use std::{marker::PhantomData, rc::Rc, thread::ThreadId};
+use std::{cell::OnceCell, marker::PhantomData, rc::Rc, thread::ThreadId};
 
 /// Executing retained-state adapter with atomic staging and bounded last-batch
 /// recording. It does not invoke an OS toolkit, closures or foreign functions.
@@ -23,7 +24,9 @@ use std::{marker::PhantomData, rc::Rc, thread::ThreadId};
 pub struct RecordingBackend {
     thread: ThreadId,
     pub(crate) rec: binding::Recorder,
-    snapshot: RecordingSnapshot,
+    /// The published state as the crate's snapshot type; empty after a
+    /// change until an accessor needs it.
+    snapshot: OnceCell<RecordingSnapshot>,
     _local: PhantomData<Rc<()>>,
 }
 impl RecordingBackend {
@@ -39,13 +42,13 @@ impl RecordingBackend {
         Self {
             thread: thread.id(),
             rec: binding::Recorder::new(&codec::limits(&limits)),
-            snapshot: RecordingSnapshot::default(),
+            snapshot: OnceCell::new(),
             _local: PhantomData,
         }
     }
     pub fn snapshot(&self, thread: &UiThread) -> Result<&RecordingSnapshot, BackendError> {
         self.check_thread(thread)?;
-        Ok(&self.snapshot)
+        Ok(self.published())
     }
     pub fn reject_next_at(&mut self, thread: &UiThread, patch: usize) -> Result<(), BackendError> {
         self.check_thread(thread)?;
@@ -77,7 +80,7 @@ impl RecordingBackend {
         if let Some(fault) = self.rec.check_widget(widget.session, widget.serial) {
             return Err(codec::backend_error(fault));
         }
-        self.snapshot
+        self.published()
             .widgets
             .get(&widget)
             .ok_or(BackendError::StaleWidget)
@@ -87,7 +90,7 @@ impl RecordingBackend {
         if let Some(fault) = self.rec.check_slot(slot.session, slot.serial) {
             return Err(codec::backend_error(fault));
         }
-        self.snapshot
+        self.published()
             .slots
             .get(&slot)
             .ok_or(BackendError::StaleSlot)
@@ -110,8 +113,12 @@ impl RecordingBackend {
             .check(self.thread)
             .map_err(|_| BackendError::WrongThread)
     }
+    fn published(&self) -> &RecordingSnapshot {
+        self.snapshot
+            .get_or_init(|| codec::snapshot(self.rec.as_ref().st()))
+    }
     fn refresh(&mut self) {
-        self.snapshot = codec::snapshot(self.rec.as_ref().st());
+        self.snapshot = OnceCell::new();
     }
 }
 impl Backend for RecordingBackend {

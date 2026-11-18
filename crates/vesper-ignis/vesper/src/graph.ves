@@ -573,7 +573,7 @@ pub fn graph_add_pass(inout g: Graph, queue: u64, in descs: Slice[UseDesc]) -> P
             return PassOutcome::ForeignHandle;
         },
     };
-    let mut uses: ChunkSeq[Use] = ChunkSeq::new[Use]();
+    let mut uses: ChunkSeq[Use] = ChunkSeq::with_capacity[Use](descs.len());
     for i in 0..descs.len() {
         match descs.try_get(i) {
             Option::Some(d) => match validate_use(in g, kind, i, d) {
@@ -596,9 +596,7 @@ pub fn graph_add_pass(inout g: Graph, queue: u64, in descs: Slice[UseDesc]) -> P
         return PassOutcome::TooManyPasses;
     }
     let first = g.uses.len();
-    for i in 0..uses.len() {
-        g.uses.push(get_use(in uses, i));
-    }
+    g.uses.extend(in uses.as_slice());
     g
         .passes
         .push(

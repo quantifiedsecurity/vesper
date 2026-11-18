@@ -1,6 +1,12 @@
 //! Executable scalar host subset of design §38. No source macros, general PEG,
 //! SIMD, constant-time parsing or source/extraction proof claims.
-#![forbid(unsafe_code)]
+// The seed build (the compiler's copy) stays safe. The port-backed build
+// links the Vesper port through the generated binding, which calls the C ABI;
+// every other module stays free of unsafe code.
+#![cfg_attr(not(vesper_port), forbid(unsafe_code))]
+#![cfg_attr(vesper_port, deny(unsafe_code))]
+// In the port-backed build the Rust bodies the port replaces are unused.
+#![cfg_attr(vesper_port, allow(dead_code, unused_imports))]
 #![doc = include_str!("../README.md")]
 
 pub mod arrow;
@@ -11,6 +17,21 @@ pub mod framing;
 pub mod grammar;
 pub mod ipc;
 pub mod protobuf;
+
+// Generated and committed, but kept outside src/ so formatters, which
+// check every file under src/, never reflow it (see the porting recipe).
+#[cfg(vesper_port)]
+#[allow(unsafe_code)]
+#[rustfmt::skip]
+#[path = "../port/binding.rs"]
+mod port_binding;
+#[cfg(vesper_port)]
+mod port;
+
+/// Which build this is: `"vesper"` for the port-backed package
+/// `vesper-grammar`, `"rust"` for the seed copy `vesper-grammar-seed` that
+/// the compiler links.
+pub const IMPLEMENTATION: &str = if cfg!(vesper_port) { "vesper" } else { "rust" };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorKind {
