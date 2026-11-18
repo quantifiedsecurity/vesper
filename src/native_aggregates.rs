@@ -546,8 +546,12 @@ fn drop_unsafe_places_once(g: &Graph, homes: &mut BTreeMap<ValueId, Home>) -> bo
             Ok(()) => {}
             // A call that may fault visibly is built in a temporary of its
             // own, before the window, and the rest of the tree stays.
+            // When the call reached its field through block parameters, the
+            // parameters and the other values reaching them share that very
+            // home: all of them lose it, or the join would skip the copy.
             Err(Some(call)) if homes.get(&call).is_some_and(|h| !root(h)) => {
-                homes.remove(&call);
+                let home = homes[&call].clone();
+                homes.retain(|_, h| *h != home);
                 retry = true;
             }
             Err(_) => {
@@ -719,6 +723,11 @@ pub(super) fn plain_data(world: &World, ty: &Type) -> bool {
 pub(super) struct HomePointers {
     placed: BTreeSet<ValueId>,
     slots: BTreeMap<ValueId, ir::StackSlot>,
+    /// Every pointer derived to each slot so far. Pointer metadata
+    /// (`NativeInfo`: closure targets of stored fields) is keyed by SSA
+    /// value, so each new pointer to a slot starts from the merged metadata
+    /// of the earlier ones.
+    derived: BTreeMap<ValueId, Vec<ir::Value>>,
 }
 
 impl HomePointers {
@@ -746,6 +755,27 @@ impl<M: Module> Codegen<'_, '_, M> {
         }
         Ok(ptr)
     }
+    /// A new pointer to the stack slot of parent `id`, carrying the merged
+    /// metadata of every earlier pointer to it.
+    fn slot_pointer(
+        &mut self,
+        id: ValueId,
+        slot: ir::StackSlot,
+        pointers: &mut HomePointers,
+    ) -> ir::Value {
+        let ptr = self
+            .b
+            .ins()
+            .stack_addr(self.m.target_config().pointer_type(), slot, 0);
+        let earlier = pointers.derived.entry(id).or_default();
+        let mut info = NativeInfo::default();
+        for old in earlier.iter() {
+            info.merge(&self.info(*old));
+        }
+        earlier.push(ptr);
+        self.infos.insert(ptr, info);
+        ptr
+    }
     fn resolve_home(
         &mut self,
         id: ValueId,
@@ -753,12 +783,8 @@ impl<M: Module> Codegen<'_, '_, M> {
         pointers: &mut HomePointers,
         sret: Option<ir::Value>,
     ) -> Result<Option<ir::Value>, String> {
-        if let Some(slot) = pointers.slots.get(&id) {
-            let ptr = self
-                .b
-                .ins()
-                .stack_addr(self.m.target_config().pointer_type(), *slot, 0);
-            return Ok(Some(ptr));
+        if let Some(slot) = pointers.slots.get(&id).copied() {
+            return Ok(Some(self.slot_pointer(id, slot, pointers)));
         }
         Ok(Some(match homes.get(&id) {
             None => return Ok(None),
@@ -792,9 +818,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                             3,
                         ));
                         pointers.slots.insert(*parent, slot);
-                        self.b
-                            .ins()
-                            .stack_addr(self.m.target_config().pointer_type(), slot, 0)
+                        self.slot_pointer(*parent, slot, pointers)
                     }
                 };
                 self.offset(base, *offset)

@@ -7,8 +7,8 @@ Claim #1022. Base `72209eb` (origin/main). Prompt:
 `inout q` goes from 25 to 9 instructions, `q.o = Option::Some(v)` from 19 to
 8, an `if` between two variants bound to a local and returned from 37 to 17,
 and an IR-inlined callee with an early `return` from 25 to 15. On the
-committed benchmarks BBR runs 3.4% fewer instructions (2.25x to **2.17x** of
-Rust). Ignis gains 0.3%, and Quarry does not change. No port reaches parity
+committed benchmarks BBR runs 3.8% fewer instructions (2.25x to **2.16x** of
+Rust), Quarry 1.0% fewer (1.60x to 1.58x) and Ignis 0.3% fewer. No port reaches parity
 from this lane, so Rust stays the default build of every port but Aura, and
 no port source changed.
 
@@ -85,6 +85,25 @@ instructions. Values reaching a parameter now get their home only from the
 parameter's own search, all together. `long_else_if_ladders_agree` is the
 shape that miscompiled; it fails on the first version and passes now.
 
+### Two more found in review
+
+Codex's review of the PR found two more, both reproduced and fixed, with a
+test each in `tests/native_block_param_homes.rs`:
+
+- A fallible call in one arm of an `if` that fills a field of a write
+  through `inout q` lost its own home (the fault rule), but the join and the
+  other arm kept theirs, so the join skipped copying the call's result
+  (`a_fallible_arm_takes_its_join_out_of_the_destination`). A call that
+  loses its home now takes every value sharing that home with it.
+- Pointer metadata (`NativeInfo`, the closure targets of stored fields) is
+  keyed by SSA value. Re-deriving the pointer to a parent's stack slot
+  lost the targets recorded by a nested constructor, and calling the field
+  then dispatched to every shape-compatible closure, including an effectful
+  one of an exited handler (`closure_fields_of_slot_parents_keep_their_targets`).
+  Each new pointer to a slot now starts from the merged metadata of the
+  earlier ones. This also narrows some dispatches in the ports: the
+  instruction numbers below are from the fixed compiler.
+
 ## Repros
 
 Built with `vesper build <file> --lib`, then `objdump -d`, counting the
@@ -109,19 +128,19 @@ arm reproduces that report's "before" numbers (49.45 M, 31.09 M, 165.65 M).
 
 | Port | Command | Rust Ir | Vesper Ir, main | Vesper Ir, branch | Change | Ratio, main | Ratio, branch |
 |---|---|---:|---:|---:|---:|---:|---:|
-| BBR | `ack_path_abba measure 20000` | 21.97 M | 49.45 M | 47.75 M | -3.4% | 2.25x | **2.17x** |
-| Quarry | `planner_abba window 20` | 19.47 M | 31.09 M | 31.09 M | -0.0% | 1.60x | 1.60x |
+| BBR | `ack_path_abba measure 20000` | 21.97 M | 49.45 M | 47.55 M | -3.8% | 2.25x | **2.16x** |
+| Quarry | `planner_abba window 20` | 19.47 M | 31.09 M | 30.78 M | -1.0% | 1.60x | 1.58x |
 | Ignis | `abba measure 20` | 116.17 M | 165.65 M | 165.23 M | -0.3% | 1.43x | 1.42x |
 
 Ignis's plan and lowering digests (`abba digest`) are equal in the Rust,
 main and branch builds.
 
-Where BBR's gain is (callgrind, by function): `ack_step` 4.74 M to 3.84 M
-and `vesper_function_56` 7.15 M to 6.41 M, the functions that write
+Where BBR's gain is (callgrind, by function, before the review fixes):
+`ack_step` 4.74 M to 3.84 M and `vesper_function_56` 7.15 M to 6.41 M, the functions that write
 `Option` and state fields of the controller. `vesper_function_126` (15% of
 the run) and `_106` did not change.
 
-Wall clock: each port's committed ABBA driver against its Rust build, run
+Wall clock (before the review fixes): each port's committed ABBA driver against its Rust build, run
 in the order main, branch, main, branch (BBR `abba <rust> <port> 16 200000`,
 Quarry `driver`, Ignis `compare <rust> <port> 15 100`). The 95% interval
 of the median ratio is in parentheses. Quarry's driver prints only the

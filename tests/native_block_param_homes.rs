@@ -353,3 +353,103 @@ fn main() -> u64 {
 "#;
     assert_eq!(differential("ladder", source), 22993);
 }
+
+/// A fallible call in one arm of an `if` that feeds a field of a write
+/// through `inout q`: the call may not be built in `q`, so the join and
+/// the other arm lose that home with it, and the success path still copies
+/// the call's result into the field (review of #1032).
+#[test]
+fn a_fallible_arm_takes_its_join_out_of_the_destination() {
+    let source = r#"
+copy struct Inner {
+    a: u64,
+    b: u64
+}
+
+copy struct Outer {
+    inner: Inner,
+    n: u64
+}
+
+copy struct Q {
+    p: Outer,
+    m: u64
+}
+
+fn make(v: i64, depth: i64) -> Inner eff [Fail[i64]] {
+    if depth > 0 {
+        return make(v, wrapping_sub(depth, 1));
+    }
+    if v < 0 {
+        Fail::raise(v)
+    }
+    Inner { a: 40, b: 50 }
+}
+
+fn set(inout q: Q, c: bool, v: i64) eff [Fail[i64]] {
+    q.p = Outer { inner: if c { make(v, 2) } else { Inner { a: 6, b: 7 } }, n: 9 };
+}
+
+fn digest(q: Q) -> u64 {
+    wrapping_add(wrapping_mul(q.p.inner.a, 100), wrapping_add(wrapping_mul(q.p.inner.b, 10), q.p.n))
+}
+
+fn main() -> u64 {
+    let mut q = Q { p: Outer { inner: Inner { a: 1, b: 2 }, n: 3 }, m: 0 };
+    let a: u64 = handle Fail[i64] in { set(inout q, true, 5); 0 } with { return v => v, raise(e, k) => 77, };
+    let first = digest(q);
+    let b: u64 = handle Fail[i64] in { set(inout q, false, 5); 0 } with { return v => v, raise(e, k) => 77, };
+    let second = digest(q);
+    let c: u64 = handle Fail[i64] in { set(inout q, true, -1); 0 } with { return v => v, raise(e, k) => 77, };
+    let third = digest(q);
+    wrapping_add(wrapping_add(wrapping_add(a, b), c), wrapping_add(wrapping_mul(first, 1000000), wrapping_add(wrapping_mul(second, 1000), third)))
+}
+"#;
+    assert_eq!(differential("fallible_arm", source), 4509679756);
+}
+
+/// A closure stored in a nested struct whose parent has no home: the
+/// parent's stack slot is reached through more than one pointer, and each
+/// carries the closure targets recorded on the earlier ones, so calling the
+/// field resolves to that closure alone and not to an effectful closure of
+/// an exited handler (review of #1032).
+#[test]
+fn closure_fields_of_slot_parents_keep_their_targets() {
+    let source = r#"
+copy struct Inner {
+    f: fn@copy(i64) -> i64,
+    k: i64
+}
+
+copy struct Outer {
+    inner: Inner,
+    n: i64
+}
+
+linear effect Ask {
+    fn ask() -> i64;
+}
+
+fn other() -> i64 {
+    handle Ask in {
+        let g = |v: i64| eff [Ask] wrapping_add(v, Ask::ask());
+        g(1)
+    } with { return x => x, ask(k) => k(40), }
+}
+
+fn run(in o: Outer, x: i64) -> i64 {
+    let i = o.inner;
+    let h = i.f;
+    h(x)
+}
+
+fn main() -> i64 {
+    let base = other();
+    let y: i64 = 5;
+    let o = Outer { inner: Inner { f: |v: i64| wrapping_mul(v, y), k: 2 }, n: 3 };
+    let r = run(in o, 7);
+    wrapping_add(wrapping_add(r, base), wrapping_add(o.inner.k, o.n))
+}
+"#;
+    assert_eq!(differential("closure_field", source), 81);
+}
