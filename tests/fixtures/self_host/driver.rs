@@ -333,6 +333,9 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("crates/vesper-beacon/vesper")
                     || path.ends_with("crates/vesper-prism/vesper")
                     || path.ends_with("crates/vesper-aura/vesper")
+                    // The Grammar port (#906) is one package of modules
+                    // that do not check on their own; joins with #880.
+                    || path.ends_with("crates/vesper-grammar/vesper")
                     // Port P1 lane 10 (#907): parts of one compilation unit,
                     // which do not check on their own; joins with #880.
                     || path.ends_with("crates/vesper-warp-bbr/vesper")

@@ -6,6 +6,8 @@
 pub mod codec;
 
 use crate::framing::{self, Remainder};
+#[cfg(vesper_port)]
+use crate::port;
 use crate::{Error, ErrorKind, Result, add, bound, charge, mul};
 use core::ops::Range;
 
@@ -80,6 +82,7 @@ struct Meta {
     color: u8,
     height: usize,
 }
+#[cfg(not(vesper_port))]
 impl Meta {
     fn contains(self, byte: u8) -> bool {
         self.first[usize::from(byte) / 64] & (1 << (byte % 64)) != 0
@@ -95,12 +98,22 @@ impl Meta {
 pub struct Grammar<'g> {
     rules: &'g [Rule],
     root: usize,
+    #[cfg(not(vesper_port))]
     meta: Vec<Meta>,
+    /// The port's metadata: seven words per rule (vesper/src/grammar.ves).
+    #[cfg(vesper_port)]
+    meta: Vec<u64>,
     limits: Limits,
+    /// The rules flattened for the port (`port::flatten_rules`).
+    #[cfg(vesper_port)]
+    flat: Vec<u64>,
+    #[cfg(vesper_port)]
+    lits: Vec<u8>,
 }
 impl<'g> Grammar<'g> {
     /// Borrows rule owners, and allocates one bounded metadata vector. Invalid
     /// rules never consume or modify the caller's rule definitions.
+    #[cfg(not(vesper_port))]
     pub fn validate(rules: &'g [Rule], root: usize, limits: Limits) -> Result<Self> {
         if limits.max_repetitions > HARD_MAX_REPETITIONS {
             return Err(Error::new(ErrorKind::Rule, 0));
@@ -184,12 +197,49 @@ impl<'g> Grammar<'g> {
             limits,
         })
     }
+    #[cfg(vesper_port)]
+    pub fn validate(rules: &'g [Rule], root: usize, limits: Limits) -> Result<Self> {
+        let (flat, lits) = port::flatten_rules(rules);
+        let lim = port::grammar_limits(limits, size_of::<Meta>());
+        let meta =
+            port::vesper::gr_validate(&flat, &lits, root as u64, &lim).map_err(port::error)?;
+        Ok(Self {
+            rules,
+            root,
+            meta,
+            limits,
+            flat,
+            lits,
+        })
+    }
+    /// The port's view of this grammar: flattened rules, literal bytes,
+    /// metadata and the root.
+    #[cfg(vesper_port)]
+    pub(crate) fn port_parts(&self) -> (&[u64], &[u8], &[u64], u64) {
+        (&self.flat, &self.lits, &self.meta, self.root as u64)
+    }
+    #[cfg(vesper_port)]
+    pub(crate) fn port_limits(&self) -> [u64; 14] {
+        port::grammar_limits(self.limits, size_of::<Meta>())
+    }
+    #[cfg(not(vesper_port))]
     pub fn nullable(&self, rule: usize) -> Option<bool> {
         self.meta.get(rule).map(|m| m.nullable)
     }
+    #[cfg(vesper_port)]
+    pub fn nullable(&self, rule: usize) -> Option<bool> {
+        (rule < self.rules.len()).then(|| self.meta[rule * 7 + 4] != 0)
+    }
+    #[cfg(not(vesper_port))]
     pub fn first_contains(&self, rule: usize, byte: u8) -> Option<bool> {
         self.meta.get(rule).map(|m| m.contains(byte))
     }
+    #[cfg(vesper_port)]
+    pub fn first_contains(&self, rule: usize, byte: u8) -> Option<bool> {
+        (rule < self.rules.len())
+            .then(|| self.meta[rule * 7 + usize::from(byte / 64)] & (1 << (byte % 64)) != 0)
+    }
+    #[cfg(not(vesper_port))]
     pub fn parse_prefix<'a>(&self, input: &'a [u8]) -> Result<Parsed<'a>> {
         bound(
             input.len(),
@@ -220,12 +270,27 @@ impl<'g> Grammar<'g> {
             tail: Remainder::at(input, run.pos),
         })
     }
+    #[cfg(vesper_port)]
+    pub fn parse_prefix<'a>(&self, input: &'a [u8]) -> Result<Parsed<'a>> {
+        let (flat, lits, meta, root) = self.port_parts();
+        let words =
+            port::vesper::gr_parse_prefix(flat, lits, meta, root, &self.port_limits(), input)
+                .map_err(port::error)?;
+        let (pos, captures) = words
+            .split_last()
+            .expect("the port returns the end position");
+        Ok(Parsed {
+            captures: port::captures(captures),
+            tail: Remainder::at(input, *pos as usize),
+        })
+    }
     pub fn parse_exact(&self, input: &[u8]) -> Result<Vec<Capture>> {
         let parsed = self.parse_prefix(input)?;
         parsed.tail.assert_exact_eof().map_err(|e| e.error)?;
         Ok(parsed.captures)
     }
 }
+#[cfg(not(vesper_port))]
 fn build(
     id: usize,
     rules: &[Rule],
@@ -315,6 +380,7 @@ fn build(
 }
 
 // Decode within the caller's current frame and charge every header byte.
+#[cfg(not(vesper_port))]
 fn decode_u24(input: &[u8], work: &mut usize) -> Result<(u64, usize)> {
     let mut value = 0u64;
     for i in 0..3 {
@@ -340,6 +406,7 @@ pub struct Parsed<'a> {
     pub captures: Vec<Capture>,
     pub tail: Remainder<'a>,
 }
+#[cfg(not(vesper_port))]
 struct Run<'g, 'r, 'a> {
     grammar: &'g Grammar<'r>,
     input: &'a [u8],
@@ -349,6 +416,7 @@ struct Run<'g, 'r, 'a> {
     captures: Vec<Capture>,
     capacity: usize,
 }
+#[cfg(not(vesper_port))]
 impl Run<'_, '_, '_> {
     fn rule(&mut self, id: usize, depth: usize) -> Result<()> {
         charge(&mut self.work, 1)?;

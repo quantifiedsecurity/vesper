@@ -125,3 +125,22 @@ sh crates/vesper-ignis/port/check.sh  # port P1 lane 12 (#909): vesper-ignis, bo
 # crates/vesper-quarry/build.rs).
 cargo test --locked -p vesper-quarry --features vesper-port --test sql --test planner_spec --test vector --test vector_join --test port_memory
 for t in "sql outer_join_null_extension_and_filter_placement" "sql outer_join_pushdown_differential_for_many_predicates_and_null_inputs" "sql sql_null_three_valued_logic_exhaustive" "sql ddl_atomic_deterministic_and_stale_revision_or_content_rejected" "planner_spec front_end_transcript_matches_golden" "planner_spec planner_chooses_the_golden_access_paths"; do set -- $t; divergent "Quarry port ($2)" "$2" "$([ "$1" = sql ] && echo real_where_aliases_literals_and_typed_bindings || echo golden_results_equal_filtered_index_lookups)" -p vesper-quarry --features vesper-port-divergent --test "$1"; done
+# Grammar port (port wave P1 lane 9, #906): both builds pass the crate's
+# tests (including the 10^5-input no-panic run), and the divergent build
+# (one edit per ported module, DIVERGENT in crates/vesper-grammar/build.rs)
+# fails a test of each module while an unrelated test still passes.
+cargo test --locked -p vesper-grammar -p vesper-grammar-seed
+while read -r module file failing passing; do
+    divergent "Grammar port ($module)" "$failing" "$passing" \
+        -p vesper-grammar --features vesper-port-divergent --test "$file" </dev/null
+done <<'CHECKS'
+framing framing known_uleb_vectors_exact_prefix_and_transactional_output u24_big_endian_frames_roundtrip_and_preserve_remainder
+arrow arrow checked_nullable_aggregation_matches_i128_prefix_oracle alignment_checks_distinguish_relative_offsets_from_actual_host_addresses
+capnp framing capnp_stream_segments_are_borrowed_and_framing_is_exact u24_boundaries_fail_transactionally
+capnp_packed capnp_packed official_encoding_vectors_and_raw_runs_with_zeroes every_short_output_preserves_the_whole_buffer
+grammar grammar aliased_dag_expansion_cannot_bypass_capture_or_work_budgets ambiguity_duplicate_branch_ids_bad_references_and_recursion_fail
+codec codec independently_constructed_numbers_have_known_canonical_encodings codec_limit_configuration_is_checked_before_all_operations
+protobuf protobuf signed_twos_complement_varints_are_canonical_in_singular_and_packed_fields singular_presence_and_defaults_are_actual_distinct_logical_values
+der der typed_set_of_sorts_complete_encodings_retains_duplicates_and_rejects_untyped_set utf8_string_is_strict_borrowed_and_transactional
+ipc ipc independent_arrow_values_and_versions hostile_schema_and_union_discriminants
+CHECKS

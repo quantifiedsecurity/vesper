@@ -1,3 +1,136 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("//tools/bazel:defs.bzl", "vesper_crate")
+load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_package", "vesper_port_object")
 
-vesper_crate()
+# The port-backed package (seed-copy rule, docs/maintenance/porting-a-crate.md;
+# port wave P1 lane 9, #906): build.rs links the object built here from the
+# Loom package in vesper/ and checks port/binding.rs against the generated
+# binding. The compiler and every other dependent link the Rust seed copy,
+# //crates/vesper-grammar/seed, until the port reaches parity.
+vesper_package(
+    name = "port_package",
+    srcs = glob(["vesper/src/**/*.ves"]),
+    manifest = "vesper/Loom.toml",
+)
+
+vesper_port_object(
+    name = "grammar_vesper",
+    library = "grammar",
+    package = ":port_package",
+    target = VESPER_TARGET,
+)
+
+filegroup(
+    name = "grammar_vesper_binding",
+    srcs = [":grammar_vesper"],
+    output_group = "rust_binding",
+)
+
+vesper_crate(
+    build_script_data = [
+        ":grammar_vesper",
+        ":grammar_vesper_binding",
+    ],
+    build_script_env = {
+        # rules_rust already makes these execpaths absolute.
+        "VESPER_PORT_OBJECT": "$(execpath :grammar_vesper)",
+        "VESPER_PORT_GENERATED_BINDING": "$(execpath :grammar_vesper_binding)",
+    },
+)
+
+# The divergence check: the edits build.rs applies under the
+# `vesper-port-divergent` feature (DIVERGENT there), one object per ported
+# module with that module's edit, each linked into the test file that covers
+# the module.
+DIVERGENT = {
+    "framing": ("framing", {"value = value | shl(byte & 127, wrapping_mul(i, 7));": "value = value | shl(byte & 127, wrapping_mul(i, 6));"}),
+    "arrow": ("arrow", {"if (value >= 0) == (sum >= 0) && (next >= 0) != (sum >= 0) {": "if (value >= 0) == (sum >= 0) && (next >= 0) != (sum >= 0) && sum < 0 {"}),
+    "capnp": ("capnp", {"let pad: u64 = if count & 1 == 0 {": "let pad: u64 = if count & 1 == 1 {"}),
+    "capnp_packed": ("capnp", {"group = wrapping_add(group, additional);": "group = wrapping_add(group, wrapping_add(additional, 1));"}),
+    "grammar": ("grammar", {"max_depth: min(sw(in lim, 4), 64),": "max_depth: min(sw(in lim, 4), 3),"}),
+    "codec": ("codec", {"let len = leb_len(n);": "let len = leb_len(wrapping_add(n, 1));"}),
+    "protobuf": ("protobuf", {"        low | 18446744069414584320": "        low"}),
+    "der": ("der", {"if less(\n": "if !less(\n"}),
+    "ipc": ("ipc", {"if version != 3 && version != 4 {": "if version != 4 {"}),
+}
+
+# The test file of each module's check (see tests/divergence.rs).
+DIVERGENT_TESTS = {
+    "framing": "framing",
+    "arrow": "arrow",
+    "capnp": "framing",
+    "capnp_packed": "capnp_packed",
+    "grammar": "grammar",
+    "codec": "codec",
+    "protobuf": "protobuf",
+    "der": "der",
+    "ipc": "ipc",
+}
+
+[
+    vesper_port_object(
+        name = "grammar_vesper_divergent_%s" % module,
+        edit_src = "vesper/src/%s.ves" % src,
+        edits = edits,
+        library = "grammar",
+        package = ":port_package",
+        target = VESPER_TARGET,
+    )
+    for module, (src, edits) in DIVERGENT.items()
+]
+
+# The port-backed library without its build script: the divergent test
+# binaries link their own object.
+rust_library(
+    name = "port_unlinked",
+    srcs = glob(["src/**/*.rs"]) + ["port/binding.rs"],
+    crate_name = "vesper_grammar",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    rustc_flags = ["--cfg=vesper_port"],
+    deps = ["//crates/vesper-port-abi"],
+)
+
+[
+    rust_test(
+        name = "_port_%s_divergent.bin" % module,
+        srcs = ["tests/%s.rs" % DIVERGENT_TESTS[module]],
+        compile_data = [":grammar_vesper_divergent_%s" % module] + glob(["tests/fixtures/**"]),
+        crate_name = "%s_divergent" % module,
+        edition = "2024",
+        rustc_flags = ["-Clink-arg=$(location :grammar_vesper_divergent_%s)" % module],
+        tags = ["manual"],
+        deps = [":port_unlinked"],
+    )
+    for module in DIVERGENT
+]
+
+rust_test(
+    name = "port_divergence_detected",
+    srcs = ["tests/divergence.rs"],
+    data = [":_port_%s_divergent.bin" % module for module in DIVERGENT],
+    edition = "2024",
+    env = {
+        "VESPER_GRAMMAR_DIVERGENT_%s" % module.upper(): "$(rootpath :_port_%s_divergent.bin)" % module
+        for module in DIVERGENT
+    },
+)
+
+# The seed package (seed/) builds these same Rust sources without the port.
+exports_files(glob([
+    "src/**/*.rs",
+    "tests/**/*.rs",
+    "tests/fixtures/**",
+]))
+
+filegroup(
+    name = "rust_srcs",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/vesper-grammar/seed:__pkg__"],
+)
+
+filegroup(
+    name = "test_fixtures",
+    srcs = glob(["tests/fixtures/**"]),
+    visibility = ["//crates/vesper-grammar/seed:__pkg__"],
+)

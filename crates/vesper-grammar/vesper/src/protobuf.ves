@@ -1,0 +1,889 @@
+// Module protobuf of @vesper/grammar (see lib.ves): src/protobuf.rs.
+//
+// Error kinds are protobuf::ErrorKind indices: Schema 0, FieldNumber 1,
+// RecursiveSchema 2, Order 3, Duplicate 4, UnknownField 5, WireType 6,
+// NonCanonical 7, Truncated 8, Utf8 9, Overflow 10, TypeMismatch 11,
+// InputLimit 12, OutputLimit 13, OutputTooSmall 14, PayloadLimit 15,
+// NodeLimit 16, DepthLimit 17, WorkLimit 18, MetadataLimit 19.
+//
+// Limits (`lim`): max_schema_messages, max_schema_fields,
+// max_fields_per_message, max_depth, max_input_bytes, max_output_bytes,
+// max_payload_bytes, max_nodes, max_metadata_bytes, max_work, then the
+// Rust byte sizes of the private schema `Meta` and of `FieldValue`.
+//
+// Schemas arrive flattened (src/port.rs): word 0 is the message count n,
+// word 1 + i the offset of message i's record, and a record is the field
+// count followed by four words per field: number, kind (Kind index: U32 0
+// .. Bytes 12, Message 13), child message, repeated.
+//
+// Messages cross as a preorder word stream: a message is its field count
+// followed by four words per field: number, Value index (U32 0 .. Bytes
+// 12, Message 13), then the scalar's 64-bit two's-complement bits, or a
+// byte range (start, length) of the input (decoding) or the arena
+// (encoding). A Message field is followed by the nested message.
+use self::{
+    GErr
+};
+use self::common::{
+    add_or,
+    fail,
+    leb_len,
+    max,
+    min,
+    mul_or,
+    put_leb,
+    sw
+};
+use self::framing::{
+    leb_decode
+};
+use self::utf8::{
+    valid_up_to
+};
+
+fn max_wire() -> u64 {
+    2147483647
+}
+
+// The budget, the parse position, and the limits it reads.
+pub copy struct Pb {
+    remaining: u64,
+    nodes: u64,
+    metadata: u64,
+    pos: u64,
+    max_depth: u64,
+    max_nodes: u64,
+    max_metadata: u64,
+    max_payload: u64,
+    max_output: u64,
+    field_size: u64
+}
+
+fn new_pb(in lim: Slice[u64]) -> Pb {
+    Pb {
+        remaining: sw(in lim, 9),
+        nodes: 0,
+        metadata: 0,
+        pos: 0,
+        max_depth: sw(in lim, 3),
+        max_nodes: sw(in lim, 7),
+        max_metadata: sw(in lim, 8),
+        max_payload: sw(in lim, 6),
+        max_output: sw(in lim, 5),
+        field_size: sw(in lim, 11)
+    }
+}
+
+fn bound(n: u64, max: u64, kind: u64) -> Unit eff [Fail[GErr]] {
+    if n > max {
+        fail(kind, 0);
+    }
+}
+
+fn add(a: u64, b: u64) -> u64 eff [Fail[GErr]] {
+    add_or(a, b, 10, 0)
+}
+
+fn work(inout b: Pb, n: u64) -> Unit eff [Fail[GErr]] {
+    if n > b.remaining {
+        fail(18, 0);
+    }
+    b.remaining = wrapping_sub(b.remaining, n);
+}
+
+fn metadata(inout b: Pb, n: u64) -> Unit eff [Fail[GErr]] {
+    b.metadata = add(b.metadata, n);
+    bound(b.metadata, b.max_metadata, 19);
+}
+
+fn node(inout b: Pb, depth: u64) -> Unit eff [Fail[GErr]] {
+    bound(depth, b.max_depth, 17);
+    b.nodes = add(b.nodes, 1);
+    bound(b.nodes, b.max_nodes, 16);
+    let units = mul_or(64, depth, 10, 0);
+    work(inout b, units);
+}
+
+// Budget::reserve for one message's field vector of length `len` and
+// emulated capacity `cap`.
+fn reserve(inout b: Pb, len: u64, inout cap: u64) -> Unit eff [Fail[GErr]] {
+    if len == cap {
+        let old = cap;
+        let doubled = if old == 0 {
+            4
+        } else {
+            mul_or(old, 2, 10, 0)
+        };
+        let next = min(doubled, b.max_nodes);
+        if next <= old {
+            fail(16, 0);
+        }
+        let grown = mul_or(wrapping_sub(next, old), b.field_size, 10, 0);
+        metadata(inout b, grown);
+        let moved = mul_or(len, b.field_size, 10, 0);
+        work(inout b, moved);
+        cap = next;
+    }
+}
+
+fn field_number(n: u64) -> bool {
+    n != 0 && n < 536870912 && !(n >= 19000 && n <= 19999)
+}
+
+fn numeric(kind: u64) -> bool {
+    kind < 11
+}
+
+fn wire(kind: u64) -> u64 {
+    if kind == 8 || kind == 10 {
+        1
+    } else if kind >= 11 {
+        2
+    } else if kind == 7 || kind == 9 {
+        5
+    } else {
+        0
+    }
+}
+
+fn msg_rec(in schema: Slice[u64], id: u64) -> u64 {
+    sw(in schema, wrapping_add(id, 1))
+}
+
+// Field `i` of message `id`: the offset of its four words.
+fn field_at(in schema: Slice[u64], id: u64, i: u64) -> u64 {
+    wrapping_add(wrapping_add(msg_rec(in schema, id), 1), wrapping_mul(i, 4))
+}
+
+fn field_tag(in schema: Slice[u64], f: u64) -> u64 {
+    let number = sw(in schema, f);
+    let kind = sw(in schema, wrapping_add(f, 1));
+    let repeated = sw(in schema, wrapping_add(f, 3)) != 0;
+    let w = if repeated && numeric(kind) {
+        2
+    } else {
+        wire(kind)
+    };
+    wrapping_mul(number, 8) | w
+}
+
+// Schema::validate.
+pub fn validate(in schema: Slice[u64], root: u64, in lim: Slice[u64]) -> Unit eff [Fail[GErr]] {
+    let n = sw(in schema, 0);
+    if n == 0 || root >= n {
+        fail(0, root);
+    }
+    let max_depth = sw(in lim, 3);
+    if max_depth == 0 || max_depth > 64 {
+        fail(17, 0);
+    }
+    bound(n, sw(in lim, 0), 0);
+    let mut b = new_pb(in lim);
+    work(inout b, n);
+    let mut total: u64 = 0;
+    for id in 0..n {
+        let count = sw(in schema, msg_rec(in schema, id));
+        bound(count, sw(in lim, 2), 0);
+        total = add(total, count);
+        bound(total, sw(in lim, 1), 0);
+        work(inout b, count);
+        let mut previous: u64 = 0;
+        for i in 0..count {
+            let f = field_at(in schema, id, i);
+            let number = sw(in schema, f);
+            if !field_number(number) {
+                fail(1, id);
+            }
+            if number <= previous {
+                if number == previous {
+                    fail(4, id);
+                }
+                fail(3, id);
+            }
+            if sw(in schema, wrapping_add(f, 1)) == 13 && sw(in schema, wrapping_add(f, 2)) >= n {
+                fail(0, id);
+            }
+            previous = number;
+        }
+    }
+    let bytes = mul_or(n, sw(in lim, 10), 10, 0);
+    metadata(inout b, bytes);
+    // Two words per message: color, height.
+    let mut meta = ChunkSeq::new[u64]();
+    let words = wrapping_mul(n, 2);
+    for i in 0..words {
+        meta.push(0);
+    }
+    for id in 0..n {
+        schema_depth(in schema, inout meta, inout b, id, 1);
+    }
+}
+
+fn mget(in meta: ChunkSeq[u64], i: u64) -> u64 {
+    match meta.try_get(i) {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}
+
+fn schema_depth(in schema: Slice[u64], inout meta: ChunkSeq[u64], inout b: Pb, id: u64, depth: u64)
+    -> u64 eff [Fail[GErr]] {
+    work(inout b, 1);
+    let color = mget(in meta, wrapping_mul(id, 2));
+    if color == 1 {
+        fail(2, id);
+    }
+    bound(depth, b.max_depth, 17);
+    if color == 2 {
+        return mget(in meta, wrapping_add(wrapping_mul(id, 2), 1));
+    }
+    meta.try_set(wrapping_mul(id, 2), 1);
+    let mut height: u64 = 1;
+    let count = sw(in schema, msg_rec(in schema, id));
+    for i in 0..count {
+        work(inout b, 1);
+        let f = field_at(in schema, id, i);
+        if sw(in schema, wrapping_add(f, 1)) == 13 {
+            let child = sw(in schema, wrapping_add(f, 2));
+            let h = add(
+                schema_depth(in schema, inout meta, inout b, child, wrapping_add(depth, 1)),
+                1
+            );
+            height = max(height, h);
+        }
+    }
+    bound(height, b.max_depth, 17);
+    meta.try_set(wrapping_mul(id, 2), 2);
+    meta.try_set(wrapping_add(wrapping_mul(id, 2), 1), height);
+    height
+}
+
+// Schema::lookup: the offset of field `number` of message `id`.
+fn lookup(in schema: Slice[u64], inout b: Pb, id: u64, number: u64, at: u64)
+    -> u64 eff [Fail[GErr]] {
+    let mut lo: u64 = 0;
+    let mut hi = sw(in schema, msg_rec(in schema, id));
+    loop {
+        if lo >= hi {
+            fail(5, at);
+        }
+        if b.remaining == 0 {
+            fail(18, at);
+        }
+        b.remaining = wrapping_sub(b.remaining, 1);
+        let mid = wrapping_add(lo, wrapping_sub(hi, lo) / 2);
+        let f = field_at(in schema, id, mid);
+        let v = sw(in schema, f);
+        if v == number {
+            return f;
+        }
+        if v < number {
+            lo = wrapping_add(mid, 1);
+        } else {
+            hi = mid;
+        }
+    }
+}
+
+// A trusted lookup after validation.
+fn find(in schema: Slice[u64], id: u64, number: u64) -> u64 {
+    let mut lo: u64 = 0;
+    let mut hi = sw(in schema, msg_rec(in schema, id));
+    loop {
+        if lo >= hi {
+            return 0;
+        }
+        let mid = wrapping_add(lo, wrapping_sub(hi, lo) / 2);
+        let f = field_at(in schema, id, mid);
+        let v = sw(in schema, f);
+        if v == number {
+            return f;
+        }
+        if v < number {
+            lo = wrapping_add(mid, 1);
+        } else {
+            hi = mid;
+        }
+    }
+}
+
+// Parsing.
+
+pub fn parse_exact(in schema: Slice[u64], root: u64, in lim: Slice[u64], in input: Slice[u8])
+    -> ChunkSeq[u64] eff [Fail[GErr]] {
+    let n = input.len();
+    bound(n, sw(in lim, 4), 12);
+    bound(n, max_wire(), 10);
+    let mut b = new_pb(in lim);
+    work(inout b, n);
+    let mut out = ChunkSeq::new[u64]();
+    message(in schema, in input, inout b, inout out, root, n, 1);
+    out
+}
+
+fn var(in input: Slice[u8], inout b: Pb, end: u64) -> u64 eff [Fail[GErr]] {
+    let start = b.pos;
+    let mut w = b.remaining;
+    let p = leb_decode(in input, start, end, inout w, start, 8, 7, 10, 18);
+    b.remaining = w;
+    b.pos = wrapping_add(start, p.b);
+    p.a
+}
+
+// (start, end) of a length-delimited range.
+fn range(in input: Slice[u8], inout b: Pb, end: u64) -> u64 eff [Fail[GErr]] {
+    let len = var(in input, inout b, end);
+    bound(len, max_wire(), 10);
+    bound(len, b.max_payload, 15);
+    let finish = add(b.pos, len);
+    if finish > end {
+        fail(8, end);
+    }
+    finish
+}
+
+fn push4(inout out: ChunkSeq[u64], a: u64, b: u64, c: u64, d: u64) {
+    out.push(a);
+    out.push(b);
+    out.push(c);
+    out.push(d);
+}
+
+fn message(
+    in schema: Slice[u64],
+    in input: Slice[u8],
+    inout b: Pb,
+    inout out: ChunkSeq[u64],
+    id: u64,
+    end: u64,
+    depth: u64
+) -> Unit eff [Fail[GErr]] {
+    node(inout b, depth);
+    let head = out.len();
+    out.push(0);
+    let mut count: u64 = 0;
+    let mut cap: u64 = 0;
+    let mut previous: u64 = 0;
+    loop {
+        if b.pos >= end {
+            break;
+        }
+        let at = b.pos;
+        let key = var(in input, inout b, end);
+        let number = key >> 3;
+        if number > 4294967295 || !field_number(number) {
+            fail(1, at);
+        }
+        let w = key & 7;
+        if !(w == 0 || w == 1 || w == 2 || w == 5) {
+            fail(6, at);
+        }
+        if number < previous {
+            fail(3, at);
+        }
+        let f = lookup(in schema, inout b, id, number, at);
+        let kind = sw(in schema, wrapping_add(f, 1));
+        let repeated = sw(in schema, wrapping_add(f, 3)) != 0;
+        let packed = repeated && numeric(kind);
+        if number == previous && (!repeated || numeric(kind)) {
+            fail(4, at);
+        }
+        let expected = if packed {
+            2
+        } else {
+            wire(kind)
+        };
+        if w != expected {
+            fail(6, at);
+        }
+        previous = number;
+        if packed {
+            let finish = range(in input, inout b, end);
+            if finish == b.pos {
+                fail(7, at);
+            }
+            loop {
+                if b.pos >= finish {
+                    break;
+                }
+                node(inout b, depth);
+                reserve(inout b, count, inout cap);
+                let v = scalar(in input, inout b, kind, finish);
+                push4(inout out, number, kind, v, 0);
+                count = wrapping_add(count, 1);
+            }
+        } else {
+            node(inout b, depth);
+            reserve(inout b, count, inout cap);
+            if kind == 11 || kind == 12 {
+                let finish = range(in input, inout b, end);
+                let start = b.pos;
+                work(inout b, wrapping_sub(finish, start));
+                b.pos = finish;
+                if kind == 11 {
+                    let valid = valid_up_to(in input, start, finish);
+                    if valid != finish {
+                        fail(9, valid);
+                    }
+                }
+                push4(inout out, number, kind, start, wrapping_sub(finish, start));
+            } else if kind == 13 {
+                let finish = range(in input, inout b, end);
+                push4(inout out, number, 13, 0, 0);
+                message(
+                    in schema,
+                    in input,
+                    inout b,
+                    inout out,
+                    sw(in schema, wrapping_add(f, 2)),
+                    finish,
+                    wrapping_add(depth, 1)
+                );
+            } else {
+                let v = scalar(in input, inout b, kind, end);
+                push4(inout out, number, kind, v, 0);
+            }
+            count = wrapping_add(count, 1);
+        }
+    }
+    out.try_set(head, count);
+}
+
+// Sign-extends the low 32 bits of `n`.
+fn sext32(n: u64) -> u64 {
+    let low = n & 4294967295;
+    if low >= 2147483648 {
+        low | 18446744069414584320
+    } else {
+        low
+    }
+}
+
+fn scalar(in input: Slice[u8], inout b: Pb, kind: u64, end: u64) -> u64 eff [Fail[GErr]] {
+    if kind >= 7 && kind <= 10 {
+        let len: u64 = if kind == 7 || kind == 9 {
+            4
+        } else {
+            8
+        };
+        let next = add(b.pos, len);
+        if next > end {
+            fail(8, end);
+        }
+        work(inout b, len);
+        let at = b.pos;
+        b.pos = next;
+        if len == 4 {
+            let v = match input.try_read_u32_le(at) {
+                Option::Some(v) => widen_u64(v),
+                Option::None => 0,
+            };
+            return if kind == 9 {
+                sext32(v)
+            } else {
+                v
+            };
+        }
+        return match input.try_read_u64_le(at) {
+            Option::Some(v) => v,
+            Option::None => 0,
+        };
+    }
+    let at = b.pos;
+    let n = var(in input, inout b, end);
+    if kind == 0 {
+        if n > 4294967295 {
+            fail(10, at);
+        }
+        n
+    } else if kind == 1 || kind == 3 {
+        n
+    } else if kind == 2 {
+        if sext32(n) != n {
+            fail(7, at);
+        }
+        n
+    } else if kind == 4 {
+        if n > 4294967295 {
+            fail(10, at);
+        }
+        let half = n >> 1;
+        let v = if n & 1 == 0 {
+            half
+        } else {
+            (~half) & 4294967295
+        };
+        sext32(v)
+    } else if kind == 5 {
+        (n >> 1) ^ wrapping_sub(0, n & 1)
+    } else if kind == 6 {
+        if n > 1 {
+            fail(7, at);
+        }
+        n
+    } else {
+        fail(11, at)
+    }
+}
+
+// Encoding.
+
+// The varint bits of a scalar of Value index `tag` (`x` = its bits), or
+// the fixed width (4 or 8) with `fixed` set.
+fn var_bits(tag: u64, x: u64) -> u64 {
+    if tag == 4 {
+        let n = x & 4294967295;
+        let neg: u64 = if n >= 2147483648 {
+            4294967295
+        } else {
+            0
+        };
+        ((n << 1) & 4294967295) ^ neg
+    } else if tag == 5 {
+        let neg: u64 = if x >= 9223372036854775808 {
+            18446744073709551615
+        } else {
+            0
+        };
+        ((x & 9223372036854775807) << 1) ^ neg
+    } else {
+        x
+    }
+}
+
+// scalar_size: the wire size of a scalar field value.
+fn scalar_size(kind: u64, tag: u64, x: u64) -> u64 eff [Fail[GErr]] {
+    if kind != tag || kind > 10 {
+        fail(11, 0);
+    }
+    if kind == 7 || kind == 9 {
+        4
+    } else if kind == 8 || kind == 10 {
+        8
+    } else if kind == 6 {
+        1
+    } else {
+        leb_len(var_bits(tag, x))
+    }
+}
+
+// Words of the stream at `cur`.
+fn w(in vals: Slice[u64], at: u64) -> u64 {
+    sw(in vals, at)
+}
+
+// The stream offset just past the message starting at `at`.
+fn skip_message(in vals: Slice[u64], at: u64) -> u64 {
+    let count = w(in vals, at);
+    let mut cur = wrapping_add(at, 1);
+    for i in 0..count {
+        let tag = w(in vals, wrapping_add(cur, 1));
+        cur = wrapping_add(cur, 4);
+        if tag == 13 {
+            cur = skip_message(in vals, cur);
+        }
+    }
+    cur
+}
+
+// scan_message: the encoded size of the message at `at`; nested message
+// sizes are recorded in `sizes` in preorder for the writer.
+fn scan_message(
+    in schema: Slice[u64],
+    in vals: Slice[u64],
+    inout b: Pb,
+    inout sizes: ChunkSeq[u64],
+    id: u64,
+    at: u64,
+    depth: u64
+) -> u64 eff [Fail[GErr]] {
+    node(inout b, depth);
+    let count = w(in vals, at);
+    if b.nodes > b.max_nodes {
+        fail(16, 0);
+    }
+    bound(count, wrapping_sub(b.max_nodes, b.nodes), 16);
+    let mut index: u64 = 0;
+    let mut cur = wrapping_add(at, 1);
+    let mut previous: u64 = 0;
+    let mut size: u64 = 0;
+    loop {
+        if index >= count {
+            break;
+        }
+        let number = w(in vals, cur);
+        if !field_number(number) {
+            fail(1, 0);
+        }
+        if number < previous {
+            fail(3, 0);
+        }
+        let f = lookup(in schema, inout b, id, number, 0);
+        let kind = sw(in schema, wrapping_add(f, 1));
+        let repeated = sw(in schema, wrapping_add(f, 3)) != 0;
+        let tag = field_tag(in schema, f);
+        // The run of entries with this number: [index, end), from `cur`.
+        let mut end = wrapping_add(index, 1);
+        let mut probe = next_field(in vals, cur);
+        loop {
+            if end >= count || w(in vals, probe) != number {
+                break;
+            }
+            work(inout b, 1);
+            end = wrapping_add(end, 1);
+            probe = next_field(in vals, probe);
+        }
+        if !repeated && wrapping_sub(end, index) != 1 {
+            fail(4, 0);
+        }
+        if repeated && numeric(kind) {
+            let mut payload: u64 = 0;
+            let mut c = cur;
+            for i in index..end {
+                node(inout b, depth);
+                payload = add(
+                    payload,
+                    scalar_size(
+                        kind,
+                        w(in vals, wrapping_add(c, 1)),
+                        w(in vals, wrapping_add(c, 2))
+                    )
+                );
+                c = next_field(in vals, c);
+            }
+            bound(payload, max_wire(), 10);
+            bound(payload, b.max_payload, 15);
+            size = add(size, add(leb_len(tag), add(leb_len(payload), payload)));
+        } else {
+            let mut c = cur;
+            for i in index..end {
+                node(inout b, depth);
+                let v = scan_value(
+                    in schema,
+                    in vals,
+                    inout b,
+                    inout sizes,
+                    kind,
+                    sw(in schema, wrapping_add(f, 2)),
+                    c,
+                    depth
+                );
+                size = add(size, add(leb_len(tag), v));
+                c = next_field(in vals, c);
+            }
+        }
+        bound(size, b.max_output, 13);
+        previous = number;
+        index = end;
+        cur = probe;
+    }
+    size
+}
+
+// The stream offset of the field after the one at `cur`.
+fn next_field(in vals: Slice[u64], cur: u64) -> u64 {
+    let after = wrapping_add(cur, 4);
+    if w(in vals, wrapping_add(cur, 1)) == 13 {
+        skip_message(in vals, after)
+    } else {
+        after
+    }
+}
+
+fn scan_value(
+    in schema: Slice[u64],
+    in vals: Slice[u64],
+    inout b: Pb,
+    inout sizes: ChunkSeq[u64],
+    kind: u64,
+    child: u64,
+    cur: u64,
+    depth: u64
+) -> u64 eff [Fail[GErr]] {
+    let tag = w(in vals, wrapping_add(cur, 1));
+    if (kind == 11 && tag == 11) || (kind == 12 && tag == 12) {
+        let len = w(in vals, wrapping_add(cur, 3));
+        bound(len, max_wire(), 10);
+        bound(len, b.max_payload, 15);
+        work(inout b, len);
+        add(leb_len(len), len)
+    } else if kind == 13 && tag == 13 {
+        let slot = sizes.len();
+        sizes.push(0);
+        let len = scan_message(
+            in schema,
+            in vals,
+            inout b,
+            inout sizes,
+            child,
+            wrapping_add(cur, 4),
+            wrapping_add(depth, 1)
+        );
+        bound(len, max_wire(), 10);
+        bound(len, b.max_payload, 15);
+        sizes.try_set(slot, len);
+        add(leb_len(len), len)
+    } else {
+        scalar_size(kind, tag, w(in vals, wrapping_add(cur, 2)))
+    }
+}
+
+pub fn encoded_size(
+    in schema: Slice[u64],
+    root: u64,
+    in lim: Slice[u64],
+    in vals: Slice[u64],
+    inout sizes: ChunkSeq[u64]
+) -> u64 eff [Fail[GErr]] {
+    let mut b = new_pb(in lim);
+    let size = scan_message(in schema, in vals, inout b, inout sizes, root, 0, 1);
+    bound(size, b.max_output, 13);
+    bound(size, max_wire(), 10);
+    work(inout b, size);
+    size
+}
+
+pub fn encoded_len(in schema: Slice[u64], root: u64, in lim: Slice[u64], in vals: Slice[u64])
+    -> u64 eff [Fail[GErr]] {
+    let mut sizes = ChunkSeq::new[u64]();
+    encoded_size(in schema, root, in lim, in vals, inout sizes)
+}
+
+// The writer's position: output offset, stream offset, next nested size.
+pub copy struct Wr {
+    pos: u64,
+    cur: u64,
+    size: u64
+}
+
+fn put_var(inout out: Slice[u8], inout wr: Wr, n: u64) {
+    let len = leb_len(n);
+    put_leb(inout out, wr.pos, n, len);
+    wr.pos = wrapping_add(wr.pos, len);
+}
+
+fn put_scalar(inout out: Slice[u8], inout wr: Wr, tag: u64, x: u64) {
+    if tag == 7 || tag == 9 {
+        out.try_write_u32_le(wr.pos, wrapping_u32(x));
+        wr.pos = wrapping_add(wr.pos, 4);
+    } else if tag == 8 || tag == 10 {
+        out.try_write_u64_le(wr.pos, x);
+        wr.pos = wrapping_add(wr.pos, 8);
+    } else {
+        put_var(inout out, inout wr, var_bits(tag, x));
+    }
+}
+
+fn write_message(
+    in schema: Slice[u64],
+    in vals: Slice[u64],
+    in arena: Slice[u8],
+    in sizes: ChunkSeq[u64],
+    inout out: Slice[u8],
+    inout wr: Wr,
+    id: u64
+) {
+    let count = w(in vals, wr.cur);
+    wr.cur = wrapping_add(wr.cur, 1);
+    let mut i: u64 = 0;
+    loop {
+        if i >= count {
+            break;
+        }
+        let number = w(in vals, wr.cur);
+        let f = find(in schema, id, number);
+        let kind = sw(in schema, wrapping_add(f, 1));
+        let repeated = sw(in schema, wrapping_add(f, 3)) != 0;
+        let tag = field_tag(in schema, f);
+        let mut end = wrapping_add(i, 1);
+        let mut probe = next_field(in vals, wr.cur);
+        loop {
+            if end >= count || w(in vals, probe) != number {
+                break;
+            }
+            end = wrapping_add(end, 1);
+            probe = next_field(in vals, probe);
+        }
+        if repeated && numeric(kind) {
+            let mut len: u64 = 0;
+            let mut c = wr.cur;
+            for j in i..end {
+                let t = w(in vals, wrapping_add(c, 1));
+                let x = w(in vals, wrapping_add(c, 2));
+                len = wrapping_add(
+                    len,
+                    if t == 7 || t == 9 {
+                        4
+                    } else if t == 8 || t == 10 {
+                        8
+                    } else {
+                        leb_len(var_bits(t, x))
+                    }
+                );
+                c = wrapping_add(c, 4);
+            }
+            put_var(inout out, inout wr, tag);
+            put_var(inout out, inout wr, len);
+            for j in i..end {
+                let t = w(in vals, wrapping_add(wr.cur, 1));
+                let x = w(in vals, wrapping_add(wr.cur, 2));
+                put_scalar(inout out, inout wr, t, x);
+                wr.cur = wrapping_add(wr.cur, 4);
+            }
+        } else {
+            for j in i..end {
+                put_var(inout out, inout wr, tag);
+                let t = w(in vals, wrapping_add(wr.cur, 1));
+                let x = w(in vals, wrapping_add(wr.cur, 2));
+                let y = w(in vals, wrapping_add(wr.cur, 3));
+                wr.cur = wrapping_add(wr.cur, 4);
+                if t == 11 || t == 12 {
+                    put_var(inout out, inout wr, y);
+                    out.try_copy_from(wr.pos, in arena[x..wrapping_add(x, y)]);
+                    wr.pos = wrapping_add(wr.pos, y);
+                } else if t == 13 {
+                    let len = match sizes.try_get(wr.size) {
+                        Option::Some(v) => v,
+                        Option::None => 0,
+                    };
+                    wr.size = wrapping_add(wr.size, 1);
+                    put_var(inout out, inout wr, len);
+                    write_message(
+                        in schema,
+                        in vals,
+                        in arena,
+                        in sizes,
+                        inout out,
+                        inout wr,
+                        sw(in schema, wrapping_add(f, 2))
+                    );
+                } else {
+                    put_scalar(inout out, inout wr, t, x);
+                }
+            }
+        }
+        i = end;
+    }
+}
+
+pub fn encode_into(
+    in schema: Slice[u64],
+    root: u64,
+    in lim: Slice[u64],
+    in vals: Slice[u64],
+    in arena: Slice[u8],
+    inout out: Slice[u8]
+) -> u64 eff [Fail[GErr]] {
+    let mut sizes = ChunkSeq::new[u64]();
+    let size = encoded_size(in schema, root, in lim, in vals, inout sizes);
+    if out.len() < size {
+        fail(14, 0);
+    }
+    let mut wr = Wr {
+        pos: 0,
+        cur: 0,
+        size: 0
+    };
+    write_message(in schema, in vals, in arena, in sizes, inout out, inout wr, root);
+    size
+}

@@ -27,8 +27,10 @@
 //! trailing bytes. No cryptographic authenticity or formal bijection proof is
 //! inferred from accepted canonical encodings.
 #![forbid(unsafe_code)]
+#[cfg(not(vesper_port))]
 use core::cmp::Ordering;
 
+#[cfg(not(vesper_port))]
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const ENCODE_METADATA: usize =
     2 * core::mem::size_of::<Vec<u8>>() + 2 * core::mem::size_of::<usize>();
@@ -60,6 +62,7 @@ impl Default for Limits {
     }
 }
 impl Limits {
+    #[cfg(not(vesper_port))]
     fn validate(self) -> Result<()> {
         if self.max_input_bytes > MAX_BYTES
             || self.max_value_bytes > MAX_BYTES
@@ -139,11 +142,13 @@ fn bound(value: usize, max: usize, kind: ErrorKind) -> Result<()> {
         Ok(())
     }
 }
+#[cfg(not(vesper_port))]
 struct Meter {
     limits: Limits,
     work: usize,
     nodes: usize,
 }
+#[cfg(not(vesper_port))]
 impl Meter {
     fn new(limits: Limits) -> Self {
         Self {
@@ -181,6 +186,7 @@ pub enum Schema<'s> {
     SequenceOf(&'s Schema<'s>),
     SetOf(&'s Schema<'s>),
 }
+#[cfg(not(vesper_port))]
 fn schema_check(schema: &Schema<'_>, meter: &mut Meter) -> Result<()> {
     fn visit(
         schema: &Schema<'_>,
@@ -247,6 +253,7 @@ impl Kind {
         }
     }
 }
+#[cfg(not(vesper_port))]
 fn matches_schema(kind: Kind, schema: &Schema<'_>) -> bool {
     matches!(
         (kind, schema),
@@ -329,6 +336,7 @@ impl<'d, 'a> Node<'d, 'a> {
     pub fn integer_bytes(self) -> Option<&'a [u8]> {
         (self.kind() == Kind::Integer).then(|| self.content())
     }
+    #[cfg(not(vesper_port))]
     pub fn as_i64(self) -> Result<i64> {
         let bytes = self
             .integer_bytes()
@@ -341,6 +349,14 @@ impl<'d, 'a> Node<'d, 'a> {
             value = (value << 8) | i64::from(*byte);
         }
         Ok(value)
+    }
+    #[cfg(vesper_port)]
+    pub fn as_i64(self) -> Result<i64> {
+        let bytes = self
+            .integer_bytes()
+            .ok_or(error(ErrorKind::SchemaMismatch, 0))?;
+        let value = crate::port::vesper::der_as_i64(bytes).map_err(port::error)?;
+        Ok(value as i64)
     }
     pub fn bit_string(self) -> Option<(u8, &'a [u8])> {
         (self.kind() == Kind::BitString).then(|| (self.content()[0], &self.content()[1..]))
@@ -383,6 +399,7 @@ impl<'d, 'a> Iterator for Children<'d, 'a> {
         Some(node)
     }
 }
+#[cfg(not(vesper_port))]
 fn byte(input: &[u8], pos: &mut usize, end: usize, meter: &mut Meter) -> Result<u8> {
     meter.charge(1)?;
     if *pos >= end {
@@ -392,6 +409,7 @@ fn byte(input: &[u8], pos: &mut usize, end: usize, meter: &mut Meter) -> Result<
     *pos += 1;
     Ok(b)
 }
+#[cfg(not(vesper_port))]
 fn header(
     input: &[u8],
     start: usize,
@@ -484,6 +502,7 @@ fn header(
     }
     Ok((kind, pos, finish))
 }
+#[cfg(not(vesper_port))]
 fn primitive(kind: Kind, content: &[u8], offset: usize, meter: &mut Meter) -> Result<()> {
     meter.charge(content.len())?;
     bound(
@@ -558,6 +577,7 @@ fn primitive(kind: Kind, content: &[u8], offset: usize, meter: &mut Meter) -> Re
         Ok(())
     }
 }
+#[cfg(not(vesper_port))]
 fn parse_node(
     input: &[u8],
     start: usize,
@@ -630,6 +650,7 @@ fn parse_node(
 }
 /// Exact DER prefix extent, with a document borrowing only that validated prefix.
 /// The caller retains input and can inspect/parse `&input[consumed..]` explicitly.
+#[cfg(not(vesper_port))]
 pub fn parse_prefix<'a>(
     input: &'a [u8],
     schema: &Schema<'_>,
@@ -668,6 +689,38 @@ pub fn parse_prefix<'a>(
         &mut meter,
         &mut Some(&mut records),
     )?;
+    Ok((
+        Document {
+            input: &input[..consumed],
+            records,
+        },
+        consumed,
+    ))
+}
+#[cfg(vesper_port)]
+pub fn parse_prefix<'a>(
+    input: &'a [u8],
+    schema: &Schema<'_>,
+    limits: Limits,
+) -> Result<(Document<'a>, usize)> {
+    let sch = port::flatten_schema(schema);
+    let words = crate::port::vesper::der_parse_prefix(input, &sch, &port::limits(limits))
+        .map_err(port::error)?;
+    let (consumed, recs) = words.split_last().expect("consumed length");
+    let consumed = *consumed as usize;
+    let records = recs
+        .as_chunks::<6>()
+        .0
+        .iter()
+        .map(|r| Record {
+            kind: port::KINDS[r[0] as usize],
+            start: r[1] as usize,
+            content: r[2] as usize,
+            end: r[3] as usize,
+            next: r[4] as usize,
+            depth: r[5] as usize,
+        })
+        .collect();
     Ok((
         Document {
             input: &input[..consumed],
@@ -720,6 +773,7 @@ impl Value<'_> {
         }
     }
 }
+#[cfg(not(vesper_port))]
 fn length_octets(len: usize) -> usize {
     if len < 128 {
         1
@@ -727,6 +781,7 @@ fn length_octets(len: usize) -> usize {
         1 + (usize::BITS - len.leading_zeros()).div_ceil(8) as usize
     }
 }
+#[cfg(not(vesper_port))]
 fn tlv_size(len: usize) -> Result<usize> {
     add(add(1, length_octets(len))?, len)
 }
@@ -737,6 +792,7 @@ pub struct EncodingPlan {
     pub metadata_bytes: usize,
     pub intermediate_bytes: usize,
 }
+#[cfg(not(vesper_port))]
 fn measure(
     value: &Value<'_>,
     schema: &Schema<'_>,
@@ -808,6 +864,7 @@ fn measure(
     )?;
     Ok(size)
 }
+#[cfg(not(vesper_port))]
 pub fn encoding_plan(
     value: &Value<'_>,
     schema: &Schema<'_>,
@@ -835,15 +892,34 @@ pub fn encoding_plan(
         intermediate_bytes: intermediate,
     })
 }
+#[cfg(vesper_port)]
+pub fn encoding_plan(
+    value: &Value<'_>,
+    schema: &Schema<'_>,
+    limits: Limits,
+) -> Result<EncodingPlan> {
+    let (vals, arena) = port::flatten_value(value);
+    let sch = port::flatten_schema(schema);
+    let p = crate::port::vesper::der_encoding_plan(&vals, &arena, &sch, &port::limits(limits))
+        .map_err(port::error)?;
+    Ok(EncodingPlan {
+        encoded_bytes: p.a as usize,
+        nodes: p.b as usize,
+        metadata_bytes: p.c as usize,
+        intermediate_bytes: p.d as usize,
+    })
+}
 pub fn encoded_len(value: &Value<'_>, schema: &Schema<'_>, limits: Limits) -> Result<usize> {
     Ok(encoding_plan(value, schema, limits)?.encoded_bytes)
 }
+#[cfg(not(vesper_port))]
 fn reserve<T>(count: usize) -> Result<Vec<T>> {
     let mut out = Vec::new();
     out.try_reserve_exact(count)
         .map_err(|_| error(ErrorKind::AllocationFailed, 0))?;
     Ok(out)
 }
+#[cfg(not(vesper_port))]
 fn push_header(out: &mut Vec<u8>, kind: Kind, len: usize) {
     out.push(kind.tag());
     if len < 128 {
@@ -856,6 +932,7 @@ fn push_header(out: &mut Vec<u8>, kind: Kind, len: usize) {
         }
     }
 }
+#[cfg(not(vesper_port))]
 fn build(value: &Value<'_>) -> Result<Vec<u8>> {
     let kind = value.kind();
     let mut children: Vec<Vec<u8>> = match value {
@@ -911,6 +988,7 @@ fn build(value: &Value<'_>) -> Result<Vec<u8>> {
 }
 /// All validation, size/work/schema/node/metadata/intermediate limits and output
 /// capacity checks precede allocation. All returned failures leave output intact.
+#[cfg(not(vesper_port))]
 pub fn encode_into(
     value: &Value<'_>,
     schema: &Schema<'_>,
@@ -925,6 +1003,21 @@ pub fn encode_into(
     output[..encoded.len()].copy_from_slice(&encoded);
     Ok(encoded.len())
 }
+#[cfg(vesper_port)]
+pub fn encode_into(
+    value: &Value<'_>,
+    schema: &Schema<'_>,
+    output: &mut [u8],
+    limits: Limits,
+) -> Result<usize> {
+    let (vals, arena) = port::flatten_value(value);
+    let sch = port::flatten_schema(schema);
+    let n =
+        crate::port::vesper::der_encode_into(&vals, &arena, &sch, &port::limits(limits), output)
+            .map_err(port::error)?;
+    Ok(n as usize)
+}
+#[cfg(not(vesper_port))]
 fn build_node(node: Node<'_, '_>) -> Result<Vec<u8>> {
     let mut children: Vec<Vec<u8>> = reserve(node.children().count())?;
     for child in node.children() {
@@ -952,6 +1045,7 @@ fn build_node(node: Node<'_, '_>) -> Result<Vec<u8>> {
 /// Reconstructs canonical tags/lengths and recursively re-encodes the validated
 /// node tree. Typed SET OF evidence is retained by Document; no schema is newly
 /// supplied or walked here. Budgets apply again before allocation/output writes.
+#[cfg(not(vesper_port))]
 pub fn reencode_into(document: &Document<'_>, output: &mut [u8], limits: Limits) -> Result<usize> {
     limits.validate()?;
     bound(
@@ -1006,4 +1100,220 @@ pub fn reencode_into(document: &Document<'_>, output: &mut [u8], limits: Limits)
     let encoded = build_node(document.root())?;
     output[..encoded.len()].copy_from_slice(&encoded);
     Ok(encoded.len())
+}
+#[cfg(vesper_port)]
+pub fn reencode_into(document: &Document<'_>, output: &mut [u8], limits: Limits) -> Result<usize> {
+    let mut recs = Vec::with_capacity(document.records.len() * 6);
+    for r in &document.records {
+        recs.extend([
+            r.kind as u64,
+            r.start as u64,
+            r.content as u64,
+            r.end as u64,
+            r.next as u64,
+            r.depth as u64,
+        ]);
+    }
+    let n = crate::port::vesper::der_reencode_into(
+        &recs,
+        document.input,
+        &port::limits(limits),
+        output,
+    )
+    .map_err(port::error)?;
+    Ok(n as usize)
+}
+
+/// The port-backed build's DER glue: schema and value graphs (shared nodes
+/// once, node 0 the root), limits and failures. See `vesper/src/der.ves`.
+#[cfg(vesper_port)]
+mod port {
+    use super::{ENCODE_METADATA, Error, ErrorKind, Kind, Limits, Record, Schema, Value};
+    use crate::port_binding::GErr;
+    use std::collections::HashMap;
+
+    pub(super) const KINDS: [Kind; 11] = [
+        Kind::Boolean,
+        Kind::Integer,
+        Kind::BitString,
+        Kind::OctetString,
+        Kind::Null,
+        Kind::ObjectIdentifier,
+        Kind::Utf8String,
+        Kind::Ia5String,
+        Kind::PrintableString,
+        Kind::Sequence,
+        Kind::SetOf,
+    ];
+
+    const ERRORS: [ErrorKind; 31] = [
+        ErrorKind::InvalidLimits,
+        ErrorKind::InputLimit,
+        ErrorKind::ValueLimit,
+        ErrorKind::NodeLimit,
+        ErrorKind::SchemaLimit,
+        ErrorKind::DepthLimit,
+        ErrorKind::WorkLimit,
+        ErrorKind::MetadataLimit,
+        ErrorKind::OutputLimit,
+        ErrorKind::IntermediateLimit,
+        ErrorKind::AllocationFailed,
+        ErrorKind::Overflow,
+        ErrorKind::UnexpectedEof,
+        ErrorKind::TrailingBytes,
+        ErrorKind::IndefiniteLength,
+        ErrorKind::NonCanonicalTag,
+        ErrorKind::NonCanonicalLength,
+        ErrorKind::Constructed,
+        ErrorKind::Boolean,
+        ErrorKind::Integer,
+        ErrorKind::BitString,
+        ErrorKind::ObjectIdentifier,
+        ErrorKind::Utf8String,
+        ErrorKind::Ia5String,
+        ErrorKind::PrintableString,
+        ErrorKind::Null,
+        ErrorKind::SetOrder,
+        ErrorKind::SchemaMismatch,
+        ErrorKind::SetSchemaRequired,
+        ErrorKind::EndOfContents,
+        ErrorKind::OutputTooSmall,
+    ];
+
+    pub(super) fn error(e: GErr) -> Error {
+        let kind = match ERRORS.get(e.kind as usize) {
+            Some(kind) => *kind,
+            None => ErrorKind::UnsupportedTag {
+                class: e.a as u8,
+                number: e.b,
+            },
+        };
+        super::error(kind, e.offset as usize)
+    }
+
+    pub(super) fn limits(l: Limits) -> [u64; 11] {
+        [
+            l.max_input_bytes as u64,
+            l.max_value_bytes as u64,
+            l.max_nodes as u64,
+            l.max_schema_nodes as u64,
+            l.max_depth as u64,
+            l.max_work as u64,
+            l.max_metadata_bytes as u64,
+            l.max_output_bytes as u64,
+            l.max_intermediate_bytes as u64,
+            core::mem::size_of::<Record>() as u64,
+            ENCODE_METADATA as u64,
+        ]
+    }
+
+    /// Numbers nodes by address in discovery order (iteratively, so deep
+    /// caller graphs cannot exhaust the stack) and writes each record.
+    fn graph<'n, T>(
+        root: &'n T,
+        mut record: impl FnMut(&'n T, &mut Vec<&'n T>, &mut Vec<u64>),
+    ) -> Vec<u64> {
+        let mut ids: HashMap<*const T, u64> = HashMap::new();
+        let mut order: Vec<&'n T> = vec![root];
+        ids.insert(root, 0);
+        let mut bodies: Vec<u64> = Vec::new();
+        let mut offsets: Vec<u64> = Vec::new();
+        let mut children: Vec<&'n T> = Vec::new();
+        let mut i = 0;
+        while i < order.len() {
+            let node = order[i];
+            offsets.push(bodies.len() as u64);
+            children.clear();
+            let at = bodies.len();
+            record(node, &mut children, &mut bodies);
+            // Child ids follow the record's operand words in order.
+            let first = bodies.len() - children.len();
+            debug_assert!(first >= at);
+            for (slot, child) in bodies[first..].iter_mut().zip(children.drain(..)) {
+                let next = order.len() as u64;
+                let id = *ids.entry(child as *const T).or_insert(next);
+                if id == next {
+                    order.push(child);
+                }
+                *slot = id;
+            }
+            i += 1;
+        }
+        let n = order.len();
+        let mut words = Vec::with_capacity(1 + n + bodies.len());
+        words.push(n as u64);
+        words.extend(offsets.iter().map(|o| o + 1 + n as u64));
+        words.extend(bodies);
+        words
+    }
+
+    pub(super) fn flatten_schema(schema: &Schema<'_>) -> Vec<u64> {
+        graph(schema, |s, children, out| match s {
+            Schema::Sequence(fields) => {
+                out.extend([10, fields.len() as u64]);
+                for f in *fields {
+                    out.push(0);
+                    children.push(f);
+                }
+            }
+            Schema::SequenceOf(child) | Schema::SetOf(child) => {
+                out.push(if matches!(s, Schema::SetOf(_)) {
+                    12
+                } else {
+                    11
+                });
+                out.push(0);
+                children.push(child);
+            }
+            other => out.push(match other {
+                Schema::Any => 0,
+                Schema::Boolean => 1,
+                Schema::Integer => 2,
+                Schema::BitString => 3,
+                Schema::OctetString => 4,
+                Schema::Null => 5,
+                Schema::ObjectIdentifier => 6,
+                Schema::Utf8String => 7,
+                Schema::Ia5String => 8,
+                _ => 9,
+            }),
+        })
+    }
+
+    /// The value graph and the arena of its primitive payloads.
+    pub(super) fn flatten_value(value: &Value<'_>) -> (Vec<u64>, Vec<u8>) {
+        let mut arena = Vec::new();
+        let words = graph(value, |v, children, out| {
+            out.push(v.kind() as u64);
+            let mut bytes = |out: &mut Vec<u64>, b: &[u8]| {
+                out.extend([arena.len() as u64, b.len() as u64]);
+                arena.extend_from_slice(b);
+            };
+            match v {
+                Value::Boolean(b) => out.push(u64::from(*b)),
+                Value::Null => {}
+                Value::BitString {
+                    unused_bits,
+                    bytes: b,
+                } => {
+                    out.push(u64::from(*unused_bits));
+                    bytes(out, b);
+                }
+                Value::Integer(b) | Value::OctetString(b) | Value::ObjectIdentifier(b) => {
+                    bytes(out, b)
+                }
+                Value::Utf8String(t) | Value::Ia5String(t) | Value::PrintableString(t) => {
+                    bytes(out, t.as_bytes())
+                }
+                Value::Sequence(items) | Value::SetOf(items) => {
+                    out.push(items.len() as u64);
+                    for item in *items {
+                        out.push(0);
+                        children.push(item);
+                    }
+                }
+            }
+        });
+        (words, arena)
+    }
 }

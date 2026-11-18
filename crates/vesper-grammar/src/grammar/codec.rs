@@ -4,6 +4,8 @@
 //! refinement proof. Logical metadata/work bounds exclude allocator bookkeeping
 //! and caller-owned values/rules.
 use super::{Grammar, Rule};
+#[cfg(vesper_port)]
+use crate::port;
 use crate::{Error, ErrorKind, Result, add, bound, charge, framing, mul};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,6 +47,7 @@ impl CodecLimits {
         max_depth: 64,
         max_work: 64 * 1024 * 1024,
     };
+    #[cfg(not(vesper_port))]
     pub fn validate(self) -> Result<()> {
         let hard = Self::HARD;
         for (n, max) in [
@@ -60,8 +63,13 @@ impl CodecLimits {
         }
         Ok(())
     }
+    #[cfg(vesper_port)]
+    pub fn validate(self) -> Result<()> {
+        port::vesper::cd_validate_limits(&port::codec_limits(self)).map_err(port::error)
+    }
 }
 
+#[cfg(not(vesper_port))]
 struct Budget {
     limits: CodecLimits,
     work: usize,
@@ -70,6 +78,7 @@ struct Budget {
     max_visits: usize,
     max_depth: usize,
 }
+#[cfg(not(vesper_port))]
 impl Budget {
     fn new(grammar: &Grammar<'_>, limits: CodecLimits) -> Result<Self> {
         limits.validate()?;
@@ -132,6 +141,7 @@ impl Budget {
 /// is encoder-only. A successfully decoded value may need larger output/work/
 /// storage budgets for serialization; there is no unconditional same-budget
 /// roundtrip guarantee.
+#[cfg(not(vesper_port))]
 pub fn decode_exact<'a>(
     grammar: &Grammar<'_>,
     input: &'a [u8],
@@ -156,6 +166,26 @@ pub fn decode_exact<'a>(
     }
     Ok(value)
 }
+#[cfg(vesper_port)]
+pub fn decode_exact<'a>(
+    grammar: &Grammar<'_>,
+    input: &'a [u8],
+    limits: CodecLimits,
+) -> Result<Value<'a>> {
+    let (flat, lits, meta, root) = grammar.port_parts();
+    let words = port::vesper::cd_decode_exact(
+        flat,
+        lits,
+        meta,
+        root,
+        &grammar.port_limits(),
+        &port::codec_limits(limits),
+        input,
+    )
+    .map_err(port::error)?;
+    Ok(port::codec_value(&words, &mut 0, input))
+}
+#[cfg(not(vesper_port))]
 struct Reader<'g, 'r, 'a> {
     grammar: &'g Grammar<'r>,
     input: &'a [u8],
@@ -163,6 +193,7 @@ struct Reader<'g, 'r, 'a> {
     end: usize,
     budget: Budget,
 }
+#[cfg(not(vesper_port))]
 impl<'a> Reader<'_, '_, 'a> {
     fn number(&mut self) -> Result<u64> {
         let (value, bytes) =
@@ -293,6 +324,10 @@ impl<'a> Reader<'_, '_, 'a> {
     }
 }
 
+/// The Rust size of one plan write, which the encoder's metadata budget
+/// counts (the port charges the same).
+#[cfg(vesper_port)]
+pub(crate) const WRITE_SIZE: usize = size_of::<Write<'_>>();
 #[derive(Clone, Copy)]
 enum Write<'a> {
     Byte(u8),
@@ -300,15 +335,18 @@ enum Write<'a> {
     U24(u32),
     Bytes(&'a [u8]),
 }
+#[cfg(not(vesper_port))]
 struct Plan<'a> {
     writes: Vec<Write<'a>>,
     len: usize,
     budget: Budget,
 }
+#[cfg(not(vesper_port))]
 struct Planner<'p, 'r> {
     grammar: &'p Grammar<'r>,
     plan: Plan<'p>,
 }
+#[cfg(not(vesper_port))]
 impl<'p> Plan<'p> {
     fn push(&mut self, write: Write<'p>) -> Result<usize> {
         if self.writes.len() == self.writes.capacity() {
@@ -327,6 +365,7 @@ impl<'p> Plan<'p> {
         Ok(index)
     }
 }
+#[cfg(not(vesper_port))]
 impl<'p> Planner<'p, '_> {
     fn length(&mut self, bytes: usize) -> Result<()> {
         self.plan.len = add(self.plan.len, bytes)?;
@@ -471,6 +510,7 @@ impl<'p> Planner<'p, '_> {
         }
     }
 }
+#[cfg(not(vesper_port))]
 fn plan<'p>(
     grammar: &'p Grammar<'_>,
     value: &'p Value<'_>,
@@ -490,13 +530,29 @@ fn plan<'p>(
 
 /// Measure canonical bytes from semantic values. This validates the complete
 /// shape and all grammar/output/plan bounds without creating an output buffer.
+#[cfg(not(vesper_port))]
 pub fn encoded_len(grammar: &Grammar<'_>, value: &Value<'_>, limits: CodecLimits) -> Result<usize> {
     Ok(plan(grammar, value, limits)?.len)
+}
+#[cfg(vesper_port)]
+pub fn encoded_len(grammar: &Grammar<'_>, value: &Value<'_>, limits: CodecLimits) -> Result<usize> {
+    let (flat, _, _, root) = grammar.port_parts();
+    let (values, _) = port::flatten_codec_value(value);
+    let n = port::vesper::cd_encoded_len(
+        flat,
+        root,
+        &grammar.port_limits(),
+        &port::codec_limits(limits),
+        &values,
+    )
+    .map_err(port::error)?;
+    Ok(n as usize)
 }
 
 /// Every returned failure preserves the whole caller output. Successful writes
 /// preserve its suffix. Plan/scratch storage and all copying work are prepaid;
 /// physical allocator behavior/RSS are not certified by these logical caps.
+#[cfg(not(vesper_port))]
 pub fn encode_into(
     grammar: &Grammar<'_>,
     value: &Value<'_>,
@@ -560,4 +616,26 @@ pub fn encode_into(
     }
     output[..plan.len].copy_from_slice(&scratch);
     Ok(plan.len)
+}
+#[cfg(vesper_port)]
+pub fn encode_into(
+    grammar: &Grammar<'_>,
+    value: &Value<'_>,
+    output: &mut [u8],
+    limits: CodecLimits,
+) -> Result<usize> {
+    let (flat, lits, _, root) = grammar.port_parts();
+    let (values, arena) = port::flatten_codec_value(value);
+    let n = port::vesper::cd_encode_into(
+        flat,
+        lits,
+        root,
+        &grammar.port_limits(),
+        &port::codec_limits(limits),
+        &values,
+        &arena,
+        output,
+    )
+    .map_err(port::error)?;
+    Ok(n as usize)
 }
