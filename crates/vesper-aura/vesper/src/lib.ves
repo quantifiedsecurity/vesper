@@ -17,9 +17,11 @@
 // - Limits: nodes, children, depth, properties, subscriptions, text bytes,
 //   total text bytes, patches.
 //
-// Every allocation lives in a handle that the caller owns (a dropped local
-// sequence is not freed natively yet), so scratch space is a field of the
-// handle a function builds or updates.
+// Scratch sequences are locals: native code frees a function's own
+// `ChunkSeq` bindings on every exit (#945). A dropped local handle does not
+// free the sequences inside it yet, so each path builds only the handle it
+// returns, and a handle's sequences are sized when it is built (assigning a
+// new sequence to a handle's field would leak the old one).
 use self::apply::{
     do_recorder_apply
 };
@@ -337,7 +339,7 @@ pub struct Recorder {
     reject: u64
 }
 
-// The answer of a SimAura query, with its scratch space. `items` holds the
+// The answer of a SimAura query, with its decoded tree. `items` holds the
 // focus order (serials), the audit findings (tag, target, kind per finding:
 // tag 0 missing label, 1 hidden subscribed control) or the encoded nodes;
 // `values` holds encoded slot references.
