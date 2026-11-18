@@ -35,7 +35,8 @@
 //   type       Primitive [0, name], I64Range [1, min, max], U64Range
 //              [2, min, max], Parameter [3, index], Named [4, name, m,
 //              argument * m], Tuple [5, m, element * m], Function
-//              [6, function], Unsupported [7, description]
+//              [6, function], Unsupported [7, description]; a subtree
+//              cut by the encoder past 256 levels is [7, description, k]
 // Maps and sets are in Rust iteration order (sorted).
 use self::Q;
 use self::util::{

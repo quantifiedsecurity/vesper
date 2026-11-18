@@ -493,3 +493,123 @@ fn projection_subsets_match_the_rust_seed() {
         assert_eq!(a.is_subset_of(&b), expected, "{a:?} <= {b:?}");
     }
 }
+
+/// A type nested `depth` levels deep: tuples, with a function type every
+/// seventh level, around `leaf`. The edit at `edit_at` (if any) swaps one
+/// level's tuple for a two-element tuple.
+fn deep_ty(depth: usize, leaf: Primitive, edit_at: Option<usize>) -> Type {
+    let mut t = Type::Primitive { name: leaf };
+    for level in (0..depth).rev() {
+        t = if level % 7 == 3 {
+            Type::Function {
+                signature: Box::new(Function {
+                    generics: vec![],
+                    mode: Mode::Copy,
+                    parameters: vec![],
+                    result: t,
+                    result_mode: Mode::Copy,
+                    effects: Effects::default(),
+                }),
+            }
+        } else if edit_at == Some(level) {
+            Type::Tuple {
+                elements: vec![
+                    t,
+                    Type::Primitive {
+                        name: Primitive::Unit,
+                    },
+                ],
+            }
+        } else {
+            Type::Tuple { elements: vec![t] }
+        };
+    }
+    t
+}
+
+fn deep_interface(pass: Pass, ty: Type) -> Interface {
+    let mut i = Interface::default();
+    i.exports.insert(
+        "f".into(),
+        Declaration::Function {
+            signature: Function {
+                generics: vec![],
+                mode: Mode::Copy,
+                parameters: vec![Parameter {
+                    pass,
+                    ty,
+                    projection: Projection::All,
+                }],
+                result: Type::Primitive {
+                    name: Primitive::Unit,
+                },
+                result_mode: Mode::Copy,
+                effects: Effects::default(),
+            },
+        },
+    );
+    i
+}
+
+/// Types nested far past the checker's 128-level guard: the port's encoder
+/// cuts them (at 256 levels) without changing any report, including where
+/// the checker compares whole deep types for equality.
+#[test]
+fn deeply_nested_types_match_the_rust_seed() {
+    // The seed's own `==`, serde and drop recurse over the whole tree.
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(|| {
+            for depth in [200, 300, 5_000] {
+                for pass in [Pass::In, Pass::Inout] {
+                    let base = deep_ty(depth, Primitive::U8, None);
+                    for new_ty in [
+                        base.clone(),
+                        deep_ty(depth, Primitive::U32, None),
+                        deep_ty(depth, Primitive::U8, Some(5)),
+                        deep_ty(depth, Primitive::U8, Some(depth - 2)),
+                    ] {
+                        let old = deep_interface(pass, base.clone());
+                        let new = deep_interface(pass, new_ty);
+                        let got = serde_json::to_value(compare(&old, &new)).unwrap();
+                        let expected = serde_json::to_value(semver_seed::compare(
+                            &seed::<semver_seed::Interface>(&old),
+                            &seed::<semver_seed::Interface>(&new),
+                        ))
+                        .unwrap();
+                        assert_eq!(got, expected, "depth {depth}, {pass:?}");
+                    }
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// The port's encoder does not recurse past its cut, so a type far too deep
+/// for the stack still yields the checker's nesting report. (The inputs are
+/// leaked: Rust's own drop of such a type recurses over the whole tree.)
+#[test]
+fn types_deeper_than_the_stack_are_reported_unsupported() {
+    std::thread::Builder::new()
+        .stack_size(2 << 20)
+        .spawn(|| {
+            let old = deep_interface(Pass::In, deep_ty(200_000, Primitive::U8, None));
+            let new = deep_interface(Pass::In, deep_ty(200_000, Primitive::U32, None));
+            let report = compare(&old, &new);
+            assert_eq!(report.classification, Classification::Unknown);
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|i| i.kind == IssueKind::Unsupported
+                        && i.message.ends_with("nesting exceeds 128 levels")),
+                "{report:?}"
+            );
+            std::mem::forget((old, new));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

@@ -70,7 +70,18 @@ struct Encoder<'a> {
     /// Open-addressing table of written nodes.
     slots: Vec<Option<Slot>>,
     used: usize,
+    /// How many `ty` calls are open, so deep input cannot overflow the stack.
+    depth: usize,
+    /// The distinct subtrees cut at `DEEP`, by Rust equality.
+    deep: Vec<&'a Type>,
 }
+
+/// Types nested deeper than this are cut. Every checker walk stops at depth
+/// 128 (counting each type and function level, as `depth` does), so it never
+/// reads below the cut; it only compares cut subtrees by offset, and a cut
+/// node `[7, description, k]` carries the index `k` of its subtree among the
+/// distinct cut subtrees, so offsets stay equal exactly when the subtrees are.
+const DEEP: usize = 256;
 
 impl<'a> Encoder<'a> {
     fn new() -> Self {
@@ -83,6 +94,8 @@ impl<'a> Encoder<'a> {
             marks: Vec::new(),
             slots: vec![None; 256],
             used: 0,
+            depth: 0,
+            deep: Vec::new(),
         }
     }
 
@@ -193,6 +206,79 @@ impl<'a> Encoder<'a> {
     }
 }
 
+/// `a == b`, without recursion, so a cut subtree of any depth compares
+/// without overflowing the stack.
+fn same_type(a: &Type, b: &Type) -> bool {
+    let mut pending = vec![(a, b)];
+    let same_capability = |a: &'_ Capability, b: &'_ Capability| {
+        a.identity == b.identity
+            && a.effect == b.effect
+            && a.resumption == b.resumption
+            && a.ceiling == b.ceiling
+            && a.grade_relation == b.grade_relation
+            && a.arguments.len() == b.arguments.len()
+    };
+    while let Some((a, b)) = pending.pop() {
+        match (a, b) {
+            (
+                Type::Named {
+                    name: n,
+                    arguments: x,
+                },
+                Type::Named {
+                    name: m,
+                    arguments: y,
+                },
+            ) => {
+                if n != m || x.len() != y.len() {
+                    return false;
+                }
+                pending.extend(x.iter().zip(y));
+            }
+            (Type::Tuple { elements: x }, Type::Tuple { elements: y }) => {
+                if x.len() != y.len() {
+                    return false;
+                }
+                pending.extend(x.iter().zip(y));
+            }
+            (Type::Function { signature: f }, Type::Function { signature: g }) => {
+                let (fe, ge) = (&f.effects, &g.effects);
+                if f.generics != g.generics
+                    || f.mode != g.mode
+                    || f.result_mode != g.result_mode
+                    || f.parameters.len() != g.parameters.len()
+                    || fe.row_variables != ge.row_variables
+                    || fe.capabilities.len() != ge.capabilities.len()
+                {
+                    return false;
+                }
+                for (p, q) in f.parameters.iter().zip(&g.parameters) {
+                    if p.pass != q.pass || p.projection != q.projection {
+                        return false;
+                    }
+                    pending.push((&p.ty, &q.ty));
+                }
+                for (c, d) in fe.capabilities.iter().zip(&ge.capabilities) {
+                    if !same_capability(c, d) {
+                        return false;
+                    }
+                    pending.extend(c.arguments.iter().zip(&d.arguments));
+                }
+                pending.push((&f.result, &g.result));
+            }
+            (Type::Named { .. } | Type::Tuple { .. } | Type::Function { .. }, _)
+            | (_, Type::Named { .. } | Type::Tuple { .. } | Type::Function { .. }) => return false,
+            // The rest hold no types.
+            _ => {
+                if a != b {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 fn mode(m: Mode) -> u64 {
     match m {
         Mode::Copy => 0,
@@ -243,6 +329,26 @@ impl<'a> Encoder<'a> {
 
     fn ty(&mut self, t: &'a Type) -> u64 {
         let n = self.begin();
+        if self.depth >= DEEP {
+            let k = match self.deep.iter().position(|d| same_type(d, t)) {
+                Some(k) => k,
+                None => {
+                    self.deep.push(t);
+                    self.deep.len() - 1
+                }
+            };
+            self.w(7);
+            self.s("type nesting exceeds 128 levels");
+            self.w(k as u64);
+            return self.end(Class::Type, n);
+        }
+        self.depth += 1;
+        let at = self.ty_node(t, n);
+        self.depth -= 1;
+        at
+    }
+
+    fn ty_node(&mut self, t: &'a Type, n: usize) -> u64 {
         match t {
             Type::Primitive { name } => {
                 self.w(0);

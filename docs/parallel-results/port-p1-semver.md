@@ -53,6 +53,14 @@ following SemVer 2.0.0 §9 to §11 and the crate's parser. Version requirements
   nodes per class, so where the Rust code compares values with `==`, the port
   compares offsets. The port writes every issue path, rule, message and
   witness itself. The wrapper only slices its text pool.
+- Types nested more than 256 levels are cut by the encoder, so input of any
+  depth cannot overflow its stack. Every checker walk stops at 128 levels, and
+  a cut node carries the index of its subtree among the distinct cut subtrees,
+  found with a non-recursive equality. Because of that, offsets still compare
+  equal exactly when the Rust `==` would.
+  `tests/interface_differential.rs` checks this against the seed at depths
+  200, 300 and 5,000. It also checks that a 200,000-level type on a 2 MiB
+  stack gets the nesting report.
 - `check_release` computes the comparison first and then calls the port with
   the classification. The comparison has no side effects, so this order cannot
   be observed.
@@ -84,7 +92,7 @@ and a contained range raises no incompatibility. No test was deleted.
 | `tests/interface.rs` (39, translated) | pass | pass |
 | `tests/release.rs` (9) | pass | pass |
 | `tests/version_differential.rs`: parse errors, messages and `Display` against `semver` over 525 generated and fixed inputs (more than 100 of them malformed), and precedence against `cmp_precedence` on 10,000 generated pairs (each ordering at least 500 times) | pass | pass |
-| `tests/interface_differential.rs`: full `Report` JSON of port and seed on 4,000 generated interface pairs (half well-formed; every classification at least 100 times), and `is_subset_of` on 5,000 projection pairs | pass | port only |
+| `tests/interface_differential.rs`: full `Report` JSON of port and seed on 4,000 generated interface pairs (half well-formed; every classification at least 100 times) and on deeply nested types, and `is_subset_of` on 5,000 projection pairs | pass | port only |
 | `tests/port_memory.rs`: 1,000 cycles of comparisons and release checks (accepted, rejected, malformed) leave no live port allocation | pass | pass (count 0) |
 
 Divergence: the `vesper-port-divergent` feature (Cargo) and the
