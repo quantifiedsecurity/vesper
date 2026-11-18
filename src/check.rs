@@ -4132,6 +4132,7 @@ impl Checker<'_> {
                 {
                     b.integer = None;
                     b.nonzero = false;
+                    b.range = None;
                 }
             }
         }

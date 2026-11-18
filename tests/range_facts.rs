@@ -308,6 +308,9 @@ fn writes_drop_the_range() {
         "fn f(x: u64, s: u64, c: bool) -> u64 { if s < 64 || c { x << s } else { 0 } }",
         "fn f(x: u64, s: u64) -> u64 { if s < 64 { 0 } else { x << s } }",
         "fn f(x: u64, s: u64) -> u64 { if s != 64 { x << s } else { 0 } }",
+        // An abort may skip the body's write, so the join forgets its range.
+        "fn f(x: u64, s: u64, c: bool) -> u64 { let mut t: u64 = 100; \
+            let r: i64 = handle Fail[i64] in { if c { Fail::raise(1) } t = 5; 0 } with { return v => v, raise(e, k) => e, }; x << t }",
     ] {
         needs_effect(source);
     }
