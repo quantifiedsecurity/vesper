@@ -158,3 +158,4 @@ protobuf protobuf signed_twos_complement_varints_are_canonical_in_singular_and_p
 der der typed_set_of_sorts_complete_encodings_retains_duplicates_and_rejects_untyped_set utf8_string_is_strict_borrowed_and_transactional
 ipc ipc independent_arrow_values_and_versions hostile_schema_and_union_discriminants
 CHECKS
+. crates/vesper-simpulse/port/check.sh  # port P1 lane 5 (#902): vesper-simpulse, both builds and the divergence check
