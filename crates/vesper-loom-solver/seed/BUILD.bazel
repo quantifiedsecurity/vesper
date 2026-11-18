@@ -14,6 +14,13 @@ _CRATE = PACKAGES["crates/vesper-loom-solver/seed"].crate_data()
 
 _DEPS = all_crate_deps(_CRATE, normal = True, platforms = _CRATE["platforms"])
 
+_TEST_DEPS = all_crate_deps(
+    _CRATE,
+    normal = True,
+    normal_dev = True,
+    platforms = _CRATE["platforms"],
+)
+
 rust_library(
     name = "seed",
     srcs = ["//crates/vesper-loom-solver:rust_srcs"],
@@ -43,7 +50,7 @@ rust_test(
         srcs = ["//crates/vesper-loom-solver:tests/%s.rs" % t],
         crate_root = "//crates/vesper-loom-solver:tests/%s.rs" % t,
         edition = "2024",
-        deps = [":seed"] + _DEPS,
+        deps = [":seed"] + _TEST_DEPS,
     )
     for t in [
         "differential",
