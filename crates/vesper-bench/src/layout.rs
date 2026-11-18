@@ -56,19 +56,24 @@ fn splitmix64(state: &mut u64) -> u64 {
 /// Draws the layout for `run` under `seed` (SplitMix64, an explicit modular
 /// generator; wrapping is its definition).
 pub fn layout_plan(seed: u64, run: u32) -> LayoutPlan {
-    let mut state = seed ^ (u64::from(run) << 32 | u64::from(run));
-    // Mix the run index in again so neighbouring runs decorrelate.
-    let _ = splitmix64(&mut state);
-    let heap = (splitmix64(&mut state) % u64::from(4096 / HEAP_OFFSET_STEP)) as u32;
-    let stack = (splitmix64(&mut state) % u64::from(4096 / STACK_FRAME_BYTES)) as u32;
-    let env = (splitmix64(&mut state) % u64::from(MAX_ENV_PADDING)) as u32;
-    LayoutPlan {
-        seed,
-        run,
-        heap_offset_bytes: heap * HEAP_OFFSET_STEP,
-        stack_padding_bytes: stack * STACK_FRAME_BYTES,
-        env_padding_bytes: env,
-        run_seed: splitmix64(&mut state),
+    #[cfg(vesper_port)]
+    return crate::port::layout_plan(seed, run);
+    #[cfg(not(vesper_port))]
+    {
+        let mut state = seed ^ (u64::from(run) << 32 | u64::from(run));
+        // Mix the run index in again so neighbouring runs decorrelate.
+        let _ = splitmix64(&mut state);
+        let heap = (splitmix64(&mut state) % u64::from(4096 / HEAP_OFFSET_STEP)) as u32;
+        let stack = (splitmix64(&mut state) % u64::from(4096 / STACK_FRAME_BYTES)) as u32;
+        let env = (splitmix64(&mut state) % u64::from(MAX_ENV_PADDING)) as u32;
+        LayoutPlan {
+            seed,
+            run,
+            heap_offset_bytes: heap * HEAP_OFFSET_STEP,
+            stack_padding_bytes: stack * STACK_FRAME_BYTES,
+            env_padding_bytes: env,
+            run_seed: splitmix64(&mut state),
+        }
     }
 }
 
@@ -160,21 +165,28 @@ pub fn env_padding_value(bytes: u32) -> String {
 
 /// Sums every measured epoch of one run into one paired sample.
 pub fn layout_sample(report: &RunReport) -> Result<PairedSample, Error> {
-    let mut baseline = 0u64;
-    let mut candidate = 0u64;
-    let mut operations = 0u64;
-    for pair in report.pairs() {
-        baseline = baseline
-            .checked_add(pair.baseline_total())
-            .ok_or(Error::ArithmeticOverflow)?;
-        candidate = candidate
-            .checked_add(pair.candidate_total())
-            .ok_or(Error::ArithmeticOverflow)?;
-        operations = operations
-            .checked_add(pair.operations_per_arm())
-            .ok_or(Error::ArithmeticOverflow)?;
+    #[cfg(vesper_port)]
+    return crate::port::layout_sample(&crate::port::samples(report.pairs()))
+        .map(crate::port::paired)
+        .map_err(crate::port::error);
+    #[cfg(not(vesper_port))]
+    {
+        let mut baseline = 0u64;
+        let mut candidate = 0u64;
+        let mut operations = 0u64;
+        for pair in report.pairs() {
+            baseline = baseline
+                .checked_add(pair.baseline_total())
+                .ok_or(Error::ArithmeticOverflow)?;
+            candidate = candidate
+                .checked_add(pair.candidate_total())
+                .ok_or(Error::ArithmeticOverflow)?;
+            operations = operations
+                .checked_add(pair.operations_per_arm())
+                .ok_or(Error::ArithmeticOverflow)?;
+        }
+        PairedSample::new(baseline, candidate, operations)
     }
-    PairedSample::new(baseline, candidate, operations)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,31 +225,38 @@ pub struct LayoutSurvival {
 /// Exact two-sided >=95% median-ratio interval over per-layout samples, tested
 /// against ratio 1. Assumes the layouts are independent draws.
 pub fn layout_survival(per_layout: &[PairedSample]) -> Result<LayoutSurvival, Error> {
-    if per_layout.len() > MAX_LAYOUT_RUNS {
-        return Err(Error::Limit("layouts"));
-    }
-    let analysis = analyze_pairs(per_layout, 0)?;
-    let verdict = match (&analysis.interval, analysis.decision) {
-        (None, _) => LayoutVerdict::InsufficientLayouts,
-        (Some(_), Decision::Regression) => LayoutVerdict::CandidateSlower,
-        // Both arms of a sample run the same operation count, so the ratio is
-        // below one exactly when the candidate total is below the baseline's.
-        (Some(interval), _)
-            if interval
-                .upper
-                .candidate_total()
-                .cmp(&interval.upper.baseline_total())
-                == Ordering::Less =>
-        {
-            LayoutVerdict::CandidateFaster
+    #[cfg(vesper_port)]
+    return crate::port::layout_survival(&crate::port::samples(per_layout))
+        .map(|s| crate::port::survival(s, per_layout.len()))
+        .map_err(crate::port::error);
+    #[cfg(not(vesper_port))]
+    {
+        if per_layout.len() > MAX_LAYOUT_RUNS {
+            return Err(Error::Limit("layouts"));
         }
-        (Some(_), _) => LayoutVerdict::DoesNotSurvive,
-    };
-    Ok(LayoutSurvival {
-        verdict,
-        analysis,
-        layouts: per_layout.len(),
-    })
+        let analysis = analyze_pairs(per_layout, 0)?;
+        let verdict = match (&analysis.interval, analysis.decision) {
+            (None, _) => LayoutVerdict::InsufficientLayouts,
+            (Some(_), Decision::Regression) => LayoutVerdict::CandidateSlower,
+            // Both arms of a sample run the same operation count, so the ratio is
+            // below one exactly when the candidate total is below the baseline's.
+            (Some(interval), _)
+                if interval
+                    .upper
+                    .candidate_total()
+                    .cmp(&interval.upper.baseline_total())
+                    == Ordering::Less =>
+            {
+                LayoutVerdict::CandidateFaster
+            }
+            (Some(_), _) => LayoutVerdict::DoesNotSurvive,
+        };
+        Ok(LayoutSurvival {
+            verdict,
+            analysis,
+            layouts: per_layout.len(),
+        })
+    }
 }
 
 /// One measured layout of an in-process randomized comparison.

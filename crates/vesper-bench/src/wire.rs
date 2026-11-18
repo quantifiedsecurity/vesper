@@ -164,34 +164,55 @@ impl PmuSampleWire {
         Ok(())
     }
     pub fn validate(&self) -> Result<(), WireError> {
-        check_ranges(
-            u64::from(self.tma_backend_bound_slots_bp),
-            u64::from(self.icache_rand_offset_bytes),
-        )
+        #[cfg(vesper_port)]
+        return crate::port::wire_validate(*self).map_err(crate::port::wire_error);
+        #[cfg(not(vesper_port))]
+        {
+            check_ranges(
+                u64::from(self.tma_backend_bound_slots_bp),
+                u64::from(self.icache_rand_offset_bytes),
+            )
+        }
     }
     pub fn encode(&self) -> Result<[u8; PMU_SAMPLE_WIRE_BYTES], WireError> {
-        self.validate()?;
-        let mut bytes = [0u8; PMU_SAMPLE_WIRE_BYTES];
-        for field in PmuField::ALL {
-            let (offset, width) = field.span();
-            let value = self.get(field).to_le_bytes();
-            bytes[offset..offset + width].copy_from_slice(&value[..width]);
+        #[cfg(vesper_port)]
+        return crate::port::wire_encode(*self)
+            .map(|bytes| {
+                let mut out = [0u8; PMU_SAMPLE_WIRE_BYTES];
+                out.copy_from_slice(&bytes);
+                out
+            })
+            .map_err(crate::port::wire_error);
+        #[cfg(not(vesper_port))]
+        {
+            self.validate()?;
+            let mut bytes = [0u8; PMU_SAMPLE_WIRE_BYTES];
+            for field in PmuField::ALL {
+                let (offset, width) = field.span();
+                let value = self.get(field).to_le_bytes();
+                bytes[offset..offset + width].copy_from_slice(&value[..width]);
+            }
+            Ok(bytes)
         }
-        Ok(bytes)
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
-        if bytes.len() != PMU_SAMPLE_WIRE_BYTES {
-            return Err(WireError::Length(bytes.len()));
+        #[cfg(vesper_port)]
+        return crate::port::wire_decode(bytes).map_err(crate::port::wire_error);
+        #[cfg(not(vesper_port))]
+        {
+            if bytes.len() != PMU_SAMPLE_WIRE_BYTES {
+                return Err(WireError::Length(bytes.len()));
+            }
+            let mut wire = Self::default();
+            for field in PmuField::ALL {
+                let (offset, width) = field.span();
+                let mut value = [0u8; 8];
+                value[..width].copy_from_slice(&bytes[offset..offset + width]);
+                wire.set(field, u64::from_le_bytes(value))?;
+            }
+            wire.validate()?;
+            Ok(wire)
         }
-        let mut wire = Self::default();
-        for field in PmuField::ALL {
-            let (offset, width) = field.span();
-            let mut value = [0u8; 8];
-            value[..width].copy_from_slice(&bytes[offset..offset + width]);
-            wire.set(field, u64::from_le_bytes(value))?;
-        }
-        wire.validate()?;
-        Ok(wire)
     }
 }
 
@@ -201,10 +222,17 @@ pub struct AvailabilityMask(u16);
 impl AvailabilityMask {
     pub const ALL: u16 = (1 << 9) - 1;
     pub fn new(bits: u16) -> Result<Self, WireError> {
-        if bits & !Self::ALL != 0 {
-            return Err(WireError::InvalidMask(bits));
+        #[cfg(vesper_port)]
+        return crate::port::mask_check(bits)
+            .map(|()| Self(bits))
+            .map_err(crate::port::wire_error);
+        #[cfg(not(vesper_port))]
+        {
+            if bits & !Self::ALL != 0 {
+                return Err(WireError::InvalidMask(bits));
+            }
+            Ok(Self(bits))
         }
-        Ok(Self(bits))
     }
     pub fn bits(self) -> u16 {
         self.0
@@ -225,11 +253,16 @@ impl PmuSample {
     }
     /// Records a measured value, rejecting values the wire cannot carry.
     pub fn set(&mut self, field: PmuField, value: u64) -> Result<(), WireError> {
-        PmuSampleWire::default().set(field, value)?;
-        match field {
-            PmuField::TmaBackendBoundSlotsBp => check_ranges(value, 0)?,
-            PmuField::IcacheRandOffsetBytes => check_ranges(0, value)?,
-            _ => {}
+        #[cfg(vesper_port)]
+        crate::port::sample_check(field.index() as u64, value).map_err(crate::port::wire_error)?;
+        #[cfg(not(vesper_port))]
+        {
+            PmuSampleWire::default().set(field, value)?;
+            match field {
+                PmuField::TmaBackendBoundSlotsBp => check_ranges(value, 0)?,
+                PmuField::IcacheRandOffsetBytes => check_ranges(0, value)?,
+                _ => {}
+            }
         }
         self.values[field.index()] = Some(value);
         Ok(())
@@ -260,12 +293,22 @@ impl PmuSample {
     }
     /// The record with unavailable fields zeroed, and the mask that says so.
     pub fn to_wire_masked(&self) -> Result<(PmuSampleWire, AvailabilityMask), WireError> {
-        let mut wire = PmuSampleWire::default();
-        for field in PmuField::ALL {
-            wire.set(field, self.get(field).unwrap_or(0))?;
+        #[cfg(vesper_port)]
+        return crate::port::wire_from_values(
+            &self.values.map(|v| v.unwrap_or(0)),
+            u64::from(self.mask().bits()),
+        )
+        .map(|wire| (wire, self.mask()))
+        .map_err(crate::port::wire_error);
+        #[cfg(not(vesper_port))]
+        {
+            let mut wire = PmuSampleWire::default();
+            for field in PmuField::ALL {
+                wire.set(field, self.get(field).unwrap_or(0))?;
+            }
+            wire.validate()?;
+            Ok((wire, self.mask()))
         }
-        wire.validate()?;
-        Ok((wire, self.mask()))
     }
     /// Inverse of [`to_wire_masked`](Self::to_wire_masked).
     pub fn from_wire_masked(wire: &PmuSampleWire, mask: AvailabilityMask) -> Self {
@@ -282,8 +325,13 @@ impl PmuSample {
 /// Top-Down backend-bound share in basis points, rounded down; `None` when
 /// no slots were counted or the backend count exceeds the slot count.
 pub fn backend_bound_bp(backend_slots: u64, total_slots: u64) -> Option<u64> {
-    if total_slots == 0 || backend_slots > total_slots {
-        return None;
+    #[cfg(vesper_port)]
+    return crate::port::backend_bound_bp(backend_slots, total_slots);
+    #[cfg(not(vesper_port))]
+    {
+        if total_slots == 0 || backend_slots > total_slots {
+            return None;
+        }
+        Some((u128::from(backend_slots) * 10_000 / u128::from(total_slots)) as u64)
     }
-    Some((u128::from(backend_slots) * 10_000 / u128::from(total_slots)) as u64)
 }

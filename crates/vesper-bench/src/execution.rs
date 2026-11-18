@@ -51,6 +51,19 @@ impl Default for RunConfig {
 }
 impl RunConfig {
     fn validate(self) -> Result<usize, Error> {
+        #[cfg(vesper_port)]
+        return crate::port::validate_config(
+            self.epochs,
+            self.warmup_epochs,
+            self.operations_per_window,
+            self.max_total_calls,
+            self.max_elapsed_nanos,
+        )
+        .map_err(crate::port::error);
+        #[cfg(not(vesper_port))]
+        self.validate_rust()
+    }
+    fn validate_rust(self) -> Result<usize, Error> {
         if self.epochs == 0 || self.epochs > MAX_EPOCHS {
             return Err(Error::InvalidConfig("epochs must be 1..=64"));
         }
@@ -529,6 +542,37 @@ fn execute_window<C: BenchCase, T: WindowClock>(
         Err(WindowObservedFailure::Observer { error, .. }) => match error.error {},
     }
 }
+/// One measured A/B/B/A epoch as a paired sample: A is windows 0 and 3,
+/// B is windows 1 and 2, over twice the window's operation count.
+fn fold_epoch(windows: &[WindowSample; 4], operations: u64) -> Result<PairedSample, Error> {
+    #[cfg(vesper_port)]
+    return crate::port::fold_epoch(
+        windows[0].elapsed_nanos,
+        windows[1].elapsed_nanos,
+        windows[2].elapsed_nanos,
+        windows[3].elapsed_nanos,
+        operations,
+    )
+    .map(crate::port::paired)
+    .map_err(crate::port::error);
+    #[cfg(not(vesper_port))]
+    {
+        let a = windows[0]
+            .elapsed_nanos
+            .checked_add(windows[3].elapsed_nanos)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let b = windows[1]
+            .elapsed_nanos
+            .checked_add(windows[2].elapsed_nanos)
+            .ok_or(Error::ArithmeticOverflow)?;
+        PairedSample::new(
+            a,
+            b,
+            operations.checked_mul(2).ok_or(Error::ArithmeticOverflow)?,
+        )
+    }
+}
+
 fn elapsed_run(start: Instant) -> Result<u64, Error> {
     u64::try_from(start.elapsed().as_nanos()).map_err(|_| Error::ClockOverflow)
 }
@@ -696,22 +740,7 @@ fn run_observed_inner<A: BenchCase, B: BenchCase, O: WindowObserver>(
             };
         }
         if !warmup {
-            let a = windows[0]
-                .elapsed_nanos
-                .checked_add(windows[3].elapsed_nanos)
-                .ok_or(observed_harness(Error::ArithmeticOverflow))?;
-            let b = windows[1]
-                .elapsed_nanos
-                .checked_add(windows[2].elapsed_nanos)
-                .ok_or(observed_harness(Error::ArithmeticOverflow))?;
-            let pair = PairedSample::new(
-                a,
-                b,
-                operations
-                    .checked_mul(2)
-                    .ok_or(observed_harness(Error::ArithmeticOverflow))?,
-            )
-            .map_err(observed_harness)?;
+            let pair = fold_epoch(&windows, operations).map_err(observed_harness)?;
             pairs.push(pair);
             epochs.push(EpochSample {
                 windows,

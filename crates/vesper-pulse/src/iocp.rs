@@ -115,6 +115,10 @@ struct Entry<T> {
     state: State,
     /// Counted in the handle's [`Binding::in_flight`].
     bound: bool,
+    /// `(socket, base)` this request holds in non-blocking mode when the
+    /// driver restores blocking mode; released (and restored once nobody
+    /// uses the socket) when the entry leaves.
+    nonblocking: Option<(SOCKET, SOCKET)>,
 }
 
 /// Which Pulse IOCP port a handle value was last bound to, and how many
@@ -197,6 +201,10 @@ pub struct IocpDriver<T> {
     afd: Option<OwnedHandle>,
     afd_polls: u64,
     offloaders: Vec<Offloader>,
+    /// At most this many offload threads; see [`IocpDriver::set_offload_limit`].
+    offload_limit: usize,
+    /// See [`IocpDriver::restore_blocking_sockets`].
+    restore_blocking: bool,
     done_tx: mpsc::Sender<Done>,
     done_rx: mpsc::Receiver<Done>,
     finished: HashMap<u64, Done>,
@@ -317,6 +325,9 @@ fn offload_thread(
     }
 }
 
+/// The default cap on a driver's offload threads.
+pub const DEFAULT_OFFLOAD_LIMIT: usize = 64;
+
 impl<T> IocpDriver<T> {
     /// `entries` bounds the requests the driver owns at once.
     pub fn new(entries: u32) -> io::Result<Self> {
@@ -341,6 +352,8 @@ impl<T> IocpDriver<T> {
             afd: None,
             afd_polls: 0,
             offloaders: vec![],
+            offload_limit: DEFAULT_OFFLOAD_LIMIT,
+            restore_blocking: false,
             done_tx,
             done_rx,
             finished: HashMap::new(),
@@ -365,6 +378,35 @@ impl<T> IocpDriver<T> {
     }
     /// Offload threads started so far (each runs one synchronous operation
     /// at a time and is reused once idle).
+    /// Cap the offload threads that wait on synchronous non-disk handles
+    /// (pipes, consoles, character devices), at least 1. Once every one is
+    /// busy, such a request is refused with `ErrorKind::WouldBlock` and
+    /// handed back, rather than starting another thread; the caller retries
+    /// later or uses an overlapped handle. Lowering the cap never stops
+    /// threads already started. The default is [`DEFAULT_OFFLOAD_LIMIT`].
+    pub fn set_offload_limit(&mut self, limit: usize) {
+        self.offload_limit = limit.max(1);
+    }
+    /// Give sockets back in blocking mode (the Winsock default) once no
+    /// request in this process uses them, instead of leaving them
+    /// non-blocking like the readiness drivers leave `O_NONBLOCK`. Off by
+    /// default: Winsock cannot report a socket's mode, so a socket the
+    /// caller made non-blocking comes back blocking, and handles duplicated
+    /// with `DuplicateHandle` or `WSADuplicateSocket` share the mode but may
+    /// not be recognised as one socket. Use it only when every concurrent
+    /// request on a socket goes through the same handle (or its base
+    /// socket). While it is on, the driver re-asserts non-blocking mode
+    /// before every transfer.
+    pub fn restore_blocking_sockets(&mut self, on: bool) {
+        self.restore_blocking = on;
+    }
+    pub fn offload_limit(&self) -> usize {
+        self.offload_limit
+    }
+    fn can_offload(&self) -> bool {
+        self.offloaders.iter().any(|o| o.busy.is_none())
+            || self.offloaders.len() < self.offload_limit
+    }
     pub fn offload_threads(&self) -> usize {
         self.offloaders.len()
     }
@@ -527,7 +569,6 @@ impl<T> IocpDriver<T> {
         socket: SOCKET,
         base: SOCKET,
     ) -> io::Result<State> {
-        afd::set_nonblocking(socket)?;
         match afd::transfer(socket, request.operation, &mut request.buffer) {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
             done => return Ok(State::Posted(done)),
@@ -610,6 +651,9 @@ impl<T> IocpDriver<T> {
         if entry.bound {
             release(handle(&entry.request.file));
         }
+        if let Some((socket, base)) = entry.nonblocking {
+            afd::release_nonblocking(socket, base);
+        }
         Ok(entry)
     }
     fn finish(
@@ -655,6 +699,11 @@ impl<T> IocpDriver<T> {
                 ERROR_INVALID_HANDLE as i32,
             )))
         } else {
+            if entry.nonblocking.is_some() {
+                // Another handle of this socket may have restored blocking
+                // mode; a failed call leaves the transfer to report it.
+                let _ = afd::set_mode(socket, true);
+            }
             match afd::transfer(socket, entry.request.operation, &mut entry.request.buffer) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     if cancelling {
@@ -779,10 +828,27 @@ impl<T> CompletionDriver<T> for IocpDriver<T> {
             poll: afd::PollInfo::zeroed(),
         });
         let mut bound = false;
+        let mut nonblocking = None;
         let state = if let Some((socket, base)) = afd::socket_of(&request.file) {
+            let held = if self.restore_blocking {
+                afd::acquire_nonblocking(socket, base)
+            } else {
+                afd::set_mode(socket, true)
+            };
+            if let Err(e) = held {
+                return Err((e, request));
+            }
             match self.start_socket(&mut request, &mut slot, socket, base) {
-                Ok(state) => state,
-                Err(e) => return Err((e, request)),
+                Ok(state) => {
+                    nonblocking = self.restore_blocking.then_some((socket, base));
+                    state
+                }
+                Err(e) => {
+                    if self.restore_blocking {
+                        afd::release_nonblocking(socket, base);
+                    }
+                    return Err((e, request));
+                }
             }
         } else {
             let sync = match synchronous(&request.file) {
@@ -794,6 +860,18 @@ impl<T> CompletionDriver<T> for IocpDriver<T> {
                 let h = handle(&request.file);
                 State::Posted(sync_transfer(h, op, &mut request.buffer, request.offset))
             } else if sync {
+                if !self.can_offload() {
+                    return Err((
+                        io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            format!(
+                                "all {} IOCP offload threads are busy with synchronous handles",
+                                self.offload_limit
+                            ),
+                        ),
+                        request,
+                    ));
+                }
                 State::Offloaded(usize::MAX)
             } else {
                 if let Err(e) = self.associate(&request.file) {
@@ -821,6 +899,7 @@ impl<T> CompletionDriver<T> for IocpDriver<T> {
                 slot,
                 state,
                 bound,
+                nonblocking,
             },
         );
         if posted {

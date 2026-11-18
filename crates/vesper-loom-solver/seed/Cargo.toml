@@ -46,7 +46,8 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 serde_json = "1"
-vesper-bench = { path = "../../vesper-bench" }
+# The compiler links this seed, so it takes the vesper-bench seed too (#1040).
+vesper-bench = { path = "../../vesper-bench/seed", package = "vesper-bench-seed" }
 
 [lints.rust]
 # cfg(vesper_port) is set only by the port-backed package's build script.

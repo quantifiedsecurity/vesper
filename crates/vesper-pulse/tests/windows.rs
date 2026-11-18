@@ -497,3 +497,142 @@ fn sockets_across_pool_workers() {
     }
     eprintln!("iocp: {n} socket fibers across {workers} workers ok");
 }
+
+fn stream_pair() -> (File, TcpStream) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (server, _) = listener.accept().unwrap();
+    let server = unsafe { File::from_raw_handle(server.into_raw_socket() as RawHandle) };
+    (server, client)
+}
+
+fn completion(d: &mut IocpDriver<u8>) -> vesper_pulse::driver::Completion<u8> {
+    loop {
+        if let Some(c) = d.poll(true).unwrap().pop() {
+            return c;
+        }
+    }
+}
+
+#[test]
+fn sockets_come_back_in_blocking_mode() {
+    let _guard = watchdog("blocking restore");
+    let (server, mut client) = stream_pair();
+    let mut driver = IocpDriver::<u8>::new(8).unwrap();
+    driver.restore_blocking_sockets(true);
+    driver
+        .submit(request(server, Operation::Read, vec![0; 8], 1))
+        .map_err(|(e, _)| e)
+        .unwrap();
+    client.write_all(b"ping").unwrap();
+    let c = completion(&mut driver);
+    assert_eq!(*c.result.as_ref().unwrap(), 4);
+    assert!(driver.socket_polls() >= 1, "the read went through AFD");
+    // Back in blocking mode, a read with a timeout waits and times out;
+    // a socket left non-blocking would fail at once with WouldBlock.
+    let mut server =
+        unsafe { TcpStream::from_raw_socket(c.request.file.into_raw_handle() as RawSocket) };
+    server
+        .set_read_timeout(Some(Duration::from_millis(150)))
+        .unwrap();
+    let start = Instant::now();
+    let err = io::Read::read(&mut server, &mut [0u8; 4]).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err:?}");
+    assert!(start.elapsed() >= Duration::from_millis(100));
+    eprintln!("iocp: socket restored to blocking mode");
+}
+
+#[test]
+fn a_large_send_goes_out_in_pieces_and_completes_with_its_count() {
+    let _guard = watchdog("large send");
+    let (server, client) = stream_pair();
+    let total = 3 * 1024 * 1024 + 17;
+    let data: Vec<u8> = (0..total).map(|i| (i * 7 % 251) as u8).collect();
+    let reader = std::thread::spawn(move || {
+        let mut client = client;
+        let mut got = Vec::with_capacity(total);
+        let mut buf = vec![0u8; 64 * 1024];
+        while got.len() < total {
+            let n = io::Read::read(&mut client, &mut buf).unwrap();
+            assert!(n > 0, "peer closed early");
+            got.extend_from_slice(&buf[..n]);
+        }
+        got
+    });
+    let mut driver = IocpDriver::<u8>::new(8).unwrap();
+    let mut file = server;
+    let mut sent = 0;
+    let mut rounds = 0;
+    while sent < total {
+        rounds += 1;
+        let chunk = data[sent..].to_vec();
+        let len = chunk.len();
+        driver
+            .submit(request(file, Operation::Write, chunk, 1))
+            .map_err(|(e, _)| e)
+            .unwrap();
+        let c = completion(&mut driver);
+        let n = *c.result.as_ref().unwrap();
+        assert!(n > 0 && n <= len, "sent {n} of {len}");
+        sent += n;
+        file = c.request.file;
+    }
+    let got = reader.join().unwrap();
+    assert_eq!(got.len(), total);
+    assert!(got == data, "the peer received the bytes in order");
+    close_socket(file);
+    eprintln!("iocp: {total} bytes sent in {rounds} requests");
+}
+
+#[test]
+fn offload_threads_are_capped_and_refuse_with_would_block() {
+    let _guard = watchdog("offload cap");
+    let mut driver = IocpDriver::<u8>::new(8).unwrap();
+    assert_eq!(
+        driver.offload_limit(),
+        vesper_pulse::iocp::DEFAULT_OFFLOAD_LIMIT
+    );
+    driver.set_offload_limit(2);
+    let mut writers = vec![];
+    for k in 0..2u8 {
+        let (r, w) = io::pipe().unwrap();
+        writers.push(File::from(OwnedHandle::from(w)));
+        driver
+            .submit(request(
+                File::from(OwnedHandle::from(r)),
+                Operation::Read,
+                vec![0; 4],
+                k,
+            ))
+            .map_err(|(e, _)| e)
+            .unwrap();
+    }
+    assert_eq!(driver.offload_threads(), 2);
+    let (r3, w3) = io::pipe().unwrap();
+    let (e, back) = driver
+        .submit(request(
+            File::from(OwnedHandle::from(r3)),
+            Operation::Read,
+            vec![0; 4],
+            9,
+        ))
+        .unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::WouldBlock, "{e}");
+    assert_eq!(back.continuation, 9, "the refused request comes back");
+    assert_eq!(driver.offload_threads(), 2, "no third thread");
+    // A finished read frees its thread for the next request.
+    writers[0].write_all(b"one!").unwrap();
+    let c = completion(&mut driver);
+    assert_eq!(*c.result.as_ref().unwrap(), 4);
+    driver.submit(back).map_err(|(e, _)| e).unwrap();
+    File::from(OwnedHandle::from(w3))
+        .write_all(b"3rd!")
+        .unwrap();
+    let c = completion(&mut driver);
+    assert_eq!(c.request.continuation, 9);
+    assert_eq!(driver.offload_threads(), 2);
+    let rest = driver.drain().unwrap();
+    assert_eq!(rest.len(), 1, "the parked read is cancelled");
+    drop(writers);
+    eprintln!("iocp: offload threads capped at 2");
+}

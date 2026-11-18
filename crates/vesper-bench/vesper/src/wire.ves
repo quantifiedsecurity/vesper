@@ -1,0 +1,191 @@
+// Module wire of @vesper/bench (see lib.ves): wire.rs's 64-byte
+// `PmuSampleWire` record (seven u64le then two u32le), its range checks,
+// the per-field availability checks of `PmuSample`, and
+// `backend_bound_bp`. Field indices are `PmuField::ALL` order.
+use self::{
+    PmuSampleWire,
+    WireErr
+};
+use self::util::{
+    add,
+    gb,
+    gu,
+    inc,
+    mul,
+    pow2,
+    rem
+};
+use self::wide::{
+    w_mul_u64,
+    w_u64,
+    w_udivrem
+};
+
+pub fn field_count() -> u64 {
+    9
+}
+
+fn check_ranges(bp: u64, offset: u64) eff [Fail[WireErr]] {
+    if bp > 10000 {
+        Fail::raise(
+            WireErr::BasisPointsOutOfRange {
+                value: bp
+            }
+        );
+    }
+    if offset >= 4096 || rem(offset, 64) != 0 {
+        Fail::raise(
+            WireErr::LayoutOffsetOutOfRange {
+                value: offset
+            }
+        );
+    }
+}
+
+pub fn do_wire_validate(in wire: PmuSampleWire) eff [Fail[WireErr]] {
+    check_ranges(
+        widen_u64(wire.tma_backend_bound_slots_bp),
+        widen_u64(wire.icache_rand_offset_bytes)
+    );
+}
+
+fn field_value(in wire: PmuSampleWire, field: u64) -> u64 {
+    if field == 0 {
+        wire.ref_cycles
+    } else if field == 1 {
+        wire.instructions_retired
+    } else if field == 2 {
+        wire.l1d_read_misses
+    } else if field == 3 {
+        wire.llc_misses
+    } else if field == 4 {
+        wire.branch_mispredicts
+    } else if field == 5 {
+        wire.simd_vec_uops_retired
+    } else if field == 6 {
+        wire.arena_bump_bytes
+    } else if field == 7 {
+        widen_u64(wire.tma_backend_bound_slots_bp)
+    } else {
+        widen_u64(wire.icache_rand_offset_bytes)
+    }
+}
+
+// `PmuSampleWire::set`'s narrowing check: fields 7 and 8 are 32 bits.
+fn check_width(field: u64, value: u64) eff [Fail[WireErr]] {
+    if field >= 7 && value > 4294967295 {
+        Fail::raise(
+            WireErr::FieldOverflow {
+                field: field
+            }
+        );
+    }
+}
+
+fn wire_of(in v: Slice[u64]) -> PmuSampleWire {
+    PmuSampleWire {
+        ref_cycles: gu(in v, 0),
+        instructions_retired: gu(in v, 1),
+        l1d_read_misses: gu(in v, 2),
+        llc_misses: gu(in v, 3),
+        branch_mispredicts: gu(in v, 4),
+        simd_vec_uops_retired: gu(in v, 5),
+        arena_bump_bytes: gu(in v, 6),
+        tma_backend_bound_slots_bp: wrapping_u32(gu(in v, 7)),
+        icache_rand_offset_bytes: wrapping_u32(gu(in v, 8))
+    }
+}
+
+pub fn do_wire_encode(in wire: PmuSampleWire) -> ChunkSeq[u8] eff [Fail[WireErr]] {
+    do_wire_validate(in wire);
+    let mut bytes: ChunkSeq[u8] = ChunkSeq::with_capacity[u8](64);
+    for field in 0..field_count() {
+        let width: u64 = if field >= 7 {
+            4
+        } else {
+            8
+        };
+        let value = field_value(in wire, field);
+        for k in 0..width {
+            bytes.push(wrapping_u8(wrapping_shr_u64(value, wrapping_u32(mul(8, k)))));
+        }
+    }
+    bytes
+}
+
+pub fn do_wire_decode(in bytes: Slice[u8]) -> PmuSampleWire eff [Fail[WireErr]] {
+    let len = bytes.len();
+    if len != 64 {
+        Fail::raise(
+            WireErr::Length {
+                len: widen_usize(len)
+            }
+        );
+    }
+    let mut values: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](9);
+    let mut offset: u64 = 0;
+    for field in 0..field_count() {
+        let width: u64 = if field >= 7 {
+            4
+        } else {
+            8
+        };
+        let mut value: u64 = 0;
+        for k in 0..width {
+            value = value | wrapping_shl_u64(gb(in bytes, add(offset, k)), wrapping_u32(mul(8, k)));
+        }
+        check_width(field, value);
+        values.push(value);
+        offset = add(offset, width);
+    }
+    let wire = wire_of(in values.as_slice());
+    do_wire_validate(in wire);
+    wire
+}
+
+// `PmuSample::set`'s checks of one measured value.
+pub fn do_sample_check(field: u64, value: u64) eff [Fail[WireErr]] {
+    check_width(field, value);
+    if field == 7 {
+        check_ranges(value, 0);
+    } else if field == 8 {
+        check_ranges(0, value);
+    }
+}
+
+// `PmuSample::to_wire_masked`: unavailable fields (bit clear in
+// `present`) are zero.
+pub fn do_wire_from_values(in values: Slice[u64], present: u64)
+    -> PmuSampleWire eff [Fail[WireErr]] {
+    let mut v: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](9);
+    for field in 0..field_count() {
+        let value = if present & pow2(field) != 0 {
+            gu(in values, field)
+        } else {
+            0
+        };
+        check_width(field, value);
+        v.push(value);
+    }
+    let wire = wire_of(in v.as_slice());
+    do_wire_validate(in wire);
+    wire
+}
+
+pub fn do_mask_check(bits: u16) eff [Fail[WireErr]] {
+    if bits & ~wrapping_u16(511) != 0 {
+        Fail::raise(
+            WireErr::InvalidMask {
+                bits: bits
+            }
+        );
+    }
+}
+
+pub fn do_backend_bound_bp(backend_slots: u64, total_slots: u64) -> Option[u64] {
+    if total_slots == 0 || backend_slots > total_slots {
+        return Option::None;
+    }
+    let (q, r) = w_udivrem(w_mul_u64(backend_slots, 10000), w_u64(total_slots));
+    Option::Some(q.lo)
+}

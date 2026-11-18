@@ -24,7 +24,8 @@ path = "../src/lib.rs"
 
 [dev-dependencies]
 serde_json = { workspace = true }
-vesper-bench = { path = "../../vesper-bench" }
+# The compiler links this seed, so it takes the vesper-bench seed too (#1040).
+vesper-bench = { path = "../../vesper-bench/seed", package = "vesper-bench-seed" }
 
 # The Rust arm of the ABBA benchmark (the port package's serde_abba).
 [[example]]

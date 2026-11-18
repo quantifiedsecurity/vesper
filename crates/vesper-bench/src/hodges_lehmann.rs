@@ -73,27 +73,35 @@ pub fn gate_paired_difference(
     differences: &[i64],
     max_difference: i64,
 ) -> Result<PairedDifferenceGate, HodgesLehmannError> {
-    let estimate = hodges_lehmann_paired(differences)?;
-    let threshold_times_two = i128::from(max_difference) * 2;
-    let (decision, reason) = match estimate.interval {
-        None => (
-            Decision::Inconclusive,
-            Some(PairedDifferenceInconclusive::InsufficientPairs),
-        ),
-        Some(interval) if interval.upper_times_two <= threshold_times_two => (Decision::Pass, None),
-        Some(interval) if interval.lower_times_two > threshold_times_two => {
-            (Decision::Regression, None)
-        }
-        Some(_) => (
-            Decision::Inconclusive,
-            Some(PairedDifferenceInconclusive::IntervalCrossesThreshold),
-        ),
-    };
-    Ok(PairedDifferenceGate {
-        decision,
-        reason,
-        estimate,
-    })
+    #[cfg(vesper_port)]
+    return crate::port::gate_paired_difference(differences, max_difference)
+        .map(crate::port::hl_gate);
+    #[cfg(not(vesper_port))]
+    {
+        let estimate = hodges_lehmann_paired(differences)?;
+        let threshold_times_two = i128::from(max_difference) * 2;
+        let (decision, reason) = match estimate.interval {
+            None => (
+                Decision::Inconclusive,
+                Some(PairedDifferenceInconclusive::InsufficientPairs),
+            ),
+            Some(interval) if interval.upper_times_two <= threshold_times_two => {
+                (Decision::Pass, None)
+            }
+            Some(interval) if interval.lower_times_two > threshold_times_two => {
+                (Decision::Regression, None)
+            }
+            Some(_) => (
+                Decision::Inconclusive,
+                Some(PairedDifferenceInconclusive::IntervalCrossesThreshold),
+            ),
+        };
+        Ok(PairedDifferenceGate {
+            decision,
+            reason,
+            estimate,
+        })
+    }
 }
 
 /// Estimate the location of a paired-difference distribution and its exact
@@ -104,76 +112,81 @@ pub fn gate_paired_difference(
 pub fn hodges_lehmann_paired(
     differences: &[i64],
 ) -> Result<HodgesLehmannEstimate, HodgesLehmannError> {
-    let n = differences.len();
-    if n == 0 {
-        return Err(HodgesLehmannError::EmptyEvidence);
-    }
-    if n > MAX_HODGES_LEHMANN_PAIRS {
-        return Err(HodgesLehmannError::TooManyPairs);
-    }
-    if differences.contains(&0) {
-        return Err(HodgesLehmannError::ZeroDifference);
-    }
-    // Fixed-size scratch avoids allocation and handles i64::MIN exactly.
-    let mut magnitudes = [0u64; MAX_HODGES_LEHMANN_PAIRS];
-    for (slot, &difference) in magnitudes.iter_mut().zip(differences) {
-        *slot = difference.unsigned_abs();
-    }
-    magnitudes[..n].sort_unstable();
-    if magnitudes[..n].windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(HodgesLehmannError::TiedAbsoluteDifferences);
-    }
-    let count = n * (n + 1) / 2;
-    let mut walsh_twice = Vec::new();
-    walsh_twice
-        .try_reserve_exact(count)
-        .map_err(|_| HodgesLehmannError::AllocationFailed)?;
-    for i in 0..n {
-        for j in i..n {
-            walsh_twice.push(i128::from(differences[i]) + i128::from(differences[j]));
+    #[cfg(vesper_port)]
+    return crate::port::hodges_lehmann_paired(differences).map(crate::port::hl_estimate);
+    #[cfg(not(vesper_port))]
+    {
+        let n = differences.len();
+        if n == 0 {
+            return Err(HodgesLehmannError::EmptyEvidence);
         }
-    }
-    walsh_twice.sort_unstable();
-    if walsh_twice.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(HodgesLehmannError::TiedWalshAverages);
-    }
-    let estimate_times_four = if count.is_multiple_of(2) {
-        walsh_twice[count / 2 - 1] + walsh_twice[count / 2]
-    } else {
-        2 * walsh_twice[count / 2]
-    };
-    // Exact distribution of the sum of a subset of ranks 1..=n.
-    // All counts fit u64 because n <= 32.
-    let mut distribution =
-        [0u64; MAX_HODGES_LEHMANN_PAIRS * (MAX_HODGES_LEHMANN_PAIRS + 1) / 2 + 1];
-    distribution[0] = 1;
-    let mut max_rank = 0;
-    for rank in 1..=n {
-        for sum in (0..=max_rank).rev() {
-            distribution[sum + rank] += distribution[sum];
+        if n > MAX_HODGES_LEHMANN_PAIRS {
+            return Err(HodgesLehmannError::TooManyPairs);
         }
-        max_rank += rank;
-    }
-    let total = 1u64 << n;
-    let mut tail = 0u64;
-    let mut critical = None;
-    for (rank, &outcomes) in distribution[..=max_rank].iter().enumerate() {
-        tail += outcomes;
-        if 40 * tail <= total {
-            critical = Some((rank, tail));
+        if differences.contains(&0) {
+            return Err(HodgesLehmannError::ZeroDifference);
+        }
+        // Fixed-size scratch avoids allocation and handles i64::MIN exactly.
+        let mut magnitudes = [0u64; MAX_HODGES_LEHMANN_PAIRS];
+        for (slot, &difference) in magnitudes.iter_mut().zip(differences) {
+            *slot = difference.unsigned_abs();
+        }
+        magnitudes[..n].sort_unstable();
+        if magnitudes[..n].windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(HodgesLehmannError::TiedAbsoluteDifferences);
+        }
+        let count = n * (n + 1) / 2;
+        let mut walsh_twice = Vec::new();
+        walsh_twice
+            .try_reserve_exact(count)
+            .map_err(|_| HodgesLehmannError::AllocationFailed)?;
+        for i in 0..n {
+            for j in i..n {
+                walsh_twice.push(i128::from(differences[i]) + i128::from(differences[j]));
+            }
+        }
+        walsh_twice.sort_unstable();
+        if walsh_twice.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(HodgesLehmannError::TiedWalshAverages);
+        }
+        let estimate_times_four = if count.is_multiple_of(2) {
+            walsh_twice[count / 2 - 1] + walsh_twice[count / 2]
         } else {
-            break;
+            2 * walsh_twice[count / 2]
+        };
+        // Exact distribution of the sum of a subset of ranks 1..=n.
+        // All counts fit u64 because n <= 32.
+        let mut distribution =
+            [0u64; MAX_HODGES_LEHMANN_PAIRS * (MAX_HODGES_LEHMANN_PAIRS + 1) / 2 + 1];
+        distribution[0] = 1;
+        let mut max_rank = 0;
+        for rank in 1..=n {
+            for sum in (0..=max_rank).rev() {
+                distribution[sum + rank] += distribution[sum];
+            }
+            max_rank += rank;
         }
+        let total = 1u64 << n;
+        let mut tail = 0u64;
+        let mut critical = None;
+        for (rank, &outcomes) in distribution[..=max_rank].iter().enumerate() {
+            tail += outcomes;
+            if 40 * tail <= total {
+                critical = Some((rank, tail));
+            } else {
+                break;
+            }
+        }
+        let interval = critical.map(|(rank, tail)| SignedRankInterval {
+            lower_times_two: walsh_twice[rank],
+            upper_times_two: walsh_twice[count - 1 - rank],
+            critical_rank: rank,
+            covered_outcomes: total - 2 * tail,
+            total_outcomes: total,
+        });
+        Ok(HodgesLehmannEstimate {
+            estimate_times_four,
+            interval,
+        })
     }
-    let interval = critical.map(|(rank, tail)| SignedRankInterval {
-        lower_times_two: walsh_twice[rank],
-        upper_times_two: walsh_twice[count - 1 - rank],
-        critical_rank: rank,
-        covered_outcomes: total - 2 * tail,
-        total_outcomes: total,
-    });
-    Ok(HodgesLehmannEstimate {
-        estimate_times_four,
-        interval,
-    })
 }

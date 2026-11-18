@@ -1,0 +1,412 @@
+// Module contract of @vesper/bench (see lib.ves): contract.rs's bounded
+// `@bench(...)` attribute parser and contract_gate.rs's exact limit
+// arithmetic.
+use self::{
+    ContractOut,
+    ErrorKind,
+    GateError,
+    GateIn,
+    GateOut,
+    ParseError
+};
+use self::util::{
+    add,
+    gb,
+    inc,
+    mul,
+    sub
+};
+use self::wide::{
+    w_mul_u64,
+    w_ult
+};
+
+fn perr(kind: ErrorKind, offset: u64) eff [Fail[ParseError]] {
+    Fail::raise(
+        ParseError {
+            kind: kind,
+            offset: widen_usize(offset)
+        }
+    );
+}
+
+// `u8::is_ascii_whitespace`: space, tab, line feed, form feed, return.
+fn is_space(b: u64) -> bool {
+    b == 32 || b == 9 || b == 10 || b == 12 || b == 13
+}
+
+fn is_name_byte(b: u64) -> bool {
+    (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 95
+}
+
+fn is_digit(b: u64) -> bool {
+    b >= 48 && b <= 57
+}
+
+fn space(in input: Slice[u8], pos: u64) -> u64 {
+    let mut p = pos;
+    loop {
+        if !is_space(gb(in input, p)) {
+            break;
+        }
+        p = inc(p);
+    }
+    p
+}
+
+// Skips space and one expected byte; Syntax at the first other byte.
+fn expect(in input: Slice[u8], pos: u64, byte: u64) -> u64 eff [Fail[ParseError]] {
+    let p = space(in input, pos);
+    if gb(in input, p) != byte {
+        perr(ErrorKind::Syntax, p);
+    }
+    inc(p)
+}
+
+// The end of the name that starts at `start` (after space).
+fn name_end(in input: Slice[u8], start: u64) -> u64 {
+    let mut p = start;
+    loop {
+        if !is_name_byte(gb(in input, p)) {
+            break;
+        }
+        p = inc(p);
+    }
+    p
+}
+
+fn name_is(in input: Slice[u8], start: u64, end: u64, in word: Str) -> bool {
+    if sub(end, start) != word.len() {
+        return false;
+    }
+    for i in 0..word.len() {
+        let want = match word.try_byte_at(i) {
+            Option::Some(b) => widen_u64(b),
+            Option::None => 256,
+        };
+        if gb(in input, add(start, i)) != want {
+            return false;
+        }
+    }
+    true
+}
+
+// A boolean literal; returns the position after it and the value.
+fn boolean(in input: Slice[u8], pos: u64) -> (u64, bool) eff [Fail[ParseError]] {
+    let start = space(in input, pos);
+    let end = name_end(in input, start);
+    if name_is(in input, start, end, "true") {
+        return (end, true);
+    }
+    if name_is(in input, start, end, "false") {
+        return (end, false);
+    }
+    perr(ErrorKind::Syntax, end);
+    (end, false)
+}
+
+// value * 10 + digit, or None where Rust's checked arithmetic overflows.
+fn push_digit(value: u64, digit: u64) -> Option[u64] {
+    if value > 1844674407370955161 {
+        return Option::None;
+    }
+    let ten = mul(value, 10);
+    let next = wrapping_add(ten, digit);
+    if next < ten {
+        Option::None
+    } else {
+        Option::Some(next)
+    }
+}
+
+// A decimal; returns (position, coefficient, scale).
+fn number(in input: Slice[u8], pos: u64, fractional: bool)
+    -> (u64, u64, u64) eff [Fail[ParseError]] {
+    let start = space(in input, pos);
+    let mut p = start;
+    let mut value: u64 = 0;
+    loop {
+        let b = gb(in input, p);
+        if !is_digit(b) {
+            break;
+        }
+        match push_digit(value, sub(b, 48)) {
+            Option::Some(v) => value = v,
+            Option::None => perr(ErrorKind::NumberOverflow, p),
+        }
+        p = inc(p);
+    }
+    if p == start {
+        perr(ErrorKind::Syntax, p);
+    }
+    let mut scale: u64 = 0;
+    if fractional && gb(in input, p) == 46 {
+        p = inc(p);
+        let fraction_start = p;
+        loop {
+            let b = gb(in input, p);
+            if !is_digit(b) {
+                break;
+            }
+            scale = inc(scale);
+            if scale > 18 {
+                perr(ErrorKind::NumberOverflow, p);
+            }
+            match push_digit(value, sub(b, 48)) {
+                Option::Some(v) => value = v,
+                Option::None => perr(ErrorKind::NumberOverflow, p),
+            }
+            p = inc(p);
+        }
+        if p == fraction_start {
+            perr(ErrorKind::Syntax, p);
+        }
+    }
+    (p, value, scale)
+}
+
+fn empty_contract() -> ContractOut {
+    ContractOut {
+        zero_alloc: 0,
+        expect_vectorized: 0,
+        has_instructions_per_byte: false,
+        instructions_coefficient: 0,
+        instructions_scale: 0,
+        has_stabilizer_pages: false,
+        stabilizer_pages: 0,
+        has_l1d_misses_per_op: false,
+        l1d_misses_per_op: 0
+    }
+}
+
+fn duplicate(start: u64) eff [Fail[ParseError]] {
+    perr(ErrorKind::DuplicateField, start);
+}
+
+// `zero_alloc` and `expect_vectorized` are 0 unset, 1 false, 2 true.
+pub fn do_parse_attribute(in input: Slice[u8]) -> ContractOut eff [Fail[ParseError]] {
+    let len = input.len();
+    if len > 4096 {
+        perr(ErrorKind::InputLimit, 4096);
+    }
+    let mut p = expect(in input, 0, 64);
+    let name_start = space(in input, p);
+    p = name_end(in input, name_start);
+    if !name_is(in input, name_start, p, "bench") {
+        perr(ErrorKind::Syntax, p);
+    }
+    p = space(in input, p);
+    let mut r = empty_contract();
+    if p == len {
+        return r;
+    }
+    p = expect(in input, p, 40);
+    loop {
+        p = space(in input, p);
+        if gb(in input, p) == 41 {
+            p = inc(p);
+            break;
+        }
+        let start = p;
+        p = name_end(in input, start);
+        let id: u64 = if name_is(in input, start, p, "zero_alloc") {
+            0
+        } else if name_is(in input, start, p, "expect_vectorized") {
+            1
+        } else if name_is(in input, start, p, "max_instructions_per_byte") {
+            2
+        } else if name_is(in input, start, p, "stabilizer_pages") {
+            3
+        } else if name_is(in input, start, p, "max_l1d_misses_per_op") {
+            4
+        } else if p == start {
+            perr(ErrorKind::Syntax, p);
+            0
+        } else {
+            perr(ErrorKind::UnknownField, start);
+            0
+        };
+        p = expect(in input, p, 61);
+        if id == 0 {
+            if r.zero_alloc != 0 {
+                duplicate(start);
+            }
+            let (q, v) = boolean(in input, p);
+            p = q;
+            r.zero_alloc = if v {
+                2
+            } else {
+                1
+            };
+        } else if id == 1 {
+            if r.expect_vectorized != 0 {
+                duplicate(start);
+            }
+            let (q, v) = boolean(in input, p);
+            p = q;
+            r.expect_vectorized = if v {
+                2
+            } else {
+                1
+            };
+        } else if id == 2 {
+            if r.has_instructions_per_byte {
+                duplicate(start);
+            }
+            let (q, c, s) = number(in input, p, true);
+            p = q;
+            r.has_instructions_per_byte = true;
+            r.instructions_coefficient = c;
+            r.instructions_scale = wrapping_u32(s);
+        } else if id == 3 {
+            if r.has_stabilizer_pages {
+                duplicate(start);
+            }
+            let (q, c, s) = number(in input, p, false);
+            p = q;
+            r.has_stabilizer_pages = true;
+            r.stabilizer_pages = c;
+        } else {
+            if r.has_l1d_misses_per_op {
+                duplicate(start);
+            }
+            let (q, c, s) = number(in input, p, false);
+            p = q;
+            r.has_l1d_misses_per_op = true;
+            r.l1d_misses_per_op = c;
+        }
+        p = space(in input, p);
+        let b = gb(in input, p);
+        if b == 44 {
+            p = inc(p);
+        } else if b == 41 {
+            p = inc(p);
+            break;
+        } else {
+            perr(ErrorKind::Syntax, p);
+        }
+    }
+    p = space(in input, p);
+    if p != len {
+        perr(ErrorKind::Syntax, p);
+    }
+    r
+}
+
+// ---------------------------------------------------------------------------
+// contract_gate.rs
+//
+// Status codes: 0 NotRequested, 1 Pass, 2 Fail, then Inconclusive with
+// 3 Counter(InstructionsRetired), 4 Counter(L1dReadMisses), 5 InputBytes,
+// 6 Operations, 7 ZeroInputBytes, 8 ZeroOperations, 9 AllocationEvidence,
+// 10 VectorizationEvidence, 11 LayoutEvidence. Overall: 0 NotRequested,
+// 1 Pass, 2 Fail, 3 Inconclusive.
+
+fn pow10(scale: u64) -> u64 {
+    let mut p: u64 = 1;
+    for i in 0..scale {
+        p = mul(p, 10);
+    }
+    p
+}
+
+fn ratio_gate(
+    has_counter: bool,
+    counter: u64,
+    has_denominator: bool,
+    denominator: u64,
+    coefficient: u64,
+    scale: u64,
+    missing_counter: u64,
+    missing_denominator: u64,
+    zero_denominator: u64
+) -> u64 {
+    if !has_counter {
+        return missing_counter;
+    }
+    if !has_denominator {
+        return missing_denominator;
+    }
+    if denominator == 0 {
+        return zero_denominator;
+    }
+    let left = w_mul_u64(counter, pow10(scale));
+    let right = w_mul_u64(coefficient, denominator);
+    if w_ult(right, left) {
+        2
+    } else {
+        1
+    }
+}
+
+pub fn do_gate_evaluate(g: GateIn) -> GateOut eff [Fail[GateError]] {
+    let scale = widen_u64(g.instructions_scale);
+    if g.has_instructions_per_byte && scale > 18 {
+        Fail::raise(GateError::InvalidDecimalScale);
+    }
+    let ipb = if g.has_instructions_per_byte {
+        ratio_gate(
+            g.has_instructions,
+            g.instructions,
+            g.has_input_bytes,
+            g.input_bytes,
+            g.instructions_coefficient,
+            scale,
+            3,
+            5,
+            7
+        )
+    } else {
+        0
+    };
+    let l1d = if g.has_l1d_misses_per_op {
+        ratio_gate(
+            g.has_l1d_misses,
+            g.l1d_misses,
+            g.has_operations,
+            g.operations,
+            g.l1d_misses_per_op,
+            0,
+            4,
+            6,
+            8
+        )
+    } else {
+        0
+    };
+    let zero_alloc: u64 = if g.zero_alloc {
+        9
+    } else {
+        0
+    };
+    let vectorized: u64 = if g.expect_vectorized {
+        10
+    } else {
+        0
+    };
+    let pages: u64 = if g.has_stabilizer_pages {
+        11
+    } else {
+        0
+    };
+    let any_fail = ipb == 2 || l1d == 2;
+    let any_inconclusive = ipb >= 3 || l1d >= 3 || zero_alloc != 0 || vectorized != 0 || pages != 0;
+    let any_pass = ipb == 1 || l1d == 1;
+    let overall: u64 = if any_fail {
+        2
+    } else if any_inconclusive {
+        3
+    } else if any_pass {
+        1
+    } else {
+        0
+    };
+    GateOut {
+        instructions_per_byte: ipb,
+        l1d_misses_per_op: l1d,
+        zero_alloc: zero_alloc,
+        expect_vectorized: vectorized,
+        stabilizer_pages: pages,
+        overall: overall
+    }
+}
