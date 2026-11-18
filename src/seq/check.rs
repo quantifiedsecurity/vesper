@@ -172,14 +172,16 @@ impl Checker<'_> {
             return Some(self.slice_view(base, None, env, span, method == "as_slice_mut"));
         }
         let arity = match op {
-            SeqOp::Len | SeqOp::SliceLen | SeqOp::Pop | SeqOp::Clear => 0,
+            SeqOp::Len | SeqOp::SliceLen | SeqOp::Pop | SeqOp::Clear | SeqOp::SumBe16 => 0,
             SeqOp::Push
             | SeqOp::Get
             | SeqOp::SliceGet
             | SeqOp::TryGet
             | SeqOp::Truncate
             | SeqOp::Extend
-            | SeqOp::Fill => 1,
+            | SeqOp::Fill
+            | SeqOp::BytesEq
+            | SeqOp::FindByte => 1,
             SeqOp::Wide(w) if !w.write => 1,
             _ => 2,
         };
@@ -210,7 +212,7 @@ impl Checker<'_> {
                     span.clone(),
                 )
             }
-            SeqOp::Wide(_)
+            SeqOp::Wide(_) | SeqOp::SumBe16 | SeqOp::BytesEq | SeqOp::FindByte
                 if known && crate::numeric::default_type(&elem_ty) != Type::named("u8") =>
             {
                 self.error(
@@ -250,8 +252,9 @@ impl Checker<'_> {
                     0
                 )
             );
-            let source_arg =
-                op == SeqOp::Extend || (matches!(op, SeqOp::CopyFrom { .. }) && i == 1);
+            let source_arg = op == SeqOp::Extend
+                || op == SeqOp::BytesEq
+                || (matches!(op, SeqOp::CopyFrom { .. }) && i == 1);
             if index_arg {
                 self.seq_by_value(method, a);
                 let t = self.expr_expected(&a.expr, env, Usage::Own, &u64_ty);
@@ -268,9 +271,12 @@ impl Checker<'_> {
                     .insert((a.expr.span.start, a.expr.span.end), Pass::In);
                 let t = self.expr(&a.expr, env, Usage::Borrow(Pass::In));
                 self.expect_type(&slice_of(elem_ty.clone()), &t, a.expr.span.clone());
-                if let (Some(src), Some(dst)) =
-                    (self.seq_view_place(&a.expr), Place::from_expr(base))
-                    && src.root == dst.root
+                // `eq` only reads, so it may compare two views of one sequence.
+                if let (true, Some(src), Some(dst)) = (
+                    op != SeqOp::BytesEq,
+                    self.seq_view_place(&a.expr),
+                    Place::from_expr(base),
+                ) && src.root == dst.root
                 {
                     self.error(
                         "E0301",
@@ -296,7 +302,9 @@ impl Checker<'_> {
         Some(match op {
             SeqOp::Len | SeqOp::SliceLen => u64_ty,
             SeqOp::Pop | SeqOp::TryGet => Type::Named("Option".into(), vec![elem_ty]),
-            SeqOp::TrySet | SeqOp::CopyFrom { total: true } => Type::named("bool"),
+            SeqOp::TrySet | SeqOp::CopyFrom { total: true } | SeqOp::BytesEq => Type::named("bool"),
+            SeqOp::SumBe16 => u64_ty,
+            SeqOp::FindByte => Type::Named("Option".into(), vec![u64_ty]),
             SeqOp::Get | SeqOp::SliceGet => elem_ty,
             SeqOp::Wide(w) => match (w.write, w.total) {
                 (false, false) => Type::named(w.int_type()),
