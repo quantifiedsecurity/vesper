@@ -199,14 +199,92 @@ pub fn l_var(inout c: C, var: u64) -> u64 {
     mkl(inout c, 7, var, 0, 0, 0, f)
 }
 
-fn swap_triple(inout c: C, x: u64, y: u64) {
+fn copy_triple(inout c: C, dst: u64, src: u64) {
     let three: u64 = 3;
     for k in 0..three {
-        let a = sw(in c.tmp, add(x, k));
-        let b = sw(in c.tmp, add(y, k));
-        setw(inout c.tmp, add(x, k), b);
-        setw(inout c.tmp, add(y, k), a);
+        let v = sw(in c.tmp, add(src, k));
+        setw(inout c.tmp, add(dst, k), v);
     }
+}
+
+// One bottom-up merge pass: runs of `w` triples at `src` merge into `dst`.
+// Ties take the left run, so the sort is stable.
+fn merge_pass(inout c: C, src: u64, dst: u64, n: u64, w: u64) {
+    let mut lo: u64 = 0;
+    loop {
+        if lo >= n {
+            break;
+        }
+        let mid = if add(lo, w) < n {
+            add(lo, w)
+        } else {
+            n
+        };
+        let hi = if add(mid, w) < n {
+            add(mid, w)
+        } else {
+            n
+        };
+        let mut i = lo;
+        let mut j = mid;
+        let mut k = lo;
+        loop {
+            if k >= hi {
+                break;
+            }
+            let take_right = if i >= mid {
+                true
+            } else if j >= hi {
+                false
+            } else {
+                let x = sw(in c.tmp, add(src, wrapping_mul(i, 3)));
+                let y = sw(in c.tmp, add(src, wrapping_mul(j, 3)));
+                sym_cmp(in c, y, x) == 0
+            };
+            let to = add(dst, wrapping_mul(k, 3));
+            if take_right {
+                let at = add(src, wrapping_mul(j, 3));
+                copy_triple(inout c, to, at);
+                j = inc(j);
+            } else {
+                let at = add(src, wrapping_mul(i, 3));
+                copy_triple(inout c, to, at);
+                i = inc(i);
+            }
+            k = inc(k);
+        }
+        lo = hi;
+    }
+}
+
+// Sorts the `n` triples at `from` by label (stable, O(n log n)), using
+// `3 n` scratch words past them.
+fn sort_triples(inout c: C, from: u64, n: u64) {
+    let words = wrapping_mul(n, 3);
+    let buf = add(from, words);
+    for _k in 0..words {
+        c.tmp.push(0);
+    }
+    let mut src = from;
+    let mut dst = buf;
+    let mut w: u64 = 1;
+    loop {
+        if w >= n {
+            break;
+        }
+        merge_pass(inout c, src, dst, n, w);
+        let t = src;
+        src = dst;
+        dst = t;
+        w = wrapping_mul(w, 2);
+    }
+    if src != from {
+        for k in 0..words {
+            let v = sw(in c.tmp, add(src, k));
+            setw(inout c.tmp, add(from, k), v);
+        }
+    }
+    c.tmp.truncate(buf);
 }
 
 // `LocalType::choice`: the branch triples `tmp[from ..]` (popped) become a
@@ -221,21 +299,7 @@ pub fn choice(inout c: C, send: bool, peer: u64, from: u64) -> u64 {
         c.tmp.truncate(from);
         return l_msg(inout c, send, peer, l, p, nx);
     }
-    for i in 1..n {
-        let mut j = i;
-        loop {
-            if j == 0 {
-                break;
-            }
-            let x = add(from, wrapping_mul(wrapping_sub(j, 1), 3));
-            let y = add(x, 3);
-            if sym_cmp(in c, sw(in c.tmp, y), sw(in c.tmp, x)) != 0 {
-                break;
-            }
-            swap_triple(inout c, x, y);
-            j = wrapping_sub(j, 1);
-        }
-    }
+    sort_triples(inout c, from, n);
     let tag: u64 = if send {
         3
     } else {
