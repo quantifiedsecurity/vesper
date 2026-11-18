@@ -24,8 +24,19 @@ struct Latch {
     remaining: AtomicUsize,
     lock: Mutex<()>,
     zero: Condvar,
+    /// The first sequence fault a worker recorded (the runtime's fault
+    /// state is per thread), moved to the caller after the join.
+    fault: Mutex<Option<String>>,
 }
 impl Latch {
+    fn new(chunks: usize) -> Self {
+        Self {
+            remaining: AtomicUsize::new(chunks),
+            lock: Mutex::new(()),
+            zero: Condvar::new(),
+            fault: Mutex::new(None),
+        }
+    }
     fn done(&self) {
         if self.remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -71,6 +82,13 @@ impl Resume for Chunk {
         let _ = event;
         IN_WORKER.with(|w| w.set(true));
         self.run();
+        if let Some(fault) = crate::seq::native_runtime::take_fault() {
+            self.latch
+                .fault
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_or_insert(fault);
+        }
         self.latch.done();
         Step::Complete(vec![])
     }
@@ -120,11 +138,7 @@ pub extern "C" fn vesper_parallel_for(body: u64, data: u64, n: u64) -> u64 {
         data,
         lo: 0,
         hi: n,
-        latch: Arc::new(Latch {
-            remaining: AtomicUsize::new(0),
-            lock: Mutex::new(()),
-            zero: Condvar::new(),
-        }),
+        latch: Arc::new(Latch::new(0)),
     };
     let pool = match workers() {
         Some(pool) if n > 1 && !IN_WORKER.with(|w| w.get()) => pool,
@@ -134,11 +148,7 @@ pub extern "C" fn vesper_parallel_for(body: u64, data: u64, n: u64) -> u64 {
         }
     };
     let chunks = n.min(pool.count as u64 * 4);
-    let latch = Arc::new(Latch {
-        remaining: AtomicUsize::new(chunks as usize),
-        lock: Mutex::new(()),
-        zero: Condvar::new(),
-    });
+    let latch = Arc::new(Latch::new(chunks as usize));
     let spawner = pool
         .spawner
         .lock()
@@ -163,6 +173,9 @@ pub extern "C" fn vesper_parallel_for(body: u64, data: u64, n: u64) -> u64 {
     last.run();
     last.latch.done();
     latch.wait();
+    if let Some(fault) = latch.fault.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        crate::seq::native_runtime::record_fault(fault);
+    }
     0
 }
 

@@ -5314,7 +5314,9 @@ impl<M: Module> Codegen<'_, '_, M> {
         let Some(data_ty) = vars.get("A") else {
             return Ok(None);
         };
-        if matches!(data_ty, Type::Named(n, a) if a.is_empty() && (n == "f64" || n == "f32")) {
+        if matches!(data_ty, Type::Named(n, a) if a.is_empty() && (n == "f64" || n == "f32"))
+            || crate::atomics::thread_affine(self.world, function, data_ty)
+        {
             return Ok(None);
         }
         let layout = Layout::of(self.world, data_ty)?;

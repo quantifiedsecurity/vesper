@@ -496,6 +496,93 @@ pub fn worker_body<'w>(world: &'w World, body: &Expr) -> Option<&'w Function> {
     })
 }
 
+/// Types whose JIT runtime state is per thread (`TiledSeq` handles, `Box`
+/// and region allocations): a worker on another thread would not find the
+/// caller's values.
+const THREAD_AFFINE: [&str; 4] = [
+    crate::tiled::TILED_SEQ_TYPE,
+    crate::fip::BOX_TYPE,
+    crate::regions::BOX_TYPE,
+    crate::regions::WATERMARK_TYPE,
+];
+
+fn affine_type(world: &World, t: &Type, seen: &mut std::collections::BTreeSet<String>) -> bool {
+    match t {
+        Type::Tuple(ts) => ts.iter().any(|t| affine_type(world, t, seen)),
+        Type::Function { .. } => false,
+        Type::Named(n, args) => {
+            if THREAD_AFFINE.contains(&n.as_str()) {
+                return true;
+            }
+            if args.iter().any(|t| affine_type(world, t, seen)) {
+                return true;
+            }
+            if !seen.insert(n.clone()) {
+                return false;
+            }
+            world.adts.get(n).is_some_and(|a| {
+                a.variants
+                    .iter()
+                    .flat_map(|v| &v.fields)
+                    .any(|f| affine_type(world, &f.ty, seen))
+            })
+        }
+        _ => false,
+    }
+}
+
+/// Whether a `parallel_for` over `data` and `body` touches state the JIT
+/// runtime keeps per thread: the data type, or any type in a function the
+/// body reaches by name or method call. The JIT then runs the loop on the
+/// calling thread.
+pub fn thread_affine(world: &World, body: &str, data: &Type) -> bool {
+    let mut seen_types = std::collections::BTreeSet::new();
+    if affine_type(world, data, &mut seen_types) {
+        return true;
+    }
+    let mut stack = vec![body.to_string()];
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(name) = stack.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let Some(f) = world.functions.get(&name) else {
+            continue;
+        };
+        let affine = |t: &Type| affine_type(world, t, &mut std::collections::BTreeSet::new());
+        if f.params.iter().any(|p| affine(&p.ty)) || affine(&f.result) {
+            return true;
+        }
+        let Some(b) = &f.body else {
+            continue;
+        };
+        let (lo, hi) = (b.span.start, b.span.end);
+        if world
+            .types
+            .range((lo, 0)..(hi + 1, 0))
+            .any(|((_, end), t)| *end <= hi && affine(t))
+        {
+            return true;
+        }
+        walk(b, &mut |e| match &e.kind {
+            ExprKind::Name(n) if world.functions.contains_key(n) => stack.push(n.clone()),
+            ExprKind::Call { callee, .. } => {
+                if let ExprKind::Field(base, m) = &callee.kind
+                    && let Some(Type::Named(head, _)) =
+                        world.types.get(&(base.span.start, base.span.end))
+                {
+                    let method = format!("{head}::{m}");
+                    if world.functions.contains_key(&method) {
+                        stack.push(method);
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
+    false
+}
+
 /// The scoped-worker rules (module docs): workers share `data` only by
 /// `in`, and each body is a named function with an empty effect row.
 fn check_workers(world: &World, e: &Expr, out: &mut Vec<Diagnostic>) {

@@ -183,6 +183,11 @@ arrays). The rest is the shared memory bandwidth of four workers on a
   calling thread and waits on a latch. A call from inside a worker (a
   nested `parallel_for`) runs on that worker, so nesting never deadlocks a
   pool whose workers are all waiting. A refused spawn runs inline.
+  A sequence fault recorded on a worker (the fault state is per thread)
+  moves to the calling thread after the join, so the JIT run fails as it
+  would sequentially. Data or bodies that reach a `TiledSeq`, `Box` or
+  region value (`atomics::thread_affine`), whose JIT runtimes keep
+  per-thread registries, run on the calling thread instead.
 
 Tests (`tests/scoped_workers.rs`, 8 tests plus one ignored measurement):
 a parallel sum, scalar data with empty and one-iteration loops, and nested

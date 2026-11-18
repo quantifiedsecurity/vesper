@@ -222,6 +222,67 @@ fn main() -> u64 {
     }
 }
 
+/// A sequence fault in an iteration on a pool worker fails the JIT run
+/// like one on the calling thread, and does not leak into the next run.
+#[test]
+fn a_fault_on_a_worker_fails_the_run() {
+    let c = accepted(
+        "\
+fn total(in s: Str) -> u64 { s.len() }
+fn view(in s: String, i: u64) {
+    if i == 0 { total(s[1..9]); } else {}
+}
+fn main() -> u64 {
+    let s = \"a\u{e9}b\";
+    parallel_for(in s, 64, view);
+    0
+}
+",
+    );
+    for optimize in [true, false] {
+        let e = native::jit_with_options(&c.world, "main", optimize).unwrap_err();
+        assert!(e.contains("out of bounds"), "optimize {optimize}: {e}");
+    }
+    let clean = accepted(PARALLEL_SUM);
+    for _ in 0..4 {
+        assert_eq!(
+            native::jit(&clean.world, "main").unwrap().to_string(),
+            (0..4000u64).sum::<u64>().to_string()
+        );
+    }
+}
+
+/// `TiledSeq` handles live in a per-thread JIT registry, so a loop that
+/// reaches one runs on the calling thread and still sees the values.
+#[test]
+fn thread_affine_data_runs_on_the_caller() {
+    let source = "\
+tiled(8) copy struct P { hot mass: u64 }
+struct Job { s: TiledSeq[P], total: Atomic[u64] }
+fn add(in job: Job, i: u64) {
+    job.total.fetch_add(job.s.col_get[mass](wrapping_add(i, 0) % 3), MemoryOrder::Relaxed);
+}
+fn main() -> u64 {
+    let mut s: TiledSeq[P] = TiledSeq::with_capacity[P](4);
+    s.push(P { mass: 1 });
+    s.push(P { mass: 2 });
+    s.push(P { mass: 3 });
+    let job = Job { s: s, total: Atomic::new(0) };
+    parallel_for(in job, 9, add);
+    job.total.load(MemoryOrder::SeqCst)
+}
+";
+    let c = accepted(source);
+    let mut runtime = Runtime::new(&c.world);
+    assert_eq!(runtime.run("main", vec![]).unwrap().to_string(), "18");
+    for optimize in [true, false] {
+        let jit = native::jit_with_options(&c.world, "main", optimize)
+            .unwrap()
+            .to_string();
+        assert_eq!(jit, "18", "optimize {optimize}");
+    }
+}
+
 static SEEN: Mutex<Vec<std::thread::ThreadId>> = Mutex::new(Vec::new());
 static HITS: AtomicU64 = AtomicU64::new(0);
 
