@@ -408,15 +408,15 @@ impl Abi for ViewFault {
 /// Owned handle of a Vesper `Mounted` value: its words, which own the Vesper
 /// allocations they point to. Dropping it calls `vesper_aura_Mounted_drop`.
 pub struct Mounted {
-    words: [u64; 8],
+    words: [u64; 9],
 }
 
 impl Mounted {
     /// # Safety
     /// `words` must hold a `Mounted` value of this library that the caller owns.
     unsafe fn from_words(words: &[u64]) -> Self {
-        let mut owned = [0u64; 8];
-        owned.copy_from_slice(&words[..8]);
+        let mut owned = [0u64; 9];
+        owned.copy_from_slice(&words[..9]);
         Self { words: owned }
     }
 
@@ -472,32 +472,36 @@ impl<'a> MountedRef<'a> {
         let w: &'a [u64] = self.words;
         unsafe { vesper_port_abi::SeqRef::from_handle(w[4]) }
     }
-    pub fn text(&self) -> vesper_port_abi::SeqRef<'a, u8> {
+    pub fn kidx(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
         unsafe { vesper_port_abi::SeqRef::from_handle(w[5]) }
     }
-    pub fn keys(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+    pub fn text(&self) -> vesper_port_abi::SeqRef<'a, u8> {
         let w: &'a [u64] = self.words;
         unsafe { vesper_port_abi::SeqRef::from_handle(w[6]) }
     }
-    pub fn sorted(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+    pub fn keys(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
         unsafe { vesper_port_abi::SeqRef::from_handle(w[7]) }
+    }
+    pub fn sorted(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[8]) }
     }
 }
 
 /// Owned handle of a Vesper `Prepared` value: its words, which own the Vesper
 /// allocations they point to. Dropping it calls `vesper_aura_Prepared_drop`.
 pub struct Prepared {
-    words: [u64; 31],
+    words: [u64; 33],
 }
 
 impl Prepared {
     /// # Safety
     /// `words` must hold a `Prepared` value of this library that the caller owns.
     unsafe fn from_words(words: &[u64]) -> Self {
-        let mut owned = [0u64; 31];
-        owned.copy_from_slice(&words[..31]);
+        let mut owned = [0u64; 33];
+        owned.copy_from_slice(&words[..33]);
         Self { words: owned }
     }
 
@@ -559,46 +563,46 @@ impl<'a> PreparedRef<'a> {
     }
     pub fn tree(&self) -> TreeRef<'a> {
         let w: &'a [u64] = self.words;
-        TreeRef { words: &w[9..18] }
+        TreeRef { words: &w[9..19] }
     }
     pub fn m(&self) -> MountedRef<'a> {
         let w: &'a [u64] = self.words;
-        MountedRef { words: &w[18..26] }
+        MountedRef { words: &w[19..28] }
     }
     pub fn prev(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[26]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[28]) }
     }
     pub fn succ(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[27]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[29]) }
     }
     pub fn cur(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[28]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[30]) }
     }
     pub fn cur_start(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[29]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[31]) }
     }
     pub fn cur_len(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
-        unsafe { vesper_port_abi::SeqRef::from_handle(w[30]) }
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[32]) }
     }
 }
 
 /// Owned handle of a Vesper `Query` value: its words, which own the Vesper
 /// allocations they point to. Dropping it calls `vesper_aura_Query_drop`.
 pub struct Query {
-    words: [u64; 23],
+    words: [u64; 24],
 }
 
 impl Query {
     /// # Safety
     /// `words` must hold a `Query` value of this library that the caller owns.
     unsafe fn from_words(words: &[u64]) -> Self {
-        let mut owned = [0u64; 23];
-        owned.copy_from_slice(&words[..23]);
+        let mut owned = [0u64; 24];
+        owned.copy_from_slice(&words[..24]);
         Self { words: owned }
     }
 
@@ -680,7 +684,7 @@ impl<'a> QueryRef<'a> {
     }
     pub fn tree(&self) -> TreeRef<'a> {
         let w: &'a [u64] = self.words;
-        TreeRef { words: &w[14..23] }
+        TreeRef { words: &w[14..24] }
     }
 }
 
@@ -816,15 +820,15 @@ impl<'a> RStateRef<'a> {
 /// Owned handle of a Vesper `Reconciler` value: its words, which own the Vesper
 /// allocations they point to. Dropping it calls `vesper_aura_Reconciler_drop`.
 pub struct Reconciler {
-    words: [u64; 22],
+    words: [u64; 23],
 }
 
 impl Reconciler {
     /// # Safety
     /// `words` must hold a `Reconciler` value of this library that the caller owns.
     unsafe fn from_words(words: &[u64]) -> Self {
-        let mut owned = [0u64; 22];
-        owned.copy_from_slice(&words[..22]);
+        let mut owned = [0u64; 23];
+        owned.copy_from_slice(&words[..23]);
         Self { words: owned }
     }
 
@@ -890,7 +894,7 @@ impl<'a> ReconcilerRef<'a> {
     }
     pub fn m(&self) -> MountedRef<'a> {
         let w: &'a [u64] = self.words;
-        MountedRef { words: &w[14..22] }
+        MountedRef { words: &w[14..23] }
     }
 }
 
@@ -966,15 +970,15 @@ impl<'a> RecorderRef<'a> {
 /// Owned handle of a Vesper `Tree` value: its words, which own the Vesper
 /// allocations they point to. Dropping it calls `vesper_aura_Tree_drop`.
 pub struct Tree {
-    words: [u64; 9],
+    words: [u64; 10],
 }
 
 impl Tree {
     /// # Safety
     /// `words` must hold a `Tree` value of this library that the caller owns.
     unsafe fn from_words(words: &[u64]) -> Self {
-        let mut owned = [0u64; 9];
-        owned.copy_from_slice(&words[..9]);
+        let mut owned = [0u64; 10];
+        owned.copy_from_slice(&words[..10]);
         Self { words: owned }
     }
 
@@ -1030,21 +1034,25 @@ impl<'a> TreeRef<'a> {
         let w: &'a [u64] = self.words;
         unsafe { vesper_port_abi::SeqRef::from_handle(w[4]) }
     }
-    pub fn keys(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+    pub fn kidx(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
         unsafe { vesper_port_abi::SeqRef::from_handle(w[5]) }
     }
-    pub fn sorted(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+    pub fn keys(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
         unsafe { vesper_port_abi::SeqRef::from_handle(w[6]) }
     }
-    pub fn parent(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+    pub fn sorted(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
         unsafe { vesper_port_abi::SeqRef::from_handle(w[7]) }
     }
-    pub fn order(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+    pub fn parent(&self) -> vesper_port_abi::SeqRef<'a, u64> {
         let w: &'a [u64] = self.words;
         unsafe { vesper_port_abi::SeqRef::from_handle(w[8]) }
+    }
+    pub fn order(&self) -> vesper_port_abi::SeqRef<'a, u64> {
+        let w: &'a [u64] = self.words;
+        unsafe { vesper_port_abi::SeqRef::from_handle(w[9]) }
     }
 }
 
@@ -1661,7 +1669,7 @@ pub fn live_allocations() -> i64 {
 
 /// Calls `audit_tree` of the Vesper library `aura` (`vesper_aura_audit_tree`).
 pub fn audit_tree(words: &[u64], text: &[u8], limits: &[u64]) -> Query {
-    let mut result = [0u64; 23];
+    let mut result = [0u64; 24];
     // SAFETY: `vesper_aura_audit_tree` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
@@ -1671,7 +1679,7 @@ pub fn audit_tree(words: &[u64], text: &[u8], limits: &[u64]) -> Query {
 
 /// Calls `encode_tree` of the Vesper library `aura` (`vesper_aura_encode_tree`).
 pub fn encode_tree(words: &[u64], text: &[u8], limits: &[u64]) -> Query {
-    let mut result = [0u64; 23];
+    let mut result = [0u64; 24];
     // SAFETY: `vesper_aura_encode_tree` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
@@ -1834,7 +1842,7 @@ pub fn reconciler_mark_closed(r: &mut Reconciler) -> () {
 
 /// Calls `reconciler_new` of the Vesper library `aura` (`vesper_aura_reconciler_new`).
 pub fn reconciler_new(session: u64, limits: &[u64]) -> Reconciler {
-    let mut result = [0u64; 22];
+    let mut result = [0u64; 23];
     // SAFETY: `vesper_aura_reconciler_new` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
     // every handle passed is owned or borrowed as its mode requires.
@@ -1844,7 +1852,7 @@ pub fn reconciler_new(session: u64, limits: &[u64]) -> Reconciler {
 
 /// Calls `reconciler_prepare` of the Vesper library `aura` (`vesper_aura_reconciler_prepare`).
 pub fn reconciler_prepare(r: &Reconciler, has_tree: bool, words: &[u64], text: &[u8]) -> Prepared {
-    let mut result = [0u64; 31];
+    let mut result = [0u64; 33];
     let mut arg_r = r.words;
     // SAFETY: `vesper_aura_reconciler_prepare` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
@@ -2020,7 +2028,7 @@ pub fn recorder_set_user_state(rec: &mut Recorder, session: u64, serial: u64, us
 
 /// Calls `sim_audit` of the Vesper library `aura` (`vesper_aura_sim_audit`).
 pub fn sim_audit(rec: &Recorder) -> Query {
-    let mut result = [0u64; 23];
+    let mut result = [0u64; 24];
     let mut arg_rec = rec.words;
     // SAFETY: `vesper_aura_sim_audit` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
@@ -2031,7 +2039,7 @@ pub fn sim_audit(rec: &Recorder) -> Query {
 
 /// Calls `sim_focus` of the Vesper library `aura` (`vesper_aura_sim_focus`).
 pub fn sim_focus(rec: &Recorder, has_focus: bool, focused: u64, forward: bool) -> Query {
-    let mut result = [0u64; 23];
+    let mut result = [0u64; 24];
     let mut arg_rec = rec.words;
     // SAFETY: `vesper_aura_sim_focus` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
@@ -2042,7 +2050,7 @@ pub fn sim_focus(rec: &Recorder, has_focus: bool, focused: u64, forward: bool) -
 
 /// Calls `sim_focusable` of the Vesper library `aura` (`vesper_aura_sim_focusable`).
 pub fn sim_focusable(rec: &Recorder) -> Query {
-    let mut result = [0u64; 23];
+    let mut result = [0u64; 24];
     let mut arg_rec = rec.words;
     // SAFETY: `vesper_aura_sim_focusable` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
@@ -2053,7 +2061,7 @@ pub fn sim_focusable(rec: &Recorder) -> Query {
 
 /// Calls `sim_still_focusable` of the Vesper library `aura` (`vesper_aura_sim_still_focusable`).
 pub fn sim_still_focusable(rec: &Recorder, widget: u64) -> Query {
-    let mut result = [0u64; 23];
+    let mut result = [0u64; 24];
     let mut arg_rec = rec.words;
     // SAFETY: `vesper_aura_sim_still_focusable` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and
@@ -2064,7 +2072,7 @@ pub fn sim_still_focusable(rec: &Recorder, widget: u64) -> Query {
 
 /// Calls `sim_trigger` of the Vesper library `aura` (`vesper_aura_sim_trigger`).
 pub fn sim_trigger(rec: &Recorder, same_session: bool, widget: u64, event: u64) -> Query {
-    let mut result = [0u64; 23];
+    let mut result = [0u64; 24];
     let mut arg_rec = rec.words;
     // SAFETY: `vesper_aura_sim_trigger` has exactly this signature in the export ABI; every
     // pointer is a live, writable buffer of the size the ABI requires, and

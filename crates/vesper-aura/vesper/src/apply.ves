@@ -192,13 +192,49 @@ pub fn validate_final(inout rec: Recorder) -> Option[BackendFault] {
             }
         }
     }
-    let mut seen_at: ChunkSeq[bool] = ChunkSeq::with_capacity[bool](rec.stage.widgets.len());
-    for i in 0..rec.stage.widgets.len() {
+    // Group the edges by parent once: `kids[first[i] .. first[i + 1]]` are
+    // the child widget indices (none when stale) of widget `i`, in edge
+    // order, so the walk does not scan every edge for every widget.
+    let nw = rec.stage.widgets.len();
+    let mut first: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](inc(nw));
+    for i in 0..inc(nw) {
+        first.push(0);
+    }
+    let mut owner: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](ne);
+    for e in 0..ne {
+        let p = widget_index(in rec.stage, redge(in rec.stage.edges, e).parent);
+        owner.push(p);
+        if p != none_id() {
+            let count = seq_u64(in first, inc(p));
+            first.try_set(inc(p), inc(count));
+        }
+    }
+    for i in 0..nw {
+        let sum = add(seq_u64(in first, inc(i)), seq_u64(in first, i));
+        first.try_set(inc(i), sum);
+    }
+    let mut next_at: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](nw);
+    next_at.extend(in first[0..nw]);
+    let mut kids: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](ne);
+    for e in 0..ne {
+        kids.push(none_id());
+    }
+    for e in 0..ne {
+        let p = seq_u64(in owner, e);
+        if p != none_id() {
+            let at = seq_u64(in next_at, p);
+            kids.try_set(at, widget_index(in rec.stage, redge(in rec.stage.edges, e).child));
+            next_at.try_set(p, inc(at));
+        }
+    }
+    let mut seen_at: ChunkSeq[bool] = ChunkSeq::with_capacity[bool](nw);
+    for i in 0..nw {
         seen_at.push(false);
     }
+    // The walk holds widget indices; a stale child fails when it is pushed.
     let mut stack: ChunkSeq[u64] = ChunkSeq::new[u64]();
     let mut depths: ChunkSeq[u64] = ChunkSeq::new[u64]();
-    stack.push(rec.stage.root);
+    stack.push(widget_index(in rec.stage, rec.stage.root));
     depths.push(1);
     let mut seen: u64 = 0;
     loop {
@@ -206,14 +242,13 @@ pub fn validate_final(inout rec: Recorder) -> Option[BackendFault] {
         if top == 0 {
             break;
         }
-        let widget = seq_u64(in stack, dec(top));
+        let i = seq_u64(in stack, dec(top));
         let depth = seq_u64(in depths, dec(top));
         stack.truncate(dec(top));
         depths.truncate(dec(top));
         if depth > lim.depth {
             return budget(b_depth());
         }
-        let i = widget_index(in rec.stage, widget);
         if i != none_id() && seq_bool(in seen_at, i) {
             return invalid(i_cycle());
         }
@@ -222,20 +257,18 @@ pub fn validate_final(inout rec: Recorder) -> Option[BackendFault] {
         }
         seen_at.try_set(i, true);
         seen = inc(seen);
-        for e in 0..rec.stage.edges.len() {
-            let edge = redge(in rec.stage.edges, e);
-            if edge.parent == widget {
-                let c = widget_index(in rec.stage, edge.child);
-                if c == none_id() {
-                    return stale_widget();
-                }
-                let cw = rwidget(in rec.stage.widgets, c);
-                if !cw.has_parent || cw.parent != widget {
-                    return invalid(i_broken_parent());
-                }
-                stack.push(edge.child);
-                depths.push(inc(depth));
+        let widget = rwidget(in rec.stage.widgets, i).serial;
+        for k in seq_u64(in first, i)..seq_u64(in first, inc(i)) {
+            let c = seq_u64(in kids, k);
+            if c == none_id() {
+                return stale_widget();
             }
+            let cw = rwidget(in rec.stage.widgets, c);
+            if !cw.has_parent || cw.parent != widget {
+                return invalid(i_broken_parent());
+            }
+            stack.push(c);
+            depths.push(inc(depth));
         }
     }
     if seen != n {

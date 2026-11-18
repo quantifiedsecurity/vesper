@@ -236,6 +236,76 @@ pub fn child_edge(in s: RState, parent: u64, index: u64) -> u64 {
     none_id()
 }
 
+// One pass over the edges for `parent`: its child count, and the position
+// in `edges` of its `index`-th child (none when `index` is not below the
+// count).
+pub fn child_scan(in s: RState, parent: u64, index: u64) -> (u64, u64) {
+    let mut n: u64 = 0;
+    let mut at = none_id();
+    for i in 0..s.edges.len() {
+        if redge(in s.edges, i).parent == parent {
+            if n == index {
+                at = i;
+            }
+            n = inc(n);
+        }
+    }
+    (n, at)
+}
+
+// Where the edge at `at` (a child of `parent`) lands when it is removed
+// and inserted again as the `to`-th child: the position of the `to`-th of
+// the other children in the array without it, or its end.
+pub fn move_target(in s: RState, parent: u64, at: u64, to: u64) -> u64 {
+    let mut n: u64 = 0;
+    let ne = s.edges.len();
+    let mut i: u64 = 0;
+    loop {
+        if i >= ne {
+            break dec(ne);
+        }
+        if i != at && redge(in s.edges, i).parent == parent {
+            if n == to {
+                // Past `at`, everything shifts down by one.
+                let dest = if i < at {
+                    i
+                } else {
+                    dec(i)
+                };
+                break dest;
+            }
+            n = inc(n);
+        }
+        i = inc(i);
+    }
+}
+
+// remove_edge(at) then insert_edge(dest) as one shift of the edges between.
+pub fn move_edge(inout s: RState, at: u64, dest: u64) {
+    let e = redge(in s.edges, at);
+    let mut j = at;
+    if dest > at {
+        loop {
+            if j >= dest {
+                break;
+            }
+            let moved = redge(in s.edges, inc(j));
+            s.edges.try_set(j, moved);
+            j = inc(j);
+        }
+    } else {
+        loop {
+            if j <= dest {
+                break;
+            }
+            let moved = redge(in s.edges, dec(j));
+            s.edges.try_set(j, moved);
+            j = dec(j);
+        }
+    }
+    s.edges.try_set(dest, e);
+}
+
 pub fn remove_edge(inout s: RState, at: u64) {
     let n = s.edges.len();
     if at < n {

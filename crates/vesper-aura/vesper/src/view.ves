@@ -46,6 +46,7 @@ pub fn tree_new() -> Tree {
         props: ChunkSeq::new[TProp](),
         subs: ChunkSeq::new[TSub](),
         kids: ChunkSeq::new[u64](),
+        kidx: ChunkSeq::new[u64](),
         keys: ChunkSeq::new[u64](),
         sorted: ChunkSeq::new[u64](),
         parent: ChunkSeq::new[u64](),
@@ -131,7 +132,10 @@ pub fn validate(inout t: Tree, lim: Lim, in text: Slice[u8]) -> Option[ViewFault
     let mut dup: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](n);
     sort_by_key(in t.keys, inout t.sorted, inout dup);
     // dup[i]: an earlier node has the same key (the sort is stable).
-    dup.fill(0);
+    dup.clear();
+    for i in 0..n {
+        dup.push(0);
+    }
     for r in 0..n {
         if r > 0 {
             let i = seq_u64(in t.sorted, r);
@@ -225,6 +229,7 @@ pub fn validate(inout t: Tree, lim: Lim, in text: Slice[u8]) -> Option[ViewFault
                 return Option::Some(ViewFault::MultipleParents(child));
             }
             t.parent.try_set(c, i);
+            t.kidx.push(c);
         }
     }
     if seq_u64(in t.parent, root) != none_id() {
@@ -264,9 +269,7 @@ pub fn validate(inout t: Tree, lim: Lim, in text: Slice[u8]) -> Option[ViewFault
                 break;
             }
             j = dec(j);
-            let child = seq_u64(in t.kids, add(node.cstart, j));
-            let c = tree_find(in t, child);
-            stack.push(c);
+            stack.push(seq_u64(in t.kidx, add(node.cstart, j)));
             depths.push(inc(depth));
         }
     }

@@ -29,7 +29,6 @@ use self::util::{
     position,
     remove_at,
     seq_u64,
-    sort_by_key,
     tnode,
     tprop,
     tsub
@@ -46,6 +45,7 @@ pub fn mounted_new() -> Mounted {
         props: ChunkSeq::new[MProp](),
         subs: ChunkSeq::new[MSub](),
         kids: ChunkSeq::new[u64](),
+        kidx: ChunkSeq::new[u64](),
         text: ChunkSeq::new[u8](),
         keys: ChunkSeq::new[u64](),
         sorted: ChunkSeq::new[u64]()
@@ -85,6 +85,7 @@ pub fn copy_mounted(in src: Mounted, inout dst: Mounted) {
     dst.props.clear();
     dst.subs.clear();
     dst.kids.clear();
+    dst.kidx.clear();
     dst.text.clear();
     dst.keys.clear();
     dst.sorted.clear();
@@ -92,6 +93,7 @@ pub fn copy_mounted(in src: Mounted, inout dst: Mounted) {
     dst.props.extend(in src.props.as_slice());
     dst.subs.extend(in src.subs.as_slice());
     dst.kids.extend(in src.kids.as_slice());
+    dst.kidx.extend(in src.kidx.as_slice());
     dst.text.extend(in src.text.as_slice());
     dst.keys.extend(in src.keys.as_slice());
     dst.sorted.extend(in src.sorted.as_slice());
@@ -164,6 +166,15 @@ pub fn exhausted(inout p: Prepared) {
 // fresh one, in the order plan::build hands them out. `prev` maps each new
 // node to the old node it retains (or none).
 pub fn mount_next(in old: Mounted, inout p: Prepared, in text: Slice[u8]) {
+    // pos[ti]: the pre-order position of tree node `ti` (every node is in
+    // the order of a validated tree).
+    let mut pos: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](p.tree.nodes.len());
+    for i in 0..p.tree.nodes.len() {
+        pos.push(none_id());
+    }
+    for oi in 0..p.tree.order.len() {
+        pos.try_set(seq_u64(in p.tree.order, oi), oi);
+    }
     for oi in 0..p.tree.order.len() {
         let ti = seq_u64(in p.tree.order, oi);
         let tn = tnode(in p.tree.nodes, ti);
@@ -261,6 +272,7 @@ pub fn mount_next(in old: Mounted, inout p: Prepared, in text: Slice[u8]) {
         let cstart = p.m.kids.len();
         for j in 0..tn.ccount {
             p.m.kids.push(seq_u64(in p.tree.kids, add(tn.cstart, j)));
+            p.m.kidx.push(seq_u64(in pos, seq_u64(in p.tree.kidx, add(tn.cstart, j))));
         }
         p
             .m
@@ -280,14 +292,16 @@ pub fn mount_next(in old: Mounted, inout p: Prepared, in text: Slice[u8]) {
             }
         );
         p.m.keys.push(tn.key);
-        p.m.sorted.push(oi);
         p.prev.push(prev);
         p.cur_start.push(0);
         p.cur_len.push(0);
     }
     p.m.present = true;
-    let mut tmp: ChunkSeq[u64] = ChunkSeq::new[u64]();
-    sort_by_key(in p.m.keys, inout p.m.sorted, inout tmp);
+    // The keys are the tree's, so their order is the tree's `sorted`
+    // mapped to pre-order positions.
+    for r in 0..p.tree.sorted.len() {
+        p.m.sorted.push(seq_u64(in pos, seq_u64(in p.tree.sorted, r)));
+    }
 }
 
 // Whether `key` has a parent in the new tree and that parent is `parent_key`
@@ -300,6 +314,13 @@ pub fn new_parent_is(in t: Tree, key: u64, parent_key: u64) -> bool {
         let parent = seq_u64(in t.parent, c);
         parent != none_id() && tnode(in t.nodes, parent).key == parent_key
     }
+}
+
+// Whether new node `nj` has a parent in the new tree and that parent's key
+// is `parent_key`.
+pub fn new_parent_key_is(in p: Prepared, nj: u64, parent_key: u64) -> bool {
+    let parent = seq_u64(in p.tree.parent, mnode(in p.m.nodes, nj).src);
+    parent != none_id() && tnode(in p.tree.nodes, parent).key == parent_key
 }
 
 // Whether old node `oi` is retained, through `succ` (old index to new index).
@@ -324,11 +345,10 @@ pub fn detach(in old: Mounted, inout p: Prepared, max: u64) -> bool {
                 break;
             }
             i = dec(i);
-            let child = seq_u64(in work, i);
-            let ci = mounted_find(in old, child);
+            let ci = seq_u64(in old.kidx, add(node.cstart, i));
             let keep = keep_node
                 && old_retained(in p, ci)
-                && new_parent_is(in p.tree, child, node.key);
+                && new_parent_key_is(in p, seq_u64(in p.succ, ci), node.key);
             if !keep {
                 if !emit(inout p, max, op(8, node.id, mnode(in old.nodes, ci).id, i, 0)) {
                     return false;
@@ -349,7 +369,7 @@ pub fn detach(in old: Mounted, inout p: Prepared, max: u64) -> bool {
 }
 
 // Disconnect, unbind and destroy, child-first.
-pub fn teardown(in old: Mounted, inout p: Prepared, max: u64) -> bool {
+pub fn teardown(in old: Mounted, inout p: Prepared, in found: ChunkSeq[u64], max: u64) -> bool {
     let mut oi = old.nodes.len();
     loop {
         if oi == 0 {
@@ -357,7 +377,7 @@ pub fn teardown(in old: Mounted, inout p: Prepared, max: u64) -> bool {
         }
         oi = dec(oi);
         let node = mnode(in old.nodes, oi);
-        let nj = mounted_find(in p.m, node.key);
+        let nj = seq_u64(in found, oi);
         let next = mnode(in p.m.nodes, nj);
         for j in 0..node.scount {
             let s = msub(in old.subs, add(node.sstart, j));
@@ -456,7 +476,7 @@ pub fn attach(inout p: Prepared, max: u64) -> bool {
             let child = seq_u64(in p.m.kids, add(node.cstart, index));
             let here = index < work.len() && seq_u64(in work, index) == child;
             if !here {
-                let child_id = mnode(in p.m.nodes, mounted_find(in p.m, child)).id;
+                let child_id = mnode(in p.m.nodes, seq_u64(in p.m.kidx, add(node.cstart, index))).id;
                 let from = position(in work, child);
                 if from != none_id() {
                     if !emit(inout p, max, op(10, node.id, child_id, from, index)) {
@@ -488,9 +508,12 @@ pub fn plan(in old: Mounted, inout p: Prepared, has_tree: bool, in text: Slice[u
             Option::None => (),
         }
     }
+    // found[oi]: old node `oi`'s key in the new tree, or none.
+    let mut found: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](old.nodes.len());
     for oi in 0..old.nodes.len() {
         let node = mnode(in old.nodes, oi);
         let nj = mounted_find(in p.m, node.key);
+        found.push(nj);
         let same = nj != none_id() && mnode(in p.m.nodes, nj).kind == node.kind;
         p
             .succ
@@ -513,7 +536,7 @@ pub fn plan(in old: Mounted, inout p: Prepared, has_tree: bool, in text: Slice[u
         if !detach(in old, inout p, max) {
             return;
         }
-        if !teardown(in old, inout p, max) {
+        if !teardown(in old, inout p, in found, max) {
             return;
         }
     }

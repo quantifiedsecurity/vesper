@@ -178,7 +178,8 @@ pub copy struct TSub {
 
 // A decoded and validated input tree. `sorted` lists node indices by key,
 // `parent` holds each node's parent index (or none), `order` is the
-// depth-first pre-order from the root. Scratch space is local to the
+// depth-first pre-order from the root, `kidx` the node index of each child
+// key in `kids`. Scratch space is local to the
 // functions that use it (native code frees a dropped local sequence).
 pub struct Tree {
     root: u64,
@@ -186,6 +187,7 @@ pub struct Tree {
     props: ChunkSeq[TProp],
     subs: ChunkSeq[TSub],
     kids: ChunkSeq[u64],
+    kidx: ChunkSeq[u64],
     keys: ChunkSeq[u64],
     sorted: ChunkSeq[u64],
     parent: ChunkSeq[u64],
@@ -222,13 +224,15 @@ pub copy struct MSub {
     handler: u64
 }
 
-// plan::Mounted: the retained identities of the mounted tree.
+// plan::Mounted: the retained identities of the mounted tree. `kidx` holds
+// the node index of each child key in `kids`.
 pub struct Mounted {
     present: bool,
     nodes: ChunkSeq[MNode],
     props: ChunkSeq[MProp],
     subs: ChunkSeq[MSub],
     kids: ChunkSeq[u64],
+    kidx: ChunkSeq[u64],
     text: ChunkSeq[u8],
     keys: ChunkSeq[u64],
     sorted: ChunkSeq[u64]

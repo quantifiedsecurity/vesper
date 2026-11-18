@@ -238,6 +238,20 @@ pub fn position(in s: ChunkSeq[u64], v: u64) -> u64 {
 // Stable bottom-up merge sort of the indices `idx` by `keys[idx[i]]`.
 pub fn sort_by_key(in keys: ChunkSeq[u64], inout idx: ChunkSeq[u64], inout tmp: ChunkSeq[u64]) {
     let n = idx.len();
+    // Already in order (the common case of a tree listed by key): done.
+    let mut r: u64 = 1;
+    let ordered = loop {
+        if r >= n {
+            break true;
+        }
+        if seq_u64(in keys, seq_u64(in idx, dec(r))) > seq_u64(in keys, seq_u64(in idx, r)) {
+            break false;
+        }
+        r = inc(r);
+    };
+    if ordered {
+        return;
+    }
     tmp.clear();
     for i in 0..n {
         tmp.push(0);
