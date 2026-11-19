@@ -97,6 +97,7 @@ members = [
     "crates/vesper-port-harness",
     "crates/vesper-port-build",
     "crates/vesper-port-pilot",
+    "crates/vesper-tools",
     "experiments/native-pulse",
 ]
 # Preserve the pre-extraction `cargo test` coverage of moved unit tests.
@@ -195,6 +196,7 @@ default-members = [
     "crates/vesper-port-harness",
     "crates/vesper-port-build",
     "crates/vesper-port-pilot",
+    "crates/vesper-tools",
     "experiments/native-pulse",
 ]
 
@@ -252,11 +254,6 @@ vesper-lsp = { path = "crates/vesper-lsp" }
 vesper-diagnostics = { path = "crates/vesper-diagnostics" }
 vesper-fmt = { path = "crates/vesper-fmt" }
 vesper-lint = { path = "crates/vesper-lint" }
-# The compiler links the frozen Rust seed copy of vesper-bench (#1040).
-vesper-bench = { path = "crates/vesper-bench/seed", package = "vesper-bench-seed" }
-vesper-bench-pmu = { path = "crates/vesper-bench-pmu" }
-# The compiler links the frozen Rust seed copy (seed-copy rule, #906).
-vesper-grammar = { path = "crates/vesper-grammar/seed", package = "vesper-grammar-seed" }
 vesper-doc = { path = "crates/vesper-doc" }
 # The compiler links the frozen Rust seed copy, never the port-backed package
 # (seed-copy rule, docs/maintenance/porting-a-crate.md).
@@ -267,19 +264,12 @@ vesper-fiber-abi = { path = "crates/vesper-fiber-abi" }
 vesper-semver = { path = "crates/vesper-semver/seed", package = "vesper-semver-seed" }
 # The compiler links the frozen Rust seed copy of vesper-loom-calculus (#913).
 vesper-loom-calculus = { path = "crates/vesper-loom-calculus/seed", package = "vesper-loom-calculus-seed" }
-# The compiler links the frozen Rust seed copy of vesper-loom-solver (#914).
-vesper-loom-solver = { path = "crates/vesper-loom-solver/seed", package = "vesper-loom-solver-seed" }
 vesper-loom-trust = { path = "crates/vesper-loom-trust" }
 vesper-loom-admission = { path = "crates/vesper-loom-admission" }
-# The compiler links the frozen Rust seed copy of vesper-loom-audit (#1039).
-vesper-loom-audit = { path = "crates/vesper-loom-audit/seed", package = "vesper-loom-audit-seed" }
 vesper-loom-cas = { path = "crates/vesper-loom-cas" }
 vesper-pact = { path = "crates/vesper-pact/seed", package = "vesper-pact-seed" }
 vesper-pact-binding = { path = "crates/vesper-pact-binding" }
 # Integration B (#136): wave-five verifiers and tools wired into the CLI.
-# The compiler links the frozen Rust seed copy (seed-copy rule); the Vesper
-# port is the package crates/vesper-aegis (#1043).
-vesper-aegis = { path = "crates/vesper-aegis/seed", package = "vesper-aegis-seed" }
 vesper-chrono = { path = "crates/vesper-chrono" }
 # The compiler links the frozen Rust seed copy (seed-copy rule); the Vesper
 # port is the package crates/vesper-crucible (#915).
@@ -326,6 +316,12 @@ wit-component = "=0.261.0"
 wit-parser = "=0.261.0"
 
 [dev-dependencies]
+# bench, grammar, json, audit, publish, resolve, sbom and `build --tee` run
+# as `vesper-<tool>` binaries (crates/vesper-tools, SH0 lane 2), so these
+# seed copies left the compiler's closure. The CLI tests still check results
+# against them.
+vesper-aegis = { path = "crates/vesper-aegis/seed", package = "vesper-aegis-seed" }
+vesper-bench = { path = "crates/vesper-bench/seed", package = "vesper-bench-seed" }
 vesper-nexus = { path = "crates/vesper-nexus" }
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "component-model", "runtime", "std", "stack-switching", "gc", "gc-null"] }
 wasmtime-wasi = { version = "50", default-features = false, features = ["p2"] }
