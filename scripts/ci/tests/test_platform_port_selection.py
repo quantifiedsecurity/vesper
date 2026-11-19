@@ -17,16 +17,21 @@ class PortHarnessSelectionTests(unittest.TestCase):
             self.assertEqual(selection.select([path]), "all", path)
 
     def test_a_seed_the_compiler_links_runs_every_port(self):
-        package_dir, _, link = selection.load_workspace()
+        package_dir, _, link, _ = selection.load_workspace()
         compiler = next(n for n, d in package_dir.items() if d == "")
         seeds = sorted(n for n in selection.closure({compiler}, link) if n.endswith("-seed"))
         self.assertTrue(seeds)
         self.assertEqual(selection.select([package_dir[seeds[0]] + "/src/lib.rs"]), "all")
 
+    def test_port_sources_a_compiler_seed_shares_run_every_port(self):
+        # vesper-alloc-seed's library is ../src/lib.rs, and the compiler links it.
+        self.assertEqual(selection.select(["crates/vesper-alloc/src/lib.rs"]), "all")
+        self.assertEqual(selection.select(["crates/vesper-alloc/vesper/src/region.ves"]), "vesper-alloc")
+
     def test_a_port_runs_itself_and_its_dependents(self):
         self.assertEqual(selection.select(["crates/vesper-prism-h3/vesper/src/message.ves"]),
                          "vesper-prism-h3")
-        picked = selection.select(["crates/vesper-beacon/src/lib.rs", "docs/x.md"]).split()
+        picked = selection.select(["crates/vesper-beacon/tests/behavior.rs", "docs/x.md"]).split()
         self.assertIn("vesper-beacon", picked)
         self.assertIn("vesper-beacon-arrow", picked)
 

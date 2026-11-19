@@ -26,8 +26,13 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def load_workspace(root: Path = ROOT) -> tuple[dict[str, str], dict[str, set[str]], dict[str, set[str]]]:
-    """Returns {package: dir}, {package: all workspace deps}, {package: build+normal workspace deps}."""
+def load_workspace(root: Path = ROOT):
+    """Returns {package: dir}, {package: all workspace deps}, {package: build+normal
+    workspace deps} and {package: directories of its linked sources}.
+
+    The source directories are the package directory plus the directory of
+    every library, binary and build script path it names, so a seed copy
+    whose library is its port's `../src/lib.rs` also owns that `src/`."""
     manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
     workspace = manifest["workspace"]
     dirs: list[str] = []
@@ -67,11 +72,23 @@ def load_workspace(root: Path = ROOT) -> tuple[dict[str, str], dict[str, set[str
                         found.add(by_dir[path])
         return found
 
+    def source_dirs(d: str, data: dict) -> set[str]:
+        dirs = {_norm(d)}
+        targets = [data.get("lib", {})] + list(data.get("bin", []))
+        paths = [t["path"] for t in targets if isinstance(t, dict) and isinstance(t.get("path"), str)]
+        build = data.get("package", {}).get("build")
+        if isinstance(build, str):
+            paths.append(build)
+        for path in paths:
+            dirs.add(_norm((PurePosixPath(d) / path).parent.as_posix()))
+        return dirs
+
     every = ("dependencies", "dev-dependencies", "build-dependencies")
     linked = ("dependencies", "build-dependencies")
     all_deps = {n: deps(d, data, every) for n, (d, data) in manifests.items()}
     link_deps = {n: deps(d, data, linked) for n, (d, data) in manifests.items()}
-    return package_dir, all_deps, link_deps
+    sources = {n: source_dirs(d, data) for n, (d, data) in manifests.items()}
+    return package_dir, all_deps, link_deps, sources
 
 
 def _norm(path: str) -> str:
@@ -95,19 +112,21 @@ def closure(start: set[str], edges: dict[str, set[str]]) -> set[str]:
 
 
 def select(changed: list[str], root: Path = ROOT) -> str:
-    package_dir, all_deps, link_deps = load_workspace(root)
+    package_dir, all_deps, link_deps, sources = load_workspace(root)
     compiler = next(n for n, d in package_dir.items() if d == "")
     compiler_closure = closure({compiler}, link_deps)
-    members = sorted(((d, n) for n, d in package_dir.items() if d), key=lambda x: -len(x[0]))
     touched: set[str] = set()
     for file in changed:
         path = PurePosixPath(file)
         if path.parts[:1] == ("docs",) or (len(path.parts) == 1 and path.suffix == ".md"):
             continue
-        owner = next((n for d, n in members if file == d or file.startswith(d + "/")), None)
-        if owner is None or owner in compiler_closure:
+        # Every package whose directory or linked sources hold the file; the
+        # root package's own directory (the whole repository) is left out.
+        owners = {n for n, dirs in sources.items() if n != compiler
+                  and any(d and (file == d or file.startswith(d + "/")) for d in dirs)}
+        if not owners or owners & compiler_closure:
             return "all"
-        touched.add(owner)
+        touched |= owners
     if not touched:
         return "none"
     dependents: dict[str, set[str]] = {}
