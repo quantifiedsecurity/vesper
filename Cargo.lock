@@ -5564,7 +5564,6 @@ dependencies = [
  "vesper-aegis-seed",
  "vesper-alloc-seed",
  "vesper-beacon-seed",
- "vesper-bench-pmu",
  "vesper-bench-seed",
  "vesper-chrono",
  "vesper-core",
@@ -5576,16 +5575,13 @@ dependencies = [
  "vesper-fiber-abi",
  "vesper-fmt",
  "vesper-forge",
- "vesper-grammar-seed",
  "vesper-highlight",
  "vesper-kinetic-seed",
  "vesper-lean-syntax-seed",
  "vesper-lint",
  "vesper-loom-admission",
- "vesper-loom-audit-seed",
  "vesper-loom-calculus-seed",
  "vesper-loom-cas",
- "vesper-loom-solver-seed",
  "vesper-loom-trust",
  "vesper-lsp",
  "vesper-migrate",
@@ -6678,6 +6674,30 @@ name = "vesper-tensor-seed"
 version = "0.1.0"
 dependencies = [
  "memmap2",
+]
+
+[[package]]
+name = "vesper-tools"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "cranelift-codegen 0.125.4",
+ "cranelift-native 0.125.4",
+ "libc",
+ "serde",
+ "serde_json",
+ "vesper",
+ "vesper-aegis-seed",
+ "vesper-bench-pmu",
+ "vesper-bench-seed",
+ "vesper-grammar-seed",
+ "vesper-loom-audit-seed",
+ "vesper-loom-calculus-seed",
+ "vesper-loom-cas",
+ "vesper-loom-solver-seed",
+ "vesper-loom-trust",
+ "vesper-semver-seed",
+ "vesper-serde-seed",
 ]
 
 [[package]]
