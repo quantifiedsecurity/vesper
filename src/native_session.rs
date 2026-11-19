@@ -929,6 +929,7 @@ fn compile_session_with_linkage<M: Module>(
             inline_depth: 0,
             cycle_depth: 0,
             tail_call: false,
+            sink_blocks: vec![],
             fail_record: None,
             caller_slot: None,
             reuse_slots: BTreeMap::new(),
