@@ -69,6 +69,7 @@ members = [
     "crates/vesper-warp-tcp",
     "crates/vesper-chorus",
     "crates/vesper-aegis",
+    "crates/vesper-aegis/seed",
     "crates/vesper-resonance",
     "crates/vesper-resonance/seed",
     "crates/vesper-warp-tls",
@@ -165,6 +166,7 @@ default-members = [
     "crates/vesper-warp-tcp",
     "crates/vesper-chorus",
     "crates/vesper-aegis",
+    "crates/vesper-aegis/seed",
     "crates/vesper-resonance",
     "crates/vesper-resonance/seed",
     "crates/vesper-warp-tls",
@@ -273,7 +275,9 @@ vesper-loom-cas = { path = "crates/vesper-loom-cas" }
 vesper-pact = { path = "crates/vesper-pact/seed", package = "vesper-pact-seed" }
 vesper-pact-binding = { path = "crates/vesper-pact-binding" }
 # Integration B (#136): wave-five verifiers and tools wired into the CLI.
-vesper-aegis = { path = "crates/vesper-aegis" }
+# The compiler links the frozen Rust seed copy (seed-copy rule); the Vesper
+# port is the package crates/vesper-aegis (#1043).
+vesper-aegis = { path = "crates/vesper-aegis/seed", package = "vesper-aegis-seed" }
 vesper-chrono = { path = "crates/vesper-chrono" }
 # The compiler links the frozen Rust seed copy (seed-copy rule); the Vesper
 # port is the package crates/vesper-crucible (#915).
@@ -335,3 +339,13 @@ find-msvc-tools = "=0.1.15"
 
 [profile.release]
 lto = "thin"
+
+# The compiler the CI port harness compiles every port with (#1103):
+# optimized, but with release's thin LTO off so it builds quickly, and with
+# debug assertions and overflow checks kept on like the dev profile.
+[profile.port-compiler]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug-assertions = true
+overflow-checks = true
