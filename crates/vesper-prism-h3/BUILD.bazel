@@ -35,6 +35,11 @@ DIVERGENT = {
     "huffman": ("huffman", "out.push(wrapping_u8(shl(acc, pad) | wrapping_sub(bit(pad), 1)));", "out.push(wrapping_u8(shl(acc, pad)));"),
     "prefix": ("prefix", "used: wrapping_sub(inc(i), at)", "used: wrapping_sub(i, at)"),
     "table": ("table", "wrapping_sub(t.inserted, table_len(in t))", "wrapping_sub(t.inserted, inc(table_len(in t)))"),
+    "varint": ("varint", "if v < 64 {", "if v <= 64 {"),
+    "frame": ("frame", "if n.used == p.len() {", "if n.used <= p.len() {"),
+    "priority": ("priority", "item.kind == 0 && item.mag <= 7", "item.kind == 0 && item.mag <= 8"),
+    "message": ("message", "if hosts > 1 {", "if hosts > 2 {"),
+    "capsule": ("capsule", "(widen_u64(byte(in v, 0)) << 24)", "(widen_u64(byte(in v, 0)) << 16)"),
 }
 
 [
@@ -71,7 +76,9 @@ rust_library(
 # (Warp, quinn and wtransport peers) run against the port in Cargo, in the
 # Linux "Vesper ports" job (port/check.sh).
 PORT_TESTS = [
+    "frame_codec",
     "h3_mem",
+    "message_rules",
     "priority_bodies",
     "qpack_encode_golden",
     "qpack_qifs",
@@ -91,6 +98,11 @@ CHECKS = {
     "huffman": "qpack_rfc",
     "prefix": "qpack_qifs",
     "table": "qpack_rfc",
+    "varint": "frame_codec",
+    "frame": "frame_codec",
+    "priority": "frame_codec",
+    "capsule": "frame_codec",
+    "message": "message_rules",
 }
 
 [

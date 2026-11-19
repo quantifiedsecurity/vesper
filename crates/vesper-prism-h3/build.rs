@@ -52,4 +52,22 @@ const DIVERGENT_EDITS: &[(&str, &str, &str)] = &[
         "let a = wrapping_add(base, index);",
         "let a = wrapping_add(base, inc(index));",
     ),
+    // varint (frame.rs put_varint): 64 is written in one byte.
+    ("varint", "if v < 64 {", "if v <= 64 {"),
+    // frame.rs: a one-varint payload may have trailing bytes.
+    ("frame", "if n.used == p.len() {", "if n.used <= p.len() {"),
+    // priority.rs: urgency 8 is accepted.
+    (
+        "priority",
+        "item.kind == 0 && item.mag <= 7",
+        "item.kind == 0 && item.mag <= 8",
+    ),
+    // capsule.rs: the close code's first byte lands one byte low.
+    (
+        "capsule",
+        "(widen_u64(byte(in v, 0)) << 24)",
+        "(widen_u64(byte(in v, 0)) << 16)",
+    ),
+    // message.rs: two Host fields are accepted.
+    ("message", "if hosts > 1 {", "if hosts > 2 {"),
 ];
