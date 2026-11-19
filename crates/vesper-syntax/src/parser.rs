@@ -520,10 +520,80 @@ impl Parser<'_> {
         }
     }
     fn lower(&mut self) -> String {
+        if self.at_contextual_name() {
+            return self.bump();
+        }
         if !matches!(self.kind(), K::Lower | K::SelfKw) {
-            self.error("expected a lower-case identifier");
+            match self.kind() {
+                K::Copy
+                | K::Affine
+                | K::Mod
+                | K::Eff
+                | K::In
+                | K::Inout
+                | K::Sink
+                | K::Handle
+                | K::Return
+                | K::Match
+                | K::If
+                | K::Else
+                | K::Let
+                | K::Fn
+                | K::Struct
+                | K::Enum
+                | K::Effect
+                | K::Impl => {
+                    let word = self.text(0).to_owned();
+                    self.error(format!(
+                        "expected a lower-case identifier, found the keyword `{word}`, which cannot be a name"
+                    ));
+                }
+                _ => self.error("expected a lower-case identifier"),
+            }
         }
         self.ident()
+    }
+    /// `state`, `linear` and `with` are keywords only where their forms
+    /// start (`handle E state p = ..`, `linear struct`, `.. with { .. }`);
+    /// everywhere a name is expected they are ordinary lower-case names.
+    fn at_contextual_name(&self) -> bool {
+        matches!(self.kind(), K::State | K::Linear | K::With)
+    }
+    /// At the root of a qualified path: `self::`, `super::` or
+    /// `@scope/name::` (manuscript ch 11.3, "Qualified paths").
+    fn at_path_root(&self) -> bool {
+        match self.kind() {
+            K::SelfKw => self.nth(1) == K::ColonColon,
+            K::Lower => self.text(0) == "super" && self.nth(1) == K::ColonColon,
+            K::At => {
+                // The adjacent tokens of a package name, then `::`.
+                let mut end = self.tokens[self.index(0)].span.end;
+                let mut n = 1;
+                while matches!(self.nth(n), K::Lower | K::Minus | K::Slash | K::Int)
+                    && self.tokens[self.index(n)].span.start == end
+                {
+                    end = self.tokens[self.index(n)].span.end;
+                    n += 1;
+                }
+                n > 1 && self.nth(n) == K::ColonColon
+            }
+            _ => false,
+        }
+    }
+    /// A qualified path at [`Self::at_path_root`], joined by `::`:
+    /// `self::m::f`, `super::m::T`, `@scope/name::m::E::V`.
+    fn qualified_path(&mut self) -> String {
+        let mut path = if self.at(K::At) {
+            self.package_name()
+        } else {
+            self.bump()
+        };
+        while self.at(K::ColonColon) && matches!(self.nth(1), K::Lower | K::Upper) {
+            self.bump();
+            path.push_str("::");
+            path.push_str(&self.bump());
+        }
+        path
     }
     fn upper(&mut self) -> String {
         if !self.at(K::Upper) {
@@ -694,12 +764,22 @@ impl Parser<'_> {
             self.use_model(0..self.source.len());
             return None;
         }
-        if self.at_word(0, "use") && matches!(self.nth(1), K::At | K::SelfKw) {
-            self.use_item();
+        if self.at_word(0, "use")
+            && (matches!(self.nth(1), K::At | K::SelfKw) || self.at_word(1, "super"))
+        {
+            self.use_item(false);
+            return None;
+        }
+        if self.at_word(0, "pub")
+            && self.at_word(1, "use")
+            && (matches!(self.nth(2), K::At | K::SelfKw) || self.at_word(2, "super"))
+        {
+            self.bump();
+            self.use_item(true);
             return None;
         }
         if self.at_word(0, "use") && self.nth(1) == K::Lower && self.nth(2) == K::ColonColon {
-            self.error("an import path starts with `@scope/package` or `self`");
+            self.error("an import path starts with `@scope/package`, `self` or `super`");
             self.bump();
             self.bump();
             while self.eat(K::ColonColon) {
@@ -708,14 +788,6 @@ impl Parser<'_> {
                 }
             }
             self.eat(K::Semi);
-            return None;
-        }
-        if self.at_word(0, "pub") && self.at_word(1, "use") {
-            self.error("`pub use` re-exports are not supported yet; mark the original item `pub`");
-            self.bump();
-            if matches!(self.nth(1), K::At | K::SelfKw) {
-                self.use_item();
-            }
             return None;
         }
         let mut fip = self.fip_attr();
@@ -1217,6 +1289,11 @@ impl Parser<'_> {
             let name = self.upper();
             let args = self.type_args();
             Type::Named(DYN_TYPE.into(), vec![Type::Named(name, args)])
+        } else if self.at_path_root() {
+            // `self::m::T[args]`, `super::m::T`, `@scope/name::m::T`.
+            let name = self.qualified_path();
+            let args = self.type_args();
+            Type::Named(name, args)
         } else {
             let name = self.ident();
             if self.at(K::ColonColon) && self.nth(1) == K::Upper {
@@ -1262,13 +1339,24 @@ impl Parser<'_> {
         }
         package
     }
-    /// `use (@scope/name | self) (:: segment)* :: (item (as alias)? | { list });`
-    /// at `use` (manuscript ch 2.2 `UseDecl`).
-    fn use_item(&mut self) {
+    /// `pub? use (@scope/name | self | super (:: super)*) (:: segment)* ::
+    /// (item (as alias)? | { list });` at `use` (manuscript ch 2.2
+    /// `UseDecl`); a `pub` before it has been consumed.
+    fn use_item(&mut self, public: bool) {
         let start = self.start();
         self.bump();
+        let mut supers = 0;
         let package = if self.at(K::At) {
             Some(self.package_name())
+        } else if self.at_word(0, "super") {
+            self.bump();
+            supers = 1;
+            while self.at(K::ColonColon) && self.at_word(1, "super") {
+                self.bump();
+                self.bump();
+                supers += 1;
+            }
+            None
         } else {
             self.bump();
             None
@@ -1305,8 +1393,10 @@ impl Parser<'_> {
         self.expect(K::Semi);
         self.uses.push(UseDecl {
             package,
+            supers,
             path,
             names,
+            public,
             span: start..self.end(),
         });
     }
@@ -2305,25 +2395,39 @@ impl Parser<'_> {
                         }
                     } else {
                         self.bump();
-                        let mut index = self.expr();
-                        // A slice interval `p[a..b]` (§2.2) is an index whose
-                        // expression is the binary `..` of its bounds.
-                        if self.kind() == K::DotDot {
-                            let op = self.bump();
-                            let hi = self.expr();
-                            let span = index.span.start..hi.span.end;
-                            index = self.record_expr(Expr {
-                                kind: ExprKind::Binary(op, Box::new(index), Box::new(hi)),
-                                span,
-                            });
-                        }
+                        let index = if self.at(K::DotDot) {
+                            // `p[..]` and `p[..b]`: open slice intervals.
+                            self.open_interval(&e, None)
+                        } else {
+                            let index = self.expr();
+                            // A slice interval `p[a..b]` (§2.2) is an index whose
+                            // expression is the binary `..` of its bounds.
+                            if self.kind() == K::DotDot {
+                                if self.nth(1) == K::RBracket {
+                                    self.open_interval(&e, Some(index))
+                                } else {
+                                    let op = self.bump();
+                                    let hi = self.expr();
+                                    let span = index.span.start..hi.span.end;
+                                    self.record_expr(Expr {
+                                        kind: ExprKind::Binary(op, Box::new(index), Box::new(hi)),
+                                        span,
+                                    })
+                                }
+                            } else {
+                                index
+                            }
+                        };
                         self.expect(K::RBracket);
                         ExprKind::Index(Box::new(e), Box::new(index))
                     }
                 }
                 K::Dot => {
                     self.bump();
-                    if self.editor && !matches!(self.kind(), K::Lower | K::SelfKw) {
+                    if self.editor
+                        && !matches!(self.kind(), K::Lower | K::SelfKw)
+                        && !self.at_contextual_name()
+                    {
                         let span = self.end()..self.end();
                         let receiver = recovery_driver::receiver(&e);
                         self.site(span, crate::recovery::SiteKind::MissingMember, receiver);
@@ -2420,7 +2524,22 @@ impl Parser<'_> {
             ExprKind::Literal(l)
         } else {
             match self.kind() {
-                K::Lower | K::SelfKw => ExprKind::Name(self.bump()),
+                _ if self.at_path_root() => {
+                    // `self::m::f`, `super::m::T { .. }`, `@scope/name::m::E::V`.
+                    let name = self.qualified_path();
+                    let last_upper = name
+                        .rsplit("::")
+                        .next()
+                        .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_uppercase()));
+                    if last_upper && self.at(K::LBrace) && !self.no_struct {
+                        self.struct_literal(name)
+                    } else {
+                        ExprKind::Name(name)
+                    }
+                }
+                K::Lower | K::SelfKw | K::State | K::Linear | K::With => {
+                    ExprKind::Name(self.bump())
+                }
                 K::Upper => {
                     let mut name = self.bump();
                     while self.eat(K::ColonColon) {
@@ -2428,26 +2547,7 @@ impl Parser<'_> {
                         name.push_str(&self.ident());
                     }
                     if self.at(K::LBrace) && !self.no_struct {
-                        self.bump();
-                        let mut fields = vec![];
-                        while !self.at(K::RBrace) && !self.at(K::Eof) {
-                            let start = self.start();
-                            let field = self.lower();
-                            let value = if self.eat(K::Colon) {
-                                self.expr()
-                            } else {
-                                Expr {
-                                    kind: ExprKind::Name(field.clone()),
-                                    span: start..self.end(),
-                                }
-                            };
-                            fields.push((field, value));
-                            if !self.eat(K::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(K::RBrace);
-                        ExprKind::Struct { name, fields }
+                        self.struct_literal(name)
                     } else {
                         ExprKind::Name(name)
                     }
@@ -2508,6 +2608,90 @@ impl Parser<'_> {
             span: start..self.end(),
         }
     }
+    /// An interval with an open end at `..` inside `p[`: `p[..]`, `p[..b]`
+    /// and `p[a..]` mean `p[0..p.len()]`, `p[0..b]` and `p[a..p.len()]`
+    /// (§2.2). An open upper bound reads `p.len()`, so `p` must be a place
+    /// path (a name and fields). The copy of the path and the `len()` call
+    /// get synthetic spans that start inside the `..` token, where no source
+    /// node starts, so no span-keyed table sees two nodes at one span.
+    fn open_interval(&mut self, base: &Expr, lo: Option<Expr>) -> Expr {
+        let dots = self.span();
+        let op = self.bump();
+        let mut fresh = dots.start + 1;
+        let mut next_span = || {
+            let s = dots.start + 1..fresh;
+            fresh += 1;
+            s
+        };
+        let lo = lo.unwrap_or(Expr {
+            kind: ExprKind::Literal(Literal::Int(0)),
+            span: dots.start..dots.start,
+        });
+        let hi = if self.at(K::RBracket) {
+            fn copy(e: &Expr, next: &mut dyn FnMut() -> Span) -> Option<Expr> {
+                let kind = match &e.kind {
+                    ExprKind::Name(n) => ExprKind::Name(n.clone()),
+                    ExprKind::Field(inner, f) => {
+                        ExprKind::Field(Box::new(copy(inner, next)?), f.clone())
+                    }
+                    _ => return None,
+                };
+                Some(Expr { kind, span: next() })
+            }
+            match copy(base, &mut next_span) {
+                Some(place) => {
+                    let len = Expr {
+                        kind: ExprKind::Field(Box::new(place), "len".into()),
+                        span: next_span(),
+                    };
+                    Expr {
+                        kind: ExprKind::Call {
+                            callee: Box::new(len),
+                            types: vec![],
+                            args: vec![],
+                        },
+                        span: next_span(),
+                    }
+                }
+                None => {
+                    self.error(
+                        "an interval without an upper bound needs a named sequence (`s[a..]`); bind the value to a name first",
+                    );
+                    self.placeholder_expr()
+                }
+            }
+        } else {
+            self.expr()
+        };
+        let span = lo.span.start.min(dots.start)..hi.span.end.max(dots.end);
+        self.record_expr(Expr {
+            kind: ExprKind::Binary(op, Box::new(lo), Box::new(hi)),
+            span,
+        })
+    }
+    /// `Name { field: value, field }` at `{`.
+    fn struct_literal(&mut self, name: String) -> ExprKind {
+        self.bump();
+        let mut fields = vec![];
+        while !self.at(K::RBrace) && !self.at(K::Eof) {
+            let start = self.start();
+            let field = self.lower();
+            let value = if self.eat(K::Colon) {
+                self.expr()
+            } else {
+                Expr {
+                    kind: ExprKind::Name(field.clone()),
+                    span: start..self.end(),
+                }
+            };
+            fields.push((field, value));
+            if !self.eat(K::Comma) {
+                break;
+            }
+        }
+        self.expect(K::RBrace);
+        ExprKind::Struct { name, fields }
+    }
     fn pattern_list(&mut self, end: K) -> Vec<Pattern> {
         let mut pats = vec![];
         while !self.at(end) && !self.at(K::Eof) {
@@ -2549,7 +2733,11 @@ impl Parser<'_> {
                 self.error("only numeric patterns can be negative");
             }
             match self.kind() {
-                K::Lower => {
+                _ if self.at_path_root() => {
+                    let name = self.qualified_path();
+                    self.constructor_pattern(name)
+                }
+                K::Lower | K::State | K::Linear | K::With => {
                     let name = self.bump();
                     if name == "_" {
                         PatternKind::Wild
@@ -2563,37 +2751,7 @@ impl Parser<'_> {
                         name.push_str("::");
                         name.push_str(&self.upper());
                     }
-                    let named = self.at(K::LBrace);
-                    let mut fields = vec![];
-                    if self.eat(K::LParen) {
-                        for (i, p) in self.pattern_list(K::RParen).into_iter().enumerate() {
-                            fields.push((i.to_string(), p));
-                        }
-                        self.expect(K::RParen);
-                    } else if self.eat(K::LBrace) {
-                        while !self.at(K::RBrace) && !self.at(K::Eof) {
-                            let start = self.start();
-                            let field = self.lower();
-                            let p = if self.eat(K::Colon) {
-                                self.pattern()
-                            } else {
-                                Pattern {
-                                    kind: PatternKind::Bind(field.clone()),
-                                    span: start..self.end(),
-                                }
-                            };
-                            fields.push((field, p));
-                            if !self.eat(K::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(K::RBrace);
-                    }
-                    PatternKind::Constructor {
-                        name,
-                        fields,
-                        named,
-                    }
+                    self.constructor_pattern(name)
                 }
                 K::LParen => {
                     self.bump();
@@ -2614,6 +2772,41 @@ impl Parser<'_> {
         Pattern {
             kind,
             span: start..self.end(),
+        }
+    }
+    /// The fields of a constructor pattern after its name: `(p, ..)`,
+    /// `{ f: p, f }` or none.
+    fn constructor_pattern(&mut self, name: String) -> PatternKind {
+        let named = self.at(K::LBrace);
+        let mut fields = vec![];
+        if self.eat(K::LParen) {
+            for (i, p) in self.pattern_list(K::RParen).into_iter().enumerate() {
+                fields.push((i.to_string(), p));
+            }
+            self.expect(K::RParen);
+        } else if self.eat(K::LBrace) {
+            while !self.at(K::RBrace) && !self.at(K::Eof) {
+                let start = self.start();
+                let field = self.lower();
+                let p = if self.eat(K::Colon) {
+                    self.pattern()
+                } else {
+                    Pattern {
+                        kind: PatternKind::Bind(field.clone()),
+                        span: start..self.end(),
+                    }
+                };
+                fields.push((field, p));
+                if !self.eat(K::Comma) {
+                    break;
+                }
+            }
+            self.expect(K::RBrace);
+        }
+        PatternKind::Constructor {
+            name,
+            fields,
+            named,
         }
     }
 }
