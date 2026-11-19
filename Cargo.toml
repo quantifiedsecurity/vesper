@@ -97,6 +97,7 @@ members = [
     "crates/vesper-port-harness",
     "crates/vesper-port-build",
     "crates/vesper-port-pilot",
+    "crates/vesper-std-driver",
     "crates/vesper-std-host",
     "experiments/native-pulse",
 ]
@@ -196,6 +197,7 @@ default-members = [
     "crates/vesper-port-harness",
     "crates/vesper-port-build",
     "crates/vesper-port-pilot",
+    "crates/vesper-std-driver",
     "crates/vesper-std-host",
     "experiments/native-pulse",
 ]

@@ -6530,12 +6530,17 @@ name = "vesper-span"
 version = "0.1.0"
 
 [[package]]
-name = "vesper-std-host"
+name = "vesper-std-driver"
 version = "0.1.0"
 dependencies = [
  "vesper-port-abi",
  "vesper-port-harness",
+ "vesper-std-host",
 ]
+
+[[package]]
+name = "vesper-std-host"
+version = "0.1.0"
 
 [[package]]
 name = "vesper-syntax"
