@@ -31,7 +31,7 @@
 use crate::ast::{Pass, PatternKind, Type};
 use crate::check::Place;
 use crate::ir::{Argument, FunctionIr, Instruction, Op, Program, Terminator, ValueId};
-use crate::seq::{Access, SeqOp};
+use crate::seq::{Access, IndexForm, SeqOp};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Versions every eligible counted loop of `program`; returns how many.
@@ -41,8 +41,149 @@ pub fn run(program: &mut Program) -> usize {
 
 /// Versions the eligible loops of one function.
 pub fn hoist_function(f: &mut FunctionIr) -> usize {
-    let original = f.blocks.len();
-    (0..original).filter(|&h| version(f, h)).count()
+    // Inner loops first: versioning a loop copies its body, nested loops
+    // and all, with the same value ids, and a loop whose values a copy
+    // outside it uses is not versioned.
+    let preds = reached_preds(f);
+    let idom = idoms(f, &preds);
+    let mut headers: Vec<(usize, usize)> = (0..f.blocks.len())
+        .filter(|&h| header(f, h).is_some())
+        .map(|h| (natural_loop(h, &preds, &idom).len(), h))
+        .collect();
+    headers.sort();
+    let versioned = headers.into_iter().filter(|&(_, h)| version(f, h)).count();
+    drop_dominated_checks(f);
+    versioned
+}
+
+/// The index of an access, for comparing accesses: the same value, or a
+/// constant.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum IndexKey {
+    Value(ValueId),
+    Const(i128),
+}
+
+/// Drops the bounds check of each element access that a checked access
+/// (`s[i]`, `s.set(i, v)`) of the same sequence dominates, at the same index
+/// or, for constant indices, at a larger or equal one; returns how many.
+///
+/// The checked access returned, so its index was below the length then;
+/// the sequence must be a place that nothing in the function can resize,
+/// rebind or lend other than `in` ([`stable_place`]), so the length has not
+/// changed since. An index that is the same IR value is the same number: a
+/// value's definition dominates every use, so no new definition runs
+/// between the dominating access and this one.
+pub fn drop_dominated_checks(f: &mut FunctionIr) -> usize {
+    let preds = reached_preds(f);
+    let idom = idoms(f, &preds);
+    let reached = reached(f);
+    let all: BTreeSet<usize> = (0..f.blocks.len()).collect();
+    let defs: BTreeMap<ValueId, Instruction> = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.instructions.iter())
+        .map(|i| (i.dest, i.clone()))
+        .collect();
+    let mut bound: BTreeMap<String, ValueId> = BTreeMap::new();
+    for i in f.blocks.iter().flat_map(|b| b.instructions.iter()) {
+        if let Op::Bind { pattern, value } = &i.op
+            && let PatternKind::Bind(name) = &pattern.kind
+        {
+            bound.insert(name.clone(), *value);
+        }
+    }
+    let key = |mut v: ValueId| -> IndexKey {
+        for _ in 0..MAX_DEPTH {
+            match defs.get(&v).map(|i| &i.op) {
+                Some(Op::Constant(crate::ast::Literal::Int(n))) if *n >= 0 => {
+                    return IndexKey::Const(*n);
+                }
+                Some(Op::Read { root, path, .. })
+                    if path.is_empty() && bound.contains_key(root) && single_binding(f, root) =>
+                {
+                    v = bound[root];
+                }
+                _ => break,
+            }
+        }
+        IndexKey::Value(v)
+    };
+    // Each access: (block, instruction, place, index, checked).
+    let mut accesses: BTreeMap<usize, Vec<(usize, Place, IndexKey, bool)>> = BTreeMap::new();
+    let mut stable: BTreeMap<Place, bool> = BTreeMap::new();
+    for &b in &reached {
+        for (k, i) in f.blocks[b].instructions.iter().enumerate() {
+            let Op::Seq { op, args } = &i.op else {
+                continue;
+            };
+            let (Some(_), Some(receiver), Some(index)) =
+                (hoistable(*op), args.first(), args.get(1))
+            else {
+                continue;
+            };
+            let Some(place) = &receiver.place else {
+                continue;
+            };
+            let read_ok = matches!(defs.get(&receiver.value).map(|r| &r.op),
+                Some(Op::Read { root, path, .. }) if *root == place.root && *path == place.path);
+            if !read_ok
+                || !*stable
+                    .entry(place.clone())
+                    .or_insert_with(|| stable_place(f, &all, place))
+            {
+                continue;
+            }
+            let checked = matches!(
+                op,
+                SeqOp::Get | SeqOp::Set | SeqOp::SliceGet | SeqOp::SliceSet
+            );
+            accesses
+                .entry(b)
+                .or_default()
+                .push((k, place.clone(), key(index.value), checked));
+        }
+    }
+    let covers = |facts: &[(Place, IndexKey)], place: &Place, at: IndexKey| {
+        facts.iter().any(|(p, k)| {
+            p == place
+                && match (*k, at) {
+                    (IndexKey::Const(a), IndexKey::Const(b)) => a >= b,
+                    (a, b) => a == b,
+                }
+        })
+    };
+    let mut dropped = vec![];
+    for (&b, list) in &accesses {
+        // Facts of the blocks that strictly dominate `b`.
+        let mut facts: Vec<(Place, IndexKey)> = vec![];
+        let mut up = idom[b];
+        while let Some(d) = up {
+            for (_, p, k, checked) in accesses.get(&d).into_iter().flatten() {
+                if *checked {
+                    facts.push((p.clone(), *k));
+                }
+            }
+            up = idom[d];
+        }
+        for (k, place, index, checked) in list {
+            if covers(&facts, place, *index) {
+                dropped.push((b, *k));
+            } else if *checked {
+                facts.push((place.clone(), *index));
+            }
+        }
+    }
+    for &(b, k) in &dropped {
+        let i = &mut f.blocks[b].instructions[k];
+        if let Op::Seq { op, .. } = &mut i.op
+            && let Some(access) = hoistable(*op)
+        {
+            *op = SeqOp::Hoisted(access);
+            i.fallible = false;
+        }
+    }
+    dropped.len()
 }
 
 /// The counted-loop header shape [`crate::loops`] lowers `for` to.
@@ -63,7 +204,9 @@ fn header(f: &FunctionIr, h: usize) -> Option<Header> {
     }
     let slot = |inst: &Instruction, suffix: &str| match &inst.op {
         Op::Read { root, path, .. }
-            if path.is_empty() && root.starts_with("$loop") && root.ends_with(suffix) =>
+            if path.is_empty()
+                && root.starts_with("$loop")
+                && uninlined(root).ends_with(suffix) =>
         {
             Some(root.clone())
         }
@@ -98,6 +241,18 @@ fn header(f: &FunctionIr, h: usize) -> Option<Header> {
     })
 }
 
+/// `name` without the `$inl<n>` suffixes the inliner gives the locals of an
+/// inlined body.
+fn uninlined(mut name: &str) -> &str {
+    while let Some((head, tail)) = name.rsplit_once("$inl") {
+        if tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+            break;
+        }
+        name = head;
+    }
+    name
+}
+
 fn successors(t: &Terminator) -> Vec<usize> {
     match t {
         Terminator::Jump { block, .. } => vec![*block],
@@ -105,6 +260,38 @@ fn successors(t: &Terminator) -> Vec<usize> {
         Terminator::Match { arms, .. } => arms.iter().map(|(_, b)| *b).collect(),
         Terminator::Return(_) | Terminator::Unreachable => vec![],
     }
+}
+
+/// The blocks the entry reaches.
+fn reached(f: &FunctionIr) -> BTreeSet<usize> {
+    let mut reached = BTreeSet::new();
+    if f.blocks.is_empty() {
+        return reached;
+    }
+    reached.insert(0);
+    let mut stack = vec![0];
+    while let Some(b) = stack.pop() {
+        for s in successors(&f.blocks[b].terminator) {
+            if s < f.blocks.len() && reached.insert(s) {
+                stack.push(s);
+            }
+        }
+    }
+    reached
+}
+
+/// Predecessors of each block among the blocks the entry reaches (a block
+/// after a `break` or `return` has none and enters nothing).
+fn reached_preds(f: &FunctionIr) -> Vec<Vec<usize>> {
+    let mut preds = vec![vec![]; f.blocks.len()];
+    for b in reached(f) {
+        for s in successors(&f.blocks[b].terminator) {
+            if let Some(p) = preds.get_mut(s) {
+                p.push(b);
+            }
+        }
+    }
+    preds
 }
 
 /// The value operands of `op`, mutably.
@@ -158,25 +345,99 @@ fn terminator_uses(t: &Terminator) -> Vec<ValueId> {
         .collect()
 }
 
-/// The blocks of the natural loop of header `h`: those reachable from `h`
-/// that reach `h` again, with `h`.
-fn natural_loop(f: &FunctionIr, h: usize, preds: &[Vec<usize>]) -> BTreeSet<usize> {
-    let mut forward = BTreeSet::new();
-    let mut stack = successors(&f.blocks[h].terminator);
-    while let Some(b) = stack.pop() {
-        if b != h && forward.insert(b) {
-            stack.extend(successors(&f.blocks[b].terminator));
+/// The immediate dominator of each block the entry reaches (`None` for the
+/// entry and for unreached blocks), from `preds` of [`reached_preds`].
+fn idoms(f: &FunctionIr, preds: &[Vec<usize>]) -> Vec<Option<usize>> {
+    let n = f.blocks.len();
+    let mut idom = vec![None; n];
+    if n == 0 {
+        return idom;
+    }
+    // Reverse postorder from the entry.
+    let mut post = vec![];
+    let mut seen = vec![false; n];
+    let mut stack = vec![(0usize, 0usize)];
+    seen[0] = true;
+    while let Some((b, k)) = stack.pop() {
+        let succ = successors(&f.blocks[b].terminator);
+        if let Some(&s) = succ.get(k) {
+            stack.push((b, k + 1));
+            if s < n && !seen[s] {
+                seen[s] = true;
+                stack.push((s, 0));
+            }
+        } else {
+            post.push(b);
         }
     }
-    let mut backward = BTreeSet::new();
-    let mut stack = preds[h].clone();
+    let mut order = vec![usize::MAX; n];
+    for (k, &b) in post.iter().enumerate() {
+        order[b] = k;
+    }
+    idom[0] = Some(0);
+    let intersect = |idom: &[Option<usize>], mut a: usize, mut b: usize| {
+        while a != b {
+            while order[a] < order[b] {
+                a = idom[a].unwrap_or(0);
+            }
+            while order[b] < order[a] {
+                b = idom[b].unwrap_or(0);
+            }
+        }
+        a
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &b in post.iter().rev().skip(1) {
+            let mut new: Option<usize> = None;
+            for &p in &preds[b] {
+                if idom[p].is_none() {
+                    continue;
+                }
+                new = Some(match new {
+                    None => p,
+                    Some(q) => intersect(&idom, p, q),
+                });
+            }
+            if new.is_some() && idom[b] != new {
+                idom[b] = new;
+                changed = true;
+            }
+        }
+    }
+    idom[0] = None;
+    idom
+}
+
+/// Whether block `a` dominates block `b` (both reached).
+fn dominates(idom: &[Option<usize>], a: usize, mut b: usize) -> bool {
+    loop {
+        if a == b {
+            return true;
+        }
+        match idom.get(b).copied().flatten() {
+            Some(up) => b = up,
+            None => return false,
+        }
+    }
+}
+
+/// The blocks of the natural loop of header `h`, with `h`: the blocks that
+/// reach a back edge into `h` (from a block `h` dominates) without passing
+/// through `h`. An enclosing loop's blocks are not part of it.
+fn natural_loop(h: usize, preds: &[Vec<usize>], idom: &[Option<usize>]) -> BTreeSet<usize> {
+    let mut blocks = BTreeSet::from([h]);
+    let mut stack: Vec<usize> = preds[h]
+        .iter()
+        .copied()
+        .filter(|&p| dominates(idom, h, p))
+        .collect();
     while let Some(b) = stack.pop() {
-        if b != h && backward.insert(b) {
+        if blocks.insert(b) {
             stack.extend(preds[b].iter().copied());
         }
     }
-    let mut blocks: BTreeSet<usize> = forward.intersection(&backward).copied().collect();
-    blocks.insert(h);
     blocks
 }
 
@@ -218,15 +479,14 @@ fn version(f: &mut FunctionIr, h: usize) -> bool {
     let Some(head) = header(f, h) else {
         return false;
     };
-    let mut preds = vec![vec![]; f.blocks.len()];
-    for (b, block) in f.blocks.iter().enumerate() {
-        for s in successors(&block.terminator) {
-            if let Some(p) = preds.get_mut(s) {
-                p.push(b);
-            }
-        }
+    // Predecessors among the blocks the entry reaches: the inliner and
+    // `break` leave unreachable blocks whose edges enter nothing.
+    let preds = reached_preds(f);
+    if preds[h].is_empty() {
+        return false;
     }
-    let blocks = natural_loop(f, h, &preds);
+    let idom = idoms(f, &preds);
+    let blocks = natural_loop(h, &preds, &idom);
     if !blocks.contains(&head.body) {
         return false;
     }
@@ -338,38 +598,38 @@ fn version(f: &mut FunctionIr, h: usize) -> bool {
             induction.insert(i.dest);
         }
     }
-    // Candidate accesses, by receiver place and index offset.
+    // Candidate accesses, by receiver place and index form.
     let reads: BTreeMap<ValueId, &Instruction> = insts()
         .filter(|(_, i)| matches!(i.op, Op::Read { .. }))
         .map(|(_, i)| (i.dest, i))
         .collect();
-    let sums: BTreeMap<ValueId, (ValueId, ValueId)> = insts()
-        .filter_map(|(_, i)| match &i.op {
-            Op::Binary(op, a, b) if op == "+" || op == "wrapping_add" => Some((i.dest, (*a, *b))),
-            _ => None,
-        })
-        .collect();
+    let defs: BTreeMap<ValueId, &Instruction> = insts().map(|(_, i)| (i.dest, i)).collect();
     let is_u64 = |v: ValueId| {
         f.values
             .get(&v)
             .is_some_and(|t| crate::numeric::default_type(t) == Type::named("u64"))
     };
-    // A loop-invariant `u64` offset: a value defined before the loop, or a
-    // read of a local the loop never changes.
-    let invariant = |v: ValueId| -> Option<Offset> {
-        if !is_u64(v) {
-            return None;
+    // Locals bound once in the loop to an index of the loop variable's form
+    // (`let s = max - j`), read like the value they hold.
+    let mut bound_locals: BTreeMap<String, ValueId> = BTreeMap::new();
+    for (_, i) in insts() {
+        if let Op::Bind { pattern, value } = &i.op
+            && let PatternKind::Bind(name) = &pattern.kind
+            && !locals.contains(name)
+            && is_u64(*value)
+            && single_binding(f, name)
+        {
+            bound_locals.insert(name.clone(), *value);
         }
-        if !defined.contains(&v) {
-            return Some(Offset::Value(v));
-        }
-        let read = reads.get(&v)?;
-        match &read.op {
-            Op::Read { root, path, .. } if path.is_empty() && invariant_local(f, &blocks, root) => {
-                Some(Offset::Local(Box::new((*read).clone())))
-            }
-            _ => None,
-        }
+    }
+    let analysis = Affine {
+        f,
+        blocks: &blocks,
+        defined: &defined,
+        induction: &induction,
+        reads: &reads,
+        defs: &defs,
+        bound_locals: &bound_locals,
     };
     let mut receivers: BTreeMap<String, Receiver> = BTreeMap::new();
     let mut candidates: BTreeMap<ValueId, (Access, String)> = BTreeMap::new();
@@ -388,34 +648,23 @@ fn version(f: &mut FunctionIr, h: usize) -> bool {
         if latches.contains(&b) {
             continue;
         }
-        let offset = if induction.contains(&index.value) {
-            Offset::Zero
-        } else if let Some((x, y)) = sums.get(&index.value) {
-            let found = if induction.contains(x) {
-                invariant(*y)
-            } else if induction.contains(y) {
-                invariant(*x)
-            } else {
-                None
-            };
-            match found {
-                Some(offset) => offset,
-                None => continue,
-            }
-        } else {
+        let Some(form) = analysis.linear(index.value, 0) else {
             continue;
         };
+        if form.sign == 0 || form.plus.len() + form.minus.len() > MAX_TERMS {
+            continue;
+        }
         let Op::Read { root, path, .. } = &read.op else {
             continue;
         };
         if root != &place.root || path != &place.path {
             continue;
         }
-        let key = format!("{}+{}", place.display(), offset.key());
+        let key = format!("{}@{}", place.display(), form.key());
         receivers.entry(key.clone()).or_insert_with(|| Receiver {
             place: place.clone(),
             read: (*read).clone(),
-            offset,
+            form,
         });
         candidates.insert(i.dest, (access, key));
     }
@@ -430,33 +679,161 @@ fn version(f: &mut FunctionIr, h: usize) -> bool {
     true
 }
 
-/// The loop-invariant offset `c` of an access `s[c + i]`.
+/// The most loop-invariant terms one guarded index may have.
+const MAX_TERMS: usize = 4;
+
+/// How deep [`Affine::linear`] follows `+` and `-` operands.
+const MAX_DEPTH: usize = 6;
+
+/// A loop-invariant `u64` term of an index.
+#[derive(Clone)]
 enum Offset {
-    Zero,
     /// A value defined before the loop.
     Value(ValueId),
     /// A read of a local the loop never changes, repeated in the preheader.
     Local(Box<Instruction>),
+    /// An integer constant, repeated in the preheader.
+    Const(Box<Instruction>),
 }
 
 impl Offset {
     fn key(&self) -> String {
         match self {
-            Self::Zero => "0".into(),
             Self::Value(v) => format!("%{v}"),
             Self::Local(read) => match &read.op {
                 Op::Read { root, .. } => root.clone(),
+                _ => String::new(),
+            },
+            Self::Const(c) => match &c.op {
+                Op::Constant(crate::ast::Literal::Int(n)) => format!("#{n}"),
                 _ => String::new(),
             },
         }
     }
 }
 
-/// A hoisted receiver: its place, the read of it, and the index offset.
+/// An index `sign * i + plus.. - minus..` in the loop index `i` (`sign` is
+/// -1, 0 or 1) with loop-invariant terms.
+#[derive(Clone)]
+struct Linear {
+    sign: i8,
+    plus: Vec<Offset>,
+    minus: Vec<Offset>,
+}
+
+impl Linear {
+    fn term(offset: Offset) -> Self {
+        Self {
+            sign: 0,
+            plus: vec![offset],
+            minus: vec![],
+        }
+    }
+
+    /// `self + other` (`self - other` when `negate`), when the loop index
+    /// keeps a coefficient of -1, 0 or 1.
+    fn combine(mut self, other: Self, negate: bool) -> Option<Self> {
+        let sign = if negate { -other.sign } else { other.sign };
+        if self.sign != 0 && sign != 0 {
+            return None;
+        }
+        self.sign += sign;
+        let (plus, minus) = if negate {
+            (other.minus, other.plus)
+        } else {
+            (other.plus, other.minus)
+        };
+        self.plus.extend(plus);
+        self.minus.extend(minus);
+        Some(self)
+    }
+
+    /// A key that tells apart the forms one guard can cover.
+    fn key(&self) -> String {
+        let mut plus: Vec<String> = self.plus.iter().map(Offset::key).collect();
+        let mut minus: Vec<String> = self.minus.iter().map(Offset::key).collect();
+        plus.sort();
+        minus.sort();
+        format!("{}i+{}-{}", self.sign, plus.join("+"), minus.join("-"))
+    }
+}
+
+/// The index analysis of one loop.
+///
+/// The fast copy keeps every arithmetic instruction of the loop, checked or
+/// wrapping, and only drops the bounds checks. Its guard evaluates the
+/// index exactly at both ends of the range: an index linear in the loop
+/// index takes every value between those, so when both ends are in `0..len`
+/// every index the loop computes is too, and the loop's own `u64` result
+/// (exact, or the exact value modulo 2^64 for a wrapping operation) is that
+/// exact value. A checked operation that would overflow still raises in the
+/// fast copy as in the checked one.
+struct Affine<'a> {
+    f: &'a FunctionIr,
+    blocks: &'a BTreeSet<usize>,
+    defined: &'a BTreeSet<ValueId>,
+    induction: &'a BTreeSet<ValueId>,
+    reads: &'a BTreeMap<ValueId, &'a Instruction>,
+    defs: &'a BTreeMap<ValueId, &'a Instruction>,
+    bound_locals: &'a BTreeMap<String, ValueId>,
+}
+
+impl Affine<'_> {
+    fn is_u64(&self, v: ValueId) -> bool {
+        self.f
+            .values
+            .get(&v)
+            .is_some_and(|t| crate::numeric::default_type(t) == Type::named("u64"))
+    }
+
+    /// The linear form of the `u64` value `v`, if it has one.
+    fn linear(&self, v: ValueId, depth: usize) -> Option<Linear> {
+        if depth > MAX_DEPTH || !self.is_u64(v) {
+            return None;
+        }
+        if self.induction.contains(&v) {
+            return Some(Linear {
+                sign: 1,
+                plus: vec![],
+                minus: vec![],
+            });
+        }
+        if !self.defined.contains(&v) {
+            return Some(Linear::term(Offset::Value(v)));
+        }
+        let def = self.defs.get(&v)?;
+        match &def.op {
+            Op::Constant(crate::ast::Literal::Int(n)) if *n >= 0 => {
+                Some(Linear::term(Offset::Const(Box::new((*def).clone()))))
+            }
+            Op::Read { root, path, .. } if path.is_empty() => {
+                if let Some(bound) = self.bound_locals.get(root) {
+                    return self.linear(*bound, depth + 1);
+                }
+                let read = self.reads.get(&v)?;
+                invariant_local(self.f, self.blocks, root)
+                    .then(|| Linear::term(Offset::Local(Box::new((*read).clone()))))
+            }
+            Op::Binary(op, a, b) => {
+                let negate = match op.as_str() {
+                    "+" | "wrapping_add" => false,
+                    "-" | "wrapping_sub" => true,
+                    _ => return None,
+                };
+                let a = self.linear(*a, depth + 1)?;
+                let b = self.linear(*b, depth + 1)?;
+                a.combine(b, negate)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A hoisted receiver: its place, the read of it, and the index form.
 struct Receiver {
     place: Place,
     read: Instruction,
-    offset: Offset,
+    form: Linear,
 }
 
 /// Whether the loop never writes, rebinds or lends `inout` the local `root`.
@@ -594,9 +971,6 @@ fn clone_loop(
     };
     // The guard, at the end of the preheader.
     let span = f.blocks[h].instructions[0].span.clone();
-    // The zero-width span the checker typed as the range's element type,
-    // which a synthesized `u64` constant needs.
-    let at = f.blocks[h].instructions[1].span.clone();
     let before = f.blocks[pre].outgoing_token;
     let guard_token = next_token;
     next_token += 1;
@@ -617,19 +991,15 @@ fn clone_loop(
     let lo = fresh_value(f, u64_ty.clone());
     let hi = fresh_value(f, u64_ty.clone());
     let mut guard_insts = vec![read_slot(lo, &head.index), read_slot(hi, &head.bound)];
-    let mut guard_args = vec![
-        Argument {
-            pass: Pass::Sink,
-            value: lo,
-            place: None,
-        },
-        Argument {
-            pass: Pass::Sink,
-            value: hi,
-            place: None,
-        },
-    ];
-    for r in receivers {
+    let sink = |value| Argument {
+        pass: Pass::Sink,
+        value,
+        place: None,
+    };
+    // One guard per receiver and index form, each taking the previous one's
+    // result.
+    let mut previous: Option<ValueId> = None;
+    for (k, r) in receivers.iter().enumerate() {
         let v = fresh_value(f, r.read.ty.clone());
         guard_insts.push(Instruction {
             dest: v,
@@ -638,57 +1008,66 @@ fn clone_loop(
             fallible: false,
             ..r.read.clone()
         });
-        let offset = match &r.offset {
-            Offset::Zero => {
-                let c = fresh_value(f, u64_ty.clone());
-                guard_insts.push(Instruction {
-                    dest: c,
-                    op: Op::Constant(crate::ast::Literal::Int(0)),
-                    ty: u64_ty.clone(),
-                    span: at.clone(),
-                    token: None,
-                    fallible: false,
-                });
-                c
-            }
-            Offset::Value(c) => *c,
-            Offset::Local(read) => {
-                let c = fresh_value(f, u64_ty.clone());
-                guard_insts.push(Instruction {
-                    dest: c,
-                    span: span.clone(),
-                    token: Some((before, before)),
-                    fallible: false,
-                    ..(**read).clone()
-                });
-                c
-            }
-        };
-        guard_args.push(Argument {
-            pass: Pass::In,
-            value: v,
-            place: Some(r.place.clone()),
-        });
-        guard_args.push(Argument {
-            pass: Pass::Sink,
-            value: offset,
-            place: None,
-        });
-    }
-    let guard = fresh_value(f, Type::named("bool"));
-    guard_insts.push(Instruction {
-        dest: guard,
-        op: Op::Seq {
-            op: SeqOp::BoundsGuard {
-                inclusive: head.inclusive,
+        let mut args = vec![
+            sink(lo),
+            sink(hi),
+            Argument {
+                pass: Pass::In,
+                value: v,
+                place: Some(r.place.clone()),
             },
-            args: guard_args,
-        },
-        ty: Type::named("bool"),
-        span: span.clone(),
-        token: Some((before, guard_token)),
-        fallible: false,
-    });
+        ];
+        for term in r.form.plus.iter().chain(&r.form.minus) {
+            let value = match term {
+                Offset::Value(c) => *c,
+                Offset::Local(read) => {
+                    let c = fresh_value(f, u64_ty.clone());
+                    guard_insts.push(Instruction {
+                        dest: c,
+                        span: span.clone(),
+                        token: Some((before, before)),
+                        fallible: false,
+                        ..(**read).clone()
+                    });
+                    c
+                }
+                Offset::Const(constant) => {
+                    let c = fresh_value(f, u64_ty.clone());
+                    guard_insts.push(Instruction {
+                        dest: c,
+                        ..(**constant).clone()
+                    });
+                    c
+                }
+            };
+            args.push(sink(value));
+        }
+        if let Some(ok) = previous {
+            args.push(sink(ok));
+        }
+        let last = k + 1 == receivers.len();
+        let guard = fresh_value(f, Type::named("bool"));
+        guard_insts.push(Instruction {
+            dest: guard,
+            op: Op::Seq {
+                op: SeqOp::BoundsGuard {
+                    inclusive: head.inclusive,
+                    form: IndexForm {
+                        negated: r.form.sign < 0,
+                        plus: r.form.plus.len() as u8,
+                        minus: r.form.minus.len() as u8,
+                    },
+                },
+                args,
+            },
+            ty: Type::named("bool"),
+            span: span.clone(),
+            token: Some((before, if last { guard_token } else { before })),
+            fallible: false,
+        });
+        previous = Some(guard);
+    }
+    let guard = previous.expect("a versioned loop hoists a receiver");
     // Fresh blocks, block parameters and tokens for the copy. Instructions
     // keep their value ids: the native backend keeps each IR value in one
     // frontend variable, so a fresh id per copied value would add a
@@ -824,6 +1203,137 @@ pub struct HeaderHoist {
     pub ty: Type,
     /// The reads of `place` in the loop that only receivers of accesses use.
     pub reads: BTreeSet<ValueId>,
+    /// A borrowed parameter that nothing in the function can change
+    /// ([`stable_views`]): read once at function entry, its header words
+    /// are invariant for the whole call, so the native backend loads them
+    /// as read-only memory that the code generator may share and move.
+    pub entry: bool,
+}
+
+/// The borrowed (`in` or `inout`) sequence and slice parameters of `f` whose
+/// handle and header nothing in the function can change, with their reads
+/// that only receivers of length-keeping accesses use.
+///
+/// A borrowed view's header lives in the caller and its buffer cannot be
+/// resized while it is lent, and the place calculus keeps distinct
+/// parameters from overlapping (§5), so only the function itself can change
+/// it: by writing, rebinding or moving the parameter, by lending it other
+/// than `in`, or from a closure, handler, effect operation or indirect call.
+/// When it does none of these, a store through another sequence cannot
+/// change this one's header, and neither can a call.
+pub fn stable_views(f: &FunctionIr) -> Vec<HeaderHoist> {
+    if f.blocks.is_empty() {
+        return vec![];
+    }
+    let all: BTreeSet<usize> = (0..f.blocks.len()).collect();
+    let insts = || f.blocks.iter().flat_map(|b| b.instructions.iter());
+    if insts().any(|i| {
+        matches!(
+            i.op,
+            Op::Closure { .. } | Op::Handle { .. } | Op::Indirect { .. }
+        ) || matches!(&i.op, Op::Call { callee, .. }
+            if callee.contains("::") && callee != "Fail::raise")
+    }) {
+        return vec![];
+    }
+    let users = value_users(f);
+    let mut out = vec![];
+    for param in &f.params {
+        if !matches!(param.pass, Pass::In | Pass::Inout) {
+            continue;
+        }
+        let ty = crate::numeric::default_type(&param.ty);
+        if !(crate::seq::is_seq_type(&ty) || crate::seq::is_slice_type(&ty))
+            || crate::strings::is_text(&ty)
+        {
+            continue;
+        }
+        let place = Place {
+            root: param.name.clone(),
+            path: vec![],
+        };
+        if !stable_place(f, &all, &place) {
+            continue;
+        }
+        let mut reads = BTreeSet::new();
+        for i in insts() {
+            let Op::Read {
+                root, path, pass, ..
+            } = &i.op
+            else {
+                continue;
+            };
+            if root != &param.name || !path.is_empty() {
+                continue;
+            }
+            // Only a growing operation writes a handle back to its place,
+            // and a stable place is never grown.
+            let pass_ok = matches!(pass, Pass::In | Pass::Inout);
+            if pass_ok && only_access_receivers(&users, i.dest, *pass, &place, None) {
+                reads.insert(i.dest);
+            }
+        }
+        if !reads.is_empty() {
+            out.push(HeaderHoist {
+                preheader: 0,
+                place,
+                ty,
+                reads,
+                entry: true,
+            });
+        }
+    }
+    out
+}
+
+/// Uses of each value, by block (`None` for the terminator).
+fn value_users(f: &FunctionIr) -> BTreeMap<ValueId, Vec<(usize, Option<&Instruction>)>> {
+    let mut users: BTreeMap<ValueId, Vec<(usize, Option<&Instruction>)>> = BTreeMap::new();
+    for (b, block) in f.blocks.iter().enumerate() {
+        for i in &block.instructions {
+            for v in uses(&i.op) {
+                users.entry(v).or_default().push((b, Some(i)));
+            }
+        }
+        for v in terminator_uses(&block.terminator) {
+            users.entry(v).or_default().push((b, None));
+        }
+    }
+    users
+}
+
+/// Whether every use of `read` is the receiver, lent as `pass`, of a
+/// length-keeping access of `place` (or the sequence of a bounds guard), in
+/// `blocks` when given.
+fn only_access_receivers(
+    users: &BTreeMap<ValueId, Vec<(usize, Option<&Instruction>)>>,
+    read: ValueId,
+    pass: Pass,
+    place: &Place,
+    blocks: Option<&BTreeSet<usize>>,
+) -> bool {
+    users.get(&read).is_some_and(|us| {
+        us.iter().all(|(b, user)| {
+            blocks.is_none_or(|blocks| blocks.contains(b))
+                && user.is_some_and(|u| match &u.op {
+                    Op::Seq {
+                        op: SeqOp::BoundsGuard { .. },
+                        args,
+                    } => args.iter().all(|a| {
+                        a.value != read || (a.pass == Pass::In && a.place.as_ref() == Some(place))
+                    }),
+                    Op::Seq { op, args } => {
+                        op.has_receiver()
+                            && (keeps_length(*op) || matches!(op, SeqOp::Hoisted(_)))
+                            && args.first().is_some_and(|a| {
+                                a.value == read && a.pass == pass && a.place.as_ref() == Some(place)
+                            })
+                            && args[1..].iter().all(|a| a.value != read)
+                    }
+                    _ => false,
+                })
+        })
+    })
 }
 
 /// The hoistable sequence headers of `f` ([`HeaderHoist`]); each read is
@@ -837,40 +1347,16 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
     {
         return vec![];
     }
-    // Predecessors among the blocks the entry reaches (a block after a
-    // `break` or `return` has none and enters nothing).
-    let mut reached = BTreeSet::from([0]);
-    let mut stack = vec![0];
-    while let Some(b) = stack.pop() {
-        for s in successors(&f.blocks[b].terminator) {
-            if s < f.blocks.len() && reached.insert(s) {
-                stack.push(s);
-            }
-        }
-    }
-    let mut preds = vec![vec![]; f.blocks.len()];
-    for &b in &reached {
-        for s in successors(&f.blocks[b].terminator) {
-            if let Some(p) = preds.get_mut(s) {
-                p.push(b);
-            }
-        }
-    }
-    // Uses of each value, by block.
-    let mut users: BTreeMap<ValueId, Vec<(usize, Option<&Instruction>)>> = BTreeMap::new();
-    for (b, block) in f.blocks.iter().enumerate() {
-        for i in &block.instructions {
-            for v in uses(&i.op) {
-                users.entry(v).or_default().push((b, Some(i)));
-            }
-        }
-        for v in terminator_uses(&block.terminator) {
-            users.entry(v).or_default().push((b, None));
-        }
-    }
+    let reached = reached(f);
+    let preds = reached_preds(f);
+    let idom = idoms(f, &preds);
+    let users = value_users(f);
+    // Parameters read once for the whole function need no loop hoist.
+    let views = stable_views(f);
+    let viewed: BTreeSet<Place> = views.iter().map(|v| v.place.clone()).collect();
     let mut found: Vec<(usize, HeaderHoist)> = vec![];
     for &h in &reached {
-        let blocks = natural_loop(f, h, &preds);
+        let blocks = natural_loop(h, &preds, &idom);
         if !preds[h].iter().any(|p| blocks.contains(p)) {
             continue;
         }
@@ -907,14 +1393,17 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
         let mut places: BTreeMap<String, HeaderHoist> = BTreeMap::new();
         for i in insts() {
             let Op::Read {
-                root,
-                path,
-                pass: Pass::In,
-                ..
+                root, path, pass, ..
             } = &i.op
             else {
                 continue;
             };
+            // Element writes (`set`, `try_set`) read their receiver `inout`
+            // but never move or grow it; a loop that calls keeps to `in`
+            // receivers (the cap below).
+            if !(*pass == Pass::In || (*pass == Pass::Inout && !calls)) {
+                continue;
+            }
             let ty = crate::numeric::default_type(&i.ty);
             if !(crate::seq::is_seq_type(&ty) || crate::seq::is_slice_type(&ty))
                 || crate::strings::is_text(&ty)
@@ -925,25 +1414,12 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
                 root: root.clone(),
                 path: path.clone(),
             };
+            if viewed.contains(&place) {
+                continue;
+            }
             // Every use is the receiver of an access in the loop.
-            let only_receivers = users.get(&i.dest).is_some_and(|us| {
-                us.iter().all(|(b, user)| {
-                    blocks.contains(b)
-                        && user.is_some_and(|u| match &u.op {
-                            Op::Seq { op, args } => {
-                                op.has_receiver()
-                                    && (keeps_length(*op) || matches!(op, SeqOp::Hoisted(_)))
-                                    && args.first().is_some_and(|a| {
-                                        a.value == i.dest
-                                            && a.pass == Pass::In
-                                            && a.place.as_ref() == Some(&place)
-                                    })
-                                    && args[1..].iter().all(|a| a.value != i.dest)
-                            }
-                            _ => false,
-                        })
-                })
-            });
+            let only_receivers =
+                only_access_receivers(&users, i.dest, *pass, &place, Some(&blocks));
             if !only_receivers || !stable_place(f, &blocks, &place) {
                 continue;
             }
@@ -954,6 +1430,7 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
                     place: place.clone(),
                     ty: ty.clone(),
                     reads: BTreeSet::new(),
+                    entry: false,
                 })
                 .reads
                 .insert(i.dest);
@@ -970,7 +1447,7 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
     // Outermost loop first; a read claimed by an enclosing loop is skipped.
     found.sort_by_key(|f| std::cmp::Reverse(f.0));
     let mut claimed = BTreeSet::new();
-    let mut out: Vec<HeaderHoist> = vec![];
+    let mut out: Vec<HeaderHoist> = views;
     for (_, mut hoist) in found {
         hoist.reads.retain(|r| !claimed.contains(r));
         if hoist.reads.is_empty() {

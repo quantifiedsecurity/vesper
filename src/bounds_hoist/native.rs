@@ -18,40 +18,45 @@ impl<M: Module> Codegen<'_, '_, M> {
                 .ok_or_else(|| format!("native ChunkSeq::{} lacks an operand", op.name()))
         };
         match op {
-            SeqOp::BoundsGuard { inclusive } => {
+            SeqOp::BoundsGuard { inclusive, form } => {
                 let (lo, hi) = (arg(0)?, arg(1)?);
-                let fits = if inclusive {
-                    IntCC::UnsignedLessThan
-                } else {
-                    IntCC::UnsignedLessThanOrEqual
-                };
+                let ty = arg_types.get(2).ok_or("bounds guard lacks its sequence")?;
+                let (_, _, len) = self.seq_view(arg(2)?, ty);
+                let (np, nm) = (usize::from(form.plus), usize::from(form.minus));
+                let plus: Vec<ir::Value> = (0..np).map(|k| arg(3 + k)).collect::<Result<_, _>>()?;
+                let minus: Vec<ir::Value> =
+                    (0..nm).map(|k| arg(3 + np + k)).collect::<Result<_, _>>()?;
+                let ok = args.get(3 + np + nm).copied();
                 let empty = if inclusive {
                     IntCC::UnsignedGreaterThan
                 } else {
                     IntCC::UnsignedGreaterThanOrEqual
                 };
-                let mut ok = self.b.ins().icmp(empty, lo, hi);
-                let mut inside = None;
-                // `offset + hi` fits `len` without overflow: `offset <= len`
-                // and `hi` fits `len - offset`.
-                for k in (2..arg_types.len()).step_by(2) {
-                    let (_, _, len) = self.seq_view(arg(k)?, &arg_types[k]);
-                    let offset = arg(k + 1)?;
-                    let room = self.b.ins().isub(len, offset);
-                    let below = self
-                        .b
-                        .ins()
-                        .icmp(IntCC::UnsignedLessThanOrEqual, offset, len);
-                    let c = self.b.ins().icmp(fits, hi, room);
-                    let c = self.b.ins().band(below, c);
-                    inside = Some(match inside {
+                let empty = self.b.ins().icmp(empty, lo, hi);
+                // The last index of a non-empty range (`hi - 1` cannot wrap
+                // then: `lo < hi`).
+                let last = if inclusive {
+                    hi
+                } else {
+                    self.b.ins().iadd_imm(hi, -1)
+                };
+                let mut fits = None;
+                for end in [lo, last] {
+                    let c = self.guard_index_fits(end, form.negated, &plus, &minus, len);
+                    fits = Some(match fits {
                         Some(all) => self.b.ins().band(all, c),
                         None => c,
                     });
                 }
-                if let Some(inside) = inside {
-                    ok = self.b.ins().bor(ok, inside);
-                }
+                let fits = fits.ok_or("bounds guard lacks a range end")?;
+                let inside = self.b.ins().bor(empty, fits);
+                let ok = match ok {
+                    Some(ok) => {
+                        let ok = self.b.ins().icmp_imm(IntCC::NotEqual, ok, 0);
+                        self.b.ins().band(ok, inside)
+                    }
+                    None => inside,
+                };
                 Ok(Some(self.b.ins().uextend(types::I64, ok)))
             }
             SeqOp::Hoisted(access) => {
@@ -91,5 +96,73 @@ impl<M: Module> Codegen<'_, '_, M> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Whether the guard's index at loop index `i` is in `0..len`: the
+    /// positive and negative sums with every addition checked for overflow.
+    fn guard_index_fits(
+        &mut self,
+        i: ir::Value,
+        negated: bool,
+        plus: &[ir::Value],
+        minus: &[ir::Value],
+        len: ir::Value,
+    ) -> ir::Value {
+        let mut overflow = self.b.ins().iconst(types::I8, 0);
+        let mut sum = |this: &mut Self, first: Option<ir::Value>, terms: &[ir::Value]| {
+            let mut acc: Option<ir::Value> = first;
+            for &t in terms {
+                acc = Some(match acc {
+                    None => t,
+                    Some(a) => {
+                        let (s, o) = this.b.ins().uadd_overflow(a, t);
+                        overflow = this.b.ins().bor(overflow, o);
+                        s
+                    }
+                });
+            }
+            acc.unwrap_or_else(|| this.b.ins().iconst(types::I64, 0))
+        };
+        let (p, n) = if negated {
+            (sum(self, None, plus), sum(self, Some(i), minus))
+        } else {
+            (sum(self, Some(i), plus), sum(self, None, minus))
+        };
+        // `p - n` in `0..len`: `n <= p` and `p - n < len`.
+        let below = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, p);
+        let d = self.b.ins().isub(p, n);
+        let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, d, len);
+        let ok = self.b.ins().band(below, inside);
+        let ok_flag = self.b.ins().icmp_imm(IntCC::Equal, overflow, 0);
+        self.b.ins().band(ok, ok_flag)
+    }
+
+    /// Reads a borrowed parameter that nothing in the function changes
+    /// ([`crate::bounds_hoist::stable_views`]) once, at function entry: its
+    /// view and handle words are then loaded as read-only memory, which
+    /// Cranelift shares between accesses and moves out of loops, so a store
+    /// through another sequence no longer reloads them.
+    pub(crate) fn seq_entry_view(
+        &mut self,
+        place: &crate::check::Place,
+        ty: &Type,
+    ) -> Result<ir::Value, String> {
+        let e = ir_place_expr(place, 0..0);
+        let receiver = if seq::is_slice_type(ty) {
+            self.address(&e)?
+        } else {
+            self.expr(&e)?
+        };
+        self.invariant_headers.insert(receiver);
+        Ok(receiver)
+    }
+
+    /// A header word of an invariant view or handle. The memory is valid
+    /// and unchanged for the whole call (a borrowed view lives in the
+    /// caller, and a sequence's header block outlives every view of it), so
+    /// the load cannot trap and may move.
+    pub(super) fn invariant_word(&mut self, ptr: ir::Value, offset: i32) -> ir::Value {
+        let flags = MemFlags::trusted().with_readonly().with_can_move();
+        self.b.ins().load(types::I64, flags, ptr, offset)
     }
 }
