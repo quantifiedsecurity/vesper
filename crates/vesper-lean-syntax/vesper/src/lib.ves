@@ -188,8 +188,23 @@ fn quoted(inout p: P, in pool: Str, off: u64, len: u64, delimiter: u32) {
             Option::Some(d) => d,
             Option::None => (0, end),
         };
-        let plain = !(c == 92 || c == 10 || c == 13 || c == 9 || c == delimiter
-            || (is_control(c) && c <= 255) || c == 8232 || c == 8233);
+        let plain = !(
+            c
+                == 92
+                || c
+                == 10
+                || c
+                == 13
+                || c
+                == 9
+                || c
+                == delimiter
+                || (is_control(c) && c <= 255)
+                || c
+                == 8232
+                || c
+                == 8233
+        );
         if !plain {
             p.out.push_str(pool[run..i]);
             if c == 92 {
@@ -528,7 +543,15 @@ fn term(inout p: P, in s: Slice[u64], in pool: Str, inout at: u64) {
         p.out.push_str("(");
         terms(inout p, in s, in pool, inout at, n, ", ");
         p.out.push_str(")");
-    } else if tag == 14 {
+    } else {
+        term_rest(inout p, in s, in pool, inout at, tag);
+    }
+}
+
+// The rest of `term`, split off to keep each tag chain within the
+// formatter's chain limit.
+fn term_rest(inout p: P, in s: Slice[u64], in pool: Str, inout at: u64, tag: u64) {
+    if tag == 14 {
         let n = take(in s, inout at);
         p.out.push_str("[");
         terms(inout p, in s, in pool, inout at, n, ", ");
@@ -700,7 +723,11 @@ fn args_error(in s: Slice[u64], in pool: Str, inout at: u64, n: u64) -> u64 {
         err: 0
     };
     args(inout scratch, in s, in pool, inout at, n);
-    let P { out, err } = scratch;
+    let P {
+        out,
+        err
+    }
+    = scratch;
     err
 }
 
@@ -1295,8 +1322,19 @@ pub fn valid_ident(in v: Str) -> bool {
             Option::Some(d) => d,
             Option::None => (0, n),
         };
-        if is_control(c) || c == 171 || c == 187 || c == 8232 || c == 8233
-            || (c >= 8234 && c <= 8238) || (c >= 8294 && c <= 8297) || c == 65279 {
+        if is_control(c)
+            || c
+            == 171
+            || c
+            == 187
+            || c
+            == 8232
+            || c
+            == 8233
+            || (c >= 8234 && c <= 8238)
+            || (c >= 8294 && c <= 8297)
+            || c
+            == 65279 {
             return false;
         }
         i = next;
@@ -1354,7 +1392,7 @@ pub fn valid_module(in v: Str) -> bool {
             return false;
         }
     }
-    !start
+    ! start
 }
 
 // References.
@@ -1545,7 +1583,15 @@ fn ref_term(inout r: R, in s: Slice[u64], in pool: Str, inout at: u64) {
         ref_pattern(inout r, in s, inout again);
         ref_term(inout r, in s, in pool, inout at);
         truncate_scope(inout r, depth);
-    } else if tag == 16 {
+    } else {
+        ref_term_rest(inout r, in s, in pool, inout at, tag);
+    }
+}
+
+// The rest of `ref_term`, split off to keep each tag chain within the
+// formatter's chain limit.
+fn ref_term_rest(inout r: R, in s: Slice[u64], in pool: Str, inout at: u64, tag: u64) {
+    if tag == 16 {
         ref_terms(inout r, in s, in pool, inout at, 3);
     } else if tag == 17 {
         let n = take(in s, inout at);
@@ -1681,7 +1727,12 @@ pub fn free_references(in s: Slice[u64], in pool: Str) -> ChunkSeq[u64] {
     ref_binders(inout r, in s, in pool, inout at);
     ref_term(inout r, in s, in pool, inout at);
     // Destructure, so the scope is dropped (returning `r.found` leaks it).
-    let R { found, scope, all } = r;
+    let R {
+        found,
+        scope,
+        all
+    }
+    = r;
     found
 }
 
@@ -1695,6 +1746,11 @@ pub fn references(in s: Slice[u64], in pool: Str) -> ChunkSeq[u64] {
     let mut at: u64 = 0;
     ref_term(inout r, in s, in pool, inout at);
     // Destructure, so the scope is dropped (returning `r.found` leaks it).
-    let R { found, scope, all } = r;
+    let R {
+        found,
+        scope,
+        all
+    }
+    = r;
     found
 }
