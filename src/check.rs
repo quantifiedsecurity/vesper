@@ -548,6 +548,13 @@ pub fn check(module: &Module) -> Checked {
     checked
 }
 
+/// Whether `t` is a builtin scalar (an integer, float, `bool` or `Unit`),
+/// which every backend passes as one word by value. Two-phase argument
+/// loans (§4.3) let such a value be read from a reserved `inout` place.
+pub(crate) fn is_scalar_type(t: &Type) -> bool {
+    matches!(crate::numeric::default_type(t), Type::Named(n, a) if a.is_empty() && crate::numeric::is_scalar_name(&n))
+}
+
 /// Static resolution of trait method calls during the frontend's first
 /// checking pass. Implemented by `pact_frontend`.
 pub(crate) trait TraitCalls {
@@ -603,7 +610,7 @@ pub(crate) fn check_core(
             caps: vec![],
             cap_aliases: BTreeMap::new(),
             loans: vec![],
-            reserved_receivers: BTreeSet::new(),
+            reserved_loans: BTreeSet::new(),
             handler_frames: vec![],
             slice_args: BTreeMap::new(),
             effect_inference: vec![],
@@ -718,10 +725,11 @@ struct Checker<'a> {
     caps: Vec<Effect>,
     cap_aliases: BTreeMap<String, String>,
     loans: Vec<(Place, Pass, Span)>,
-    /// Origin spans of the `inout` receiver loans in `loans`: two-phase
-    /// borrows (§4) reserve them while the call's other arguments are
-    /// evaluated, so those arguments may read the receiver's place.
-    reserved_receivers: BTreeSet<(usize, usize)>,
+    /// Origin spans of the `inout` argument loans in `loans` (receivers and
+    /// plain arguments): two-phase borrows (§4.3) reserve them while the
+    /// call's other arguments are evaluated, so those arguments may read the
+    /// loaned place.
+    reserved_loans: BTreeSet<(usize, usize)>,
     /// Lexical handlers being checked: the capability index each installs,
     /// the declaration span of every binding declared outside it, and the
     /// outer linear bindings that were live at an abortable checkpoint this
@@ -1071,7 +1079,7 @@ impl Checker<'_> {
             })
             .collect();
         self.loans.clear();
-        self.reserved_receivers.clear();
+        self.reserved_loans.clear();
         self.valid_type(&f.result, &f.generics, f.span.clone());
         let mut env = Env::default();
         for p in &f.params {
@@ -1294,10 +1302,8 @@ impl Checker<'_> {
             Type::Infer
         });
         for (loan, mode, origin) in self.loans.clone() {
-            let reserved = mode == Pass::Inout
-                && self
-                    .reserved_receivers
-                    .contains(&(origin.start, origin.end));
+            let reserved =
+                mode == Pass::Inout && self.reserved_loans.contains(&(origin.start, origin.end));
             let exclusive = (mode != Pass::In && !reserved)
                 || matches!(usage, Usage::Borrow(Pass::Inout))
                 || (matches!(usage, Usage::Own) && self.mode(&ty) != Mode::Copy);
@@ -1569,6 +1575,9 @@ impl Checker<'_> {
                             };
                             let ty = &self.region_annotation(hinted.as_ref().unwrap_or(ty));
                             self.valid_type(ty, &self.generics.clone(), value.span.clone());
+                            let bound_view = !*mutable
+                                && matches!(pat.kind, PatternKind::Bind(_))
+                                && self.bind_view(value, env);
                             let actual = self.expr_expected(value, env, Usage::Own, ty);
                             self.expect_type(ty, &actual, value.span.clone());
                             let t = if *ty == Type::Infer {
@@ -1612,6 +1621,10 @@ impl Checker<'_> {
                             self.bind(pat, &t, env);
                             if let PatternKind::Bind(n) = &pat.kind {
                                 let binding = env.bindings.get_mut(n).unwrap();
+                                if bound_view {
+                                    // A bound view shares its source.
+                                    binding.pass = Pass::In;
+                                }
                                 binding.integer = fact;
                                 binding.nonzero = nonzero;
                                 binding.range = bounds.map(|(lo, hi)| IntRange {
@@ -2948,11 +2961,12 @@ impl Checker<'_> {
                 .collect::<Vec<_>>(),
             env,
         );
-        let has_receiver = receiver.is_some();
-        for (index, ((expr, explicit), param)) in actuals.into_iter().zip(&f.params).enumerate() {
-            if index == 0 && has_receiver && param.pass == Pass::Inout {
-                self.reserved_receivers
-                    .insert((expr.span.start, expr.span.end));
+        for ((expr, explicit), param) in actuals.into_iter().zip(&f.params) {
+            // Two-phase argument loans (§4.3): every `inout` argument, not
+            // only the receiver, is reserved while the call's other
+            // arguments are evaluated.
+            if param.pass == Pass::Inout {
+                self.reserved_loans.insert((expr.span.start, expr.span.end));
             }
             if let Some(pass) = explicit
                 && pass != param.pass
@@ -2990,9 +3004,22 @@ impl Checker<'_> {
                         })
                         .collect()
                 };
+                // A scalar passed to an `in` or by-value parameter is read
+                // into a word before the call, so it may read the place of a
+                // reserved `inout` argument loan (two-phase borrows, §4.3).
+                // Copy aggregates may be lent by address and stay refused.
+                let copied = param.pass != Pass::Inout
+                    && param.projections.is_empty()
+                    && is_scalar_type(&self.peek_type(expr, env));
                 for p in paths {
                     for (old, mode, origin) in &loans {
-                        if p.overlaps(old) && !(param.pass == Pass::In && *mode == Pass::In) {
+                        let reserved = *mode == Pass::Inout
+                            && copied
+                            && self.reserved_loans.contains(&(origin.start, origin.end));
+                        if p.overlaps(old)
+                            && !reserved
+                            && !(param.pass == Pass::In && *mode == Pass::In)
+                        {
                             self.error("E0301",format!("overlapping arguments '{}' and '{}' violate alias XOR mutability",old.display(),p.display()),expr.span.clone());
                             self.related(
                                 origin.clone(),
