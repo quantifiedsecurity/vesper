@@ -36,10 +36,12 @@ blake3 = "1.8"
 vesper-core = { path = "../vesper-core" }
 vesper-forge = { path = "../vesper-forge", default-features = false }
 vesper-simd = { path = "../vesper-simd" }
-vesper-lean-syntax = { path = "../vesper-lean-syntax" }
+# The compiler links the frozen Rust seed copies of vesper-lean-syntax and
+# vesper-span (#1128).
+vesper-lean-syntax = { path = "../vesper-lean-syntax/seed", package = "vesper-lean-syntax-seed" }
 vesper-syntax = { path = "../vesper-syntax" }
 vesper-highlight = { path = "../vesper-highlight", features = ["shot"] }
-vesper-span = { path = "../vesper-span" }
+vesper-span = { path = "../vesper-span/seed", package = "vesper-span-seed" }
 vesper-lsp = { path = "../vesper-lsp" }
 vesper-diagnostics = { path = "../vesper-diagnostics" }
 vesper-fmt = { path = "../vesper-fmt" }

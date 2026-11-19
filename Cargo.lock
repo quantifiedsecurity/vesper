@@ -5579,7 +5579,7 @@ dependencies = [
  "vesper-grammar-seed",
  "vesper-highlight",
  "vesper-kinetic-seed",
- "vesper-lean-syntax",
+ "vesper-lean-syntax-seed",
  "vesper-lint",
  "vesper-loom-admission",
  "vesper-loom-audit-seed",
@@ -5598,7 +5598,7 @@ dependencies = [
  "vesper-serde-seed",
  "vesper-silicon-seed",
  "vesper-simd",
- "vesper-span",
+ "vesper-span-seed",
  "vesper-std-host",
  "vesper-syntax",
  "vesper-tensor-seed",
@@ -5853,7 +5853,7 @@ dependencies = [
  "ariadne",
  "serde_json",
  "vesper-core",
- "vesper-span",
+ "vesper-span-seed",
 ]
 
 [[package]]
@@ -5943,7 +5943,7 @@ name = "vesper-fmt"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "vesper-lean-syntax",
+ "vesper-lean-syntax-seed",
  "vesper-syntax",
 ]
 
@@ -6066,7 +6066,7 @@ dependencies = [
  "vesper-grammar-seed",
  "vesper-highlight",
  "vesper-kinetic-seed",
- "vesper-lean-syntax",
+ "vesper-lean-syntax-seed",
  "vesper-lint",
  "vesper-loom-admission",
  "vesper-loom-audit-seed",
@@ -6086,7 +6086,7 @@ dependencies = [
  "vesper-serde-seed",
  "vesper-silicon-seed",
  "vesper-simd",
- "vesper-span",
+ "vesper-span-seed",
  "vesper-syntax",
  "vesper-tensor-seed",
  "vesper-vault",
@@ -6161,6 +6161,16 @@ dependencies = [
 
 [[package]]
 name = "vesper-lean-syntax"
+version = "0.1.0"
+dependencies = [
+ "vesper-bench",
+ "vesper-lean-syntax-seed",
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
+
+[[package]]
+name = "vesper-lean-syntax-seed"
 version = "0.1.0"
 
 [[package]]
@@ -6341,7 +6351,7 @@ dependencies = [
  "serde",
  "serde_json",
  "vesper-serde-seed",
- "vesper-span",
+ "vesper-span-seed",
 ]
 
 [[package]]
@@ -6615,6 +6625,16 @@ dependencies = [
 
 [[package]]
 name = "vesper-span"
+version = "0.1.0"
+dependencies = [
+ "vesper-bench",
+ "vesper-port-abi",
+ "vesper-port-harness",
+ "vesper-span-seed",
+]
+
+[[package]]
+name = "vesper-span-seed"
 version = "0.1.0"
 
 [[package]]
