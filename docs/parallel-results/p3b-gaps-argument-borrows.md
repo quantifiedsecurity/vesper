@@ -76,10 +76,18 @@ the PR.
   views and views of views; slice-view receivers (`len`, `find_byte`,
   `find_not_in`, `try_get`); refused views of changing places, `let mut`
   views, escapes, and updating view receivers. All run differentially.
+- Self-hosted checker lockstep fixtures: `tests/fixtures/self_host_check/inout_overlap.ves`
+  (`pair(inout a, in a)` of an `i64`) and `nested_loans.ves`
+  (`pair(inout a, identity(a))`) are now accepted by the Rust checker but
+  still refused by the stricter Stage 1 checker, so `tests/self_host_check.rs`
+  saw the two disagree. Both fixtures now use an overlap that both checkers
+  refuse (`pair(inout a, inout a)`, `pair(inout a, bump(inout a))`), with the
+  same E0301 diagnostics.
 - Updated tests: the "only receivers" case in `tests/two_phase_borrows.rs`
   now checks a write in a plain call's argument. Two `tests/strings.rs`
   cases bind views of `inout` strings, which are still refused. In
-  `tests/diagnostic_causes.rs`, `both(inout p, in p)` now reports only the
+  `tests/language.rs`, `projection_overlap` now uses a lent copy aggregate.
+  In `tests/diagnostic_causes.rs`, `both(inout p, in p)` now reports only the
   live overlap.
 
 ## Repros before and after
