@@ -626,3 +626,86 @@ fn run() -> u64 eff [Fail[RuntimeError], Fail[ArithOverflow]] {
     let short = source.replace("fill(inout s, 12);", "fill(inout s, 7);");
     assert_eq!(differential("bounds_boxes_short", &short), 7777);
 }
+
+#[test]
+fn short_constant_loops_are_not_versioned() {
+    // Three iterations of four accesses through four index forms save less
+    // than four guards cost (the Kinetic sweep-and-prune overlap test), so
+    // the loop keeps its checks; a long constant loop is still guarded.
+    let source = program(
+        "fn three() -> u64 { 3 }
+fn overlaps(in lo: Slice[u64], in hi: Slice[u64], s: u64, t: u64) -> bool eff [Fail[RuntimeError]] {
+    let bs = wrapping_mul(s, 3);
+    let bt = wrapping_mul(t, 3);
+    for a in 0..three() {
+        if !(lo[wrapping_add(bs, a)] <= hi[wrapping_add(bt, a)] && lo[wrapping_add(bt, a)] <= hi[wrapping_add(bs, a)]) {
+            return false;
+        }
+    }
+    true
+}
+fn long(in s: Slice[u64]) -> u64 eff [Fail[RuntimeError]] {
+    let mut acc: u64 = 0;
+    for i in 0..16 {
+        acc = wrapping_add(acc, s[i]);
+    }
+    acc
+}
+fn run() -> u64 eff [Fail[RuntimeError], Fail[ArithOverflow]] {
+    let mut lo: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut hi: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    fill(inout lo, 30);
+    fill(inout hi, 30);
+    let mut n: u64 = 0;
+    for s in 0..9 {
+        for t in 0..9 {
+            if overlaps(in lo.as_slice(), in hi.as_slice(), s, t) {
+                n = wrapping_add(n, 1);
+            }
+        }
+    }
+    wrapping_add(wrapping_mul(n, 1000), long(in lo.as_slice()))
+}",
+    );
+    let ir = hoisted(&source);
+    assert_eq!(guards(&ir, "overlaps"), 0);
+    assert_eq!(guards(&ir, "long"), 1);
+    // lo == hi, element k holding 3k: boxes s and t overlap iff s == t.
+    assert_eq!(
+        differential("bounds_short_loops", &source),
+        9 * 1000 + (0..16).map(|i| i * 3).sum::<u64>()
+    );
+}
+
+#[test]
+fn short_inner_loops_keep_their_checks() {
+    // A triangle loop (`j` in `i + 1..n`) changes its range with the outer
+    // loop and has one access for its one guard (the Ignis use-pair check):
+    // only the outer loop is guarded. A row loop of fixed length is guarded
+    // ([`inner_loops_are_guarded`]).
+    let source = program(
+        "fn pairs(in s: Slice[u64]) -> u64 eff [Fail[RuntimeError], Fail[ArithOverflow]] {
+    let n = s.len();
+    let mut hits: u64 = 0;
+    for i in 0..n {
+        let a = s[i];
+        for j in wrapping_add(i, 1)..n {
+            if s[j] == a {
+                hits = wrapping_add(hits, 1);
+            }
+        }
+    }
+    hits
+}
+fn run() -> u64 eff [Fail[RuntimeError], Fail[ArithOverflow]] {
+    let mut s: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    for i in 0..12 {
+        s.push(i % 4);
+    }
+    pairs(in s.as_slice())
+}",
+    );
+    assert_eq!(guards(&hoisted(&source), "pairs"), 1);
+    // Each residue appears 3 times: 3 pairs each.
+    assert_eq!(differential("bounds_pairs", &source), 12);
+}

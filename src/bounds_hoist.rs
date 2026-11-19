@@ -54,7 +54,23 @@ pub fn hoist_function(f: &mut FunctionIr) -> usize {
         .map(|h| (natural_loop(h, &preds, &idom).len(), h))
         .collect();
     headers.sort();
-    let versioned = headers.into_iter().filter(|&(_, h)| version(f, h)).count();
+    // Every loop of the function (counted or not), to tell inner loops.
+    let loops: Vec<(usize, BTreeSet<usize>)> = (0..f.blocks.len())
+        .filter(|&h| preds[h].iter().any(|&p| dominates(&idom, h, p)))
+        .map(|h| (h, natural_loop(h, &preds, &idom)))
+        .collect();
+    let versioned = headers
+        .into_iter()
+        .filter(|&(_, h)| {
+            // The innermost loop around this one.
+            let enclosing = loops
+                .iter()
+                .filter(|(o, l)| *o != h && l.contains(&h))
+                .min_by_key(|(_, l)| l.len())
+                .map(|(_, l)| l.clone());
+            version(f, h, enclosing.as_ref())
+        })
+        .count();
     drop_dominated_checks(f);
     versioned
 }
@@ -478,7 +494,7 @@ fn keeps_length(op: SeqOp) -> bool {
 }
 
 /// Versions the loop headed by `h` when it is eligible.
-fn version(f: &mut FunctionIr, h: usize) -> bool {
+fn version(f: &mut FunctionIr, h: usize, enclosing: Option<&BTreeSet<usize>>) -> bool {
     let Some(head) = header(f, h) else {
         return false;
     };
@@ -673,9 +689,144 @@ fn version(f: &mut FunctionIr, h: usize) -> bool {
     if candidates.is_empty() {
         return false;
     }
+    // A loop with a short constant trip count saves less than its guards
+    // cost: each guard checks both range ends with overflow-checked sums
+    // (about 20 instructions), and each unchecked access saves a compare
+    // and a branch (about 3) per iteration.
+    match trip_count(f, &head) {
+        Some(trips)
+            if trips.saturating_mul(candidates.len() as u64)
+                < GUARD_COST * receivers.len() as u64 =>
+        {
+            return false;
+        }
+        // An inner loop runs its guard on every iteration of the loop
+        // around it. When its range changes with that loop's iteration it
+        // is often short (a pass's few resource uses in Ignis's planner),
+        // so it pays only when it drops more checks per iteration than it
+        // adds guards; a length fixed for the outer loop (a matrix row) is
+        // guarded as a top-level loop is.
+        None if enclosing.is_some_and(|outer| !bound_invariant(f, &head, outer))
+            && candidates.len() <= receivers.len() =>
+        {
+            return false;
+        }
+        _ => {}
+    }
     let receivers: Vec<Receiver> = receivers.into_values().collect();
     clone_loop(f, h, pre, &head, &blocks, &receivers, &candidates);
     true
+}
+
+/// Whether every binding of `head`'s range slots (its start and its bound)
+/// takes a value `outer` (the loop around it) does not change: one defined
+/// outside it, a constant, or a read of a local `outer` neither binds nor
+/// writes. A triangle loop (`for j in i + 1..n`) changes its start.
+fn bound_invariant(f: &FunctionIr, head: &Header, outer: &BTreeSet<usize>) -> bool {
+    let in_outer = || outer.iter().flat_map(|&b| f.blocks[b].instructions.iter());
+    let changed = |root: &str| {
+        in_outer().any(|i| match &i.op {
+            Op::Bind { pattern, .. } => binds(pattern, root),
+            Op::Write { place, .. } => place_root(place) == root,
+            _ => false,
+        })
+    };
+    in_outer().all(|i| match &i.op {
+        Op::Bind { pattern, value }
+            if binds(pattern, &head.bound) || binds(pattern, &head.index) =>
+        {
+            match in_outer().find(|d| d.dest == *value).map(|d| &d.op) {
+                None => !outer.iter().any(|&b| f.blocks[b].params.contains(value)),
+                Some(Op::Constant(_)) => true,
+                Some(Op::Read { root, .. }) => !changed(root),
+                Some(_) => false,
+            }
+        }
+        _ => true,
+    })
+}
+
+/// How many iterations' worth of one unchecked access pay for one guard
+/// ([`version`]).
+const GUARD_COST: u64 = 7;
+
+/// The trip count of the counted loop `head` when both its range ends are
+/// constants.
+fn trip_count(f: &FunctionIr, head: &Header) -> Option<u64> {
+    let lo = slot_constant(f, &head.index)?;
+    let hi = slot_constant(f, &head.bound)?;
+    let hi = if head.inclusive {
+        hi.checked_add(1)?
+    } else {
+        hi
+    };
+    Some(u64::try_from(hi.saturating_sub(lo).max(0)).unwrap_or(u64::MAX))
+}
+
+/// The constant every binding of the loop slot `slot` gives it (the index
+/// slot's writes are the loop's own increments).
+fn slot_constant(f: &FunctionIr, slot: &str) -> Option<i128> {
+    let mut found = None;
+    for i in f.blocks.iter().flat_map(|b| &b.instructions) {
+        match &i.op {
+            Op::Bind { pattern, value } if binds(pattern, slot) => {
+                let c = constant_value(f, *value, 0)?;
+                if found.is_some_and(|k| k != c) {
+                    return None;
+                }
+                found = Some(c);
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// The integer constant `v` always holds: a literal, a read of a local
+/// bound once to one, or a block parameter every incoming jump passes the
+/// same constant (an inlined callee's result).
+fn constant_value(f: &FunctionIr, v: ValueId, depth: usize) -> Option<i128> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    for (b, block) in f.blocks.iter().enumerate() {
+        if let Some(i) = block.instructions.iter().find(|i| i.dest == v) {
+            return match &i.op {
+                Op::Constant(crate::ast::Literal::Int(n)) => Some(*n),
+                Op::Read { root, path, .. } if path.is_empty() && single_binding(f, root) => f
+                    .blocks
+                    .iter()
+                    .flat_map(|b| &b.instructions)
+                    .find_map(|i| match &i.op {
+                        Op::Bind { pattern, value } if binds(pattern, root) => {
+                            Some(constant_value(f, *value, depth + 1))
+                        }
+                        _ => None,
+                    })?,
+                _ => None,
+            };
+        }
+        if let Some(k) = block.params.iter().position(|p| *p == v) {
+            let mut found = None;
+            for pred in &f.blocks {
+                let args = match &pred.terminator {
+                    Terminator::Jump { block: t, args } if *t == b => args,
+                    Terminator::Branch { yes, no, .. } if *yes == b || *no == b => return None,
+                    Terminator::Match { arms, .. } if arms.iter().any(|(_, t)| *t == b) => {
+                        return None;
+                    }
+                    _ => continue,
+                };
+                let c = constant_value(f, *args.get(k)?, depth + 1)?;
+                if found.is_some_and(|x| x != c) {
+                    return None;
+                }
+                found = Some(c);
+            }
+            return found;
+        }
+    }
+    None
 }
 
 /// The most loop-invariant terms one guarded index may have.
@@ -1433,8 +1584,24 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
         {
             continue;
         }
+        // A versioned loop and its fast copy share their preheader (the
+        // guard picks one) and their value ids, so a read's users span both:
+        // the hoisted words, read at the end of the shared preheader, serve
+        // both copies.
+        let twin = match f.blocks[*pre].terminator {
+            Terminator::Branch { yes, no, .. } if yes == h || no == h => {
+                let other = if yes == h { no } else { yes };
+                let twin = natural_loop(other, &preds, &idom);
+                let disjoint = twin.is_disjoint(&blocks)
+                    && preds[other].iter().filter(|p| !twin.contains(p)).eq([pre]);
+                if disjoint { twin } else { BTreeSet::new() }
+            }
+            _ => BTreeSet::new(),
+        };
+        let both: BTreeSet<usize> = blocks.union(&twin).copied().collect();
         let insts = || blocks.iter().flat_map(|&b| f.blocks[b].instructions.iter());
-        if insts().any(|i| {
+        let all_insts = || both.iter().flat_map(|&b| f.blocks[b].instructions.iter());
+        if all_insts().any(|i| {
             matches!(
                 i.op,
                 Op::Closure { .. } | Op::Handle { .. } | Op::Indirect { .. }
@@ -1448,7 +1615,7 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
         // words are spilled and reloaded anyway, and many of them push other
         // values out of registers: such a loop hoists one receiver at most
         // (Ignis's pass loops ran 4% more instructions with no cap).
-        let calls = insts().any(|i| calls_out(&i.op));
+        let calls = all_insts().any(|i| calls_out(&i.op));
         let mut places: BTreeMap<String, HeaderHoist> = BTreeMap::new();
         for i in insts() {
             let Op::Read {
@@ -1477,9 +1644,8 @@ pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
                 continue;
             }
             // Every use is the receiver of an access in the loop.
-            let only_receivers =
-                only_access_receivers(&users, i.dest, *pass, &place, Some(&blocks));
-            if !only_receivers || !stable_place(f, &blocks, &place) {
+            let only_receivers = only_access_receivers(&users, i.dest, *pass, &place, Some(&both));
+            if !only_receivers || !stable_place(f, &both, &place) {
                 continue;
             }
             places

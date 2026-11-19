@@ -4,6 +4,10 @@
 use super::*;
 use crate::seq::Access;
 
+/// The shortest `hi - lo` a loop guard checks; a shorter range runs the
+/// checked loop without evaluating the guard.
+const MIN_GUARDED_SPAN: i64 = 4;
+
 impl<M: Module> Codegen<'_, '_, M> {
     /// Lowers `op` when it is a hoisting operation, else `None`.
     pub(super) fn hoisted_seq_op(
@@ -27,6 +31,24 @@ impl<M: Module> Codegen<'_, '_, M> {
                 let minus: Vec<ir::Value> =
                     (0..nm).map(|k| arg(3 + np + k)).collect::<Result<_, _>>()?;
                 let ok = args.get(3 + np + nm).copied();
+                // A short range saves less than the guard costs, and a guard
+                // after a failed one need not run: both take the checked
+                // loop (the guard may always say no).
+                let skip = match ok {
+                    Some(ok) => self.b.ins().icmp_imm(IntCC::Equal, ok, 0),
+                    None => {
+                        let span = self.b.ins().isub(hi, lo);
+                        self.b
+                            .ins()
+                            .icmp_imm(IntCC::UnsignedLessThan, span, MIN_GUARDED_SPAN)
+                    }
+                };
+                let compute = self.b.create_block();
+                let done = self.b.create_block();
+                self.b.append_block_param(done, types::I64);
+                let no = self.zero();
+                self.branch(skip, done, &[no.into()], compute, &[]);
+                self.b.switch_to_block(compute);
                 let empty = if inclusive {
                     IntCC::UnsignedGreaterThan
                 } else {
@@ -40,24 +62,12 @@ impl<M: Module> Codegen<'_, '_, M> {
                 } else {
                     self.b.ins().iadd_imm(hi, -1)
                 };
-                let mut fits = None;
-                for end in [lo, last] {
-                    let c = self.guard_index_fits(end, form.negated, &plus, &minus, len);
-                    fits = Some(match fits {
-                        Some(all) => self.b.ins().band(all, c),
-                        None => c,
-                    });
-                }
-                let fits = fits.ok_or("bounds guard lacks a range end")?;
+                let fits = self.guard_range_fits(lo, last, form.negated, &plus, &minus, len);
                 let inside = self.b.ins().bor(empty, fits);
-                let ok = match ok {
-                    Some(ok) => {
-                        let ok = self.b.ins().icmp_imm(IntCC::NotEqual, ok, 0);
-                        self.b.ins().band(ok, inside)
-                    }
-                    None => inside,
-                };
-                Ok(Some(self.b.ins().uextend(types::I64, ok)))
+                let inside = self.b.ins().uextend(types::I64, inside);
+                self.jump(done, &[inside.into()]);
+                self.b.switch_to_block(done);
+                Ok(Some(self.b.block_params(done)[0]))
             }
             SeqOp::Hoisted(access) => {
                 let ty = arg_types
@@ -98,18 +108,27 @@ impl<M: Module> Codegen<'_, '_, M> {
         }
     }
 
-    /// Whether the guard's index at loop index `i` is in `0..len`: the
-    /// positive and negative sums with every addition checked for overflow.
-    fn guard_index_fits(
+    /// Whether the guard's index is in `0..len` at every loop index in
+    /// `lo..=last` (when that range is not empty). The index `±i + Σplus -
+    /// Σminus` is monotone in `i`, so its two ends bound it: the end where
+    /// it is smallest must not be negative and the end where it is largest
+    /// must be below `len`. The sums at the largest loop index are checked
+    /// for overflow; the sums at `lo` then cannot overflow (`lo <= last`).
+    fn guard_range_fits(
         &mut self,
-        i: ir::Value,
+        lo: ir::Value,
+        last: ir::Value,
         negated: bool,
         plus: &[ir::Value],
         minus: &[ir::Value],
         len: ir::Value,
     ) -> ir::Value {
+        if !negated && plus.is_empty() && minus.is_empty() {
+            // `s[i]`: in bounds when the last index is.
+            return self.b.ins().icmp(IntCC::UnsignedLessThan, last, len);
+        }
         let mut overflow = self.b.ins().iconst(types::I8, 0);
-        let mut sum = |this: &mut Self, first: Option<ir::Value>, terms: &[ir::Value]| {
+        let mut checked = |this: &mut Self, first: Option<ir::Value>, terms: &[ir::Value]| {
             let mut acc: Option<ir::Value> = first;
             for &t in terms {
                 acc = Some(match acc {
@@ -123,14 +142,32 @@ impl<M: Module> Codegen<'_, '_, M> {
             }
             acc.unwrap_or_else(|| this.b.ins().iconst(types::I64, 0))
         };
-        let (p, n) = if negated {
-            (sum(self, None, plus), sum(self, Some(i), minus))
+        // The loop-dependent sum (`i + Σplus`, or `i + Σminus` when
+        // negated) at `last`, checked, and the constant sum, checked.
+        let (moving, fixed) = if negated {
+            (minus, plus)
         } else {
-            (sum(self, Some(i), plus), sum(self, None, minus))
+            (plus, minus)
         };
-        // `p - n` in `0..len`: `n <= p` and `p - n < len`.
-        let below = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, p);
-        let d = self.b.ins().isub(p, n);
+        let at_last = checked(self, Some(last), moving);
+        let constant = checked(self, None, fixed);
+        let mut at_lo = lo;
+        for &t in moving {
+            at_lo = self.b.ins().iadd(at_lo, t);
+        }
+        // Not negated: `i + Σplus - Σminus` grows with `i`, so it is
+        // smallest at `lo` and largest at `last`. Negated: `Σplus - (i +
+        // Σminus)` shrinks, so it is smallest at `last` and largest at `lo`.
+        let (low_p, low_n, high_p, high_n) = if negated {
+            (constant, at_last, constant, at_lo)
+        } else {
+            (at_lo, constant, at_last, constant)
+        };
+        let below = self
+            .b
+            .ins()
+            .icmp(IntCC::UnsignedLessThanOrEqual, low_n, low_p);
+        let d = self.b.ins().isub(high_p, high_n);
         let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, d, len);
         let ok = self.b.ins().band(below, inside);
         let ok_flag = self.b.ins().icmp_imm(IntCC::Equal, overflow, 0);
