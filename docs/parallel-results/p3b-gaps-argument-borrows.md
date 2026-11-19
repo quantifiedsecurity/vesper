@@ -33,14 +33,16 @@ Claim #1094. Base: `origin/main` at 9305b24 (plan PR #1098).
    views (`s.as_str()`, `t[a..b]`, `q.as_slice()`) may initialize an
    immutable `let` when the source cannot change while the function runs.
    That means an `in` parameter, or an immutable binding that is itself a
-   `Str` or `Slice`. The binding follows the existing second-class rules
+   `Str` or `Slice`. The binding is shared (`in`), so it cannot be moved into
+   a `let mut` or written (`E0305`, `E0307`). It also follows the existing second-class rules
    (`E1520` for results, `sink`, fields), so it cannot outlive its source.
    Views of locals, `inout` or `sink` parameters, and `let mut` views stay
    `E1531`/`E1521`.
 3. **Slice views as receivers** (`src/seq/check.rs`). `b[a..c].find_not_in(..)`,
    `b[1..4].len()`, `s.as_slice().len()`, `b[2..4].try_get(i)`: a view
    receiver of a reading `Slice` method is borrowed `in`, like a view
-   argument. A view receiver of an updating method (`o[0..2].fill(1)`) is
+   argument, and its source stays borrowed until the method's arguments are
+   evaluated, so they cannot move or update it. A view receiver of an updating method (`o[0..2].fill(1)`) is
    `E1521` with a hint to pass the view as an `inout` argument.
 4. **Manuscript** §4.3 "Two-phase argument loans" (it was "Two-phase
    receiver loans") and the `Slice`/`Str` paragraphs of §13 (bound views,

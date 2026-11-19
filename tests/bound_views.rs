@@ -223,6 +223,24 @@ fn views_of_changing_places_stay_refused() {
             "E1520",
             "sink",
         ),
+        // A bound view shares its source: it cannot be moved into a
+        // mutable binding or written.
+        (
+            "fn f(in s: String) { let b = s.as_bytes(); let mut c = b; c.fill(255); }",
+            "E0305",
+            "",
+        ),
+        (
+            "fn f(in s: String) { let b = s.as_bytes(); b.fill(255); }",
+            "E0307",
+            "shared",
+        ),
+        // A view receiver's source stays borrowed through the arguments.
+        (
+            "fn f(sink s: ChunkSeq[u8]) -> bool { match s[0..1].find_byte({ ChunkSeq::finish(s); 0 }) { Option::Some(_) => true, Option::None => false } }",
+            "E0301",
+            "conflicts with active argument loan",
+        ),
         (
             "fn f(inout o: Slice[u8]) { o[0..2].fill(1); }",
             "E1521",

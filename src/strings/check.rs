@@ -196,9 +196,10 @@ impl Checker<'_> {
     /// `s[a..b]`, `s.as_slice()`) of a place that stays unchanged while the
     /// function runs: an `in` parameter, or an immutable binding that is
     /// itself a view. The bound view is a read-only `Str` or `Slice` local
-    /// that cannot outlive its source (views are second-class: they cannot be
-    /// returned, stored or moved).
-    pub(in crate::check) fn bind_view(&mut self, value: &Expr, env: &Env) {
+    /// that cannot outlive its source: the binding is shared (`in`), so it
+    /// cannot be moved, rebound mutably or written, and views are
+    /// second-class (never returned or stored).
+    pub(in crate::check) fn bind_view(&mut self, value: &Expr, env: &Env) -> bool {
         let base = whole_view(value)
             .or_else(|| crate::seq::interval(value).map(|(b, _, _)| b))
             .or_else(|| match crate::seq::whole_view(value) {
@@ -206,16 +207,18 @@ impl Checker<'_> {
                 _ => None,
             });
         let Some(root) = base.and_then(Place::from_expr) else {
-            return;
+            return false;
         };
         let Some(b) = env.bindings.get(&root.root) else {
-            return;
+            return false;
         };
         let view = crate::seq::is_slice_type(&b.ty) || is_str_type(&b.ty);
-        if b.pass == Pass::In || (b.frozen && view) {
+        let bound = b.pass == Pass::In || (b.frozen && view);
+        if bound {
             self.slice_args
                 .insert((value.span.start, value.span.end), Pass::In);
         }
+        bound
     }
 
     /// A `Str` (or, for `as_bytes`, `Slice[u8]`) view of `base`, allowed only

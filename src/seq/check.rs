@@ -359,7 +359,15 @@ impl Checker<'_> {
             self.types
                 .insert((base.span.start, base.span.end), base_ty.clone());
         }
+        let loan_base = self.loans.len();
         self.seq_receiver(base, env, op.receiver_pass());
+        // The view's source stays borrowed `in` while the arguments are
+        // evaluated, so they cannot move or update it.
+        if view.is_some()
+            && let Some(p) = self.seq_view_place(base)
+        {
+            self.loans.push((p, Pass::In, base.span.clone()));
+        }
         let u64_ty = Type::named("u64");
         let mode = self.mode(&elem_ty);
         let known = elem_ty != Type::Infer;
@@ -482,6 +490,7 @@ impl Checker<'_> {
                 self.expr(&a.expr, env, Usage::Own);
             }
         }
+        self.loans.truncate(loan_base);
         if op.fallible() {
             self.primitive_failure(env, span);
         }

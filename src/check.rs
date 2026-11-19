@@ -1541,9 +1541,9 @@ impl Checker<'_> {
                         } => {
                             let ty = &self.region_annotation(ty);
                             self.valid_type(ty, &self.generics.clone(), value.span.clone());
-                            if !*mutable && matches!(pat.kind, PatternKind::Bind(_)) {
-                                self.bind_view(value, env);
-                            }
+                            let bound_view = !*mutable
+                                && matches!(pat.kind, PatternKind::Bind(_))
+                                && self.bind_view(value, env);
                             let actual = self.expr_expected(value, env, Usage::Own, ty);
                             self.expect_type(ty, &actual, value.span.clone());
                             let t = if *ty == Type::Infer {
@@ -1576,6 +1576,10 @@ impl Checker<'_> {
                             self.bind(pat, &t, env);
                             if let PatternKind::Bind(n) = &pat.kind {
                                 let binding = env.bindings.get_mut(n).unwrap();
+                                if bound_view {
+                                    // A bound view shares its source.
+                                    binding.pass = Pass::In;
+                                }
                                 binding.integer = fact;
                                 binding.nonzero = nonzero;
                                 binding.range = bounds.map(|(lo, hi)| IntRange {
