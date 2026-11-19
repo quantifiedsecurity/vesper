@@ -97,6 +97,7 @@ members = [
     "crates/vesper-port-harness",
     "crates/vesper-port-build",
     "crates/vesper-port-pilot",
+    "crates/vesper-hybrid",
     "experiments/native-pulse",
 ]
 # Preserve the pre-extraction `cargo test` coverage of moved unit tests.
