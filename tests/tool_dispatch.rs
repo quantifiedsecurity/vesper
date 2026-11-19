@@ -17,6 +17,8 @@ fn executable(name: &str) -> PathBuf {
     env::split_paths(&env::var_os("PATH").unwrap_or_default())
         .map(|dir| dir.join(&file))
         .find(|p| p.is_file())
+        // Bazel's PATH entries are runfiles symlinks; link the real file.
+        .map(|p| fs::canonicalize(&p).unwrap_or(p))
         .unwrap_or_else(|| panic!("{name} not found on PATH"))
 }
 
