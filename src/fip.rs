@@ -148,14 +148,29 @@ pub fn active(world: &World) -> bool {
     })
 }
 
+thread_local! {
+    /// While [`handle_drop_plan`] runs: the `.vsys` handle types whose
+    /// drops the elaboration plans in place of `Box[T]`.
+    static DROPPED_HANDLES: std::cell::RefCell<Option<BTreeSet<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+fn dropped_handles<R>(f: impl FnOnce(Option<&BTreeSet<String>>) -> R) -> R {
+    DROPPED_HANDLES.with(|h| f(h.borrow().as_ref()))
+}
+
 /// Whether `ty` is the built-in `Box[T]`.
 pub fn is_box_type(world: &World, ty: &Type) -> bool {
+    if let Some(handle) = dropped_handles(|h| {
+        h.map(|h| matches!(ty, Type::Named(n, args) if args.is_empty() && h.contains(n)))
+    }) {
+        return handle;
+    }
     active(world) && matches!(ty, Type::Named(n, args) if n == BOX_TYPE && args.len() == 1)
 }
 
 /// Inner type `T` when `ty` is built-in `Box[T]`.
 pub fn box_inner<'a>(world: &World, ty: &'a Type) -> Option<&'a Type> {
-    if !active(world) {
+    if !active(world) || dropped_handles(|h| h.is_some()) {
         return None;
     }
     match ty {
@@ -167,6 +182,7 @@ pub fn box_inner<'a>(world: &World, ty: &'a Type) -> Option<&'a Type> {
 /// Whether a pattern unpacks the built-in `Box(...)` constructor.
 pub fn is_box_pattern(world: &World, pat: &Pattern) -> bool {
     active(world)
+        && !dropped_handles(|h| h.is_some())
         && matches!(
             &pat.kind,
             PatternKind::Constructor { name, fields, .. }
@@ -1746,6 +1762,63 @@ pub fn fail_exit_drops(
         .filter(|e| edges_placeable(f, e))
         .map(|e| e.at_abort)
         .unwrap_or_default()
+}
+
+/// Where one graph drops the `.vsys` handles of `handles` (affine extern
+/// types with a drop import, §16.3): the `Box` drop elaboration of
+/// [`elaborate_non_fip_drops`] run with those handle types standing in for
+/// `Box[T]`, so a handle is dropped exactly where a box in its place would
+/// be. Edge drops are placed with [`split_edge`] into `f`. `None` when the
+/// slot states reach no fixed point.
+pub fn handle_drop_plan(
+    world: &World,
+    f: &mut crate::ir::FunctionIr,
+    handles: &BTreeSet<String>,
+) -> Option<HandleDrops> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            DROPPED_HANDLES.with(|h| *h.borrow_mut() = None);
+        }
+    }
+    DROPPED_HANDLES.with(|h| *h.borrow_mut() = Some(handles.clone()));
+    let _reset = Reset;
+    let mentions = f
+        .values
+        .values()
+        .chain(f.locals.values())
+        .chain(f.params.iter().map(|p| &p.ty))
+        .any(|t| type_contains_box(world, t));
+    if !mentions {
+        return Some(HandleDrops::default());
+    }
+    let e = elaborate_function(world, f)?;
+    let mut plan = HandleDrops {
+        before_inst: e.before_inst,
+        after_inst: e.after_inst,
+        before_term: e.before_term,
+    };
+    for ((p, s), drops) in e.edges {
+        if drops.is_empty() {
+            continue;
+        }
+        let at = if matches!(f.blocks[p].terminator, crate::ir::Terminator::Jump { .. }) {
+            p
+        } else {
+            split_edge(f, p, s)
+        };
+        plan.before_term.entry(at).or_default().extend(drops);
+    }
+    Some(plan)
+}
+
+/// The handle drops of one graph ([`handle_drop_plan`]), keyed as the
+/// `box_drops_*` fields of [`crate::ir::FunctionIr`].
+#[derive(Debug, Default)]
+pub struct HandleDrops {
+    pub before_inst: BTreeMap<usize, Vec<(usize, FipDrop)>>,
+    pub after_inst: BTreeMap<usize, Vec<(usize, FipDrop)>>,
+    pub before_term: BTreeMap<usize, Vec<FipDrop>>,
 }
 
 /// An edge drop is placed before its source's `Jump`, or in a block split

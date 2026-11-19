@@ -736,7 +736,7 @@ fn instances_for_entry(
     entry: &str,
     include_entry: bool,
 ) -> Result<InstanceMap, String> {
-    let program = crate::ir::lower_world(world);
+    let program = crate::ffi_lowering::drops::lower_world(world);
     let references = program
         .functions
         .values()
@@ -772,6 +772,10 @@ fn instances_for_entry(
             || !function_arguments(&vars).is_empty()
         {
             result.insert(key, (name.clone(), vars.clone()));
+        }
+        // Handle drops (§16.3) are calls the source body never names.
+        for callee in crate::ffi_lowering::drops::drop_callees(world, &program, &name) {
+            todo.push((callee, BTreeMap::new()));
         }
         if let Some(body) = &f.body {
             visit(body, &mut |e| {
@@ -971,7 +975,7 @@ fn compile_entry<M: Module>(
         return Err("native entry cannot expose specialized closure values; invoke them within the entry function".into());
     }
     let instances = instances_for_entry(world, entry, trace_ok)?;
-    let mut program = crate::ir::lower_world(world);
+    let mut program = crate::ffi_lowering::drops::lower_world(world);
     crate::integer_widths::lower_bit_builtin_calls(world, &mut program);
     let mut inlined_into = BTreeMap::new();
     if optimize {

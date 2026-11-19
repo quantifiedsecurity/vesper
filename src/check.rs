@@ -746,6 +746,36 @@ impl Checker<'_> {
     fn extern_handle(&self, t: &Type) -> bool {
         self.holds_extern_handle(t, &mut BTreeSet::new())
     }
+    /// Whether a value of `t` holds an affine `.vsys` handle whose type
+    /// declares a drop import (`crate::ffi_lowering::drops`).
+    fn droppable_handle(&self, t: &Type) -> bool {
+        fn visit(c: &Checker, t: &Type, seen: &mut BTreeSet<String>) -> bool {
+            match t {
+                Type::Named(n, args) => {
+                    if args.iter().any(|a| visit(c, a, seen)) {
+                        return true;
+                    }
+                    if !seen.insert(n.clone()) {
+                        return false;
+                    }
+                    if c.world
+                        .functions
+                        .contains_key(&format!("{}{n}", crate::ffi_lowering::drops::DROP_PREFIX))
+                    {
+                        return true;
+                    }
+                    c.world.adts.get(n).is_some_and(|a| {
+                        a.variants
+                            .iter()
+                            .any(|v| v.fields.iter().any(|f| visit(c, &f.ty, seen)))
+                    })
+                }
+                Type::Tuple(items) => items.iter().any(|i| visit(c, i, seen)),
+                _ => false,
+            }
+        }
+        visit(self, t, &mut BTreeSet::new())
+    }
     fn holds_extern_handle(&self, t: &Type, seen: &mut BTreeSet<String>) -> bool {
         match t {
             Type::Named(n, args) => {
@@ -3442,6 +3472,20 @@ impl Checker<'_> {
                 self.error("E0402",format!("potentially abortable effect '{effect}' may discard live linear value '{n}'"),span.clone());
                 self.related(b.span.clone(), "live linear binding introduced here");
                 self.help("An abortable checkpoint may discard a continuation that still owns this linear binding.");
+            }
+            // An abort skips the drop of an affine `.vsys` handle with a
+            // drop import (§16.3), so such a handle is kept off abortable
+            // checkpoints as a linear value is. A lexical handler that
+            // catches the abort keeps the binding in scope.
+            if b.pass == Pass::Sink
+                && !b.moved.iter().any(Vec::is_empty)
+                && catcher
+                    .is_none_or(|frame| self.handler_frames[frame].outer.get(n) != Some(&b.span))
+                && self.droppable_handle(&b.ty)
+            {
+                self.error("E0402",format!("potentially abortable effect '{effect}' may skip the drop import of live handle '{n}'"),span.clone());
+                self.related(b.span.clone(), "live handle binding introduced here");
+                self.help("A handle whose type declares a drop import is released when it is dropped; an abort would skip that call. Finalize or move the handle before the checkpoint, or catch the abort in this function.");
             }
             if b.pass == Pass::Inout && !b.moved.is_empty() {
                 self.error("E0402",format!("potentially abortable effect '{effect}' crosses inout parameter '{n}' while part of it is moved out"),span.clone());
