@@ -1543,6 +1543,9 @@ impl Checker<'_> {
                         } => {
                             let ty = &self.region_annotation(ty);
                             self.valid_type(ty, &self.generics.clone(), value.span.clone());
+                            if !*mutable && matches!(pat.kind, PatternKind::Bind(_)) {
+                                self.bind_view(value, env);
+                            }
                             let actual = self.expr_expected(value, env, Usage::Own, ty);
                             self.expect_type(ty, &actual, value.span.clone());
                             let t = if *ty == Type::Infer {

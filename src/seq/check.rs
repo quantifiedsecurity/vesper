@@ -274,7 +274,20 @@ impl Checker<'_> {
         env: &mut Env,
         span: Span,
     ) -> Option<Type> {
-        let base_ty = self.peek_type(base, env);
+        let mut base_ty = self.peek_type(base, env);
+        // A slice view receiver (`b[a..c].find_byte(x)`, `s.as_slice().len()`)
+        // is borrowed `in` for the call, like a view argument.
+        let view = interval(base)
+            .map(|(b, _, _)| b)
+            .or_else(|| whole_view(base).map(|(b, _)| b));
+        if let Some(inner) = view
+            && base_ty == Type::Infer
+        {
+            let inner_ty = self.peek_type(inner, env);
+            if is_seq_or_slice(&inner_ty) {
+                base_ty = slice_of(elem(&inner_ty).cloned().unwrap_or(Type::Infer));
+            }
+        }
         if !is_seq_or_slice(&base_ty) {
             return None;
         }
@@ -332,6 +345,19 @@ impl Checker<'_> {
                 format!("'{method}' expects {arity} arguments, found {}", args.len()),
                 span.clone(),
             );
+        }
+        if view.is_some() && is_slice_type(&base_ty) {
+            if op.receiver_pass() != Pass::In {
+                self.error(
+                    "E1521",
+                    format!("'{method}' updates its receiver; pass the slice view as an 'inout' call argument instead"),
+                    base.span.clone(),
+                );
+            }
+            self.slice_args
+                .insert((base.span.start, base.span.end), Pass::In);
+            self.types
+                .insert((base.span.start, base.span.end), base_ty.clone());
         }
         self.seq_receiver(base, env, op.receiver_pass());
         let u64_ty = Type::named("u64");

@@ -191,8 +191,36 @@ impl Checker<'_> {
         Some(self.text_view(base, Some((lo, hi)), StrOp::SubStr, env, e.span.clone()))
     }
 
+    /// Registers `value`, the initializer of an immutable `let`, as a bound
+    /// view when it is a string or slice view (`s.as_bytes()`, `s.as_str()`,
+    /// `s[a..b]`, `s.as_slice()`) of a place that stays unchanged while the
+    /// function runs: an `in` parameter, or an immutable binding that is
+    /// itself a view. The bound view is a read-only `Str` or `Slice` local
+    /// that cannot outlive its source (views are second-class: they cannot be
+    /// returned, stored or moved).
+    pub(in crate::check) fn bind_view(&mut self, value: &Expr, env: &Env) {
+        let base = whole_view(value)
+            .or_else(|| crate::seq::interval(value).map(|(b, _, _)| b))
+            .or_else(|| match crate::seq::whole_view(value) {
+                Some((b, false)) => Some(b),
+                _ => None,
+            });
+        let Some(root) = base.and_then(Place::from_expr) else {
+            return;
+        };
+        let Some(b) = env.bindings.get(&root.root) else {
+            return;
+        };
+        let view = crate::seq::is_slice_type(&b.ty) || is_str_type(&b.ty);
+        if b.pass == Pass::In || (b.frozen && view) {
+            self.slice_args
+                .insert((value.span.start, value.span.end), Pass::In);
+        }
+    }
+
     /// A `Str` (or, for `as_bytes`, `Slice[u8]`) view of `base`, allowed only
-    /// as an `in` call argument registered in `slice_args`.
+    /// as an `in` call argument registered in `slice_args`, or as a bound
+    /// view ([`Checker::bind_view`]).
     fn text_view(
         &mut self,
         base: &Expr,
