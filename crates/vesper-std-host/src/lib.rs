@@ -27,16 +27,6 @@ pub mod env;
 pub mod fs;
 pub mod process;
 
-/// The sample driver (driver/, a Loom package over the three packages)
-/// compiled to an object by `vesper build --lib` and linked into this
-/// crate: `driver::run()` (feature `vesper-port`, tests/driver.rs).
-// Generated: rustfmt must never reflow it (the build checks it byte for
-// byte).
-#[cfg(vesper_port)]
-#[rustfmt::skip]
-#[path = "../port/binding.rs"]
-pub mod driver;
-
 /// The error kinds an I/O call reports, as `IoError.kind` in Vesper
 /// (`@vesper-std/fs::error`). Stable numbers: they are part of the ABI.
 #[repr(u8)]

@@ -96,9 +96,13 @@ fn driver_walks_reads_spawns_and_writes_atomically() {
             std::env::set_var("VESPER_STD_DRIVER_CC", "cc");
         }
         let before = vesper_std_host::live_handles();
-        let files = vesper_std_host::driver::run();
+        let files = vesper_std_driver::driver::run();
         assert_eq!(vesper_std_host::live_handles(), before, "{package}");
-        assert_eq!(vesper_std_host::driver::live_allocations(), 0, "{package}");
+        assert_eq!(
+            vesper_std_driver::driver::live_allocations(),
+            0,
+            "{package}"
+        );
         let want = model(&root, "cc");
         assert_eq!(std::fs::read_to_string(&out).unwrap(), want, "{package}");
         assert_eq!(
@@ -114,14 +118,14 @@ fn driver_walks_reads_spawns_and_writes_atomically() {
     // A missing package: the walk fails with NotFound.
     // SAFETY: as above.
     unsafe { std::env::set_var("VESPER_STD_DRIVER_ROOT", tmp.join("missing")) };
-    assert_eq!(vesper_std_host::driver::run(), 1_000_001);
+    assert_eq!(vesper_std_driver::driver::run(), 1_000_001);
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
 #[test]
 fn driver_vsys_copies_match_the_packages() {
     let lib =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("driver/src/lib.ves"))
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("vesper/src/lib.ves"))
             .unwrap()
             .replace("\r\n", "\n");
     for name in ["fs", "process", "env"] {
@@ -139,7 +143,7 @@ fn driver_vsys_copies_match_the_packages() {
         }
         assert!(
             lib.contains(&block),
-            "driver/src/lib.ves lacks the current {name}.vsys"
+            "vesper/src/lib.ves lacks the current {name}.vsys"
         );
     }
 }

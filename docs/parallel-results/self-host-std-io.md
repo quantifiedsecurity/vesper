@@ -15,7 +15,8 @@ any of that. Ports kept their OS edge in Rust.
 | `packages/vesper-std/fs/` | `@vesper-std/fs`: `IoError` and its kind codes, `read`, `read_string`, `write`, `append`, `create_new`, atomic `replace`, `rename`, `remove_file`, `remove_dir`, `remove_dir_all`, `create_dir`, `create_dir_all`, `metadata`, `symlink_metadata`, `exists` (each with a `*_path` byte-path variant where a driver needs one); module `walk`: `Entries`, `list_dir`, `walk`, `entry_*` accessors, `entry_join`. `fs.vsys` is the `StdFs` import. |
 | `packages/vesper-std/process/` | `@vesper-std/process`: `command`, `arg`, `env`, `env_remove`, `env_clear`, `cwd`, `stdio`, `discard`, `spawn`, `wait`, `stdout`, `stderr`, `child_id`, `release`, `output`, `success`, `exit`, `id`. `process.vsys` is `StdProcess`. |
 | `packages/vesper-std/env/` | `@vesper-std/env`: `arg_count`, `arg`, `arg_bytes`, `var`, `var_bytes`, `var_count`, `var_at_bytes`, `current_dir`, `current_dir_bytes`, `os`. `env.vsys` is `StdEnv`. |
-| `crates/vesper-std-host/` | The C-ABI host shim: 38 `extern "C"` functions over `std::fs`, `std::process` and `std::env`, the JIT symbol table, live-handle counters for leak tests. Under feature `vesper-port`, the sample driver (`driver/`) is compiled by `vesper build --lib` through the port harness and linked in (`port/binding.rs`, `tests/driver.rs`). |
+| `crates/vesper-std-host/` | The C-ABI host shim: 38 `extern "C"` functions over `std::fs`, `std::process` and `std::env`, the JIT symbol table, live-handle counters for leak tests. No dependencies, so the root package's tests can link it. |
+| `crates/vesper-std-driver/` | The sample driver: a Loom package in `vesper/`, compiled under feature `vesper-port` by `vesper build --lib` through the port harness and linked in (`port/binding.rs`, `tests/driver.rs`). A package of its own because its build script links the compiler: in `vesper-std-host` it made a Bazel cycle through the root package's dev-dependency. |
 | `tests/std_fs.rs`, `tests/std_process.rs`, `tests/std_env.rs`, `tests/std_io_support/` | Differential tests: every scenario runs in the JIT with the optimizer on and off and in the evaluator, against the real OS, checked against `std`, with a leak check on every run. |
 | `src/ffi_lowering.rs` | One additive method, `ForeignChecked::jit_with_options`, so the JIT can run imports with the optimizer off (outside the lane's exclusive paths; flagged in the PR). |
 | `scripts/test-port-harness.sh` | The driver test joins the export ABI tier, which runs on Linux, macOS and Windows. |
@@ -94,7 +95,7 @@ declare `capability_ceiling = ["Fail", "Alloc", "Ffi[Std…]"]`.
 | `tests/std_fs.rs` (6 + 1 ignored bench) | JIT opt, JIT no-opt, evaluator | round trips, `read_string` UTF-8 rejection, atomic replace with no leftover temporary file, typed errors (NotFound, AlreadyExists, DirectoryNotEmpty, InvalidInput for a NUL byte, a directory read as a file), rename/remove/exists/metadata, sorted `walk`/`list_dir` against a Rust model (names chosen so OS order, creation order and sorted order all differ), 200 opens and closes (JIT) |
 | `tests/std_process.rs` (3 + 1 child) | all three | arguments, a variable, the directory, both captured streams and exit code 3 of `/bin/sh` against `std::process`; `env_clear` and `env_remove`; spawn of a missing program (NotFound from `spawn` and from `output`); wait twice (InvalidInput); a discarded command; a child released while running is killed (three runs of `sleep 30` finish in under 25 s); `exit(7)` in a child test process |
 | `tests/std_env.rs` (3) | all three | every argument against `std::env::args_os`, variables (a 1,000-byte value that needs a regrown buffer, unset, empty key, UTF-8 text, the full `KEY=VALUE` listing), the current directory and `os()` |
-| `crates/vesper-std-host/tests/driver.rs` (2, `--features vesper-port`) | AOT object linked into the test binary | the sample driver (below) over `packages/vesper-std/fs` and `packages/vesper-compiler`; the report must equal one computed with `std`, no live handle or Vesper allocation left; the driver's `.vsys` copies must equal the packages' files |
+| `crates/vesper-std-driver/tests/driver.rs` (2, `--features vesper-port`) | AOT object linked into the test binary | the sample driver (below) over `packages/vesper-std/fs` and `packages/vesper-compiler`; the report must equal one computed with `std`, no live handle or Vesper allocation left; the driver's `.vsys` copies must equal the packages' files |
 
 **Leak checks.** `vesper_std_host::live_handles()` counts files, listings,
 commands and children. Every JIT and evaluator run must leave all four counts
@@ -108,7 +109,7 @@ parsed `.vsys` descriptors, marshals the source values into the C ABI (words,
 calls the same `extern "C"` host functions the JIT binds. So the evaluator
 does real I/O too, and all three modes agree on every scenario.
 
-**Sample driver.** `crates/vesper-std-host/driver` reads three variables
+**Sample driver.** `crates/vesper-std-driver/vesper` reads three variables
 (`VESPER_STD_DRIVER_ROOT`, `_OUT`, `_CC`). It walks `ROOT/src`, takes each
 `.ves` file's size from `metadata`, reads the file and hashes its contents,
 then runs `cc --version` and writes this report through `replace`:
@@ -160,7 +161,7 @@ between runs. Before this lane there was no Vesper number to compare.
    such as `@vesper-std/fs` cannot carry its own import, and `vesper build`
    or `vesper run` of an executable cannot import at all. So every consumer
    repeats the three `.vsys` texts in its root module
-   (`crates/vesper-std-host/driver/src/lib.ves`, kept equal to the packages
+   (`crates/vesper-std-driver/vesper/src/lib.ves`, kept equal to the packages
    by `driver_vsys_copies_match_the_packages`). Repro: move
    the `// @export vsys` block from the driver into
    `packages/vesper-std/fs/src/lib.ves`. `export_directives_source` blanks
