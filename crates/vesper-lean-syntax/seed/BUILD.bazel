@@ -34,6 +34,8 @@ rust_test(
         srcs = ["//crates/vesper-lean-syntax:tests/%s.rs" % t],
         crate_root = "//crates/vesper-lean-syntax:tests/%s.rs" % t,
         edition = "2024",
+        # test/lean runs the pinned Lean (VESPER_LEAN) from the host.
+        tags = ["no-remote-exec"] if t == "lean" else [],
         deps = [":seed"],
     )
     for t in [

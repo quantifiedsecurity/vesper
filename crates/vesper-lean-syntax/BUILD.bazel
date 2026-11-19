@@ -60,8 +60,8 @@ vesper_port_object(
     target = VESPER_TARGET,
 )
 
-# Pure Rust tests apart from the prebuilt port object: no external tools or
-# host services.
+# Pure Rust tests apart from the prebuilt port object, except test/lean, which
+# runs the pinned Lean (VESPER_LEAN) and so stays local.
 vesper_crate(
     build_script_data = [
         ":lean_syntax_vesper",
@@ -72,7 +72,13 @@ vesper_crate(
         "VESPER_PORT_OBJECT": "$(execpath :lean_syntax_vesper)",
         "VESPER_PORT_GENERATED_BINDING": "$(execpath :lean_syntax_vesper_binding)",
     },
-    remote_tests = ["*"],
+    remote_tests = [
+        "vesper-lean-syntax_unit_test",
+        "vesper-lean-syntax_doc_test",
+        "test/differential",
+        "test/lists",
+        "test/port_memory",
+    ],
 )
 
 # The seed package (seed/) builds these same Rust sources without the port.
