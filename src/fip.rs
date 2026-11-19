@@ -2395,6 +2395,12 @@ fn block_drops(
             }
         }
 
+        // A temporary used in a later block (an argument evaluated before
+        // a branch in a later argument) is that use's to consume: dropping
+        // it here would hand the use a freed box or a released handle.
+        if owned_values.contains_key(&inst.dest) && used_outside_block(f, b, inst.dest) {
+            owned_values.remove(&inst.dest);
+        }
         let dead_temps: Vec<ValueId> = owned_values
             .keys()
             .copied()
@@ -2454,6 +2460,24 @@ fn block_drops(
         }
     }
     (slots, block_div)
+}
+/// Whether value `v` (defined in block `b`) is used by another block.
+fn used_outside_block(f: &crate::ir::FunctionIr, b: usize, v: ValueId) -> bool {
+    use crate::ir::Terminator;
+    f.blocks.iter().enumerate().any(|(i, blk)| {
+        i != b
+            && (blk
+                .instructions
+                .iter()
+                .any(|inst| crate::ir_inline::operands(&inst.op).contains(&v))
+                || match &blk.terminator {
+                    Terminator::Jump { args, .. } => args.contains(&v),
+                    Terminator::Branch { condition, .. } => *condition == v,
+                    Terminator::Match { value, .. } => *value == v,
+                    Terminator::Return(r) => *r == v,
+                    Terminator::Unreachable => false,
+                })
+    })
 }
 /// Whether `inst` can abort its graph with a `Fail` (its own or a callee's).
 fn may_abort(inst: &crate::ir::Instruction) -> bool {

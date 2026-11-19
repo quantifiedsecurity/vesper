@@ -204,6 +204,19 @@ functions a graph calls (`drops::drop_callees`).
 - Dropping another aggregate that holds such a handle as a whole
   temporary (a discarded `Result[Probe, ForeignInvalid]`) is refused with
   a typed error; bound aggregates release field by field.
+- A handle consumed inside a handled body that may abort before consuming
+  it is refused (`E0402`, as for a linear value). A struct whose handle
+  fields were all closed may cross a checkpoint.
+- `let _ = h` releases `h`. A handle discarded by `_` inside a
+  destructuring pattern, or moved into a closure (an unused closure would
+  not release it), is refused with a typed error.
+
+**Review follow-up (also fixes Boxes).** A temporary used in a later
+block (`take(open(1), if flag { 2 } else { 3 })`) was dropped right after
+its definition, before the branch, so the call received a released handle.
+The same was true of Boxes since #1076: the JIT read freed memory. The
+elaboration now leaves a value used outside its block to that use
+(`a_box_argument_before_a_branching_argument_is_the_callees`).
 
 The IR checker now lets a plain assignment re-initialize a moved place
 (the overwrite drop moves the old handle into the import first). Source
@@ -211,10 +224,11 @@ programs never produced that shape before, so no existing diagnostic
 changes (`ir_diagnostic_causes`, `two_phase_borrows`,
 `runtime_resource_trace`, `bit_builtin_mut` pass).
 
-**Tests.** `tests/ffi_affine_drops.rs` (8): ten scenarios (scope end,
+**Tests.** `tests/ffi_affine_drops.rs` (11): twelve scenarios (scope end,
 explicit close, branch, 10-iteration loop, overwrite, discarded result,
 `Option` values and a matched handle, struct field and tuple item, early
-return, `sink` callee) count opens, explicit closes and drop-import calls.
+return, `sink` callee, `let _`, a handle argument before a branching
+argument) count opens, explicit closes and drop-import calls.
 The JIT (Rust library), the evaluator (Rust stand-in) and, on Linux
 x86-64, objects linked with a C library and run as executables all give
 the expected value and release count, with opens = closes + releases.

@@ -208,3 +208,14 @@ fn held(x: i64) -> i64 eff [Fail[RuntimeError]] {
     );
     assert_eq!(execute(&src), "11006");
 }
+
+#[test]
+fn a_box_argument_before_a_branching_argument_is_the_callees() {
+    let src = format!(
+        "{P}fn take(sink b: Box[P], n: i64) -> i64 {{ let Box(p) = b; wrapping_add(p.v, n) }}
+fn pick(flag: bool) -> i64 {{ take(Box::new(P {{ v: 10 }}), if flag {{ 2 }} else {{ 3 }}) }}
+fn main() -> i64 {{ wrapping_add(pick(true), pick(false)) }}
+"
+    );
+    assert_eq!(execute(&src), "25");
+}

@@ -136,6 +136,23 @@ pub fn early_exit() -> u64 eff [Ffi[Res]] {
     wrapping_add(early(0), early(8))
 }
 
+// `let _ =` discards (and releases) a handle.
+pub fn wildcard() -> u64 eff [Ffi[Res]] {
+    let _ = open(11);
+    0
+}
+
+// A handle argument evaluated before a branching argument is the call's.
+fn take(sink p: Probe, n: u64) -> u64 eff [Ffi[Res]] {
+    wrapping_add(Res::res_close(p), n)
+}
+fn crossing(flag: bool) -> u64 eff [Ffi[Res]] {
+    take(open(12), if flag { 2 } else { 3 })
+}
+pub fn cross_block() -> u64 eff [Ffi[Res]] {
+    wrapping_add(crossing(true), crossing(false))
+}
+
 // A callee that takes the handle `sink` releases it.
 pub fn callee() -> u64 eff [Ffi[Res]] {
     eat(open(9))
@@ -196,6 +213,9 @@ fn expected() -> BTreeMap<&'static str, (u64, u64)> {
         ("fields", (3, 2)),
         ("early_exit", (7 + 108, 2)),
         ("callee", (1, 1)),
+        ("wildcard", (0, 1)),
+        // take closes both: 12 + 2 and 12 + 3.
+        ("cross_block", (29, 0)),
     ])
 }
 
@@ -530,6 +550,53 @@ fn a_live_handle_may_not_cross_an_abortable_effect() {
         &imports(("x86_64-unknown-linux-gnu", "sysv64"), ZERO),
     )
     .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+fn a_handle_consumed_inside_a_handled_body_that_may_abort_is_refused() {
+    // The body may abort before closing `p`; the handle expression would
+    // then leave `p` neither closed nor released.
+    let e = refused(
+        "copy struct Bad { n: u64 }\n\
+         fn risky(n: u64) -> u64 eff [Fail[Bad]] { if n > 3 { Fail::raise(Bad { n: n }) } else { n } }\n\
+         fn f(sink p: Probe) -> u64 eff [Ffi[Res]] {\n\
+             handle Fail[Bad] in { let n = risky(4); Res::res_close(p) } with { return v => v, raise(e, k) => 0, }\n\
+         }",
+    );
+    assert!(codes(&e).contains(&"E0402"), "{e}");
+}
+
+#[test]
+fn a_struct_whose_handle_was_closed_may_cross_an_abortable_effect() {
+    ffi_lowering::check_source(
+        "affine struct Holder { p: Probe, n: u64 }\n\
+         copy struct Bad { n: u64 }\n\
+         fn risky(n: u64) -> u64 eff [Fail[Bad]] { if n > 3 { Fail::raise(Bad { n: n }) } else { n } }\n\
+         fn f(sink h: Holder) -> u64 eff [Ffi[Res], Fail[Bad]] {\n\
+             let c = Res::res_close(h.p);\n\
+             wrapping_add(risky(c), h.n)\n\
+         }",
+        &imports(("x86_64-unknown-linux-gnu", "sysv64"), ZERO),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+fn handles_that_no_drop_point_can_release_are_refused() {
+    // `_` inside a destructuring pattern.
+    let e = refused(
+        "affine struct Holder { p: Probe, n: u64 }\n\
+         fn f(sink h: Holder) -> u64 eff [Ffi[Res]] { let Holder { p: _, n: n } = h; n }",
+    );
+    assert!(e.message.contains("bind it to a name"), "{e}");
+    // A handle moved into a closure.
+    let e = refused(
+        "fn f(sink p: Probe) -> u64 eff [Ffi[Res]] {\n\
+             let c = || eff [Ffi[Res]] { Res::res_close(p) };\n\
+             1\n\
+         }",
+    );
+    assert!(e.message.contains("into a closure"), "{e}");
 }
 
 #[test]

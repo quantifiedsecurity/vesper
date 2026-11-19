@@ -152,6 +152,11 @@ pub(super) fn insert(world: &World, program: &mut Program) -> Result<Vec<DropSit
         {
             continue;
         }
+        release_wildcards(world, f, &handles, &mut sites);
+        if let Err(e) = refuse_unplaced(world, f, &names) {
+            error.get_or_insert(e);
+            continue;
+        }
         let Some(plan) = crate::fip::handle_drop_plan(world, f, &names) else {
             error.get_or_insert_with(|| {
                 format!(
@@ -170,6 +175,161 @@ pub(super) fn insert(world: &World, program: &mut Program) -> Result<Vec<DropSit
         Some(e) => Err(e),
         None => Ok(sites),
     }
+}
+
+/// Whether a value of `ty` holds a handle of `names`.
+fn holds(world: &World, ty: &Type, names: &BTreeSet<String>, seen: &mut BTreeSet<String>) -> bool {
+    match ty {
+        Type::Named(n, args) => {
+            if names.contains(n) || args.iter().any(|a| holds(world, a, names, seen)) {
+                return true;
+            }
+            if !seen.insert(n.clone()) {
+                return false;
+            }
+            let found = world.adts.get(n).is_some_and(|a| {
+                let vars: BTreeMap<String, Type> = a
+                    .generics
+                    .iter()
+                    .zip(args)
+                    .map(|(g, t)| (g.name.clone(), t.clone()))
+                    .collect();
+                a.variants
+                    .iter()
+                    .flat_map(|v| &v.fields)
+                    .any(|f| holds(world, &substitute(&f.ty, &vars), names, seen))
+            });
+            seen.remove(n);
+            found
+        }
+        Type::Tuple(ts) => ts.iter().any(|t| holds(world, t, names, seen)),
+        _ => false,
+    }
+}
+
+/// `let _ = v` discards a handle (or an `Option` of one): the bind becomes
+/// the release call, which consumes `v` as the bind did.
+fn release_wildcards(
+    world: &World,
+    f: &mut FunctionIr,
+    names: &BTreeMap<String, String>,
+    sites: &mut Vec<DropSite>,
+) {
+    for b in &mut f.blocks {
+        for inst in &mut b.instructions {
+            let Op::Bind { pattern, value } = &inst.op else {
+                continue;
+            };
+            if !matches!(pattern.kind, PatternKind::Wild) {
+                continue;
+            }
+            let Some(ty) = f.values.get(value) else {
+                continue;
+            };
+            let handle = match ty {
+                Type::Named(n, a) if a.is_empty() && names.contains_key(n) => n.clone(),
+                Type::Named(o, a) if o == "Option" => match &a[..] {
+                    [Type::Named(n, x)] if x.is_empty() && names.contains_key(n) => n.clone(),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let Some(callee) = drop_function(ty) else {
+                continue;
+            };
+            let Some(target) = world.functions.get(&callee) else {
+                continue;
+            };
+            let value = *value;
+            inst.op = Op::Call {
+                callee,
+                args: vec![Argument {
+                    pass: Pass::Sink,
+                    value,
+                    place: None,
+                }],
+                types: vec![],
+                capability: None,
+            };
+            inst.ty = target.result.clone();
+            f.values.insert(inst.dest, target.result.clone());
+            sites.push(DropSite {
+                graph: f.name.clone(),
+                effect: names[&handle].clone(),
+                handle,
+            });
+        }
+    }
+}
+
+/// Drops the elaboration cannot place: a handle discarded by a `_` inside
+/// a destructuring pattern, and a handle moved into a closure (dropping an
+/// unused closure does not release what it captured).
+fn refuse_unplaced(world: &World, f: &FunctionIr, names: &BTreeSet<String>) -> Result<(), String> {
+    fn wild_handle(world: &World, p: &Pattern, ty: &Type, names: &BTreeSet<String>) -> bool {
+        match (&p.kind, ty) {
+            (PatternKind::Wild, _) => holds(world, ty, names, &mut BTreeSet::new()),
+            (PatternKind::Tuple(ps), Type::Tuple(ts)) => ps
+                .iter()
+                .zip(ts)
+                .any(|(p, t)| wild_handle(world, p, t, names)),
+            (PatternKind::Constructor { name, fields, .. }, Type::Named(_, args)) => {
+                let Some((a, v)) = world.constructor(name) else {
+                    return false;
+                };
+                let vars: BTreeMap<String, Type> = a
+                    .generics
+                    .iter()
+                    .zip(args)
+                    .map(|(g, t)| (g.name.clone(), t.clone()))
+                    .collect();
+                fields.iter().any(|(fname, sub)| {
+                    v.fields
+                        .iter()
+                        .find(|f| &f.name == fname)
+                        .is_some_and(|f| wild_handle(world, sub, &substitute(&f.ty, &vars), names))
+                })
+            }
+            _ => false,
+        }
+    }
+    for inst in f.blocks.iter().flat_map(|b| &b.instructions) {
+        match &inst.op {
+            Op::Bind { pattern, value } => {
+                if let Some(ty) = f.values.get(value)
+                    && wild_handle(world, pattern, ty, names)
+                {
+                    return Err(format!(
+                        "'{}' discards a handle with a drop import with `_` inside a pattern; bind it to a name so it is released",
+                        f.name
+                    ));
+                }
+            }
+            Op::Closure { moves, .. } => {
+                for m in moves {
+                    let ty = f
+                        .locals
+                        .get(&m.root)
+                        .or_else(|| f.params.iter().find(|p| p.name == m.root).map(|p| &p.ty))
+                        .and_then(|t| {
+                            if m.path.is_empty() {
+                                Some(t.clone())
+                            } else {
+                                world.field(t, &m.path)
+                            }
+                        });
+                    if ty.is_some_and(|t| holds(world, &t, names, &mut BTreeSet::new())) {
+                        return Err(format!(
+                            "'{}' moves a handle with a drop import into a closure; a dropped closure does not release it, so pass the handle to the closure's call instead",
+                            f.name
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn apply(
