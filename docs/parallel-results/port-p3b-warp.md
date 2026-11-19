@@ -1,30 +1,45 @@
 # Port P3b lane 4: Warp's QUIC core in Vesper
 
-Claim: #1066 (it lands in several PRs, and the last one closes it). Part
-1a (PR #1079) ported the wire modules, part 1b (PR #1108) loss recovery,
-and part 1c the stream byte buffers. Lane prompt:
+Claim: #1066. It landed in several PRs, and part 2b, the last, closes it.
+Part 1a (PR #1079) ported the wire modules, part 1b (PR #1108) loss
+recovery, part 1c (PR #1116) the stream byte buffers, part 2a (PR #1121)
+the keyed tokens of `lifecycle.rs`, and part 2b the endpoint's 1-RTT packet
+assembly. Lane prompt:
 `docs/agent-prompts/port-p3b/04-warp.md` (plan PR #1072).
 
 ## Summary
 
-- `@vesper/warp` (`crates/vesper-warp/vesper/`, 6 modules, about 2,900
-  lines) ports Warp's wire layer: `varint`, `packet_number`, `header`,
-  `frame` and the receive side of `ack` (`ReceivedPackets`).
+- `@vesper/warp` (`crates/vesper-warp/vesper/`, 9 modules, about 5,000
+  lines) ports Warp's wire layer (`varint`, `packet_number`, `header`,
+  `frame` and the receive side of `ack`), loss recovery, the stream byte
+  buffers, the address-validation and reset tokens, and the endpoint's
+  1-RTT packet assembly.
 - The port is the non-default `vesper-port` feature of `vesper-warp`
   itself, following vesper-warp-tcp. The crate is not compiler-linked, so it
   needs no seed copy. Without the feature, the crate builds exactly the Rust
   code it had before. That code now lives in `src/reference/` and is frozen.
   With the feature, `src/ported/` forwards each function to the Vesper
   object. No Rust code is deleted.
-- All 21 test targets pass on both builds. That includes quinn interop, the
+- All 22 test targets pass on both builds. That includes quinn interop, the
   endpoint, handshake, lifecycle and stream suites (which run through the
   ported wire layer), and the zero-alloc tests.
 - Speed against Rust (ABBA wall clock, callgrind instructions per batch):
-  frames 2.35x / 2.29x, ack 1.86x / 2.03x, and a whole-connection echo
-  transfer 1.15x / 1.11x. The port is not at parity, so Rust stays the
+  frames 2.35x / 2.29x, ack 1.86x / 2.03x, recovery 5.39x / 4.16x,
+  buffers 1.51x / 1.74x, tokens about 1.08x, and a whole-connection echo
+  transfer 1.22x / 1.17x. The port is not at parity, so Rust stays the
   default.
-- Part 2 adds recovery and cc, reusing the warp-wheel and BBR ports, and
-  then stream. The endpoint waits on opaque handles (lane 3, #1065).
+- Part 2a brought the first `.vsys` imports: AES-256-GCM, HMAC and the
+  CSPRNG stay Rust behind them. `cc` stays Rust (see below).
+- **Endpoint scope (the owner's decision, 2026-11-19).** The owner chose
+  "packet core, driver stays Rust": port the per-packet code and keep the
+  endpoint's driver in Rust. The driver covers the UMEM frames, the
+  connection and slot tables, the application callbacks (`Responder`,
+  `TxTap`), TLS driving, `StreamSet`, `Cids`, `Path` and the handshake
+  state. The export ABI cannot carry those callbacks or handles today.
+  Part 2b ports the 1-RTT packet assembly. Frame dispatch already parses
+  each frame in Vesper. A batched scan, with one call per packet instead of
+  one per frame, measured slower (gap 10), so it was not kept. The
+  dispatch `match` calls Rust state on every arm, so it stays in Rust.
 
 ## API inventory
 
@@ -38,7 +53,9 @@ and part 1c the stream byte buffers. Lane prompt:
 | `recovery` | `ack_delay_ns`, `RttEstimator::new`/`update`/`pto_base_ns`/`loss_delay_ns`, `LossRecovery::new`, `on_packet_sent`, `on_ack_received`, `on_timeout`, `pto_time_and_space`, `persistent_congestion_duration_ns`, `set_max_ack_delay_ns`, `set_handshake_status`, `reset_space`, `discard_space`, and the timer it arms | The buffers (three `RecSpace`s, the sent-packet rings and one call's events), lent in place; replaying the events to the caller's sink; the getters |
 | `cc` | Nothing yet (see below) | The BBR adapters |
 | `stream` | `SendBuf` (`write`, `next_lost`, `take_new`, `copy_out`, `on_ack`, `on_lost`, `discard`, `reset_for_reuse`, `free_space`), `RecvBuf` (`insert`, `read`, `reset_for_reuse`), and the ring bitmaps and ring copies under them | The rings and bitmaps (owned by the wrapper, lent in place); the offset getters; the stream state machines, `CryptoStream`, `StreamSet` (packet building, flow control, the sent-frame record), which call the ported buffers |
-| endpoint, handshake, lifecycle, TLS glue | Not yet (part 2) | Everything |
+| `lifecycle` | `TokenKey::seal`/`open` (the Retry and NEW_TOKEN token layout and every check: length, kind, lifetime, address, ODCID length), `ResetKey::token`, the constant-time reset-token comparison (`token_eq`) | AES-256-GCM, HMAC-SHA-256 and the CSPRNG behind the `.vsys` library `WarpKeys` (`src/ported/lifecycle.rs`, module `keys`); the address encoding (`std::net` types); `LifecycleConfig`, `Cids`, `Path`, `PathProbe` and the preferred-address helpers, which move with the endpoint |
+| endpoint (part 2b) | `write_plaintext`: the 1-RTT packet's plain text (the ACK frame from the received-packet state, the application's frames, the packet-number length with its 4-byte sample rule, the short header and the shift into place, and the size checks), in `vesper/src/packet.ves` | The driver, by the owner's decision: UMEM frames, the connection and slot tables, application callbacks, sealing and opening (`vesper-warp-crypto`), TLS, `StreamSet`, `Cids`, `Path`, the handshake state (`Hs`, `LongSpace`, `Amplification`), pacing, timers and the frame-dispatch `match` |
+| handshake, TLS glue | Nothing (the driver) | Everything |
 
 Borrowed slices cross the ABI as spans `(start, len)` into the caller's
 buffer, and the Rust side converts them back into slices. That keeps
@@ -62,7 +79,31 @@ const context.
   has no `unsafe` code. The crate keeps `forbid(unsafe_code)` on the Rust
   build. The port build uses `deny(unsafe_code)`, with one `allow` on the
   generated binding module, so the hand-written forwarding layer has no
-  `unsafe` code either.
+  `unsafe` code either, with one exception from part 2a: the `WarpKeys`
+  shim (`src/ported/lifecycle.rs`, module `keys`). Its four
+  `#[unsafe(no_mangle)] extern "C"` functions receive each `nocapture`
+  `CSlice[u8]` as a pointer and a length, and two `unsafe` blocks turn
+  those into slices for the call. Each has an `allow(unsafe_code)` and a
+  SAFETY note. The Vesper package itself still has no `unsafe` code.
+- Packet assembly (part 2b). `WarpEndpoint::write_plaintext` calls
+  `crate::imp::packet::short_plaintext` on both builds. The Rust version is
+  the old body, moved unchanged. The Vesper version takes the
+  received-packet state and ranges in place, builds the ACK frame as a
+  `FrameW` inside Vesper (no conversion at the boundary), and maps each
+  module error back to the `WarpError` the Rust build returns. One change
+  is shared by both builds: the endpoint now reads the send key phase
+  before assembling the packet, so a connection without 1-RTT keys reports
+  `KeysUnavailable` before a packet-size error. Both builds run the same
+  endpoint code, so they still agree.
+- `.vsys` imports (part 2a). A `.vsys` library is visible only in the root
+  module, so the token code is in `lib.ves`. Export ABI v3 refuses handles
+  in exported signatures, and the token key lives in the Rust wrapper
+  between calls. So the shim does not use a handle: the wrapper lends its
+  `Arc<Aes256Gcm>` to the one synchronous call through a per-thread slot
+  (vesper-tensor's `WeightFile` pattern). The Vesper code writes the
+  layout and the random nonce (an import), and the shim seals or opens the
+  token in place. `TokenKey::open` opens a copy, so the caller's bytes stay
+  as received.
 - Export ABI v3 (`// @export abi 3` in `lib.ves`). `FrameW` is a
   20-variant word enum that converts as `Words<FrameW, 12>`. `RxState` is a
   copy struct lent `inout`.
@@ -101,9 +142,12 @@ const context.
 ## Unit tests
 
 - The integration suites (`tests/*.rs`) run unchanged on both builds.
-- The unit tests in `src/varint.rs`, `src/packet_number.rs` and
-  `src/stream.rs` (the send and receive buffer tests) exercise only the
-  public API, so they also run on both builds.
+- The unit tests in `src/varint.rs`, `src/packet_number.rs`,
+  `src/stream.rs` (the send and receive buffer tests) and
+  `src/lifecycle.rs` exercise only the crate's API, so they also run on
+  both builds. `src/lifecycle.rs` gained two in part 2a: token round
+  trips and every refusal (expired, wrong address, wrong key, a flipped tag
+  bit, a truncated token, an empty one), and reset tokens.
 - The unit tests in `src/reference/` cover reference internals and run only
   on the Rust build. One example is `bits_find_and_wrap`, a test of the
   reference bitmap type.
@@ -126,6 +170,8 @@ Bazel build has one divergent object per module.
 | ack | delayed-ACK threshold `>= 2` to `>= 3` | `ack_tracking::delayed_ack_policy` | `ack_tracking::merges_ranges_and_detects_duplicates` |
 | recovery | packet threshold 3 to 4 | `recovery::packet_threshold_then_time_threshold` | `recovery::rtt_estimator_and_ack_delay_rules` |
 | stream | an in-order insert no longer advances the readable prefix (`start <= contig` to `<`) | `stream::tests::recv_buf_reassembles_with_wrap` | `stream::tests::send_buf_retransmits_only_unacked_lost_bytes` |
+| lifecycle (in `lib.ves`) | a Retry token's ODCID is read one byte early (`token[41..]` to `token[40..]`) | `lifecycle::tests::tokens_round_trip_and_refuse_what_they_must` | `lifecycle::tests::reset_tokens_are_keyed_and_compared_whole` |
+| packet | 1-RTT packets always carry key phase 0 (`let phase = key_phase;` to `false`) | `review_fixes::explicit_key_update_is_accepted_by_the_peer` | `review_fixes::a_full_launch_queue_backpressures_instead_of_sending_early` |
 
 ## Speed against Rust
 
@@ -140,14 +186,33 @@ startup. The frames digests match Rust (`0ec977800e561b4d` for 3 batches).
 | ack | 8,192 received packets with gaps, ACK frames built and encoded | 41 ns/packet | 76 ns/packet | 1.86x (1.84-1.88) | 5.54M | 11.23M | 2.03x |
 | recovery | 4,096 sends with an ACK every eighth and a loss every fortieth, loss timer polled per send | 59 ns/packet | 222 ns/packet | 5.39x (4.92-5.48) | 1.78M | 7.41M | 4.16x |
 | buffers | 1,024 chunks of 1,200 bytes through a 64 KiB send ring (every seventh lost and retransmitted) and a 64 KiB receive ring (neighbours swapped) | 1,249 ns/chunk | 1,908 ns/chunk | 1.51x (1.50-1.55) | 7.03M | 12.22M | 1.74x |
-| transfer | 16 echo rounds on a loopback connection pair (endpoint, TLS and crypto stay Rust) | 22.7 µs/round | 26.0 µs/round | 1.15x (1.12-1.17) | 3.13M | 3.78M | 1.21x |
+| transfer | 16 echo rounds on a loopback connection pair (the endpoint's driver, TLS and crypto stay Rust) | 30.1 µs/round | 37.2 µs/round | 1.22x (1.19-1.24) | 3.19M | 3.71M | 1.17x |
 
-The transfer instruction count is from part 1c, with recovery and the
-stream buffers ported too. Part 1a measured 3.46M (1.11x) and part 1b
-3.60M (1.15x). Its wall-clock numbers are from part 1a.
+The transfer row is from part 2b, with everything above ported, on a
+busier machine than part 1a's 22.7 µs/round. Its instruction count by
+part: 1a 3.46M (1.11x), 1b 3.60M (1.15x), 1c 3.78M (1.21x, Rust 3.13M), 2b
+3.71M (1.17x, Rust 3.19M on the current main). Porting `write_plaintext`
+replaced four boundary crossings per packet with one, so it saved 2%.
 Wall-clock runs for part 1b were noisy, because other jobs shared the
 machine: recovery measured 3.60x and 6.60x in two later runs. The
 callgrind ratio is the reliable figure.
+
+Tokens (part 2a) are measured by the ignored unit test
+`lifecycle::tests::measure_tokens` (`cargo test --release --lib --
+--ignored --nocapture measure_tokens`, with and without `vesper-port`).
+Each iteration seals and opens one Retry token, then derives and compares
+one reset token, 100,000 times, best of 7. Two runs each:
+
+| Operation | Rust | Vesper | Wall ratio |
+|---|---|---|---|
+| Retry token seal + open | 863-890 ns | 951-960 ns | 1.08-1.10x |
+| reset token + comparison | 270-279 ns | 262-270 ns | 0.97x |
+
+Callgrind over the whole test (both loops, 7 rounds): 14.29G instructions
+for Rust and 15.38G for Vesper (1.08x), about 20,400 and 22,000 per
+iteration. AES-GCM and HMAC dominate and are the same Rust code in both
+builds. The port adds the copy of the token, the slot and the byte-wise
+layout code.
 
 Profile of the frames workload, with functions named: `fr_encode` 17.8%,
 `fr_parse_at` 13.9%, `w_vi` 9%, `parse_ack` 8.3%, `vi_put` 4.2% and
@@ -228,6 +293,22 @@ struct temporaries through the stack. Gaps 4 and 5 below cover this.
 8. **`state` cannot be a field name.** It is a keyword. `vesper check`
    says "expected a lower-case identifier", but `vesper fmt` reports only
    `Syntax { offset: N }`. The record field is `status`.
+9. **`vesper check` does not read `// @export vsys` directives.** Only
+   `vesper build --lib` does, so `vesper check` on the package reports
+   `unknown effect 'Ffi'` and `unknown name 'WarpKeys::...'` for code that
+   builds. Also, an import named like an export symbol
+   (`vesper_warp_token_open` against the exported `token_open`) is a codegen
+   error. It is a clear one, but `vesper check` misses it too. The imports
+   are named `vesper_warp_keys_*`.
+10. **A batch of word-enum records costs more than one call per frame.**
+    Part 2b tried `frame_scan`, which parses a packet's frames into an
+    `inout Slice[FrameAt]` (13 words per frame) in one call. Transfer went
+    from 3.71M to 3.77M instructions with batches of 16, and to 3.85M with
+    batches of 4. Initializing and converting the `Words<FrameW, 12>`
+    records costs more than the crossings it saves, because most packets
+    carry one or two frames. Gap 2 (word enums convert at every crossing)
+    is the real cost. A borrowed view of the record, read field by field
+    in place, would remove it.
 
 ## Platforms
 
@@ -239,9 +320,10 @@ first run.
 
 ## Files
 
-- `crates/vesper-warp/vesper/`: `Loom.toml`, `src/{lib,varint,pn,header,frame,ack,recovery,stream}.ves`
+- `crates/vesper-warp/vesper/`: `Loom.toml`, `src/{lib,varint,pn,header,frame,ack,recovery,stream,packet}.ves`
 - `crates/vesper-warp/src/reference/`: the frozen Rust implementations
-- `crates/vesper-warp/src/ported/`: the forwarding layer
+- `crates/vesper-warp/src/ported/`: the forwarding layer and the `WarpKeys`
+  shim
 - `crates/vesper-warp/port/`: `binding.rs` (generated), `check.sh`, `bench.sh`
 - `crates/vesper-warp/build.rs`, `examples/abba.rs`, `BUILD.bazel`, `Cargo.toml`
 - One line each: `scripts/test-port-harness.sh`, `tests/fixtures/self_host/driver.rs`

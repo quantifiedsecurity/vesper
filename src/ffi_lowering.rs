@@ -87,6 +87,7 @@ use vesper_ffi::sys::{
     ValueType,
 };
 
+pub mod drops;
 #[path = "ffi_lowering/types.rs"]
 mod types;
 use types::ParamKind;
@@ -576,6 +577,16 @@ impl ForeignChecked {
         entry: &str,
         symbols: &[(&str, *const u8)],
     ) -> Result<crate::runtime::Value, FfiError> {
+        self.jit_with_options(entry, symbols, true)
+    }
+    /// [`Self::jit`] with the native `optimize` pipeline on or off, so
+    /// differential tests can run both (#1125).
+    pub fn jit_with_options(
+        &self,
+        entry: &str,
+        symbols: &[(&str, *const u8)],
+        optimize: bool,
+    ) -> Result<crate::runtime::Value, FfiError> {
         for call in &self.calls {
             if self.plan.libraries[&effect_name(&call.library)].handler != Handler::Direct {
                 return Err(FfiError::new(
@@ -605,7 +616,9 @@ impl ForeignChecked {
                 .collect()
         });
         let _guard = JitGuard;
-        self.with_lowering(None, |world| crate::native::jit(world, entry))
+        self.with_lowering(None, |world| {
+            crate::native::jit_with_options(world, entry, optimize)
+        })
     }
     /// Run the argument-free `entry` in the evaluator (`vesper run`'s
     /// machine), with `host` standing in for every foreign call: it gets the
@@ -765,6 +778,16 @@ pub fn check_source(source: &str, imports: &Imports) -> Result<ForeignChecked, F
 pub fn check_module(module: &Module, imports: &Imports) -> Result<ForeignChecked, FfiError> {
     let generated = types::Generated::new(imports)?;
     generated.check_collisions(module)?;
+    // The release functions of affine handles with drop imports, called
+    // like source code so both passes record their foreign calls.
+    let mut module = module.clone();
+    let mut base = drops::span_base(&module);
+    for (name, import) in &imports.libraries {
+        let (items, next) = drops::generated(name, &import.descriptor, base);
+        module.items.extend(items);
+        base = next;
+    }
+    let module = &module;
     // Pass 1: slice parameters open, to read each slice argument's tuple.
     let mut first = module.clone();
     let mut rewriter = Rewriter::new(imports, &generated, None);
@@ -810,6 +833,7 @@ pub fn check_module(module: &Module, imports: &Imports) -> Result<ForeignChecked
             .collect();
         return Err(e);
     }
+    drops::check_rows(&checked.world)?;
     let mut plan = Plan::default();
     for (name, import) in &imports.libraries {
         plan.libraries.insert(
