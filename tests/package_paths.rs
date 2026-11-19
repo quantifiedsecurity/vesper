@@ -426,3 +426,63 @@ fn a_reserved_keyword_as_a_name_is_named_in_the_diagnostic() {
         parsed.diagnostics
     );
 }
+
+/// Paths in effect rows and generic arguments, contextual names as path
+/// segments and import names, and a root item exported under an alias.
+#[test]
+fn paths_in_rows_and_type_arguments_and_contextual_item_names() {
+    let dir = package(
+        "rows",
+        &[
+            ("Loom.toml", &manifest("@demo/rows", "")),
+            (
+                "src/lib.ves",
+                "use self::m::{state as st};
+fn internal() -> u64 { 5 }
+pub use self::internal as api;
+fn tick(n: i64) -> i64 eff [c: self::m::Counter] { wrapping_add(c.next(), n) }
+pub fn main() -> u64 {
+    let k = handle c: self::m::Counter state counter = 0 in {
+        tick(1)
+    } with {
+        return (value, counter) => wrapping_add(value, counter),
+        next(counter, resume) => resume(counter, wrapping_add(counter, 1)),
+    };
+    let v = self::m::sub::wrap();
+    wrapping_add(wrapping_add(self::m::state(), st()), wrapping_add(api(), v.len()))
+}
+",
+            ),
+            (
+                "src/m.ves",
+                "pub linear effect Counter {
+    fn next() -> i64;
+}
+pub copy struct T { x: u64 }
+pub fn state() -> u64 { 10 }
+",
+            ),
+            (
+                "src/m/sub.ves",
+                "pub fn wrap() -> ChunkSeq[super::T] {
+    let mut s = ChunkSeq::new[super::T]();
+    s.push(super::T { x: 1 });
+    s
+}
+",
+            ),
+        ],
+    );
+    agree(&dir, 10 + 10 + 5 + 1);
+    // `pub use self::internal as api;` exports `api`, not `internal`.
+    let assembled = packages::load(&dir).unwrap();
+    assert!(assembled.module.public_items.iter().any(|n| n == "api"));
+    assert!(
+        !assembled
+            .module
+            .public_items
+            .iter()
+            .any(|n| n == "internal")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -588,7 +588,12 @@ impl Parser<'_> {
         } else {
             self.bump()
         };
-        while self.at(K::ColonColon) && matches!(self.nth(1), K::Lower | K::Upper) {
+        while self.at(K::ColonColon)
+            && matches!(
+                self.nth(1),
+                K::Lower | K::Upper | K::State | K::Linear | K::With
+            )
+        {
             self.bump();
             path.push_str("::");
             path.push_str(&self.bump());
@@ -1383,7 +1388,7 @@ impl Parser<'_> {
                 }
                 break;
             }
-            if self.at(K::Lower) && self.nth(1) == K::ColonColon {
+            if (self.at(K::Lower) || self.at_contextual_name()) && self.nth(1) == K::ColonColon {
                 path.push(self.bump());
                 continue;
             }
@@ -1402,7 +1407,7 @@ impl Parser<'_> {
     }
     fn use_name(&mut self) -> UseName {
         let start = self.start();
-        let name = if matches!(self.kind(), K::Lower | K::Upper) {
+        let name = if matches!(self.kind(), K::Lower | K::Upper) || self.at_contextual_name() {
             self.bump()
         } else {
             self.error("expected an imported item name");
@@ -1410,7 +1415,7 @@ impl Parser<'_> {
         };
         let alias = if self.at_word(0, "as") {
             self.bump();
-            if matches!(self.kind(), K::Lower | K::Upper) {
+            if matches!(self.kind(), K::Lower | K::Upper) || self.at_contextual_name() {
                 Some(self.bump())
             } else {
                 self.error("expected a name after `as`");
@@ -1655,6 +1660,7 @@ impl Parser<'_> {
             while !self.at(K::RBracket) && !self.at(K::Eof) {
                 if self.at(K::Lower)
                     && !self.primitive()
+                    && !self.at_path_root()
                     && !(self.at_word(0, DYN_TYPE) && self.nth(1) == K::Upper)
                 {
                     let label = self.bump();
@@ -1731,18 +1737,23 @@ impl Parser<'_> {
                 out.tail = Some(self.lower());
                 break;
             }
-            if self.at(K::Lower) && self.nth(1) != K::Colon {
+            if self.at(K::Lower) && self.nth(1) != K::Colon && !self.at_path_root() {
                 out.tail = Some(self.lower());
                 break;
             }
-            let label = if self.at(K::Lower) {
+            let label = if self.at(K::Lower) && !self.at_path_root() {
                 let l = self.lower();
                 self.expect(K::Colon);
                 Some(l)
             } else {
                 None
             };
-            let name = self.upper();
+            // `eff [self::m::E]`: a qualified effect name (ch 11.3).
+            let name = if self.at_path_root() {
+                self.qualified_path()
+            } else {
+                self.upper()
+            };
             let args = self.type_args();
             out.instances.push(Effect { label, name, args });
             if !self.eat(K::Comma) && !self.at(K::Pipe) {
@@ -2134,7 +2145,11 @@ impl Parser<'_> {
         } else {
             None
         };
-        let name = self.upper();
+        let name = if self.at_path_root() {
+            self.qualified_path()
+        } else {
+            self.upper()
+        };
         let args = self.type_args();
         let state = if self.eat(K::State) {
             let p = self.pattern();
@@ -2374,10 +2389,15 @@ impl Parser<'_> {
                         || scoped_row
                         || self.nth(1) == K::Upper
                         || self.nth(1) == K::LBracket
+                        // `f[self::m::T](x)`, `f[@scope/name::T](x)`: a
+                        // qualified type argument (ch 11.3).
+                        || self.nth(1) == K::At
+                        || (matches!(self.nth(1), K::SelfKw) && self.nth(2) == K::ColonColon)
                         || {
                             let i = self.index(1);
                             let text = &self.source[self.tokens[i].span.clone()];
                             text == "fn"
+                                || (text == "super" && self.nth(2) == K::ColonColon)
                                 // `Box::new[dyn Trait](x)` (§7.3)
                                 || (text == DYN_TYPE && self.nth(2) == K::Upper)
                                 || (vesper_core::numeric::is_scalar_name(text)

@@ -1052,7 +1052,10 @@ impl<'a> Resolver<'a> {
             .unwrap_or(0);
         let mut renamed: BTreeMap<ItemKey, String> = BTreeMap::new();
         for (local, (item, _)) in reexported {
-            if item.0 == self.root && item.1.is_empty() {
+            // `pub use self::f;` in the root module re-exports a root item
+            // under its own name: nothing to rename. `pub use self::f as g;`
+            // renames the root item `f` to `g` like any other re-export.
+            if item.0 == self.root && item.1.is_empty() && item.2 == *local {
                 continue;
             }
             if let Some(first) = renamed.get(item) {
