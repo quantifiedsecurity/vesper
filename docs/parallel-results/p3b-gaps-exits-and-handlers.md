@@ -134,8 +134,9 @@ instruction count to compare.
   sites on the bit builtins; patch kept out of the tree):
   `cargo test --locked -p vesper-prism-h3 --features vesper-port` passes
   every test binary (16 of 16, 0 failures), the RFC 9204 / QIFS / golden
-  encoder tests included, so the output is identical. Before part 1 the
-  same rewrite failed to build with E0410.
+  encoder tests included, so the output is identical. (The port's
+  `int.ves` comment records that the builtins failed E0410 there before
+  part 1; that run is the port lane's, not repeated here.)
 
 ## Stage 1 guard
 
