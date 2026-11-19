@@ -1683,6 +1683,7 @@ impl Renamer<'_> {
                     self.expr(v);
                 }
             }
+            ExprKind::Continue => {}
         }
         self.span(&mut e.span);
     }
