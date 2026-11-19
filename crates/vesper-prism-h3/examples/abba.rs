@@ -1,6 +1,10 @@
 //! ABBA benchmark of the Rust and Vesper builds of vesper-prism-h3 (port
-//! wave P3b lane 5, #1067): QPACK decoding of the committed QIFs corpus and
-//! QPACK encoding of its field lists.
+//! wave P3b lane 5, #1067): QPACK decoding of the committed QIFs corpus,
+//! QPACK encoding of its field lists, and frame parsing (`frames`): request
+//! streams of HEADERS and DATA frames, a control stream of SETTINGS and
+//! PRIORITY_UPDATE frames, and capsules, read in packet-sized pushes; and
+//! message validation (`messages`) of the netbsd QIF's field lists as requests
+//! or responses.
 //!
 //! The two builds are one crate compiled with and without `vesper-port`, so
 //! they cannot share a process. Each arm is a worker process (this example
@@ -13,15 +17,19 @@
 //!
 //! ```text
 //! crates/vesper-prism-h3/scripts/bench.sh       # builds both, runs every workload
-//! abba worker <decode|encode>                   # one arm
-//! abba drive <decode|encode> <rust-worker> <vesper-worker>
-//! abba once <decode|encode> <batches>
+//! abba worker <decode|encode|frames|messages>                # one arm
+//! abba drive <decode|encode|frames|messages> <rust-worker> <vesper-worker>
+//! abba once <decode|encode|frames|messages> <batches>
 //! ```
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use vesper_bench::{BenchCase, Invocation, RunConfig, analyze_pairs, run_abba};
+use vesper_prism_h3::capsule::{self, Capsule, CapsuleReader};
+use vesper_prism_h3::frame::{self, Frame, FrameReader, Settings};
+use vesper_prism_h3::message;
+use vesper_prism_h3::priority::{Priority, PriorityUpdate};
 use vesper_prism_h3::qpack::{Decoded, Decoder, DecoderConfig, Encoder, EncoderConfig, Field};
 
 fn fnv(mut h: u64, bytes: &[u8]) -> u64 {
@@ -176,16 +184,172 @@ fn encode_batch(blocks: &[Vec<Field>]) -> u64 {
     digest
 }
 
+/// The frame workload's streams (built once): 64 request streams, each
+/// HEADERS (a section of the corpus) then DATA frames of 1 to 16 KiB; a
+/// control stream; and a capsule stream.
+struct Streams {
+    requests: Vec<Vec<u8>>,
+    control: Vec<u8>,
+    capsules: Vec<u8>,
+}
+
+fn streams(corpus: &[Encoded]) -> Streams {
+    let sections: Vec<&[u8]> = corpus
+        .iter()
+        .flat_map(|f| f.records.iter().filter(|(s, _)| *s != 0))
+        .map(|(_, b)| b.as_slice())
+        .collect();
+    let mut requests = Vec::new();
+    for i in 0..64usize {
+        let mut w = Vec::new();
+        frame::write_frame(&mut w, frame::HEADERS, sections[i * 7 % sections.len()]);
+        for k in 0..4 {
+            let len = 1024 * (1 + (i * 5 + k * 3) % 16);
+            frame::write_frame(&mut w, frame::DATA, &vec![(i + k) as u8; len]);
+        }
+        frame::write_frame(&mut w, 0x21 + 0x1f * (i as u64 % 5), b"grease");
+        requests.push(w);
+    }
+    let mut control = Vec::new();
+    Settings {
+        qpack_max_table_capacity: 4096,
+        qpack_blocked_streams: 100,
+        max_field_section_size: Some(65536),
+        enable_connect_protocol: true,
+        h3_datagram: true,
+        webtransport_max_sessions: Some(8),
+        no_rfc7540_priorities: true,
+    }
+    .encode(&mut control);
+    for i in 0..256u64 {
+        PriorityUpdate {
+            push: false,
+            element_id: 4 * i,
+            priority: Priority::new((i % 8) as u8, i % 3 == 0),
+        }
+        .encode(&mut control);
+    }
+    frame::write_varint_frame(&mut control, frame::GOAWAY, 1 << 20);
+    let mut capsules = Vec::new();
+    for i in 0..512usize {
+        capsule::write_capsule(
+            &mut capsules,
+            capsule::DATAGRAM,
+            &vec![i as u8; 32 + i % 1000],
+        );
+        if i % 16 == 0 {
+            capsule::write_capsule(&mut capsules, 0x17, &[0; 100]);
+        }
+    }
+    capsule::write_close_session(&mut capsules, 0x1234, b"done");
+    Streams {
+        requests,
+        control,
+        capsules,
+    }
+}
+
+/// Bytes arrive in packet-sized pieces.
+const PACKET: usize = 1200;
+
+fn frames_batch(s: &Streams) -> u64 {
+    let mut digest = 0xcbf2_9ce4_8422_2325;
+    let frame_digest = |digest: &mut u64, f: Frame| {
+        *digest = fnv(*digest, &f.frame_type().to_be_bytes());
+        match f {
+            Frame::Data(d) | Frame::Headers(d) => *digest = fnv(*digest, &d),
+            Frame::PriorityUpdate(u) => {
+                let p = u.priority;
+                *digest = fnv(*digest, &[p.urgency, u8::from(p.incremental)]);
+                // The scheduler's view of the update.
+                *digest = fnv(
+                    *digest,
+                    Priority::parse(p.serialize().as_bytes())
+                        .serialize()
+                        .as_bytes(),
+                );
+            }
+            Frame::Settings(st) => {
+                *digest = fnv(*digest, &st.qpack_max_table_capacity.to_be_bytes())
+            }
+            _ => {}
+        }
+    };
+    for w in s.requests.iter().chain([&s.control]) {
+        let mut r = FrameReader::new(1 << 16);
+        for chunk in w.chunks(PACKET) {
+            r.push(chunk);
+            while let Some(f) = r.next_frame().unwrap() {
+                frame_digest(&mut digest, f);
+            }
+        }
+        r.finish().unwrap();
+    }
+    let mut r = CapsuleReader::new(1 << 16);
+    for chunk in s.capsules.chunks(PACKET) {
+        r.push(chunk);
+        while let Some(c) = r.next_capsule().unwrap() {
+            match c {
+                Capsule::Datagram(d) => digest = fnv(digest, &d),
+                Capsule::CloseSession { code, reason } => {
+                    digest = fnv(digest, &code.to_be_bytes());
+                    digest = fnv(digest, &reason);
+                }
+                Capsule::DrainSession => digest = fnv(digest, b"drain"),
+                Capsule::Unknown(t) => digest = fnv(digest, &t.to_be_bytes()),
+            }
+        }
+    }
+    r.finish().unwrap();
+    digest
+}
+
+/// Validates every field list of the QIFs corpus (requests, and responses
+/// when it starts with `:status`), 64 rounds.
+fn messages_batch(lists: &[Vec<Field>]) -> u64 {
+    let mut digest = 0xcbf2_9ce4_8422_2325;
+    for _ in 0..64 {
+        for list in lists {
+            if list.first().is_some_and(|f| f.name == b":status") {
+                match message::parse_response(list.clone()) {
+                    Ok(r) => digest = fnv(digest, &r.status.to_be_bytes()),
+                    Err(e) => digest = fnv(digest, format!("{e:?}").as_bytes()),
+                }
+            } else {
+                match message::parse_request(list.clone()) {
+                    Ok(r) => {
+                        digest = fnv(digest, r.path.as_bytes());
+                        digest = fnv(digest, &r.fields.len().to_be_bytes());
+                    }
+                    Err(e) => digest = fnv(digest, format!("{e:?}").as_bytes()),
+                }
+            }
+        }
+    }
+    digest
+}
+
+fn frame_count(_s: &Streams) -> usize {
+    // 64 requests x 6 frames, the control stream's 258, and the capsules.
+    64 * 6 + 258 + 512 + 512 / 16 + 1
+}
+
 struct Workload {
     corpus: Vec<Encoded>,
     blocks: Vec<Vec<Field>>,
+    streams: Streams,
+    lists: Vec<Vec<Field>>,
 }
 
 impl Workload {
     fn load() -> Self {
+        let corpus = corpus();
+        let streams = streams(&corpus);
         Self {
-            corpus: corpus(),
+            corpus,
             blocks: qif_blocks(),
+            streams,
+            lists: qif_blocks(),
         }
     }
 
@@ -193,6 +357,8 @@ impl Workload {
         match workload {
             "decode" => decode_batch(&self.corpus),
             "encode" => encode_batch(&self.blocks),
+            "frames" => frames_batch(&self.streams),
+            "messages" => messages_batch(&self.lists),
             other => panic!("unknown workload {other}"),
         }
     }
@@ -272,6 +438,8 @@ fn drive(workload: &str, rust: &str, vesper: &str) {
             "section",
         ),
         "encode" => (16 * w.blocks.len(), "section"),
+        "frames" => (frame_count(&w.streams), "frame"),
+        "messages" => (64 * w.lists.len(), "message"),
         other => panic!("unknown workload {other}"),
     };
     let operations = 16;
@@ -359,7 +527,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: abba worker <decode|encode> | abba drive <decode|encode> <rust-worker> <vesper-worker> | abba once <decode|encode> <batches>"
+                "usage: abba worker <decode|encode> | abba drive <decode|encode|frames|messages> <rust-worker> <vesper-worker> | abba once <decode|encode|frames|messages> <batches>"
             );
             std::process::exit(2);
         }

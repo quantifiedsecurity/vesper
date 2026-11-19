@@ -17,6 +17,67 @@ pub(crate) mod abi {
     pub use crate::qpack::prefix::PrefixError;
     pub use crate::qpack::{DecoderConfig, EncoderConfig, EncoderStats, QpackError, Reason};
 
+    pub use crate::capsule::CapsuleError;
+    pub use crate::frame::{FrameError, Settings};
+    pub use crate::message::MessageError;
+
+    /// A byte range of a flattened field list.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Span {
+        pub lo: u64,
+        pub hi: u64,
+    }
+
+    /// A validated request head, as ranges of the flattened field list;
+    /// the first `pseudo` fields are the pseudo-headers.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct RequestParts {
+        pub method: Span,
+        pub scheme: Span,
+        pub authority: Option<Span>,
+        pub path: Span,
+        pub protocol: Option<Span>,
+        pub pseudo: u64,
+        pub content_length: Option<u64>,
+    }
+
+    /// A validated response head.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ResponseParts {
+        pub status: u16,
+        pub pseudo: u64,
+        pub content_length: Option<u64>,
+    }
+    pub use crate::priority::{Priority, PriorityUpdate};
+
+    /// A frame from the reader: [`crate::frame::Frame`] without its
+    /// payloads, which stay in the reader's output buffer.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum FrameOut {
+        None,
+        Data,
+        Headers,
+        SettingsFrame(Settings),
+        GoAway(u64),
+        CancelPush(u64),
+        MaxPushId(u64),
+        PushPromise,
+        PriorityUpdateFrame(PriorityUpdate),
+        WebTransportStream(u64),
+        Unknown(u64),
+    }
+
+    /// A capsule from the reader; its bytes stay in the reader's output
+    /// buffer.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum CapsuleOut {
+        None,
+        Datagram,
+        CloseSession(u32),
+        DrainSession,
+        Unknown(u64),
+    }
+
     /// A decoded prefixed integer and the bytes it used.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct IntRead {
@@ -30,7 +91,7 @@ pub(crate) mod abi {
 #[allow(unsafe_code, missing_docs, dead_code, clippy::all)]
 #[rustfmt::skip]
 #[path = "../../port/binding.rs"]
-mod binding;
+pub(crate) mod binding;
 
 /// The Huffman and static tables every codec call reads, built once (the
 /// Rust build keeps them in statics).
