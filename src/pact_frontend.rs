@@ -2665,6 +2665,7 @@ fn walk_expr(e: &mut Expr, g: &mut dyn FnMut(&mut Type, &Span)) {
         | ExprKind::For { .. }
         | ExprKind::Range { .. }
         | ExprKind::Break(_)
+        | ExprKind::Continue
         | ExprKind::Return(_)) => {
             for c in k.control_children_mut().into_iter().flatten() {
                 walk_expr(c, g);
@@ -2822,6 +2823,7 @@ fn rewrite_expr(
         | ExprKind::For { .. }
         | ExprKind::Range { .. }
         | ExprKind::Break(_)
+        | ExprKind::Continue
         | ExprKind::Return(_)) => {
             for c in k.control_children_mut().into_iter().flatten() {
                 rewrite_expr(c, resolved, params);

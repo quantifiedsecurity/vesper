@@ -148,14 +148,29 @@ pub fn active(world: &World) -> bool {
     })
 }
 
+thread_local! {
+    /// While [`handle_drop_plan`] runs: the `.vsys` handle types whose
+    /// drops the elaboration plans in place of `Box[T]`.
+    static DROPPED_HANDLES: std::cell::RefCell<Option<BTreeSet<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+fn dropped_handles<R>(f: impl FnOnce(Option<&BTreeSet<String>>) -> R) -> R {
+    DROPPED_HANDLES.with(|h| f(h.borrow().as_ref()))
+}
+
 /// Whether `ty` is the built-in `Box[T]`.
 pub fn is_box_type(world: &World, ty: &Type) -> bool {
+    if let Some(handle) = dropped_handles(|h| {
+        h.map(|h| matches!(ty, Type::Named(n, args) if args.is_empty() && h.contains(n)))
+    }) {
+        return handle;
+    }
     active(world) && matches!(ty, Type::Named(n, args) if n == BOX_TYPE && args.len() == 1)
 }
 
 /// Inner type `T` when `ty` is built-in `Box[T]`.
 pub fn box_inner<'a>(world: &World, ty: &'a Type) -> Option<&'a Type> {
-    if !active(world) {
+    if !active(world) || dropped_handles(|h| h.is_some()) {
         return None;
     }
     match ty {
@@ -167,6 +182,7 @@ pub fn box_inner<'a>(world: &World, ty: &'a Type) -> Option<&'a Type> {
 /// Whether a pattern unpacks the built-in `Box(...)` constructor.
 pub fn is_box_pattern(world: &World, pat: &Pattern) -> bool {
     active(world)
+        && !dropped_handles(|h| h.is_some())
         && matches!(
             &pat.kind,
             PatternKind::Constructor { name, fields, .. }
@@ -266,6 +282,7 @@ fn expr_uses_box(e: &Expr) -> bool {
         | ExprKind::For { .. }
         | ExprKind::Range { .. }
         | ExprKind::Break(_)
+        | ExprKind::Continue
         | ExprKind::Return(_)) => k
             .control_children()
             .into_iter()
@@ -1207,6 +1224,7 @@ impl<'a> FipChecker<'a> {
             | ExprKind::For { .. }
             | ExprKind::Range { .. }
             | ExprKind::Break(_)
+            | ExprKind::Continue
             | ExprKind::Return(_) => {
                 // Loops and early exits leave the FIP ownership model (P0 lane 4).
                 self.diagnostics.push(Diagnostic::new(
@@ -1715,6 +1733,94 @@ struct Elaboration {
     after_inst: BTreeMap<usize, Vec<(usize, FipDrop)>>,
     before_term: BTreeMap<usize, Vec<FipDrop>>,
     edges: BTreeMap<(usize, usize), Vec<FipDrop>>,
+    /// What the graph owns while an instruction that can abort runs, by
+    /// (block, instruction): dropped when a `Fail` leaves the graph there
+    /// ([`fail_exit_drops`]).
+    at_abort: BTreeMap<(usize, usize), Vec<FipDrop>>,
+}
+
+/// The boxes a graph owns at each instruction that can abort it (a call, an
+/// indirect call, `?`, a handled body, a sequence or tiled operation, a
+/// partial primitive), by (block, instruction): what a `Fail` leaving the
+/// graph there must drop. Arguments the instruction takes `sink` are the
+/// callee's to drop. Empty when the graph owns no box or its drops are not
+/// elaborated ([`elaborate_non_fip_drops`]).
+pub fn fail_exit_drops(
+    world: &World,
+    f: &crate::ir::FunctionIr,
+) -> BTreeMap<(usize, usize), Vec<FipDrop>> {
+    if !active(world)
+        || world.functions.get(&f.name).is_some_and(|src| src.fip)
+        || !f
+            .values
+            .values()
+            .chain(f.locals.values())
+            .chain(f.params.iter().map(|p| &p.ty))
+            .any(|t| type_contains_box(world, t))
+    {
+        return BTreeMap::new();
+    }
+    elaborate_function(world, f)
+        .filter(|e| edges_placeable(f, e))
+        .map(|e| e.at_abort)
+        .unwrap_or_default()
+}
+
+/// Where one graph drops the `.vsys` handles of `handles` (affine extern
+/// types with a drop import, §16.3): the `Box` drop elaboration of
+/// [`elaborate_non_fip_drops`] run with those handle types standing in for
+/// `Box[T]`, so a handle is dropped exactly where a box in its place would
+/// be. Edge drops are placed with [`split_edge`] into `f`. `None` when the
+/// slot states reach no fixed point.
+pub fn handle_drop_plan(
+    world: &World,
+    f: &mut crate::ir::FunctionIr,
+    handles: &BTreeSet<String>,
+) -> Option<HandleDrops> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            DROPPED_HANDLES.with(|h| *h.borrow_mut() = None);
+        }
+    }
+    DROPPED_HANDLES.with(|h| *h.borrow_mut() = Some(handles.clone()));
+    let _reset = Reset;
+    let mentions = f
+        .values
+        .values()
+        .chain(f.locals.values())
+        .chain(f.params.iter().map(|p| &p.ty))
+        .any(|t| type_contains_box(world, t));
+    if !mentions {
+        return Some(HandleDrops::default());
+    }
+    let e = elaborate_function(world, f)?;
+    let mut plan = HandleDrops {
+        before_inst: e.before_inst,
+        after_inst: e.after_inst,
+        before_term: e.before_term,
+    };
+    for ((p, s), drops) in e.edges {
+        if drops.is_empty() {
+            continue;
+        }
+        let at = if matches!(f.blocks[p].terminator, crate::ir::Terminator::Jump { .. }) {
+            p
+        } else {
+            split_edge(f, p, s)
+        };
+        plan.before_term.entry(at).or_default().extend(drops);
+    }
+    Some(plan)
+}
+
+/// The handle drops of one graph ([`handle_drop_plan`]), keyed as the
+/// `box_drops_*` fields of [`crate::ir::FunctionIr`].
+#[derive(Debug, Default)]
+pub struct HandleDrops {
+    pub before_inst: BTreeMap<usize, Vec<(usize, FipDrop)>>,
+    pub after_inst: BTreeMap<usize, Vec<(usize, FipDrop)>>,
+    pub before_term: BTreeMap<usize, Vec<FipDrop>>,
 }
 
 /// An edge drop is placed before its source's `Jump`, or in a block split
@@ -1796,6 +1902,7 @@ fn elaborate_function(world: &World, f: &crate::ir::FunctionIr) -> Option<Elabor
         after_inst: BTreeMap::new(),
         before_term: BTreeMap::new(),
         edges: BTreeMap::new(),
+        at_abort: BTreeMap::new(),
     };
     if n_blocks == 0 {
         return Some(plan);
@@ -1879,6 +1986,7 @@ fn elaborate_function(world: &World, f: &crate::ir::FunctionIr) -> Option<Elabor
         plan.after_inst.clear();
         plan.before_term.clear();
         plan.edges.clear();
+        plan.at_abort.clear();
         let mut changed = false;
         for &b in &order {
             if !reachable[b] {
@@ -2081,6 +2189,30 @@ fn block_drops(
             block_div = true;
             break;
         }
+        if may_abort(inst) {
+            let taken: BTreeSet<ValueId> = match &inst.op {
+                Op::Call { args, .. }
+                | Op::Indirect { args, .. }
+                | Op::Tiled { args, .. }
+                | Op::Seq { args, .. }
+                | Op::Fip { args, .. } => args
+                    .iter()
+                    .filter(|a| a.pass == Pass::Sink)
+                    .map(|a| a.value)
+                    .collect(),
+                Op::Try(v) => BTreeSet::from([*v]),
+                _ => BTreeSet::new(),
+            };
+            let mut drops: Vec<FipDrop> = owned_values
+                .iter()
+                .filter(|(v, _)| !taken.contains(v))
+                .map(|(v, t)| FipDrop::Value(*v, t.clone()))
+                .collect();
+            drops.extend(owned_slot_drops(world, f, &slots));
+            if !drops.is_empty() {
+                plan.at_abort.insert((b, inst_idx), drops);
+            }
+        }
         if inst.ty.name() == "Never" {
             block_div = true;
             break;
@@ -2265,6 +2397,12 @@ fn block_drops(
             }
         }
 
+        // A temporary used in a later block (an argument evaluated before
+        // a branch in a later argument) is that use's to consume: dropping
+        // it here would hand the use a freed box or a released handle.
+        if owned_values.contains_key(&inst.dest) && used_outside_block(f, b, inst.dest) {
+            owned_values.remove(&inst.dest);
+        }
         let dead_temps: Vec<ValueId> = owned_values
             .keys()
             .copied()
@@ -2324,6 +2462,38 @@ fn block_drops(
         }
     }
     (slots, block_div)
+}
+/// Whether value `v` (defined in block `b`) is used by another block.
+fn used_outside_block(f: &crate::ir::FunctionIr, b: usize, v: ValueId) -> bool {
+    use crate::ir::Terminator;
+    f.blocks.iter().enumerate().any(|(i, blk)| {
+        i != b
+            && (blk
+                .instructions
+                .iter()
+                .any(|inst| crate::ir_inline::operands(&inst.op).contains(&v))
+                || match &blk.terminator {
+                    Terminator::Jump { args, .. } => args.contains(&v),
+                    Terminator::Branch { condition, .. } => *condition == v,
+                    Terminator::Match { value, .. } => *value == v,
+                    Terminator::Return(r) => *r == v,
+                    Terminator::Unreachable => false,
+                })
+    })
+}
+/// Whether `inst` can abort its graph with a `Fail` (its own or a callee's).
+fn may_abort(inst: &crate::ir::Instruction) -> bool {
+    use crate::ir::Op;
+    inst.fallible
+        || matches!(
+            inst.op,
+            Op::Call { .. }
+                | Op::Indirect { .. }
+                | Op::Try(_)
+                | Op::Handle { .. }
+                | Op::Seq { .. }
+                | Op::Tiled { .. }
+        )
 }
 /// What a native sequence drop frees ([`seq_drop_plan`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
