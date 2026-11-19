@@ -478,6 +478,7 @@ impl Flow<'_> {
             };
             for b in args {
                 let Some(ValueState {
+                    ty,
                     loan: Some((loans, Pass::In)),
                     consumed: false,
                     ..
@@ -485,6 +486,13 @@ impl Flow<'_> {
                 else {
                     continue;
                 };
+                // A scalar is read into its parameter's word before the call
+                // runs (two-phase argument loans, §4.3), so it does not alias
+                // the activated `inout` place. Copy aggregates may be lent by
+                // address and stay refused.
+                if b.pass != Pass::Inout && crate::check::is_scalar_type(ty) {
+                    continue;
+                }
                 if let Some(q) = loans
                     .iter()
                     .find(|q| places.iter().any(|p| self.graph.overlaps(p, q)))
