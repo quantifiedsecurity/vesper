@@ -1,7 +1,8 @@
 // @vesper/warp: Vesper port of the vesper-warp QUIC core (port wave P3b
 // lane 4, #1066), part 1: varints (varint.rs), packet numbers
 // (packet_number.rs), long and short headers (header.rs), frames
-// (frame.rs) and received-packet tracking (ack.rs).
+// (frame.rs), received-packet tracking (ack.rs), loss recovery
+// (recovery.rs) and the stream byte buffers (stream.rs).
 //
 // The Rust crate keeps its public types and the parts the export ABI cannot
 // carry: borrowed byte views (a parsed header or frame names its byte
@@ -26,6 +27,38 @@ use self::ack::{
     rx_on_ack_of_ack,
     rx_on_ack_sent,
     rx_on_packet_received
+};
+use self::stream::{
+    rb_insert,
+    rb_new,
+    rb_read,
+    rb_reset_for_reuse,
+    sb_copy_out,
+    sb_discard,
+    sb_free_space,
+    sb_new,
+    sb_next_lost,
+    sb_on_ack,
+    sb_on_lost,
+    sb_reset_for_reuse,
+    sb_take_new,
+    sb_write
+};
+use self::recovery::{
+    rec_ack_delay_ns,
+    rec_clear_space,
+    rec_new,
+    rec_on_ack_received,
+    rec_on_packet_sent,
+    rec_on_timeout,
+    rec_pc_duration_ns,
+    rec_pto_time_and_space,
+    rec_set_timer,
+    rec_space_new,
+    rtt_loss_delay_ns,
+    rtt_new,
+    rtt_pto_base_ns,
+    rtt_update
 };
 use self::frame::{
     fr_allowed,
@@ -609,4 +642,360 @@ pub fn received_on_ack_sent(inout s: RxState) {
 
 pub fn received_on_ack_of_ack(inout s: RxState, inout ranges: Slice[AckRange], x: u64) {
     rx_on_ack_of_ack(inout s, inout ranges, x)
+}
+
+// ---------------------------------------------------------------------------
+// recovery.rs
+
+// `recovery::RttEstimator`.
+pub copy struct Rtt {
+    latest: u64,
+    min: u64,
+    smoothed: u64,
+    rttvar: u64,
+    has_sample: bool
+}
+
+// `recovery::RecoveryError`.
+pub copy enum RecErr {
+    PnOutOfRange {
+        pn: u64
+    },
+    NonIncreasingPn {
+        pn: u64,
+        last: u64
+    },
+    ClockWentBackwards,
+    TooManyTracked,
+    AckOfUnsentPacket {
+        largest_acked: u64
+    },
+    SpaceDiscarded {
+        space: u8
+    },
+    BadAckDelayExponent {
+        exponent: u8
+    }
+}
+
+// One sent-packet record (`status`: 0 in flight, 1 newly acknowledged,
+// 2 acknowledged, 3 lost).
+pub copy struct RecEntry {
+    pn: u64,
+    sent_ns: u64,
+    bytes: u32,
+    ack_eliciting: bool,
+    in_flight: bool,
+    status: u8
+}
+
+// One `CongestionEvent` (`kind`: 0 Acked, 1 Lost, 2 EcnCe with `count`,
+// 3 PersistentCongestion).
+pub copy struct RecEvent {
+    kind: u8,
+    pn: u64,
+    sent_ns: u64,
+    bytes: u32,
+    count: u64
+}
+
+// One packet-number space's recovery state.
+pub copy struct RecSpace {
+    head: u64,
+    len: u64,
+    has_largest_acked: bool,
+    largest_acked: u64,
+    has_last_sent: bool,
+    last_sent_pn: u64,
+    has_last_ack_eliciting: bool,
+    last_ack_eliciting_ns: u64,
+    has_loss_time: bool,
+    loss_time: u64,
+    ack_eliciting_in_flight: u32,
+    ecn_ce: u64,
+    discarded: bool
+}
+
+// The rest of `LossRecovery`: config, handshake status, the armed timer
+// and the number of events the last call wrote.
+pub copy struct RecState {
+    max_ack_delay_ns: u64,
+    initial_rtt_ns: u64,
+    cap: u64,
+    pto_count: u32,
+    bytes_in_flight: u64,
+    confirmed: bool,
+    pcav: bool,
+    has_handshake_keys: bool,
+    at_amplification_limit: bool,
+    has_first_sample: bool,
+    first_sample_ns: u64,
+    last_sent_ns: u64,
+    has_timer: bool,
+    timer_deadline_ns: u64,
+    timer_pto: bool,
+    timer_space: u8,
+    n_events: u64
+}
+
+// `recovery::AckOutcome`.
+pub copy struct AckOut {
+    newly_acked: u32,
+    newly_acked_bytes: u64,
+    lost: u32,
+    lost_bytes: u64,
+    has_rtt: bool,
+    rtt_latest_ns: u64,
+    rtt_min_ns: u64,
+    rtt_smoothed_ns: u64,
+    rtt_ack_delay_ns: u64,
+    ecn_ce_increase: u64,
+    persistent_congestion: bool
+}
+
+// `recovery::TimeoutAction` (`kind`: 0 None, 1 LossDetected, 2 SendProbe).
+pub copy struct TimeoutOut {
+    kind: u8,
+    space: u8,
+    lost: u32,
+    packets: u8,
+    anti_deadlock: bool
+}
+
+// A deadline and its space, if any.
+pub copy struct PtoOut {
+    has: bool,
+    t: u64,
+    space: u8
+}
+
+pub fn recovery_rtt_new(initial_rtt_ns: u64) -> Rtt {
+    rtt_new(initial_rtt_ns)
+}
+
+pub fn recovery_rtt_update(inout r: Rtt, latest_ns: u64, ack_delay_ns: u64) {
+    rtt_update(inout r, latest_ns, ack_delay_ns)
+}
+
+pub fn recovery_rtt_pto_base_ns(in r: Rtt) -> u64 {
+    rtt_pto_base_ns(in r)
+}
+
+pub fn recovery_rtt_loss_delay_ns(in r: Rtt) -> u64 {
+    rtt_loss_delay_ns(in r)
+}
+
+pub fn recovery_ack_delay_ns(encoded: u64, exponent: u8) -> u64 eff [Fail[RecErr]] {
+    rec_ack_delay_ns(encoded, exponent)
+}
+
+pub fn recovery_new(
+    max_ack_delay_ns: u64,
+    initial_rtt_ns: u64,
+    cap: u64,
+    confirmed: bool,
+    pcav: bool,
+    keys: bool,
+    amp: bool
+) -> RecState {
+    rec_new(max_ack_delay_ns, initial_rtt_ns, cap, confirmed, pcav, keys, amp)
+}
+
+pub fn recovery_space_new() -> RecSpace {
+    rec_space_new()
+}
+
+pub fn recovery_set_timer(inout st: RecState, in r: Rtt, in spaces: Slice[RecSpace], now_ns: u64) {
+    rec_set_timer(inout st, in r, in spaces, now_ns)
+}
+
+pub fn recovery_clear_space(
+    inout st: RecState,
+    in r: Rtt,
+    inout spaces: Slice[RecSpace],
+    in ents: Slice[RecEntry],
+    space: u64,
+    discard: bool,
+    now_ns: u64
+) -> u64 {
+    rec_clear_space(inout st, in r, inout spaces, in ents, space, discard, now_ns)
+}
+
+pub fn recovery_on_packet_sent(
+    inout st: RecState,
+    in r: Rtt,
+    inout spaces: Slice[RecSpace],
+    inout ents: Slice[RecEntry],
+    space: u64,
+    pkt: RecEntry
+) eff [Fail[RecErr]] {
+    rec_on_packet_sent(inout st, in r, inout spaces, inout ents, space, pkt)
+}
+
+pub fn recovery_on_ack_received(
+    inout st: RecState,
+    inout r: Rtt,
+    inout spaces: Slice[RecSpace],
+    inout ents: Slice[RecEntry],
+    inout evs: Slice[RecEvent],
+    space: u64,
+    largest: u64,
+    decoded: bool,
+    first_range: u64,
+    count: u64,
+    in pairs: Slice[u8],
+    in ranges: Slice[AckRange],
+    has_ecn: bool,
+    ecn_ce: u64,
+    ack_delay_ns: u64,
+    now_ns: u64
+) -> AckOut eff [Fail[RecErr]] {
+    rec_on_ack_received(
+        inout st,
+        inout r,
+        inout spaces,
+        inout ents,
+        inout evs,
+        space,
+        largest,
+        decoded,
+        first_range,
+        count,
+        in pairs,
+        in ranges,
+        has_ecn,
+        ecn_ce,
+        ack_delay_ns,
+        now_ns
+    )
+}
+
+pub fn recovery_on_timeout(
+    inout st: RecState,
+    in r: Rtt,
+    inout spaces: Slice[RecSpace],
+    inout ents: Slice[RecEntry],
+    inout evs: Slice[RecEvent],
+    now_ns: u64
+) -> TimeoutOut {
+    rec_on_timeout(inout st, in r, inout spaces, inout ents, inout evs, now_ns)
+}
+
+pub fn recovery_pto_time_and_space(
+    in st: RecState,
+    in r: Rtt,
+    in spaces: Slice[RecSpace],
+    now_ns: u64
+) -> PtoOut {
+    rec_pto_time_and_space(in st, in r, in spaces, now_ns)
+}
+
+pub fn recovery_pc_duration_ns(in st: RecState, in r: Rtt) -> u64 {
+    rec_pc_duration_ns(in st, in r)
+}
+
+// ---------------------------------------------------------------------------
+// stream.rs: SendBuf and RecvBuf
+
+// A `SendBuf`'s offsets (`cap` is the ring's length).
+pub copy struct SendSt {
+    cap: u64,
+    base: u64,
+    next: u64,
+    end: u64,
+    lost_hint: u64
+}
+
+// A `RecvBuf`'s offsets.
+pub copy struct RecvSt {
+    cap: u64,
+    read: u64,
+    contig: u64,
+    highest: u64
+}
+
+// An `Option<(u64, usize)>` range.
+pub copy struct LostRange {
+    has: bool,
+    off: u64,
+    len: u64
+}
+
+pub fn send_buf_new(cap: u64) -> SendSt {
+    sb_new(cap)
+}
+
+pub fn send_buf_free_space(in s: SendSt) -> u64 {
+    sb_free_space(in s)
+}
+
+pub fn send_buf_write(inout s: SendSt, inout data: Slice[u8], in src: Slice[u8]) -> u64 {
+    sb_write(inout s, inout data, in src)
+}
+
+pub fn send_buf_next_lost(inout s: SendSt, inout lost: Slice[u64], max: u64) -> LostRange {
+    sb_next_lost(inout s, inout lost, max)
+}
+
+pub fn send_buf_take_new(inout s: SendSt, max: u64) -> LostRange {
+    sb_take_new(inout s, max)
+}
+
+pub fn send_buf_copy_out(in data: Slice[u8], off: u64, inout out: Slice[u8]) {
+    sb_copy_out(in data, off, inout out)
+}
+
+pub fn send_buf_on_ack(
+    inout s: SendSt,
+    inout acked: Slice[u64],
+    inout lost: Slice[u64],
+    off: u64,
+    len: u64
+) {
+    sb_on_ack(inout s, inout acked, inout lost, off, len)
+}
+
+pub fn send_buf_on_lost(
+    inout s: SendSt,
+    inout lost: Slice[u64],
+    in acked: Slice[u64],
+    off: u64,
+    len: u64
+) {
+    sb_on_lost(inout s, inout lost, in acked, off, len)
+}
+
+pub fn send_buf_discard(inout s: SendSt, inout acked: Slice[u64], inout lost: Slice[u64]) {
+    sb_discard(inout s, inout acked, inout lost)
+}
+
+pub fn send_buf_reset_for_reuse(inout s: SendSt, inout acked: Slice[u64], inout lost: Slice[u64]) {
+    sb_reset_for_reuse(inout s, inout acked, inout lost)
+}
+
+pub fn recv_buf_new(cap: u64) -> RecvSt {
+    rb_new(cap)
+}
+
+pub fn recv_buf_insert(
+    inout s: RecvSt,
+    inout data: Slice[u8],
+    inout have: Slice[u64],
+    off: u64,
+    in src: Slice[u8]
+) -> bool {
+    rb_insert(inout s, inout data, inout have, off, in src)
+}
+
+pub fn recv_buf_read(
+    inout s: RecvSt,
+    in data: Slice[u8],
+    inout have: Slice[u64],
+    inout out: Slice[u8]
+) -> u64 {
+    rb_read(inout s, in data, inout have, inout out)
+}
+
+pub fn recv_buf_reset_for_reuse(inout s: RecvSt, inout have: Slice[u64]) {
+    rb_reset_for_reuse(inout s, inout have)
 }
