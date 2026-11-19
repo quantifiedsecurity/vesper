@@ -382,6 +382,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("crates/vesper-silicon/vesper")
                     // Port P3b lane 4 (#1066): the Warp port uses `use` (#880).
                     || path.ends_with("crates/vesper-warp/vesper")
+                    // Port P3b lane 7 (#1069): the Flux port uses `use` (#880).
+                    || path.ends_with("crates/vesper-flux/vesper")
                     // P3b lane 3 (#1065): `.vsys` handle fixtures (slice intervals).
                     || path.ends_with("tests/fixtures/ffi_handles")
                     // Port P3b lane 5 (#1067): the prism-h3 port uses `use` (#880).
