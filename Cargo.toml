@@ -7,6 +7,7 @@ members = [
     "crates/vesper-core",
     "crates/vesper-syntax",
     "crates/vesper-span",
+    "crates/vesper-span/seed",
     "crates/vesper-lsp",
     "crates/vesper-diagnostics",
     "crates/vesper-grammar",
@@ -24,6 +25,7 @@ members = [
     "crates/vesper-loom-calculus",
     "crates/vesper-loom-calculus/seed",
     "crates/vesper-lean-syntax",
+    "crates/vesper-lean-syntax/seed",
     "crates/vesper-simpulse",
     "crates/vesper-simpulse/seed",
     "crates/vesper-sim-session",
@@ -105,6 +107,7 @@ default-members = [
     "crates/vesper-core",
     "crates/vesper-syntax",
     "crates/vesper-span",
+    "crates/vesper-span/seed",
     "crates/vesper-lsp",
     "crates/vesper-diagnostics",
     "crates/vesper-grammar",
@@ -122,6 +125,7 @@ default-members = [
     "crates/vesper-loom-calculus",
     "crates/vesper-loom-calculus/seed",
     "crates/vesper-lean-syntax",
+    "crates/vesper-lean-syntax/seed",
     "crates/vesper-simpulse",
     "crates/vesper-simpulse/seed",
     "crates/vesper-sim-session",
@@ -244,10 +248,12 @@ blake3 = "1.8"
 vesper-core = { path = "crates/vesper-core" }
 vesper-forge = { path = "crates/vesper-forge", default-features = false }
 vesper-simd = { path = "crates/vesper-simd" }
-vesper-lean-syntax = { path = "crates/vesper-lean-syntax" }
+# The compiler links the frozen Rust seed copy of vesper-lean-syntax (#1128).
+vesper-lean-syntax = { path = "crates/vesper-lean-syntax/seed", package = "vesper-lean-syntax-seed" }
 vesper-syntax = { path = "crates/vesper-syntax" }
 vesper-highlight = { path = "crates/vesper-highlight", features = ["shot"] }
-vesper-span = { path = "crates/vesper-span" }
+# The compiler links the frozen Rust seed copy of vesper-span (#1128).
+vesper-span = { path = "crates/vesper-span/seed", package = "vesper-span-seed" }
 vesper-lsp = { path = "crates/vesper-lsp" }
 vesper-diagnostics = { path = "crates/vesper-diagnostics" }
 vesper-fmt = { path = "crates/vesper-fmt" }
