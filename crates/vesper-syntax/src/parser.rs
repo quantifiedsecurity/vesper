@@ -1256,6 +1256,32 @@ impl Parser<'_> {
         self.depth = previous;
         result
     }
+    /// `(pass T, ..) -> R eff [E]` after `fn` (and its mode) or a
+    /// function-object trait name.
+    fn function_signature(&mut self, mode: Mode) -> Type {
+        self.expect(K::LParen);
+        let mut params = vec![];
+        while !self.at(K::RParen) && !self.at(K::Eof) {
+            let (p, _) = self.pass();
+            params.push((p, self.ty()));
+            if !self.eat(K::Comma) {
+                break;
+            }
+        }
+        self.expect(K::RParen);
+        let result = if self.eat(K::Arrow) {
+            self.ty()
+        } else {
+            Type::unit()
+        };
+        let effects = self.effects();
+        Type::Function {
+            params,
+            result: Box::new(result),
+            effects,
+            mode,
+        }
+    }
     /// Whether the `[` at the cursor opens an array type `[T; N]`: a `;`
     /// at bracket depth one before the matching `]`. A tensor shape
     /// `[M, N]` has none.
@@ -1311,28 +1337,7 @@ impl Parser<'_> {
             } else {
                 Mode::Affine
             };
-            self.expect(K::LParen);
-            let mut params = vec![];
-            while !self.at(K::RParen) && !self.at(K::Eof) {
-                let (p, _) = self.pass();
-                params.push((p, self.ty()));
-                if !self.eat(K::Comma) {
-                    break;
-                }
-            }
-            self.expect(K::RParen);
-            let result = if self.eat(K::Arrow) {
-                self.ty()
-            } else {
-                Type::unit()
-            };
-            let effects = self.effects();
-            Type::Function {
-                params,
-                result: Box::new(result),
-                effects,
-                mode,
-            }
+            self.function_signature(mode)
         } else if self.eat(K::LParen) {
             let mut args = vec![];
             while !self.at(K::RParen) && !self.at(K::Eof) {
@@ -1388,8 +1393,14 @@ impl Parser<'_> {
             // `dyn Trait[args]` (manuscript §5 `DynType`, §7.1).
             self.bump();
             let name = self.upper();
-            let args = self.type_args();
-            Type::Named(DYN_TYPE.into(), vec![Type::Named(name, args)])
+            if matches!(name.as_str(), "Fn" | "FnMut" | "FnOnce") && self.at(K::LParen) {
+                // A function object `dyn FnMut(A) -> R eff [E]` (§7.3).
+                let signature = self.function_signature(Mode::Affine);
+                Type::Named(DYN_TYPE.into(), vec![Type::Named(name, vec![signature])])
+            } else {
+                let args = self.type_args();
+                Type::Named(DYN_TYPE.into(), vec![Type::Named(name, args)])
+            }
         } else if self.at_path_root() {
             // `self::m::T[args]`, `super::m::T`, `@scope/name::m::T`.
             let name = self.qualified_path();
