@@ -3,3 +3,6 @@ name = "@vesper/kinetic"
 version = "0.1.0"
 edition = "2026"
 capability_ceiling = ["Fail", "Ffi"]
+
+[dependencies]
+"@vesper-std/sort" = { version = "^0.1", path = "../../../packages/vesper-std/sort" }

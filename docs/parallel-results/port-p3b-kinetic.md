@@ -175,6 +175,37 @@ Where the time goes:
 3. **Marshalling.** `&[Aabb]` and `&[ConstraintBodies]` are flattened into
    packed columns per call, and the pair lists are unpacked from words.
 
+## Part 2: std sort
+
+Part 2 (base `main` at 8e7d8b7, 2026-11-19) replaces the three heap sorts
+of `util.ves` with `@vesper-std/sort` (#1096, PR #1110), a path dependency
+of the package (Bazel: `//:std_sort_package`). The orders are unchanged,
+since every sort is by a strict total order:
+
+| Call site | Before | After |
+|---|---|---|
+| LBVH build, codes and primitives | `sort_pairs` (heap, by code then primitive) | codes go to the free traversal stack, `keyed::sort_by_key` orders the primitives (ties by index), then the codes are gathered; no allocation |
+| LBVH pairs | `sort_u64` (heap) | `unstable::sort` (introsort) on `out[0..len]` |
+| `Colorer` / `MultiColorer` | `sort_by_key` (heap) | `keyed::sort_by_key` on `order[0..n]` |
+
+`keyed::sort_pairs` is not used: it is stable but allocates scratch.
+
+| Workload | Part 1 wall | Part 2 wall (range) | Part 1 instr | Part 2 instr (Rust, port) |
+|---|--:|--:|--:|--:|
+| `colorer` | 2.54x | 1.99x (1.81-2.00) | 2.74x | 1.75x (6.76M, 11.81M) |
+| `multi-colorer` | 3.36x | 2.78x (2.69-3.18) | 2.78x | 1.99x (3.59M, 7.13M) |
+| `lbvh` | 2.43x | 2.08x (2.01-2.21) | 4.36x | 3.81x (8.17M, 31.17M) |
+| `pile-lbvh` | 2.80x | 2.45x (2.42-2.51) | 2.35x | 2.24x (58.24M, 130.27M) |
+| `pile-lbvh-4t` | 2.87x | 2.46x (2.43-2.67) | | |
+| `scene` | 1.32x | 1.28x (1.20-1.30) | | |
+
+Same host and method as above (`abba compare 5 8`, callgrind minus the
+empty run). `morton`, `fastmath` and `sap` do not sort through `util.ves`
+and are unchanged (1.85x, 1.44x, 2.03x wall). Still not parity, so Rust
+stays the default. The LBVH gap that is left is the per-query traversal
+(two `try_get`s per box lane) and the 2.7-4.3x of std sort against Rust's
+`sort_unstable` reported in #1110.
+
 ## Compiler gaps (with repros)
 
 1. **Bit builtin on a reassigned mutable local fails IR validation.**
@@ -204,14 +235,13 @@ Where the time goes:
    `fn u(n: u64) -> u64`.
 3. **No `while`.** `while cond { .. }` is a parse error; ports write
    `loop { if !(cond) { break; } .. }`.
-4. **No sort in `@vesper-std`** (std candidate: `util::sort_by_key`,
-   `sort_pairs`, `sort_u64`), and no `f32` in the export ABI (bit patterns
+4. **No sort in `@vesper-std`** (fixed by #1110, adopted in part 2), and no `f32` in the export ABI (bit patterns
    instead; known since the Tensor port).
 5. **`.vsys` imports are visible only in the root module.** `fastmath.ves`
    cannot name `Crmath` (`E0111 module self has no item 'Crmath'`), so the
    crmath fallback sits in `lib.ves`.
 
-Std candidates: the heap sorts and the total slice getters in `util.ves`.
+Std candidates: the total slice getters in `util.ves`.
 
 ## Not ported yet (later parts)
 
