@@ -151,7 +151,10 @@ fn main() -> u64 {
 }
 ";
     // s = [5, 5, 2]; st.n = 3 -> 303 -> 30301 -> 3030103.
-    assert_eq!(differential("pact", pact), 50_000_000 + 2_000_000 + 3_030_103);
+    assert_eq!(
+        differential("pact", pact),
+        50_000_000 + 2_000_000 + 3_030_103
+    );
     // port-p3-ebpf.md gap 7: a verifier state read in a nested call, with
     // several reserved loans in one call.
     let ebpf = "struct V { regs: ChunkSeq[u64], pc: u64 }

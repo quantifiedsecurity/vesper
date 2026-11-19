@@ -1274,10 +1274,8 @@ impl Checker<'_> {
             Type::Infer
         });
         for (loan, mode, origin) in self.loans.clone() {
-            let reserved = mode == Pass::Inout
-                && self
-                    .reserved_loans
-                    .contains(&(origin.start, origin.end));
+            let reserved =
+                mode == Pass::Inout && self.reserved_loans.contains(&(origin.start, origin.end));
             let exclusive = (mode != Pass::In && !reserved)
                 || matches!(usage, Usage::Borrow(Pass::Inout))
                 || (matches!(usage, Usage::Own) && self.mode(&ty) != Mode::Copy);
@@ -2911,8 +2909,7 @@ impl Checker<'_> {
             // only the receiver, is reserved while the call's other
             // arguments are evaluated.
             if param.pass == Pass::Inout {
-                self.reserved_loans
-                    .insert((expr.span.start, expr.span.end));
+                self.reserved_loans.insert((expr.span.start, expr.span.end));
             }
             if let Some(pass) = explicit
                 && pass != param.pass

@@ -179,7 +179,10 @@ fn main() -> u64 {
 }
 ";
     // find_not_in with the class {1, 2, 3} (mask 14) stops at byte 4.
-    assert_eq!(differential("receivers", source), 3000 + 100 + 30 + 4 + 60_000);
+    assert_eq!(
+        differential("receivers", source),
+        3000 + 100 + 30 + 4 + 60_000
+    );
 }
 
 #[test]
