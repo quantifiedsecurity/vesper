@@ -782,6 +782,73 @@ impl Checker<'_> {
     fn extern_handle(&self, t: &Type) -> bool {
         self.holds_extern_handle(t, &mut BTreeSet::new())
     }
+    /// Whether a value of `t` holds an affine `.vsys` handle whose type
+    /// declares a drop import (`crate::ffi_lowering::drops`).
+    fn droppable_handle(&self, t: &Type) -> bool {
+        fn visit(c: &Checker, t: &Type, seen: &mut BTreeSet<String>) -> bool {
+            match t {
+                Type::Named(n, args) => {
+                    if args.iter().any(|a| visit(c, a, seen)) {
+                        return true;
+                    }
+                    if !seen.insert(n.clone()) {
+                        return false;
+                    }
+                    if c.world
+                        .functions
+                        .contains_key(&format!("{}{n}", crate::ffi_lowering::drops::DROP_PREFIX))
+                    {
+                        return true;
+                    }
+                    c.world.adts.get(n).is_some_and(|a| {
+                        a.variants
+                            .iter()
+                            .any(|v| v.fields.iter().any(|f| visit(c, &f.ty, seen)))
+                    })
+                }
+                Type::Tuple(items) => items.iter().any(|i| visit(c, i, seen)),
+                _ => false,
+            }
+        }
+        visit(self, t, &mut BTreeSet::new())
+    }
+    /// [`Self::droppable_handle`] for the parts of a binding of `t` at
+    /// `path` that `moved` has not moved out.
+    fn droppable_remaining(&self, t: &Type, path: &mut Vec<String>, moved: &[Vec<String>]) -> bool {
+        if moved.iter().any(|m| path.starts_with(m)) {
+            return false;
+        }
+        if !moved.iter().any(|m| m.starts_with(path)) {
+            return self.droppable_handle(t);
+        }
+        match t {
+            Type::Tuple(items) => items.iter().enumerate().any(|(i, item)| {
+                path.push(i.to_string());
+                let found = self.droppable_remaining(item, path, moved);
+                path.pop();
+                found
+            }),
+            Type::Named(n, args) => match self.world.adts.get(n) {
+                Some(a) if !a.is_enum && a.variants.len() == 1 => {
+                    let vars: BTreeMap<String, Type> = a
+                        .generics
+                        .iter()
+                        .zip(args)
+                        .map(|(g, t)| (g.name.clone(), t.clone()))
+                        .collect();
+                    a.variants[0].fields.iter().any(|f| {
+                        path.push(f.name.clone());
+                        let found =
+                            self.droppable_remaining(&substitute(&f.ty, &vars), path, moved);
+                        path.pop();
+                        found
+                    })
+                }
+                _ => self.droppable_handle(t),
+            },
+            _ => false,
+        }
+    }
     fn holds_extern_handle(&self, t: &Type, seen: &mut BTreeSet<String>) -> bool {
         match t {
             Type::Named(n, args) => {
@@ -3503,8 +3570,14 @@ impl Checker<'_> {
         // checks afterwards that the body did not consume them.
         let catcher = target.and_then(|t| self.handler_frames.iter().rposition(|h| h.cap == t));
         for (n, b) in &env.bindings {
+            // An abort skips the drop of an affine `.vsys` handle with a
+            // drop import (§16.3), so such a handle is kept off abortable
+            // checkpoints as a linear value is.
+            let droppable = b.pass == Pass::Sink
+                && !b.moved.iter().any(Vec::is_empty)
+                && self.droppable_remaining(&b.ty, &mut vec![], &b.moved);
             if b.pass == Pass::Sink
-                && self.mode(&b.ty) == Mode::Linear
+                && (self.mode(&b.ty) == Mode::Linear || droppable)
                 && !b.moved.iter().any(Vec::is_empty)
                 && let Some(frame) = catcher
                 && self.handler_frames[frame].outer.get(n) == Some(&b.span)
@@ -3522,6 +3595,11 @@ impl Checker<'_> {
                 self.error("E0402",format!("potentially abortable effect '{effect}' may discard live linear value '{n}'"),span.clone());
                 self.related(b.span.clone(), "live linear binding introduced here");
                 self.help("An abortable checkpoint may discard a continuation that still owns this linear binding.");
+            }
+            if droppable && self.mode(&b.ty) != Mode::Linear {
+                self.error("E0402",format!("potentially abortable effect '{effect}' may skip the drop import of live handle '{n}'"),span.clone());
+                self.related(b.span.clone(), "live handle binding introduced here");
+                self.help("A handle whose type declares a drop import is released when it is dropped; an abort would skip that call. Finalize or move the handle before the checkpoint, or catch the abort in this function.");
             }
             if b.pass == Pass::Inout && !b.moved.is_empty() {
                 self.error("E0402",format!("potentially abortable effect '{effect}' crosses inout parameter '{n}' while part of it is moved out"),span.clone());
@@ -4324,7 +4402,10 @@ impl Checker<'_> {
             {
                 self.error(
                     "E0402",
-                    format!("linear value '{n}' is consumed inside a handled body that may abort before consuming it"),
+                    format!(
+                        "{} '{n}' is consumed inside a handled body that may abort before consuming it",
+                        if self.mode(&before.ty) == Mode::Linear { "linear value" } else { "handle" }
+                    ),
                     checkpoint,
                 );
                 self.related(before.span.clone(), "live linear binding introduced here");

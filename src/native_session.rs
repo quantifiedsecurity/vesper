@@ -347,7 +347,7 @@ fn align8(n: u32) -> Result<u32, String> {
 /// uses), so shadowing locals and local closures add no call edges.
 type References = BTreeSet<(usize, usize, String)>;
 fn function_references(world: &World) -> References {
-    crate::ir::lower_world(world)
+    crate::ffi_lowering::drops::lower_world(world)
         .functions
         .values()
         .flat_map(|f| {
@@ -853,7 +853,7 @@ fn compile_session_with_linkage<M: Module>(
     linkage: super::DefinitionLinkage,
 ) -> Result<(FuncId, String), String> {
     let instances: InstanceMap = super::instances(world, &plan.entry)?;
-    let mut program = crate::ir::lower_world(world);
+    let mut program = crate::ffi_lowering::drops::lower_world(world);
     crate::integer_widths::lower_bit_builtin_calls(world, &mut program);
     if optimize {
         crate::ir_opt::optimize(world, &mut program)?;

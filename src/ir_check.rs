@@ -672,13 +672,21 @@ impl Flow<'_> {
                 self.consume(s, *value, &i.span);
                 self.bind(s, pattern, &t, *value);
             }
-            Op::Write { place, value, .. } => {
+            Op::Write { place, op, value } => {
                 self.consume(s, *value, &i.span);
                 let mut path = place.split('.');
                 let p = Place {
                     root: path.next().unwrap_or("").into(),
                     path: path.map(str::to_owned).collect(),
                 };
+                // A plain assignment re-initializes a place whose old value
+                // was moved out (the drop of an overwritten `.vsys` handle
+                // moves it into its drop import first, §16.3).
+                if op == "="
+                    && let Some(slot) = s.slots.get_mut(&p.root)
+                {
+                    slot.moved.retain(|q| !q.starts_with(&p.path));
+                }
                 self.access(s, &p, Pass::Inout, &i.span);
                 if let Some(slot) = s.slots.get(&p.root) {
                     let t = self.world.field(&slot.ty, &p.path).unwrap_or(Type::Infer);
