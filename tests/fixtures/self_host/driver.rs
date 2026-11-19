@@ -388,6 +388,10 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("crates/vesper-prism-h3/vesper")
                     // Port P3b lane 8 (#1070): the Kinetic port uses `use` (#880).
                     || path.ends_with("crates/vesper-kinetic/vesper")
+                    // SH0 lane 1 (#1123): the hybrid compiler's swapped
+                    // modules export with `pub fn`, which the Stage 1
+                    // parser lacks (node counts differ).
+                    || path.ends_with("crates/vesper-hybrid/modules")
                 {
                     continue;
                 }
