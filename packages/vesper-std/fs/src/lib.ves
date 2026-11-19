@@ -226,32 +226,6 @@ pub fn create_new(in path: Str, in data: Slice[u8]) eff [Ffi[StdFs], Fail[IoErro
     write_mode(in path.as_bytes(), in data, mode_create_new(), false);
 }
 
-// The directory part of `path` ("." when it has none): everything before
-// the last `/` (or `\`, which Windows also accepts).
-fn parent_of(in path: Slice[u8]) -> ChunkSeq[u8] {
-    let mut cut: u64 = 0;
-    let mut found = false;
-    for i in 0..path.len() {
-        let b = match path.try_get(i) {
-            Option::Some(b) => b,
-            Option::None => 0,
-        };
-        if b == 47 || b == 92 {
-            cut = i;
-            found = true;
-        }
-    }
-    let mut out: ChunkSeq[u8] = ChunkSeq::new[u8]();
-    if !found {
-        out.push(46);
-    } else if cut == 0 {
-        out.push(47);
-    } else {
-        out.extend(in path[0..cut]);
-    }
-    out
-}
-
 // Append `n` in lower-case hexadecimal.
 fn push_hex(inout out: ChunkSeq[u8], n: u64) {
     let mut shift: u64 = 60;
@@ -279,10 +253,18 @@ pub fn replace(in path: Str, in data: Slice[u8]) eff [Ffi[StdFs], Fail[IoError]]
 }
 
 pub fn replace_path(in path: Slice[u8], in data: Slice[u8]) eff [Ffi[StdFs], Fail[IoError]] {
+    // The temporary file goes beside `path`, under a short name of its own
+    // (so a target name near the file system's limit still works):
+    // "<dir>.vst-<16 hex digits>.tmp", the process id and a per-process
+    // counter. The host splits off the directory by the platform's rules.
+    let cut = StdFs::vstd_fs_parent_len(in path);
     let mut temp: ChunkSeq[u8] = ChunkSeq::new[u8]();
-    temp.extend(in path);
-    // ".<16 hex digits>.tmp": the process id and a per-process counter.
+    temp.extend(in path[0..cut]);
     temp.push(46);
+    temp.push(118);
+    temp.push(115);
+    temp.push(116);
+    temp.push(45);
     push_hex(inout temp, StdFs::vstd_fs_unique());
     temp.push(46);
     temp.push(116);
@@ -306,7 +288,12 @@ pub fn replace_path(in path: Slice[u8], in data: Slice[u8]) eff [Ffi[StdFs], Fai
         let r = StdFs::vstd_fs_remove_file(in temp.as_slice(), inout ignored);
         return raise_io(err);
     }
-    let dir = parent_of(in path);
+    let mut dir: ChunkSeq[u8] = ChunkSeq::new[u8]();
+    if cut == 0 {
+        dir.push(46);
+    } else {
+        dir.extend(in path[0..cut]);
+    }
     let s = StdFs::vstd_fs_sync_dir(in dir.as_slice(), inout err);
     if err != 0 {
         raise_io(err)

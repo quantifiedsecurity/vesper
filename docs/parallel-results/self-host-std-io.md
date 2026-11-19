@@ -15,7 +15,7 @@ any of that. Ports kept their OS edge in Rust.
 | `packages/vesper-std/fs/` | `@vesper-std/fs`: `IoError` and its kind codes, `read`, `read_string`, `write`, `append`, `create_new`, atomic `replace`, `rename`, `remove_file`, `remove_dir`, `remove_dir_all`, `create_dir`, `create_dir_all`, `metadata`, `symlink_metadata`, `exists` (each with a `*_path` byte-path variant where a driver needs one); module `walk`: `Entries`, `list_dir`, `walk`, `entry_*` accessors, `entry_join`. `fs.vsys` is the `StdFs` import. |
 | `packages/vesper-std/process/` | `@vesper-std/process`: `command`, `arg`, `env`, `env_remove`, `env_clear`, `cwd`, `stdio`, `discard`, `spawn`, `wait`, `stdout`, `stderr`, `child_id`, `release`, `output`, `success`, `exit`, `id`. `process.vsys` is `StdProcess`. |
 | `packages/vesper-std/env/` | `@vesper-std/env`: `arg_count`, `arg`, `arg_bytes`, `var`, `var_bytes`, `var_count`, `var_at_bytes`, `current_dir`, `current_dir_bytes`, `os`. `env.vsys` is `StdEnv`. |
-| `crates/vesper-std-host/` | The C-ABI host shim: 38 `extern "C"` functions over `std::fs`, `std::process` and `std::env`, the JIT symbol table, live-handle counters for leak tests. No dependencies, so the root package's tests can link it. |
+| `crates/vesper-std-host/` | The C-ABI host shim: 39 `extern "C"` functions over `std::fs`, `std::process` and `std::env`, the JIT symbol table, live-handle counters for leak tests. No dependencies, so the root package's tests can link it. |
 | `crates/vesper-std-driver/` | The sample driver: a Loom package in `vesper/`, compiled under feature `vesper-port` by `vesper build --lib` through the port harness and linked in (`port/binding.rs`, `tests/driver.rs`). A package of its own because its build script links the compiler: in `vesper-std-host` it made a Bazel cycle through the root package's dev-dependency. |
 | `tests/std_fs.rs`, `tests/std_process.rs`, `tests/std_env.rs`, `tests/std_io_support/` | Differential tests: every scenario runs in the JIT with the optimizer on and off and in the evaluator, against the real OS, checked against `std`, with a leak check on every run. |
 | `src/ffi_lowering.rs` | One additive method, `ForeignChecked::jit_with_options`, so the JIT can run imports with the optimizer off (outside the lane's exclusive paths; flagged in the PR). |
@@ -38,8 +38,11 @@ any bytes except NUL, and on Windows it must be UTF-8.
   proves that every path closes it exactly once. `read` reads the length the
   file has now, then keeps reading until EOF, so a file that grows during the
   read is still read whole.
-- **Atomic replace.** `replace` writes `<path>.<pid:32><counter:32 hex>.tmp`
-  with create-new, `fsync`s it, renames it over the target (`MoveFileEx`
+- **Atomic replace.** `replace` writes `<dir>.vst-<pid:32><counter:32 hex>.tmp`
+  beside the target with create-new (a short name of its own, so a target
+  name near the 255-byte limit still works; the host's `vstd_fs_parent_len`
+  splits off the directory by the platform's rules, so on Unix a backslash
+  stays a name byte), `fsync`s it, renames it over the target (`MoveFileEx`
   with replace-existing on Windows) and `fsync`s the directory (Unix). On
   any failure it removes the temporary file and raises. The test checks that
   no temporary file is left behind.
@@ -92,7 +95,7 @@ declare `capability_ceiling = ["Fail", "Alloc", "Ffi[Std…]"]`.
 
 | Test | Modes | What |
 |---|---|---|
-| `tests/std_fs.rs` (6 + 1 ignored bench) | JIT opt, JIT no-opt, evaluator | round trips, `read_string` UTF-8 rejection, atomic replace with no leftover temporary file, typed errors (NotFound, AlreadyExists, DirectoryNotEmpty, InvalidInput for a NUL byte, a directory read as a file), rename/remove/exists/metadata, sorted `walk`/`list_dir` against a Rust model (names chosen so OS order, creation order and sorted order all differ), 200 opens and closes (JIT) |
+| `tests/std_fs.rs` (6 + 1 ignored bench) | JIT opt, JIT no-opt, evaluator | round trips, `read_string` UTF-8 rejection, atomic replace with no leftover temporary file (also for a 240-byte name and, on Unix, a name with a backslash), typed errors (NotFound, AlreadyExists, DirectoryNotEmpty, InvalidInput for a NUL byte, a directory read as a file), rename/remove/exists/metadata, sorted `walk`/`list_dir` against a Rust model (names chosen so OS order, creation order and sorted order all differ), 200 opens and closes (JIT) |
 | `tests/std_process.rs` (3 + 1 child) | all three | arguments, a variable, the directory, both captured streams and exit code 3 of `/bin/sh` against `std::process`; `env_clear` and `env_remove`; spawn of a missing program (NotFound from `spawn` and from `output`); wait twice (InvalidInput); a discarded command; a child released while running is killed (three runs of `sleep 30` finish in under 25 s); `exit(7)` in a child test process |
 | `tests/std_env.rs` (3) | all three | every argument against `std::env::args_os`, variables (a 1,000-byte value that needs a regrown buffer, unset, empty key, UTF-8 text, the full `KEY=VALUE` listing), the current directory and `os()` |
 | `crates/vesper-std-driver/tests/driver.rs` (2, `--features vesper-port`) | AOT object linked into the test binary | the sample driver (below) over `packages/vesper-std/fs` and `packages/vesper-compiler`; the report must equal one computed with `std`, no live handle or Vesper allocation left; the driver's `.vsys` copies must equal the packages' files |

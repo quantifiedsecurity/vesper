@@ -92,6 +92,11 @@ pub fn replace_atomic() -> u64 eff [Ffi[StdFs]] {
         let big = pattern(5000);
         replace(in "@DIR@/r/x.txt", in big.as_slice());
         replace(in "@DIR@/r/new.txt", in "fresh".as_bytes());
+        // A name near the 255-byte limit: the temporary's name is its own,
+        // not the target's plus a suffix.
+        replace(in "@DIR@/r/@LONG@", in "long".as_bytes());
+        // On Unix a backslash is a name byte, not a separator.
+        replace(in "@DIR@/r/@ODD@", in "odd".as_bytes());
         let got = read(in "@DIR@/r/x.txt");
         let fresh = read(in "@DIR@/r/new.txt");
         // No temporary file is left behind.
@@ -328,7 +333,21 @@ fn code(e: &std::io::Error) -> u64 {
 
 fn source(dir: &Temp) -> String {
     let root = lit(&fs::canonicalize(".").unwrap());
-    DRIVER.replace("@DIR@", &dir.lit()).replace("@ROOT@", &root)
+    DRIVER
+        .replace("@DIR@", &dir.lit())
+        .replace("@ROOT@", &root)
+        .replace("@LONG@", &long_name())
+        .replace("@ODD@", if cfg!(unix) { "a\\\\b.txt" } else { "odd.txt" })
+}
+
+/// A 240-byte file name for `replace_atomic`.
+fn long_name() -> String {
+    "n".repeat(240)
+}
+
+/// The file `replace_atomic` names `@ODD@`, as the OS lists it.
+fn odd_name() -> &'static str {
+    if cfg!(unix) { "a\\b.txt" } else { "odd.txt" }
 }
 
 /// Every `.ves` file under `dir` (not following links), read with `std::fs`:
@@ -477,7 +496,7 @@ fn replace_is_atomic_and_leaves_no_temporary() {
         let got = agree(&checked, "replace_atomic", &[mode]);
         assert_eq!(
             got,
-            mix(mix(hash(&pattern(5000)), hash(b"fresh")), 2),
+            mix(mix(hash(&pattern(5000)), hash(b"fresh")), 4),
             "{mode:?}"
         );
         let mut names: Vec<_> = fs::read_dir(dir.path().join("r"))
@@ -485,7 +504,14 @@ fn replace_is_atomic_and_leaves_no_temporary() {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         names.sort();
-        assert_eq!(names, ["new.txt", "x.txt"], "{mode:?}");
+        let mut want = vec![
+            long_name(),
+            "new.txt".into(),
+            odd_name().into(),
+            "x.txt".into(),
+        ];
+        want.sort();
+        assert_eq!(names, want, "{mode:?}");
     }
 }
 

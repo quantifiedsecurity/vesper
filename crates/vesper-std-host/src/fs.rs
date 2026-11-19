@@ -313,6 +313,23 @@ pub unsafe extern "C" fn vstd_fs_sync_dir(path: *const u8, len: usize, err: *mut
     }
 }
 
+/// The length of the directory part of `path`, its trailing separator
+/// included: 4 for `a/b/c` (`a/b/`), 0 for a bare name. `/` separates on
+/// every platform; `\` and a drive prefix (`C:`) only on Windows, since on
+/// Unix a backslash is an ordinary name byte.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vstd_fs_parent_len(path: *const u8, len: usize) -> u64 {
+    // SAFETY: lent for the call.
+    let raw = unsafe { bytes(path, len) };
+    let windows = cfg!(windows);
+    let sep = |b: u8| b == b'/' || (windows && b == b'\\');
+    match raw.iter().rposition(|&b| sep(b)) {
+        Some(i) => i as u64 + 1,
+        None if windows && raw.len() >= 2 && raw[1] == b':' => 2,
+        None => 0,
+    }
+}
+
 static UNIQUE: AtomicU64 = AtomicU64::new(0);
 
 /// A process-unique number for temporary names: the process id in the high
@@ -390,6 +407,7 @@ pub(crate) fn symbols() -> Vec<(&'static str, *const u8)> {
         ("vstd_fs_create_dir", vstd_fs_create_dir as *const u8),
         ("vstd_fs_metadata", vstd_fs_metadata as *const u8),
         ("vstd_fs_sync_dir", vstd_fs_sync_dir as *const u8),
+        ("vstd_fs_parent_len", vstd_fs_parent_len as *const u8),
         ("vstd_fs_unique", vstd_fs_unique as *const u8),
         ("vstd_fs_read_dir", vstd_fs_read_dir as *const u8),
         ("vstd_fs_dir_next", vstd_fs_dir_next as *const u8),
