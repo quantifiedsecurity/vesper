@@ -934,6 +934,7 @@ fn compile_session_with_linkage<M: Module>(
             caller_slot: None,
             reuse_slots: BTreeMap::new(),
             register_locals: BTreeSet::new(),
+            split: BTreeMap::new(),
             current_call_slot: None,
             in_fip_fn: world.functions.get(&plan.entry).is_some_and(|f| f.fip),
             trace_fail: None,
