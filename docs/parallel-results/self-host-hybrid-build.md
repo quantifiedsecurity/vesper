@@ -234,6 +234,15 @@ branch's `vesper`, `main`'s and the hybrid.
    `src/main.rs` (lane 2's file in this wave), so it is left for after
    lane 2.
 
+6. **The Stage 1 self-hosted parser has no `pub`.** `pub fn a() -> i64 { 1 }`
+   gives a different node count from the seed parser in
+   `tests/self_host_front_end.rs` (`differential_over_repository_sources`),
+   so `crates/vesper-hybrid/modules` joins the skip list in
+   `tests/fixtures/self_host/driver.rs`, as the ports do. The same test
+   fails under Cargo on `main` for `crates/vesper-port-pilot/vesper/*.ves`,
+   which are not skipped; Bazel passes because those files are not in the
+   test's data. Not fixed here (Stage 1 lock).
+
 ## What is left
 
 - Bazel and macOS/Windows have not run locally (no Bazel on this host); the

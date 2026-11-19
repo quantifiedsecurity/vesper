@@ -34,8 +34,9 @@ fn hybrid() -> PathBuf {
 }
 
 fn which(name: &Path) -> Option<PathBuf> {
+    let suffixed = format!("{}{}", name.display(), std::env::consts::EXE_SUFFIX);
     std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(name))
+        .flat_map(|dir| [dir.join(name), dir.join(&suffixed)])
         .find(|p| p.is_file())
         .and_then(|p| p.canonicalize().ok())
 }
