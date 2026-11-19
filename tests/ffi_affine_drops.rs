@@ -501,7 +501,11 @@ fn other_aggregates_holding_a_handle_are_not_dropped_whole() {
     // temporary: only `Probe` and `Option[Probe]` are released implicitly.
     let e = refused("fn f() -> u64 eff [Ffi[Res]] { Res::res_open(3); 0 }");
     assert_eq!(e.kind, FfiErrorKind::Check, "{e}");
-    assert!(e.message.contains("only the handle itself or an `Option` of it"), "{e}");
+    assert!(
+        e.message
+            .contains("only the handle itself or an `Option` of it"),
+        "{e}"
+    );
 }
 
 #[test]

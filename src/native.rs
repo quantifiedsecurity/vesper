@@ -6858,6 +6858,12 @@ impl<M: Module> Codegen<'_, '_, M> {
             // `raise` never resumes: the handled body ends here, so what it
             // owns at the failing instruction is dropped.
             self.box_drop_abort(h.control.exits_depth)?;
+            // Those graphs are unwound: a failure the clause raises must not
+            // drop their boxes again. Each graph sets its position again at
+            // its next instruction.
+            for exit in self.exits.iter_mut().skip(h.control.exits_depth) {
+                exit.at = None;
+            }
         }
         let captures = self.copy_bindings(&h.captured, &h.captured_types)?;
         let old_vars = std::mem::replace(&mut self.vars, captures);

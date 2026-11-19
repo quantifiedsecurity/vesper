@@ -159,6 +159,13 @@ They cover an acyclic and a loop function, a box taken `sink` by the failing
 callee, boxes in struct fields and a `Box[dyn Trait]`, a handled body inside
 a loop, and unconsumed `sink` sequences, boxes and sequence-holding structs.
 
+**Review follow-up (in the part 4 PR).** After a local `Fail` handler
+drops what the handled body owns, the body's graphs no longer report an
+abort position, so a failure the clause raises again cannot drop those
+boxes twice. Three more tests in `tests/native_fail_exit_drops.rs` cover a
+re-raising clause and a box moved into a `Log` body that fails before and
+after consuming it (each freed exactly once).
+
 ## Part 4: drop imports for affine extern handles
 
 **Decision (user, 2026-11-19): drops perform `Ffi[Lib]`.** A drop import
