@@ -129,7 +129,9 @@ impl<M: Module> Codegen<'_, '_, M> {
         }
         for (name, kind) in crate::fip::seq_drop_plan(self.world, f) {
             let param = f.params.iter().any(|p| p.name == name);
-            if only.is_some_and(|names| param || !names.contains(&name)) {
+            // `only` names the slots a nested graph owns, its own `sink`
+            // parameters included when it is an inlined function.
+            if only.is_some_and(|names| !names.contains(&name)) {
                 continue;
             }
             let Some(&var) = self.vars.get(&name) else {
