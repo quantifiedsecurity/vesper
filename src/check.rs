@@ -50,6 +50,9 @@ pub struct World {
     /// Whether the module received the atomic prelude (`Atomic[T]`,
     /// `MemoryOrder`; [`crate::atomics`]).
     pub atomic_prelude: bool,
+    /// Whether the module received the scoped-worker prelude
+    /// (`parallel_for`; [`crate::atomics`]).
+    pub workers_prelude: bool,
     /// Second-class trait objects: `dyn` parameters, vtable stubs and the
     /// vtables the program needs (empty without `dyn`; §7.1).
     pub dyn_objects: crate::dyn_trait::DynObjects,
@@ -94,7 +97,14 @@ impl World {
                 .max(crate::integer_widths::module_end(&float_prelude))
                 .max(crate::integer_widths::module_end(&string_prelude)),
         );
-        w.atomic_prelude = !atomic_prelude.items.is_empty();
+        w.atomic_prelude = atomic_prelude
+            .items
+            .iter()
+            .any(|i| matches!(i, Item::Adt(a) if a.name == crate::atomics::ATOMIC_TYPE));
+        w.workers_prelude = atomic_prelude
+            .items
+            .iter()
+            .any(|i| matches!(i, Item::Function(f) if f.name == crate::atomics::PARALLEL_FOR));
         w.string_prelude = crate::strings::prelude_function_names(&string_prelude);
         w.float_prelude = float_prelude
             .items
@@ -727,6 +737,36 @@ impl Checker<'_> {
     }
     fn mode(&self, t: &Type) -> Mode {
         self.world.mode(t, &self.bounds)
+    }
+    /// Whether `t` is an opaque `.vsys` extern-type handle (§16.3), which
+    /// `crate::ffi_lowering` generates as a struct whose one field no source
+    /// identifier can spell.
+    /// Whether a value of `t` holds an opaque `.vsys` handle anywhere:
+    /// directly, or through type arguments, tuple items or ADT fields.
+    fn extern_handle(&self, t: &Type) -> bool {
+        self.holds_extern_handle(t, &mut BTreeSet::new())
+    }
+    fn holds_extern_handle(&self, t: &Type, seen: &mut BTreeSet<String>) -> bool {
+        match t {
+            Type::Named(n, args) => {
+                if args.iter().any(|a| self.holds_extern_handle(a, seen)) {
+                    return true;
+                }
+                if !seen.insert(n.clone()) {
+                    return false;
+                }
+                self.world.adts.get(n).is_some_and(|a| {
+                    a.variants.iter().any(|v| {
+                        v.fields.iter().any(|f| {
+                            f.name == crate::ffi_lowering::HANDLE_FIELD
+                                || self.holds_extern_handle(&f.ty, seen)
+                        })
+                    })
+                })
+            }
+            Type::Tuple(items) => items.iter().any(|i| self.holds_extern_handle(i, seen)),
+            _ => false,
+        }
     }
     fn declarations(&mut self) {
         for a in self.world.adts.values() {
@@ -1697,6 +1737,12 @@ impl Checker<'_> {
                 }
                 if matches!(op.as_str(), "==" | "!=") && self.mode(&common) == Mode::Linear {
                     self.error("E0302","equality cannot discharge linear obligations; compare copy fields and explicitly consume their owners",e.span.clone());
+                } else if matches!(op.as_str(), "==" | "!=") && self.extern_handle(&common) {
+                    self.error(
+                        "E0200",
+                        "extern type handles are opaque and cannot be compared; ask their library",
+                        e.span.clone(),
+                    );
                 }
                 if matches!(op.as_str(), "/" | "%") && integer(&common) && !self.nonzero(r, env) {
                     self.primitive_failure(env, e.span.clone());
