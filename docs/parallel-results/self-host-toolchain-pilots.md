@@ -95,7 +95,7 @@ batches, so setup is not counted (`CALLGRIND=1 scripts/bench.sh`).
 | --- | --- | --- | --- | --- |
 | span lookup (offset/position over a mixed-width file) | 1.48 (1.36-1.63) | 34.76M | 54.26M | 1.56 |
 | span index (build the line table) | 0.28 (0.24-0.32) | 10.31M | 2.67M | 0.26 |
-| span edits (check and apply an edit list) | 9.44 (6.72-11.40) | 0.40M | 2.17M | 5.39 |
+| span edits (check and apply 64 insertions) | 3.14 (2.74-4.49) | 0.92M | 3.52M | 3.82 |
 | lean term (print a depth-15 term) | 0.35 (0.31-0.39) | 1,401M | 416M | 0.30 |
 | lean module (print 400 definitions) | 0.39 (0.35-0.48) | 997M | 330M | 0.33 |
 | lean free (free references of a large term) | 1.96 (1.85-2.13) | 96.0M | 289.0M | 3.01 |
@@ -105,10 +105,16 @@ which is a SIMD scan, while Rust walks bytes. The printer is faster because
 Rust formats through `fmt::Write` and many small `write!` calls, while the port
 pushes into one pre-sized `String`.
 
-The edits workload is a few microseconds per operation, so the fixed cost of
-the export call and the encoding dominates. The edits gap went from 18x to
-5.4x Ir after `edits_apply` changed from building a `String` with `push_str` to
-`ChunkSeq::extend` plus Rust's `from_utf8` (see the gaps below).
+The edits workload checks and applies 64 insertions spread over a 64 KiB file
+(about 17 µs per operation in Rust), so the export call and the encoding are a
+large part of its cost. An earlier version of the benchmark picked only 6
+edits because its offsets were not sorted; the numbers in gap 4 come from
+that smaller batch.
+
+The port encodes edits and diagnostics only as far as the budgets allow: the
+limits, source size and counts are checked first, and the encoding stops
+where the check is sure to fail, so a rejected batch with a huge expected
+text is not copied.
 
 Not at parity: span lookup, span edits and lean free. So Rust stays the
 default (the user's parity rule), and the seeds stay what the compiler uses.
@@ -153,8 +159,8 @@ Each gap has a minimal shape and where the port works around it.
 
 4. **`String::push_str` copies byte by byte.** It does not lower to the
    copy builtin. Together with gap 5, switching `edits_apply` from `push_str`
-   into a `String` to `ChunkSeq::extend` cut the edits workload from 5.08M to
-   2.17M Ir. Workaround: `edits_apply` returns `ChunkSeq[u8]`.
+   into a `String` to `ChunkSeq::extend` cut the 6-edit workload from 5.08M
+   to 2.17M Ir. Workaround: `edits_apply` returns `ChunkSeq[u8]`.
 
 5. **The export binding validates returned `String`s again.** A `String`
    result is checked with `from_utf8` in the generated binding, though Vesper

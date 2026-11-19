@@ -45,6 +45,7 @@ macro_rules! workloads {
                 pub index: LineIndex,
                 pub offsets: Vec<usize>,
                 pub text: Arc<str>,
+                pub edits: Vec<SourceEdit>,
             }
 
             pub fn input() -> Input {
@@ -61,11 +62,35 @@ macro_rules! workloads {
                         offsets.push(at);
                     }
                 }
+                let edits = spread_edits(&offsets);
                 Input {
                     index,
                     offsets,
                     text,
+                    edits,
                 }
+            }
+
+            /// 64 insertions spread over the file: the offsets are random, so
+            /// sort them first and keep ones at least 8 bytes apart.
+            fn spread_edits(offsets: &[usize]) -> Vec<SourceEdit> {
+                let mut sorted = offsets.to_vec();
+                sorted.sort_unstable();
+                sorted.dedup();
+                let step = (sorted.len() / 64).max(1);
+                let mut edits: Vec<SourceEdit> = Vec::new();
+                for &at in sorted.iter().step_by(step) {
+                    let spaced = edits.last().is_none_or(|e| at > e.span.start + 8);
+                    if spaced && edits.len() < 64 {
+                        edits.push(SourceEdit {
+                            span: ByteSpan { start: at, end: at },
+                            expected: String::new(),
+                            replacement: "/* edit */".into(),
+                        });
+                    }
+                }
+                assert_eq!(edits.len(), 64, "the edits workload needs 64 edits");
+                edits
             }
 
             pub fn lookup(input: &Input) -> u64 {
@@ -84,21 +109,12 @@ macro_rules! workloads {
             }
 
             pub fn edits(input: &Input) -> u64 {
-                let mut edits = Vec::new();
-                let mut last = 0;
-                for &at in input.offsets.iter().take(4 * 64) {
-                    if at > last + 8 && edits.len() < 64 {
-                        edits.push(SourceEdit {
-                            span: ByteSpan { start: at, end: at },
-                            expected: String::new(),
-                            replacement: "/* edit */".into(),
-                        });
-                        last = at;
-                    }
-                }
-                edits.sort_by_key(|e| e.span.start);
-                edits.dedup_by_key(|e| e.span.start);
-                let batch = SourceEdits::new(&input.index, &edits, Limits::default()).unwrap();
+                // Each edit scans the 64 KiB file twice: 8 MiB of work for 64.
+                let limits = Limits {
+                    max_work: 16 * 1024 * 1024,
+                    ..Limits::default()
+                };
+                let batch = SourceEdits::new(&input.index, &input.edits, limits).unwrap();
                 black_box(batch.apply().unwrap().len() as u64)
             }
         }

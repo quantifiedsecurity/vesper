@@ -431,7 +431,12 @@ impl SourceEdits {
     }
     #[cfg(vesper_port)]
     pub fn new(index: &LineIndex, edits: &[SourceEdit], limits: Limits) -> Result<Self, Error> {
-        let (words, pool) = port::encode_edits(edits);
+        // The checks that come before any edit is read, so that a rejected
+        // batch is not encoded first.
+        limits.validate()?;
+        bound(index.text.len(), limits.max_source_bytes, Resource::Source)?;
+        bound(edits.len(), limits.max_edits, Resource::Edits)?;
+        let (words, pool) = port::encode_edits(index.text.len(), edits, limits);
         let output_bytes = port::edits_check(
             &index.text,
             &index.lines,
@@ -652,7 +657,12 @@ impl Diagnostics {
     }
     #[cfg(vesper_port)]
     fn check(index: &LineIndex, data: &[DiagnosticData], limits: Limits) -> Result<(), Error> {
-        let (words, pool) = port::encode_diagnostics(data);
+        // The checks that come before any diagnostic is read, so that a
+        // rejected set is not encoded first.
+        limits.validate()?;
+        bound(index.text.len(), limits.max_source_bytes, Resource::Source)?;
+        bound(data.len(), limits.max_diagnostics, Resource::Diagnostics)?;
+        let (words, pool) = port::encode_diagnostics(index.text.len(), data, limits);
         port::diagnostics_check(
             &index.text,
             &index.lines,
