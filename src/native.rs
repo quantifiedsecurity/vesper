@@ -1334,6 +1334,8 @@ fn define_instances_observed_with_trace<M: Module>(
                 handlers: vec![],
                 exits: vec![],
                 inline_depth: 0,
+                cycle_depth: 0,
+                tail_call: false,
                 fail_record: fail_record.map(|record| {
                     (
                         record,
@@ -2085,6 +2087,8 @@ struct HandlerControl {
     selector: Variable,
     dispatch: ir::Block,
     returns: Rc<RefCell<Vec<ir::Block>>>,
+    /// [`Codegen::cycle_depth`] where the `handle` is installed.
+    cycle_depth: usize,
 }
 #[derive(Clone, Default)]
 struct NativeInfo {
@@ -2162,6 +2166,14 @@ struct Codegen<'a, 'b, M: Module> {
     /// ([`crate::ir::Op::Exit`]) by lowered function or closure name.
     exits: Vec<ExitTarget>,
     inline_depth: usize,
+    /// How many loops of the graphs being emitted enclose the current
+    /// block. A handler records its own depth; an operation performed at a
+    /// greater depth can run again before its earlier resumption returns.
+    cycle_depth: usize,
+    /// The `Op::Indirect` being lowered is a handler clause's tail call
+    /// (`emit(v, k) => k(v)`): a resumption there returns the clause's
+    /// result unchanged ([`Codegen::invoke_continuation`]).
+    tail_call: bool,
     /// The failure-record pointer of a `fail_only` function being compiled,
     /// with the error type of each of its `Fail` instances.
     fail_record: Option<(ir::Value, Vec<Type>)>,
@@ -2534,6 +2546,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         args: &[Arg],
         site: &Expr,
     ) -> Result<ir::Value, String> {
+        let tail = std::mem::take(&mut self.tail_call);
         let normalized = crate::numeric::default_type(ty);
         let ty = &normalized;
         if self.inline_depth >= 64 {
@@ -2604,7 +2617,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                     self.invoke_closure_body(&closure, name, params, &prepared)
                 }
                 ClosureTarget::Continuation { entry, control } => {
-                    self.invoke_continuation(*entry, control, result, &prepared)
+                    self.invoke_continuation(*entry, control, result, &prepared, tail)
                 }
             };
             self.inline_depth -= 1;
@@ -2630,11 +2643,43 @@ impl<M: Module> Codegen<'_, '_, M> {
         control: &HandlerControl,
         result: &Type,
         args: &[Arg],
+        tail: bool,
     ) -> Result<ir::Value, String> {
         let values = args
             .iter()
             .map(|a| self.expr(&a.expr))
             .collect::<Result<Vec<_>, _>>()?;
+        let layout = Layout::of(self.world, result)?;
+        let result_type = if layout.aggregate() {
+            self.m.target_config().pointer_type()
+        } else {
+            scalar(result, &[])?
+        };
+        if tail {
+            // `k(v)` is the clause's result, which is the value of the rest
+            // of the `handle`: resume with the clause's own return selector,
+            // so the rest returns straight to whoever the clause returns to.
+            // Nothing is saved, so the operation may run again (from a loop
+            // of the handled body) before this resumption returns.
+            self.jump(
+                entry,
+                &values
+                    .into_iter()
+                    .map(ir::BlockArg::from)
+                    .collect::<Vec<_>>(),
+            );
+            let unreachable = self.b.create_block();
+            self.b.append_block_param(unreachable, result_type);
+            self.b.switch_to_block(unreachable);
+            return Ok(self.b.block_params(unreachable)[0]);
+        }
+        if self.cycle_depth > control.cycle_depth {
+            // The return point and the clause's locals below live in one
+            // frame slot per operation site; a nested resumption from the
+            // next loop iteration would overwrite them before this one
+            // returns.
+            return Err(crate::native_handlers::LOOP_RESUME_REFUSAL.into());
+        }
         let saved = self.b.create_sized_stack_slot(ir::StackSlotData::new(
             ir::StackSlotKind::ExplicitSlot,
             8,
@@ -2643,15 +2688,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         let selector = self.use_var(control.selector);
         self.b.ins().stack_store(selector, saved, 0);
         let returned = self.b.create_block();
-        let layout = Layout::of(self.world, result)?;
-        self.b.append_block_param(
-            returned,
-            if layout.aggregate() {
-                self.m.target_config().pointer_type()
-            } else {
-                scalar(result, &[])?
-            },
-        );
+        self.b.append_block_param(returned, result_type);
         let index = control.returns.borrow().len();
         control.returns.borrow_mut().push(returned);
         let selected = self.b.ins().iconst(types::I64, index as i64);
@@ -3098,6 +3135,14 @@ impl<M: Module> Codegen<'_, '_, M> {
             postorder
         });
         order.extend(unreached);
+        // Blocks on a cycle of this graph (a loop body): an operation there
+        // can be performed again before its earlier resumption returns.
+        let cyclic = petgraph::algo::tarjan_scc(&live)
+            .into_iter()
+            .filter(|c| c.len() > 1 || live.contains_edge(c[0], c[0]))
+            .flatten()
+            .collect::<BTreeSet<_>>();
+        let base_cycle_depth = self.cycle_depth;
         // Box drop elaboration (`fip::elaborate_non_fip_drops`) assumes a
         // forward-only graph without early exits; refuse rather than leak.
         if f.blocks
@@ -3149,6 +3194,7 @@ impl<M: Module> Codegen<'_, '_, M> {
         });
         for i in order {
             let block = &f.blocks[i];
+            self.cycle_depth = base_cycle_depth + usize::from(cyclic.contains(&i));
             if self.b.current_block() != Some(blocks[i]) {
                 self.b.switch_to_block(blocks[i]);
             }
@@ -3460,6 +3506,18 @@ impl<M: Module> Codegen<'_, '_, M> {
                             })
                             .collect::<Result<Vec<_>, String>>()?;
                         let callable = substitute(&f.values[callee], &self.generic_vars);
+                        // A handler clause that ends in this call returns its
+                        // value unchanged, and drops nothing after it.
+                        self.tail_call = f.name.starts_with("$handler_clause_")
+                            && inst_idx + 1 == block.instructions.len()
+                            && returns_unchanged(f, &block.terminator, inst.dest)
+                            && f.box_drops_after_inst.is_empty()
+                            && f.box_drops_before_inst.is_empty()
+                            && self
+                                .exits
+                                .last()
+                                .is_some_and(|x| x.drops.is_empty() && x.replace.is_empty())
+                            && temporaries.is_empty();
                         self.invoke_tag(
                             values[callee],
                             &callable,
@@ -3791,6 +3849,7 @@ impl<M: Module> Codegen<'_, '_, M> {
             }
         }
         self.exits.pop();
+        self.cycle_depth = base_cycle_depth;
         Ok(())
     }
     /// `return value` from the graph lowered as `owner` (`Op::Exit`).
@@ -5054,6 +5113,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                         selector,
                         dispatch,
                         returns: Rc::new(RefCell::new(vec![exit])),
+                        cycle_depth: self.cycle_depth,
                     }
                 };
                 let captured = self.vars.clone();
@@ -7748,4 +7808,33 @@ mod far_call_tests {
             ));
         }
     }
+}
+
+/// `terminator` returns `value` from the graph `f` unchanged: directly, or
+/// through blocks that only pass their one parameter on (the join of an `if`
+/// or `match` whose arm ends in the value).
+fn returns_unchanged(
+    f: &crate::ir::FunctionIr,
+    terminator: &crate::ir::Terminator,
+    value: crate::ir::ValueId,
+) -> bool {
+    use crate::ir::Terminator;
+    let (mut terminator, mut value) = (terminator, value);
+    for _ in 0..=f.blocks.len() {
+        match terminator {
+            Terminator::Return(r) => return *r == value,
+            Terminator::Jump { block, args } => {
+                let target = &f.blocks[*block];
+                if args.as_slice() != [value]
+                    || target.params.len() != 1
+                    || !target.instructions.is_empty()
+                {
+                    return false;
+                }
+                (terminator, value) = (&target.terminator, target.params[0]);
+            }
+            _ => return false,
+        }
+    }
+    false
 }
