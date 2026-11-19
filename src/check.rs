@@ -738,6 +738,36 @@ impl Checker<'_> {
     fn mode(&self, t: &Type) -> Mode {
         self.world.mode(t, &self.bounds)
     }
+    /// Whether `t` is an opaque `.vsys` extern-type handle (§16.3), which
+    /// `crate::ffi_lowering` generates as a struct whose one field no source
+    /// identifier can spell.
+    /// Whether a value of `t` holds an opaque `.vsys` handle anywhere:
+    /// directly, or through type arguments, tuple items or ADT fields.
+    fn extern_handle(&self, t: &Type) -> bool {
+        self.holds_extern_handle(t, &mut BTreeSet::new())
+    }
+    fn holds_extern_handle(&self, t: &Type, seen: &mut BTreeSet<String>) -> bool {
+        match t {
+            Type::Named(n, args) => {
+                if args.iter().any(|a| self.holds_extern_handle(a, seen)) {
+                    return true;
+                }
+                if !seen.insert(n.clone()) {
+                    return false;
+                }
+                self.world.adts.get(n).is_some_and(|a| {
+                    a.variants.iter().any(|v| {
+                        v.fields.iter().any(|f| {
+                            f.name == crate::ffi_lowering::HANDLE_FIELD
+                                || self.holds_extern_handle(&f.ty, seen)
+                        })
+                    })
+                })
+            }
+            Type::Tuple(items) => items.iter().any(|i| self.holds_extern_handle(i, seen)),
+            _ => false,
+        }
+    }
     fn declarations(&mut self) {
         for a in self.world.adts.values() {
             self.valid_generics(&a.generics, a.span.clone());
@@ -1707,6 +1737,12 @@ impl Checker<'_> {
                 }
                 if matches!(op.as_str(), "==" | "!=") && self.mode(&common) == Mode::Linear {
                     self.error("E0302","equality cannot discharge linear obligations; compare copy fields and explicitly consume their owners",e.span.clone());
+                } else if matches!(op.as_str(), "==" | "!=") && self.extern_handle(&common) {
+                    self.error(
+                        "E0200",
+                        "extern type handles are opaque and cannot be compared; ask their library",
+                        e.span.clone(),
+                    );
                 }
                 if matches!(op.as_str(), "/" | "%") && integer(&common) && !self.nonzero(r, env) {
                     self.primitive_failure(env, e.span.clone());

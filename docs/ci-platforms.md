@@ -42,6 +42,25 @@ minute compiler build; the 60 minute job timeout is a backstop. When a shard
 passes about 35 minutes, move a shard boundary in the script, or add a shard
 there and in the `ports` matrix.
 
+Nearly all of the harness's time is the compiler compiling Vesper sources:
+the Rust tests themselves finish in seconds. So one `Vesper ports compiler`
+job builds `vesper` once with the `port-compiler` Cargo profile (release
+optimizations without thin LTO, debug assertions and overflow checks kept on)
+and every shard downloads that binary instead of building a debug compiler
+of its own (#1103).
+
+On pull requests the plan job also picks the ports to test
+(`scripts/ci/port_harness_selection.py`, `VESPER_PORT_HARNESS_CRATES`). If
+every changed file is documentation or sits inside workspace crates outside
+the compiler's dependency closure, only those crates' blocks of the harness
+and the blocks of the crates that depend on them run; a documentation-only
+change runs none. Any other change (the compiler, std packages, a seed copy
+the compiler links, the harness, CI, the root manifests or lockfile) runs
+every port, and so do pushes to main, merge queue groups and the nightly.
+Each block of the script names its crate directory with `if ported vesper-x;
+then ... fi` or `skip_port vesper-x || ...`; a line without a guard always
+runs.
+
 The native executable cases are shared with `scripts/test-native-host.sh`;
 `scripts/ci/test-native-executables.sh` runs them with the Cargo-built compiler.
 Linux retains general source-macro, formatting, proof, and workspace tests.

@@ -335,3 +335,13 @@ find-msvc-tools = "=0.1.15"
 
 [profile.release]
 lto = "thin"
+
+# The compiler the CI port harness compiles every port with (#1103):
+# optimized, but with release's thin LTO off so it builds quickly, and with
+# debug assertions and overflow checks kept on like the dev profile.
+[profile.port-compiler]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug-assertions = true
+overflow-checks = true

@@ -64,10 +64,18 @@ class PlatformWorkflowTests(unittest.TestCase):
             self.assertEqual(step["env"]["VESPER_PORT_HARNESS_SCOPE"], "abi")
         ports = jobs["ports"]
         self.assertEqual(ports["runs-on"], "ubuntu-latest")
-        self.assertEqual(ports["needs"], "plan")
+        self.assertEqual(ports["needs"], ["plan", "ports-compiler"])
         self.assertEqual(ports["steps"][0]["run"], 'test "$PLAN_RESULT" = success')
         step = next(s for s in ports["steps"] if "test-port-harness.sh" in s.get("run", ""))
         self.assertNotIn("VESPER_PORT_HARNESS_SCOPE", step.get("env", {}))
+        # One optimized compiler, built once and shared by every shard (#1103).
+        compiler = jobs["ports-compiler"]
+        self.assertEqual(compiler["needs"], "plan")
+        build = next(s for s in compiler["steps"] if "cargo build" in s.get("run", ""))
+        self.assertIn("--profile port-compiler --bin vesper", build["run"])
+        self.assertEqual(step["env"]["VESPER_PORT_COMPILER"], "${{ runner.temp }}/port-compiler/vesper")
+        self.assertEqual(step["env"]["VESPER_PORT_HARNESS_CRATES"], "${{ needs.plan.outputs.ports }}")
+        self.assertNotIn("cargo build", "\n".join(s.get("run", "") for s in ports["steps"]))
         # Seven shards (#1019, #1100), each running its own part of the harness.
         shards = [str(n) for n in range(1, 8)]
         self.assertEqual(ports["strategy"]["matrix"]["shard"], shards)
