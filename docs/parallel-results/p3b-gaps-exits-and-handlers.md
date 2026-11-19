@@ -5,9 +5,10 @@ Claim #1095. Prompt:
 Base `9305b24` (origin/main with the wave plan #1098), merged with
 origin/main `31f81b9` (#1076) before merging.
 
-This report covers parts 1 and 2 (PR #1105). Parts 3 (Box drops on `Fail`
-exits, specialized `sink` leaks, after #1076) and 4 (affine extern-type drop
-imports, after #1077) follow in their own PRs and extend this report.
+Parts 1 and 2 merged in PR #1105 (`c9bd17a`; the bootstrap-stage1
+workflow passed on that branch). Part 3 (Box drops on `Fail` exits,
+specialized `sink` leaks) is the next PR, based on `c9bd17a`. Part 4
+(affine extern-type drop imports) follows and extends this report.
 
 ## Part 1: bit builtins on a reassigned `let mut`
 
