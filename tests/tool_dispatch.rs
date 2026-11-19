@@ -193,9 +193,18 @@ fn external_subcommands_pass_streams_and_status_through() {
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    // A non-executable file of the same name earlier on PATH is skipped.
+    let shadow = dir.join("shadow");
+    fs::create_dir_all(&shadow).unwrap();
+    fs::write(shadow.join("vesper-echo-dispatch"), "not a program\n").unwrap();
+    fs::rename(&script, dir.join("later-echo")).unwrap();
+    let later = dir.join("later");
+    fs::create_dir_all(&later).unwrap();
+    fs::rename(dir.join("later-echo"), later.join("vesper-echo-dispatch")).unwrap();
+    let path = env::join_paths([shadow, later, "/usr/bin".into(), "/bin".into()]).unwrap();
     let mut child = Command::new(&exe)
         .args(["echo-dispatch", "a b", "--json", ""])
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

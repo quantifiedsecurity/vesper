@@ -53,7 +53,7 @@ pub fn locate(tool: &str) -> Option<PathBuf> {
                 dir.join(&name),
                 dir.join("../crates/vesper-tools/bin").join(&name),
             ] {
-                if candidate.is_file() {
+                if executable(&candidate) {
                     return Some(candidate);
                 }
             }
@@ -62,7 +62,24 @@ pub fn locate(tool: &str) -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
     env::split_paths(&path)
         .map(|dir| dir.join(&name))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| executable(candidate))
+}
+
+/// A regular file the host would run: on Unix, one with an execute bit, so
+/// a stray non-executable `vesper-<tool>` cannot shadow a later PATH entry.
+fn executable(path: &Path) -> bool {
+    let Ok(meta) = path.metadata() else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
 }
 
 /// The error for a known tool whose binary is missing.
