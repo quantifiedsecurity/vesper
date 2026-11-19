@@ -576,3 +576,53 @@ fn run() -> u64 eff [Fail[RuntimeError], Fail[ArithOverflow]] {
         near(u64::MAX - 5, 10).wrapping_add(near(4, 10))
     );
 }
+
+#[test]
+fn loops_that_own_boxes_are_guarded() {
+    // Each iteration replaces the box `c` (dropping the old one), so the
+    // loop carries box drops; the fast copy reclaims them at the same
+    // points, and a short slice still faults in the checked copy.
+    let source = program(
+        "struct Counter { n: u64 }
+fn owned(in s: Slice[u64], n: u64) -> u64 eff [Fail[RuntimeError], Fail[ArithOverflow]] {
+    let mut c: Box[Counter] = Box::new(Counter { n: 0 });
+    let mut acc: u64 = 0;
+    for i in 0..n {
+        acc = wrapping_add(acc, s[i]);
+        c = Box::new(Counter { n: wrapping_add(acc, i) });
+    }
+    let Box(last) = c;
+    wrapping_add(acc, last.n)
+}
+fn run() -> u64 eff [Fail[RuntimeError], Fail[ArithOverflow]] {
+    let mut s: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    fill(inout s, 12);
+    owned(in s.as_slice(), 12)
+}",
+    );
+    let program_ir = hoisted(&source);
+    let f = &program_ir.functions["owned"];
+    assert!(
+        !f.box_drops_before_inst.is_empty()
+            || !f.box_drops_after_inst.is_empty()
+            || !f.box_drops_before_term.is_empty(),
+        "the loop owns boxes"
+    );
+    assert_eq!(guards(&program_ir, "owned"), 1);
+    assert_eq!(unchecked(&program_ir, "owned"), 1);
+    // Box drops balance in both JIT configurations.
+    let c = accepted(&source);
+    for optimize in [true, false] {
+        vesper::fip::native_runtime::reset_counts();
+        native::jit_with_options(&c.world, "main", optimize).unwrap();
+        assert_eq!(
+            vesper::fip::native_runtime::alloc_count(),
+            vesper::fip::native_runtime::free_count(),
+            "optimize {optimize}: boxes leaked or freed twice"
+        );
+    }
+    let acc: u64 = (0..12).map(|i| i * 3).sum();
+    assert_eq!(differential("bounds_boxes", &source), acc + acc + 11);
+    let short = source.replace("fill(inout s, 12);", "fill(inout s, 7);");
+    assert_eq!(differential("bounds_boxes_short", &short), 7777);
+}

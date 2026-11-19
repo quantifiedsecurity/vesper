@@ -23,13 +23,16 @@
 //! faults at the same iteration with the same prior effects.
 //!
 //! The pass is conservative. It skips a loop that contains a closure, a
-//! handler or an indirect call, carries Box drop or reuse bookkeeping, lets
+//! handler or an indirect call, carries `@fip` reuse bookkeeping, lets
 //! a value defined inside it escape, or is entered other than through its
 //! header. It hoists only sequences named by a place that no instruction in
 //! the loop writes, rebinds, moves or passes other than `in`, except element
-//! accesses (`get`/`set`/`try_get`/`try_set`), which never resize.
+//! accesses (`get`/`set`/`try_get`/`try_set`), which never resize, and
+//! whose boxes no drop in the loop reclaims. A loop that owns boxes keeps
+//! its drops: the fast copy reclaims them at the same points.
 use crate::ast::{Pass, PatternKind, Type};
 use crate::check::Place;
+use crate::fip::FipDrop;
 use crate::ir::{Argument, FunctionIr, Instruction, Op, Program, Terminator, ValueId};
 use crate::seq::{Access, IndexForm, SeqOp};
 use std::collections::{BTreeMap, BTreeSet};
@@ -508,11 +511,7 @@ fn version(f: &mut FunctionIr, h: usize) -> bool {
         if b != h && preds[b].iter().any(|p| !blocks.contains(p)) {
             return false;
         }
-        if f.fip_join_slots.contains_key(&b)
-            || f.box_drops_before_inst.contains_key(&b)
-            || f.box_drops_after_inst.contains_key(&b)
-            || f.box_drops_before_term.contains_key(&b)
-        {
+        if f.fip_join_slots.contains_key(&b) {
             return false;
         }
     }
@@ -895,6 +894,9 @@ fn single_binding(f: &FunctionIr, name: &str) -> bool {
 /// Whether nothing in `blocks` can change the length of a sequence rooted
 /// at `root`.
 fn stable(f: &FunctionIr, blocks: &BTreeSet<usize>, root: &str) -> bool {
+    if box_drops(f, blocks).any(|p| p.root == root) {
+        return false;
+    }
     for &b in blocks {
         for i in &f.blocks[b].instructions {
             let rooted = |a: &Argument| a.place.as_ref().is_some_and(|p| p.root == root);
@@ -923,6 +925,27 @@ fn stable(f: &FunctionIr, blocks: &BTreeSet<usize>, root: &str) -> bool {
         }
     }
     true
+}
+
+/// The places whose boxes the drop bookkeeping of `blocks` reclaims (a
+/// replaced field, a destructured or dead local). A sequence at or inside
+/// such a place may be freed there, so it is never hoisted.
+fn box_drops<'a>(
+    f: &'a FunctionIr,
+    blocks: &'a BTreeSet<usize>,
+) -> impl Iterator<Item = &'a Place> {
+    blocks.iter().flat_map(move |b| {
+        let inst = |m: &'a BTreeMap<usize, Vec<(usize, FipDrop)>>| {
+            m.get(b).into_iter().flatten().map(|(_, d)| d)
+        };
+        inst(&f.box_drops_before_inst)
+            .chain(inst(&f.box_drops_after_inst))
+            .chain(f.box_drops_before_term.get(b).into_iter().flatten())
+            .filter_map(|d| match d {
+                FipDrop::Place(p, _) => Some(p),
+                _ => None,
+            })
+    })
 }
 
 /// Adds the guard to `pre` and a fast copy of the loop `blocks`.
@@ -1179,6 +1202,28 @@ fn clone_loop(
         }
     }
     f.blocks.extend(copies);
+    // The copy reclaims the same boxes at the same points: its instructions
+    // keep their order, and only block parameters get fresh values.
+    let map_drop = |d: &FipDrop| {
+        let mut d = d.clone();
+        match &mut d {
+            FipDrop::Value(v, _) | FipDrop::OtherFields { value: v, .. } => map_value(v),
+            FipDrop::Place(..) => {}
+        }
+        d
+    };
+    for (&b, &copy) in &block_map {
+        for m in [&mut f.box_drops_before_inst, &mut f.box_drops_after_inst] {
+            if let Some(drops) = m.get(&b) {
+                let drops = drops.iter().map(|(k, d)| (*k, map_drop(d))).collect();
+                m.insert(copy, drops);
+            }
+        }
+        if let Some(drops) = f.box_drops_before_term.get(&b) {
+            let drops = drops.iter().map(map_drop).collect();
+            f.box_drops_before_term.insert(copy, drops);
+        }
+    }
     for (s, from, token) in exit_edges {
         f.blocks[s].incoming_tokens.push((from, token));
     }
@@ -1358,12 +1403,7 @@ fn only_access_receivers(
 /// The hoistable sequence headers of `f` ([`HeaderHoist`]); each read is
 /// hoisted out of the outermost loop that keeps it stable.
 pub fn header_hoists(f: &FunctionIr) -> Vec<HeaderHoist> {
-    if !f.fip_join_slots.is_empty()
-        || !f.box_drops_before_inst.is_empty()
-        || !f.box_drops_after_inst.is_empty()
-        || !f.box_drops_before_term.is_empty()
-        || !f.fip_call_slots.is_empty()
-    {
+    if !f.fip_join_slots.is_empty() || !f.fip_call_slots.is_empty() {
         return vec![];
     }
     let reached = reached(f);
@@ -1515,6 +1555,9 @@ fn parse_place(place: &str) -> Place {
 /// that overlaps it, no operation that resizes it, and no loan of it other
 /// than `in`. Writing a disjoint field of the same root is allowed.
 fn stable_place(f: &FunctionIr, blocks: &BTreeSet<usize>, place: &Place) -> bool {
+    if box_drops(f, blocks).any(|p| p.overlaps(place)) {
+        return false;
+    }
     let lent =
         |a: &Argument| a.pass != Pass::In && a.place.as_ref().is_some_and(|p| p.overlaps(place));
     blocks.iter().all(|&b| {
