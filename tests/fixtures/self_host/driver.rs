@@ -383,6 +383,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("tests/fixtures/ffi_handles")
                     // Port P3b lane 5 (#1067): the prism-h3 port uses `use` (#880).
                     || path.ends_with("crates/vesper-prism-h3/vesper")
+                    // Port P3b lane 8 (#1070): the Kinetic port uses `use` (#880).
+                    || path.ends_with("crates/vesper-kinetic/vesper")
                 {
                     continue;
                 }
