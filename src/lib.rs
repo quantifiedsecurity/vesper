@@ -10,6 +10,7 @@ pub use vesper_pulse::frames;
 #[cfg(target_os = "linux")]
 pub use vesper_pulse::{io_driver, scheduler};
 pub use vesper_syntax::{lexer, parser};
+pub mod atomic_file;
 pub mod atomics;
 pub mod bounds_hoist;
 pub mod capability_effects;
@@ -43,6 +44,9 @@ pub mod native_verifiers;
 pub mod optimize;
 pub mod packages;
 pub mod pact_frontend;
+/// `vesper proof-audit` and the Lean replay shared with `verify` and the
+/// `vesper-publish` tool (crates/vesper-tools).
+pub mod proof_commands;
 pub mod regions;
 pub mod runtime;
 pub mod seq;
