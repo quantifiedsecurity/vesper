@@ -901,9 +901,6 @@ pub(super) fn placed(pointers: &HomePointers, id: ValueId) -> bool {
 /// its storage: those uses write through an address.
 #[derive(Clone, Debug)]
 pub(super) struct Split {
-    /// The local's own variable when it was split: a later binding of the
-    /// same name (a closure body's local) is a different local.
-    pub(super) base: Variable,
     pub(super) ty: Type,
     pub(super) leaves: Vec<SplitLeaf>,
 }
@@ -943,10 +940,9 @@ pub(super) fn split_words(world: &World, ty: &Type) -> Option<Vec<(Vec<String>, 
     ) -> bool {
         match &layout.kind {
             LayoutKind::Scalar => {
+                // A unit field has no word to keep, so its reads and writes
+                // would have nothing to name: such aggregates stay in memory.
                 let ty = crate::numeric::default_type(&layout.ty);
-                if ty == Type::unit() {
-                    return true;
-                }
                 let name = ty.name();
                 let word = matches!(&ty, Type::Named(_, args) if args.is_empty())
                     && (crate::numeric::is_integer_name(name)
@@ -1198,11 +1194,10 @@ fn cyclic_blocks(f: &FunctionIr) -> BTreeSet<usize> {
 }
 
 impl<M: Module> Codegen<'_, '_, M> {
-    /// Declares the word variables of split local `name` of type `ty`, all
-    /// zero ([`Split`]).
+    /// Declares the word variables of the split local whose own variable is
+    /// `base`, of type `ty`, all zero ([`Split`]).
     pub(super) fn split_declare(
         &mut self,
-        name: &str,
         ty: &Type,
         base: Variable,
         reads: &[Vec<String>],
@@ -1226,9 +1221,8 @@ impl<M: Module> Codegen<'_, '_, M> {
             });
         }
         self.split.insert(
-            name.to_owned(),
+            base.as_u32(),
             Split {
-                base,
                 ty: ty.clone(),
                 leaves,
             },
@@ -1237,9 +1231,7 @@ impl<M: Module> Codegen<'_, '_, M> {
     }
     /// The split local `name`, when the name still denotes it.
     pub(super) fn split_of(&self, name: &str) -> Option<&Split> {
-        self.split
-            .get(name)
-            .filter(|s| self.vars.get(name) == Some(&s.base))
+        self.split.get(&self.vars.get(name)?.as_u32())
     }
     /// The root and field path of place expression `e` when its root is a
     /// split local.

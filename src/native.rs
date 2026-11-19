@@ -2176,7 +2176,9 @@ struct Codegen<'a, 'b, M: Module> {
     register_locals: BTreeSet<u32>,
     /// Copy-struct locals kept as one variable per word on the optimize
     /// path ([`aggregates::Split`]).
-    split: BTreeMap<String, aggregates::Split>,
+    /// Keyed by the local's own variable, so a specialized callee's local
+    /// of the same name is a different entry.
+    split: BTreeMap<u32, aggregates::Split>,
     /// Selected caller-slot source for the active `Op::Call`, if optimized by Stage 4.
     current_call_slot: Option<crate::fip::CallSlot>,
     /// True while emitting code for an `@fip` function (prevents emitting non-FIP drops/frees).
@@ -2995,9 +2997,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                 self.vars.insert(n.clone(), var);
                 self.local_types.insert(n.clone(), ty.clone());
                 if let Some(reads) = split_ok.get(n) {
-                    self.split_declare(n, &ty, var, reads)?;
-                } else {
-                    self.split.remove(n);
+                    self.split_declare(&ty, var, reads)?;
                 }
                 var
             };
