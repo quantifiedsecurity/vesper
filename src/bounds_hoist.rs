@@ -999,6 +999,8 @@ fn clone_loop(
     // One guard per receiver and index form, each taking the previous one's
     // result.
     let mut previous: Option<ValueId> = None;
+    let mut guards = vec![];
+    let mut token = before;
     for (k, r) in receivers.iter().enumerate() {
         let v = fresh_value(f, r.read.ty.clone());
         guard_insts.push(Instruction {
@@ -1035,6 +1037,8 @@ fn clone_loop(
                     let c = fresh_value(f, u64_ty.clone());
                     guard_insts.push(Instruction {
                         dest: c,
+                        token: constant.token.map(|_| (before, before)),
+                        fallible: false,
                         ..(**constant).clone()
                     });
                     c
@@ -1047,7 +1051,16 @@ fn clone_loop(
         }
         let last = k + 1 == receivers.len();
         let guard = fresh_value(f, Type::named("bool"));
-        guard_insts.push(Instruction {
+        // Each guard is a state action of its own: the token chain runs
+        // from the preheader's token through every guard to `guard_token`.
+        let input = token;
+        token = if last {
+            guard_token
+        } else {
+            next_token += 1;
+            next_token - 1
+        };
+        guards.push(Instruction {
             dest: guard,
             op: Op::Seq {
                 op: SeqOp::BoundsGuard {
@@ -1062,11 +1075,13 @@ fn clone_loop(
             },
             ty: Type::named("bool"),
             span: span.clone(),
-            token: Some((before, if last { guard_token } else { before })),
+            token: Some((input, token)),
             fallible: false,
         });
         previous = Some(guard);
     }
+    // The reads and constants first, then the guards.
+    guard_insts.extend(guards);
     let guard = previous.expect("a versioned loop hoists a receiver");
     // Fresh blocks, block parameters and tokens for the copy. Instructions
     // keep their value ids: the native backend keeps each IR value in one
@@ -1217,10 +1232,11 @@ pub struct HeaderHoist {
 /// A borrowed view's header lives in the caller and its buffer cannot be
 /// resized while it is lent, and the place calculus keeps distinct
 /// parameters from overlapping (§5), so only the function itself can change
-/// it: by writing, rebinding or moving the parameter, by lending it other
-/// than `in`, or from a closure, handler, effect operation or indirect call.
-/// When it does none of these, a store through another sequence cannot
-/// change this one's header, and neither can a call.
+/// it. A slice view is second-class and never changes; a sequence handle
+/// changes when the function writes, rebinds or moves the parameter, lends
+/// it other than `in`, or from a closure, handler, effect operation or
+/// indirect call. When it does none of these, a store through another
+/// sequence cannot change this one's header, and neither can a call.
 pub fn stable_views(f: &FunctionIr) -> Vec<HeaderHoist> {
     if f.blocks.is_empty() {
         return vec![];
@@ -1252,7 +1268,10 @@ pub fn stable_views(f: &FunctionIr) -> Vec<HeaderHoist> {
             root: param.name.clone(),
             path: vec![],
         };
-        if !stable_place(f, &all, &place) {
+        // A slice is a second-class borrow (§13): it is never assigned,
+        // moved or resized, so even a callee it is lent `inout` to keeps its
+        // view. A sequence must be stable here.
+        if !crate::seq::is_slice_type(&ty) && !stable_place(f, &all, &place) {
             continue;
         }
         let mut reads = BTreeSet::new();
