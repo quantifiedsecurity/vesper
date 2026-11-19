@@ -2,7 +2,8 @@
 
 Claim #1095. Prompt:
 [10-exits-and-handlers.md](../agent-prompts/p3b-gaps/10-exits-and-handlers.md).
-Base `9305b24` (origin/main with the wave plan #1098).
+Base `9305b24` (origin/main with the wave plan #1098), merged with
+origin/main `31f81b9` (#1076) before merging.
 
 This report covers parts 1 and 2 (PR #1105). Parts 3 (Box drops on `Fail`
 exits, specialized `sink` leaks, after #1076) and 4 (affine extern-type drop
@@ -129,9 +130,12 @@ instruction count to compare.
 
 ## Port checks
 
-- Prism H3 with the local `shl`/`shr` rewrite:
-  `cargo test -p vesper-prism-h3 --features vesper-port` — see the PR
-  comment for the result of this run.
+- Prism H3 with the local `shl`/`shr` rewrite (helpers deleted, 22 call
+  sites on the bit builtins; patch kept out of the tree):
+  `cargo test --locked -p vesper-prism-h3 --features vesper-port` passes
+  every test binary (16 of 16, 0 failures), the RFC 9204 / QIFS / golden
+  encoder tests included, so the output is identical. Before part 1 the
+  same rewrite failed to build with E0410.
 
 ## Stage 1 guard
 
