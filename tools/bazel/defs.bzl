@@ -96,6 +96,7 @@ def _strip_rs(src):
 def vesper_crate(
         compile_data = None,
         binary_compile_data = [],
+        binary_data = {},
         test_data = None,
         integration_compile_data = None,
         test_data_by_target = {},
@@ -121,6 +122,8 @@ def vesper_crate(
     Args:
       compile_data: globs of files `include_str!`/`include_bytes!` may read.
         Defaults to package files outside tests/, examples/ and benches/.
+      binary_data: binary name to run-time data labels built with it (the
+        root's `vesper-<tool>` binaries, which `vesper <tool>` runs).
       binary_compile_data: extra compile-time globs for binaries, in addition
         to compile_data (e.g. the checker's embedded source manifests).
       test_data: globs of files tests may read at run time. Defaults to every
@@ -336,6 +339,7 @@ def vesper_crate(
             crate_root = b["src"],
             edition = b["edition"],
             compile_data = binary_files,
+            data = binary_data.get(b["name"], []),
             deps = normal + build_deps + lib_dep,
             rustc_env = pkg_env,
             visibility = ["//visibility:public"],

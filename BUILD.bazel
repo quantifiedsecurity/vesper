@@ -6,6 +6,18 @@ exports_files([
     "Cargo.toml",
 ])
 
+# The `vesper-<tool>` binaries (crates/vesper-tools, self-hosting SH0 lane 2).
+_TOOLS = [
+    "//crates/vesper-tools:bin/vesper-audit",
+    "//crates/vesper-tools:bin/vesper-bench",
+    "//crates/vesper-tools:bin/vesper-grammar",
+    "//crates/vesper-tools:bin/vesper-json",
+    "//crates/vesper-tools:bin/vesper-publish",
+    "//crates/vesper-tools:bin/vesper-resolve",
+    "//crates/vesper-tools:bin/vesper-sbom",
+    "//crates/vesper-tools:bin/vesper-tee",
+]
+
 # The root package also owns docs/, examples/, lean/, scripts/ and tools/
 # (directories without their own BUILD.bazel), which the CLI and its tests read.
 vesper_crate(
@@ -72,18 +84,12 @@ vesper_crate(
         "docs/rfcs/resource-model42-source-manifest.json",
         "lean/**",
     ],
-    # `vesper <tool>` runs `vesper-<tool>` from PATH when it is not beside
-    # `vesper` (crates/vesper-tools, self-hosting SH0 lane 2, #1124).
-    extra_test_path_binaries = [
-        "//crates/vesper-tools:bin/vesper-audit",
-        "//crates/vesper-tools:bin/vesper-bench",
-        "//crates/vesper-tools:bin/vesper-grammar",
-        "//crates/vesper-tools:bin/vesper-json",
-        "//crates/vesper-tools:bin/vesper-publish",
-        "//crates/vesper-tools:bin/vesper-resolve",
-        "//crates/vesper-tools:bin/vesper-sbom",
-        "//crates/vesper-tools:bin/vesper-tee",
-    ],
+    # `vesper <tool>` runs `vesper-<tool>` (crates/vesper-tools, self-hosting
+    # SH0 lane 2, #1124). Building //:bin/vesper builds them beside it at
+    # crates/vesper-tools/bin/, where the dispatcher looks, so every script
+    # and test that runs vesper gets them; tests also find them on PATH.
+    extra_test_path_binaries = _TOOLS,
+    binary_data = {"vesper": _TOOLS},
     remote_tests = ["test/self_host_front_end"],
     test_data_by_target = {
         "test/lean4lean_foundations42": [":proof_packet_data"],

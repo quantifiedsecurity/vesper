@@ -4,7 +4,8 @@
 //! executables (crates/vesper-tools), so their libraries stay out of the
 //! compiler's closure. `vesper <tool> ARGS...` runs `vesper-<tool> ARGS...`
 //! with the same arguments, standard streams and exit status. The executable
-//! is looked up next to the running `vesper` first, then on `PATH`.
+//! is looked up next to the running `vesper` first (Bazel: in
+//! `crates/vesper-tools/bin/` beside `bin/vesper`), then on `PATH`.
 use std::{
     env,
     ffi::OsString,
@@ -45,9 +46,16 @@ pub fn locate(tool: &str) -> Option<PathBuf> {
             dirs.push(dir);
         }
         for dir in dirs {
-            let candidate = dir.join(&name);
-            if candidate.is_file() {
-                return Some(candidate);
+            // Cargo puts the tools beside `vesper`. Bazel builds them as
+            // data of `//:bin/vesper` at `<bin>/crates/vesper-tools/bin/`,
+            // next to `<bin>/bin/vesper` (outputs and runfiles alike).
+            for candidate in [
+                dir.join(&name),
+                dir.join("../crates/vesper-tools/bin").join(&name),
+            ] {
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
     }
