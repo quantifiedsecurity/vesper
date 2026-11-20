@@ -463,6 +463,30 @@ vesper_package(
     visibility = ["//visibility:public"],
 )
 
+# The front end v2 and @vesper-std/hash(-sys) as dependencies of the fmt and
+# highlight ports (self-hosting SH1 lane 11, #1154).
+vesper_package(
+    name = "front_package",
+    srcs = glob(["packages/vesper-front/src/**/*.ves"]),
+    manifest = "packages/vesper-front/Loom.toml",
+    visibility = ["//visibility:public"],
+)
+
+vesper_package(
+    name = "std_hash_package",
+    srcs = glob(["packages/vesper-std/hash/src/**/*.ves"]),
+    manifest = "packages/vesper-std/hash/Loom.toml",
+    visibility = ["//visibility:public"],
+)
+
+vesper_package(
+    name = "std_hash_sys_package",
+    srcs = glob(["packages/vesper-std/hash/sys/src/**/*.ves"]),
+    manifest = "packages/vesper-std/hash/sys/Loom.toml",
+    visibility = ["//visibility:public"],
+    deps = [":std_hash_package"],
+)
+
 filegroup(
     name = "examples",
     srcs = glob(["examples/**"]),
