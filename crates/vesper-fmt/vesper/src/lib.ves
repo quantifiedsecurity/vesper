@@ -174,11 +174,21 @@ const E_IDEMPOTENT: u64 = 12;
 const U64_MAX: u64 = 18446744073709551615;
 
 fn fail(code: u64) eff [Fail[FmtFail]] {
-    Fail::raise(FmtFail { code: code, offset: 0 });
+    Fail::raise(
+        FmtFail {
+            code: code,
+            offset: 0
+        }
+    );
 }
 
 fn fail_at(offset: u64) eff [Fail[FmtFail]] {
-    Fail::raise(FmtFail { code: E_SYNTAX, offset: offset });
+    Fail::raise(
+        FmtFail {
+            code: E_SYNTAX,
+            offset: offset
+        }
+    );
 }
 
 // `a + b`, or `Overflow`.
@@ -270,7 +280,10 @@ fn doc_new(in lim: Limits, capacity: u64) -> Doc {
         width: ChunkSeq::with_capacity[u64](capacity),
         depth: ChunkSeq::with_capacity[u32](capacity),
         kids: ChunkSeq::with_capacity[u32](capacity),
-        w: Work { used: 0, max: lim.max_work },
+        w: Work {
+            used: 0,
+            max: lim.max_work
+        },
         max_nodes: lim.max_doc_nodes,
         max_output: lim.max_output_bytes
     }
@@ -330,8 +343,8 @@ fn has_break(in s: Slice[u8], a: u64, b: u64) -> bool {
     }
 }
 
-fn add_node(inout d: Doc, kind: u8, a: u64, b: u64, width: u64, depth: u64) -> u64
-    eff [Fail[FmtFail]] {
+fn add_node(inout d: Doc, kind: u8, a: u64, b: u64, width: u64, depth: u64)
+    -> u64 eff [Fail[FmtFail]] {
     if depth > MAX_DOC_DEPTH {
         fail(E_DEPTH);
     }
@@ -352,12 +365,17 @@ fn begin(inout d: Doc) eff [Fail[FmtFail]] {
 }
 
 // `Doc::Text` or `Doc::Comment` of `src[s..e]`.
-fn push_text(inout d: Doc, in src: Slice[u8], s: u64, e: u64, comment: bool) -> u64
-    eff [Fail[FmtFail]] {
+fn push_text(inout d: Doc, in src: Slice[u8], s: u64, e: u64, comment: bool)
+    -> u64 eff [Fail[FmtFail]] {
     begin(inout d);
     charge(inout d.w, wrapping_sub(e, s));
-    let line_comment = comment && wrapping_sub(e, s) >= 2 && byte(in src, s) == 47
-        && byte(in src, wrapping_add(s, 1)) == 47;
+    let line_comment = comment
+        && wrapping_sub(e, s)
+        >= 2
+        && byte(in src, s)
+        == 47
+        && byte(in src, wrapping_add(s, 1))
+        == 47;
     let width = if line_comment || has_break(in src, s, e) {
         NONE
     } else {
@@ -587,7 +605,9 @@ fn append_check(in out: ChunkSeq[u8], n: u64, max: u64) eff [Fail[FmtFail]] {
 
 // `Document::render`.
 fn render(inout d: Doc, in src: Slice[u8], root: u64) -> ChunkSeq[u8] eff [Fail[FmtFail]] {
-    let mut out = ChunkSeq::with_capacity[u8](wrapping_add(src.len(), wrapping_shr_u64(src.len(), 2)));
+    let mut out = ChunkSeq::with_capacity[u8](
+        wrapping_add(src.len(), wrapping_shr_u64(src.len(), 2))
+    );
     let mut stack = ChunkSeq::with_capacity[u64](64);
     stack.push(entry(0, false, root));
     let mut column: u64 = 0;
@@ -737,9 +757,40 @@ fn trivia(k: u8) -> bool {
 }
 
 fn is_binary_operator(k: u8) -> bool {
-    k == K_PLUS || k == K_MINUS || k == K_STAR || k == K_SLASH || k == K_PERCENT || k == K_EQ_EQ
-        || k == K_NE || k == K_LT || k == K_LE || k == K_GT || k == K_GE || k == K_AND
-        || k == K_OR || k == K_AMP || k == K_CARET || k == K_SHL || k == K_SHR
+    k
+        == K_PLUS
+        || k
+        == K_MINUS
+        || k
+        == K_STAR
+        || k
+        == K_SLASH
+        || k
+        == K_PERCENT
+        || k
+        == K_EQ_EQ
+        || k
+        == K_NE
+        || k
+        == K_LT
+        || k
+        == K_LE
+        || k
+        == K_GT
+        || k
+        == K_GE
+        || k
+        == K_AND
+        || k
+        == K_OR
+        || k
+        == K_AMP
+        || k
+        == K_CARET
+        || k
+        == K_SHL
+        || k
+        == K_SHR
 }
 
 fn text_is(in src: Slice[u8], s: u64, e: u64, in word: Slice[u8]) -> bool {
@@ -765,15 +816,49 @@ fn text_is(in src: Slice[u8], s: u64, e: u64, in word: Slice[u8]) -> bool {
 // `continues_chain`: whether a token right after a closing `}` extends the
 // same expression.
 fn continues_chain(k: u8, in src: Slice[u8], s: u64, e: u64) -> bool {
-    is_binary_operator(k) || k == K_DOT || k == K_QUESTION || k == K_ELSE || k == K_WITH
-        || k == K_L_PAREN || k == K_L_BRACKET || k == K_DOT_DOT || k == K_DOT_DOT_EQ || k == K_EQ
-        || k == K_PLUS_EQ || k == K_MINUS_EQ || k == K_STAR_EQ || k == K_SLASH_EQ
-        || k == K_PERCENT_EQ || k == K_ARROW || k == K_FAT_ARROW || k == K_COLON
-        || k == K_COLON_COLON || text_is(in src, s, e, in "as".as_bytes())
+    is_binary_operator(k)
+        || k
+        == K_DOT
+        || k
+        == K_QUESTION
+        || k
+        == K_ELSE
+        || k
+        == K_WITH
+        || k
+        == K_L_PAREN
+        || k
+        == K_L_BRACKET
+        || k
+        == K_DOT_DOT
+        || k
+        == K_DOT_DOT_EQ
+        || k
+        == K_EQ
+        || k
+        == K_PLUS_EQ
+        || k
+        == K_MINUS_EQ
+        || k
+        == K_STAR_EQ
+        || k
+        == K_SLASH_EQ
+        || k
+        == K_PERCENT_EQ
+        || k
+        == K_ARROW
+        || k
+        == K_FAT_ARROW
+        || k
+        == K_COLON
+        || k
+        == K_COLON_COLON
+        || text_is(in src, s, e, in "as".as_bytes())
 }
 
 fn opaque_word(in src: Slice[u8], s: u64, e: u64) -> bool {
-    text_is(in src, s, e, in "quote".as_bytes()) || text_is(in src, s, e, in "quasiquote".as_bytes())
+    text_is(in src, s, e, in "quote".as_bytes())
+        || text_is(in src, s, e, in "quasiquote".as_bytes())
         || text_is(in src, s, e, in "syntax_quote".as_bytes())
 }
 
@@ -979,14 +1064,45 @@ fn aflags(in a: Atoms, i: u64) -> u8 {
 }
 
 fn starts_range_bound(k: u8) -> bool {
-    k == K_INT || k == K_FLOAT || k == K_LOWER || k == K_UPPER || k == K_L_PAREN || k == K_MINUS
-        || k == K_SELF_KW
+    k
+        == K_INT
+        || k
+        == K_FLOAT
+        || k
+        == K_LOWER
+        || k
+        == K_UPPER
+        || k
+        == K_L_PAREN
+        || k
+        == K_MINUS
+        || k
+        == K_SELF_KW
 }
 
 fn ends_operand(k: u8) -> bool {
-    k == K_LOWER || k == K_UPPER || k == K_INT || k == K_FLOAT || k == K_STRING || k == K_TRUE
-        || k == K_FALSE || k == K_SELF_KW || k == K_R_PAREN || k == K_R_BRACKET
-        || k == K_R_BRACE
+    k
+        == K_LOWER
+        || k
+        == K_UPPER
+        || k
+        == K_INT
+        || k
+        == K_FLOAT
+        || k
+        == K_STRING
+        || k
+        == K_TRUE
+        || k
+        == K_FALSE
+        || k
+        == K_SELF_KW
+        || k
+        == K_R_PAREN
+        || k
+        == K_R_BRACKET
+        || k
+        == K_R_BRACE
 }
 
 fn gap(p: u8, c: u8, block: bool, after_block: bool) -> u8 {
@@ -1004,8 +1120,24 @@ fn gap(p: u8, c: u8, block: bool, after_block: bool) -> u8 {
         };
     }
     if after_block
-        && !(c == K_COMMA || c == K_SEMI || c == K_R_PAREN || c == K_R_BRACKET || c == K_DOT
-        || c == K_QUESTION || c == K_ELSE || c == K_WITH) {
+        && !(
+        c
+            == K_COMMA
+            || c
+            == K_SEMI
+            || c
+            == K_R_PAREN
+            || c
+            == K_R_BRACKET
+            || c
+            == K_DOT
+            || c
+            == K_QUESTION
+            || c
+            == K_ELSE
+            || c
+            == K_WITH
+    ) {
         return G_HARD;
     }
     if c == K_COMMENT || c == K_BLOCK_COMMENT || p == K_BLOCK_COMMENT {
@@ -1020,8 +1152,10 @@ fn gap(p: u8, c: u8, block: bool, after_block: bool) -> u8 {
     if c == K_COLON_COLON {
         return G_NONE;
     }
-    if (c == K_DOT_DOT || c == K_DOT_DOT_EQ) && ends_operand(p)
-        || (p == K_DOT_DOT || p == K_DOT_DOT_EQ) && starts_range_bound(c) {
+    if (c == K_DOT_DOT || c == K_DOT_DOT_EQ)
+        && ends_operand(p)
+        || (p == K_DOT_DOT || p == K_DOT_DOT_EQ)
+        && starts_range_bound(c) {
         return G_NONE;
     }
     if c == K_ARROW {
@@ -1030,8 +1164,22 @@ fn gap(p: u8, c: u8, block: bool, after_block: bool) -> u8 {
     if is_binary_operator(c) && ends_operand(p) {
         return G_OPERATOR;
     }
-    if c == K_COMMA || c == K_SEMI || c == K_COLON || c == K_DOT || c == K_COLON_COLON
-        || c == K_QUESTION || c == K_R_PAREN || c == K_R_BRACKET {
+    if c
+        == K_COMMA
+        || c
+        == K_SEMI
+        || c
+        == K_COLON
+        || c
+        == K_DOT
+        || c
+        == K_COLON_COLON
+        || c
+        == K_QUESTION
+        || c
+        == K_R_PAREN
+        || c
+        == K_R_BRACKET {
         return G_NONE;
     }
     if p == K_DOT || p == K_COLON_COLON || p == K_AT || p == K_AT_AT {
@@ -1048,8 +1196,9 @@ fn gap(p: u8, c: u8, block: bool, after_block: bool) -> u8 {
 }
 
 // `concat_group`: a non-empty line becomes one group of the output.
-fn concat_group(inout ids: ChunkSeq[u32], inout d: Doc, inout out: ChunkSeq[u32])
-    eff [Fail[FmtFail]] {
+fn concat_group(inout ids: ChunkSeq[u32], inout d: Doc, inout out: ChunkSeq[u32]) eff [
+    Fail[FmtFail]
+] {
     if ids.len() != 0 {
         let node = push_concat(inout d, in ids.as_slice());
         ids.truncate(0);
@@ -1081,8 +1230,8 @@ fn concat4(inout d: Doc, a: u64, b: u64, c: u64, e: u64) -> u64 eff [Fail[FmtFai
 }
 
 // `sequence`: the atoms from `pos` up to the closing delimiter `end`.
-fn sequence(in at: Atoms, inout pos: u64, end: u8, block: bool, inout d: Doc,
-    in src: Slice[u8]) -> u64 eff [Fail[FmtFail]] {
+fn sequence(in at: Atoms, inout pos: u64, end: u8, block: bool, inout d: Doc, in src: Slice[u8])
+    -> u64 eff [Fail[FmtFail]] {
     let n = at.kind.len();
     let list = end != NO_END && !block;
     let mut output = ChunkSeq::new[u32]();
@@ -1104,9 +1253,16 @@ fn sequence(in at: Atoms, inout pos: u64, end: u8, block: bool, inout d: Doc,
         let blank = f & 1 != 0;
         let glued = f & 2 != 0;
         let is_block = c == K_L_BRACE && (!has_prev || prev != K_DOT);
-        package = glued && has_prev
-            && (prev == K_AT && c == K_LOWER
-            || package && (c == K_LOWER || c == K_MINUS || c == K_SLASH || c == K_INT));
+        package = glued
+            && has_prev
+            && (
+            prev
+                == K_AT
+                && c
+                == K_LOWER
+                || package
+                && (c == K_LOWER || c == K_MINUS || c == K_SLASH || c == K_INT)
+        );
         let spacing = if previous_unary || package {
             G_NONE
         } else if list && has_prev && prev == K_SEMI {
@@ -1117,8 +1273,13 @@ fn sequence(in at: Atoms, inout pos: u64, end: u8, block: bool, inout d: Doc,
             G_NONE
         };
         let after_comma = has_prev && prev == K_COMMA;
-        let near_comment = c == K_COMMENT || c == K_BLOCK_COMMENT
-            || has_prev && prev == K_BLOCK_COMMENT;
+        let near_comment = c
+            == K_COMMENT
+            || c
+            == K_BLOCK_COMMENT
+            || has_prev
+            && prev
+            == K_BLOCK_COMMENT;
         if spacing == G_HARD {
             concat_group(inout line, inout d, inout output);
             if blank {
@@ -1137,11 +1298,14 @@ fn sequence(in at: Atoms, inout pos: u64, end: u8, block: bool, inout d: Doc,
             let lead = push_leaf(inout d, D_SOFT_SPACE);
             line.push(wrapping_u32(push_nest(inout d, 4, lead)));
         } else if spacing == G_EMPTY || spacing == G_OPERATOR {
-            let lead = push_leaf(inout d, if spacing == G_EMPTY {
-                D_SOFT_EMPTY
-            } else {
-                D_SOFT_SPACE
-            });
+            let lead = push_leaf(
+                inout d,
+                if spacing == G_EMPTY {
+                    D_SOFT_EMPTY
+                } else {
+                    D_SOFT_SPACE
+                }
+            );
             line.push(wrapping_u32(push_nest(inout d, 4, lead)));
         }
         if is_block {
@@ -1159,8 +1323,11 @@ fn sequence(in at: Atoms, inout pos: u64, end: u8, block: bool, inout d: Doc,
             let start = push_text(inout d, in src, cs, ce, false);
             let inner = sequence(in at, inout pos, close, is_block, inout d, in src);
             let last_is_line_comment = pos > 0 && akind(in at, wrapping_sub(pos, 1)) == K_COMMENT;
-            let trailing_comma = !is_block && pos > 0
-                && akind(in at, wrapping_sub(pos, 1)) == K_COMMA;
+            let trailing_comma = !is_block
+                && pos
+                > 0
+                && akind(in at, wrapping_sub(pos, 1))
+                == K_COMMA;
             if !(pos < n && akind(in at, pos) == close) {
                 fail(E_CONSERVATION);
             }
@@ -1171,19 +1338,24 @@ fn sequence(in at: Atoms, inout pos: u64, end: u8, block: bool, inout d: Doc,
             if empty {
                 concat4(inout d, start, finish, 4294967295, 4294967295)
             } else {
-                let lead = push_leaf(inout d, if is_block || trailing_comma {
-                    D_HARD
-                } else {
-                    D_SOFT_EMPTY
-                });
+                let lead = push_leaf(
+                    inout d,
+                    if is_block || trailing_comma {
+                        D_HARD
+                    } else {
+                        D_SOFT_EMPTY
+                    }
+                );
                 let content = concat4(inout d, lead, inner, 4294967295, 4294967295);
                 let nest = push_nest(inout d, 4, content);
-                let trail = push_leaf(inout d, if is_block || last_is_line_comment
-                    || trailing_comma {
-                    D_HARD
-                } else {
-                    D_SOFT_EMPTY
-                });
+                let trail = push_leaf(
+                    inout d,
+                    if is_block || last_is_line_comment || trailing_comma {
+                        D_HARD
+                    } else {
+                        D_SOFT_EMPTY
+                    }
+                );
                 let all = concat4(inout d, start, nest, trail, finish);
                 push_group(inout d, all)
             }
@@ -1325,8 +1497,8 @@ fn same_pieces(in a: Slice[u8], in ta: Tokens, in b: Slice[u8], in tb: Tokens) -
 // `once` without a capture: gate, parse, lay out and render `src`. `t` is
 // the token table the gate accepted (lexed again by the caller when it has
 // one already).
-fn once_tokens(in src: Slice[u8], sink t: Tokens, in lim: Limits, inout w: Work) -> ChunkSeq[u8]
-    eff [Fail[FmtFail]] {
+fn once_tokens(in src: Slice[u8], sink t: Tokens, in lim: Limits, inout w: Work)
+    -> ChunkSeq[u8] eff [Fail[FmtFail]] {
     let p = parse_tokens(in src, t, diags_new());
     if p.d.code.len() != 0 {
         let at = match p.d.start.try_get(0) {
@@ -1350,8 +1522,15 @@ fn once_tokens(in src: Slice[u8], sink t: Tokens, in lim: Limits, inout w: Work)
 }
 
 // `format_source(source, limits)`: the canonical text, or the error.
-pub fn format(in source: Str, max_input_bytes: u64, max_output_bytes: u64, max_tokens: u64,
-    max_doc_nodes: u64, max_depth: u64, max_work: u64) -> ChunkSeq[u8] eff [Fail[FmtFail]] {
+pub fn format(
+    in source: Str,
+    max_input_bytes: u64,
+    max_output_bytes: u64,
+    max_tokens: u64,
+    max_doc_nodes: u64,
+    max_depth: u64,
+    max_work: u64
+) -> ChunkSeq[u8] eff [Fail[FmtFail]] {
     let src = source.as_bytes();
     if src.len() > max_input_bytes {
         fail(E_INPUT);
@@ -1364,7 +1543,10 @@ pub fn format(in source: Str, max_input_bytes: u64, max_output_bytes: u64, max_t
         max_depth: max_depth,
         max_work: max_work
     };
-    let mut w = Work { used: 0, max: max_work };
+    let mut w = Work {
+        used: 0,
+        max: max_work
+    };
     let t = gate(in src, in lim, inout w);
     let output = once_tokens(in src, t, in lim, inout w);
     let ts = gate(in src, in lim, inout w);
@@ -1389,7 +1571,12 @@ pub fn format(in source: Str, max_input_bytes: u64, max_output_bytes: u64, max_t
 // `format_for_verification`'s source and output hashes.
 pub fn blake3(in data: Str) -> Hash32 eff [Ffi[Blake3]] {
     let d = hash(in data.as_bytes());
-    Hash32 { w0: d.w0, w1: d.w1, w2: d.w2, w3: d.w3 }
+    Hash32 {
+        w0: d.w0,
+        w1: d.w1,
+        w2: d.w2,
+        w3: d.w3
+    }
 }
 
 // A digest's 32 bytes as four little-endian words.

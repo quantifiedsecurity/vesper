@@ -19,7 +19,9 @@ pilots (`docs/parallel-results/self-host-toolchain-pilots.md`):
 - `crates/<c>/seed/` is a package `<c>-seed` with the same lib name, built
   from the same `src/lib.rs` with no build script, so it is plain Rust. The
   root package and `vesper-hybrid` use the seeds (root patch in its own
-  commit). `vesper-nexus` uses fmt only as a dev-dependency and is unchanged.
+  commit). `vesper-nexus`'s fmt dev-dependency also moves to the seed:
+  the root package links nexus, and the port-backed `vesper-fmt` builds its
+  object with `//:bin/vesper`, so Bazel would see a cycle.
 - The original package builds the Rust code by default. Under the Cargo
   feature `vesper-port`, `build.rs` links the Vesper object through
   `vesper_port_harness::Port::build`, which sets `cfg(vesper_port)`, and the
@@ -198,7 +200,13 @@ in the PR.
    code, which makes profiling ports slow.
 8. **Slices are second class.** `let s = out.as_slice();` is refused, so
    every call site passes `in out.as_slice()` inline.
-9. **The front end has fixed limits.** These are 1 MiB, 65,536 tokens and
+9. **`vesper fmt` refuses deep boolean chains with DepthLimit.** A
+   15-operand `||` chain inside an else-if arm (the control-keyword test in
+   highlight's `classify`) is over the nesting limit of 24. This is the
+   formatter itself, Rust and port alike. Workaround: the
+   `control_keyword` and `declaration_keyword` helpers. Lane 5 (#1148)
+   relaxes the else-if case.
+10. **The front end has fixed limits.** These are 1 MiB, 65,536 tokens and
    128 diagnostics. Lane 10's PR #1166 adds the `*_with_limits` entry
    points.
 
