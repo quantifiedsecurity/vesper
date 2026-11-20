@@ -117,7 +117,13 @@ on)".
   local between that read and the preheader (`snapshot_end`, which the
   old rule versioned behind a guard on `0`).
 
-### Other test edit
+### Other test edits
+
+In `tests/native_bytes.rs`, three tests counted versioned loops. Loops
+over `0..s.len()` are now proved without a guard, so they check unchecked
+accesses per function instead, and the resizing test asserts that the
+pushing loop has no guard and keeps its check.
+
 
 In `tests/native_bounds_facts.rs`, `short_inner_loops_keep_their_checks`
 now takes the triangle loop's bound as a parameter. With `n = s.len()`
