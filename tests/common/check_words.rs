@@ -666,13 +666,12 @@ pub fn ir_input(w: &World, program: &vesper::ir::Program) -> Option<Vec<u8>> {
                             flags |= 2;
                         }
                     }
-                    Op::Handle { expr, .. } => {
+                    Op::Handle { expr, .. }
                         if w.handler_effects
                             .get(&(expr.span.start, expr.span.end))
-                            .is_some_and(|r| effectful_row(w, r))
-                        {
-                            flags |= 2;
-                        }
+                            .is_some_and(|r| effectful_row(w, r)) =>
+                    {
+                        flags |= 2;
                     }
                     _ => {}
                 }
