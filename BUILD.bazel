@@ -161,6 +161,13 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # Self-hosting SH2 lane 6 (#1178): the package assembler over every
+        # Loom package the root package declares. Anchored globs.
+        "test/self_host_check_names_packages": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # @vesper-std/fs, process and env (#1125): drivers over the packages
         # and their .vsys imports.
         "test/std_env": [":files"],
@@ -476,6 +483,8 @@ vesper_crate(
         # The checker data differential (#1176) checks every corpus world.
         "test/self_host_check_data": "long",
         "test/self_host_check_harness": "long",
+        # The package assembler differential (#1178) compiles the AST package.
+        "test/self_host_check_names_packages": "long",
     },
 )
 

@@ -214,6 +214,7 @@ corpus: `vesper check` on 537 files under `bootstrap/corpus`, `examples/` and
 | Swap | Lane | Whole corpus wall | Whole corpus Ir | Swapped module alone | Report |
 |---|---|--:|--:|---|---|
 | `parse` (front end v2 + AST, read back into `Parse`) | SH1-12 (#1155) | 1.03x | 1.06x | 1.00x wall, 1.19x Ir over 911 sources | [self-host-parser-swap.md](../parallel-results/self-host-parser-swap.md) |
+| `names_packages` (package assembler: imports, re-exports, renaming; not swapped yet) | SH2-6 (#1178) | not swapped | not swapped | 0.72x-0.87x wall of `packages::load` on four packages, 0.37x-0.44x for the assembler alone | [self-host-check-names-packages.md](../parallel-results/self-host-check-names-packages.md) |
 
 ## Estimates
 
