@@ -6398,7 +6398,7 @@ name = "vesper-nexus"
 version = "0.1.0"
 dependencies = [
  "vesper-ffi",
- "vesper-fmt",
+ "vesper-fmt-seed",
  "vesper-simpulse-seed",
  "vesper-syntax",
  "wasmtime",
