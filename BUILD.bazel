@@ -502,7 +502,8 @@ vesper_package(
 )
 
 # The AST and @vesper-std/arena and intern as dependencies of the lint port
-# (self-hosting SH1 lane 13, #1156).
+# (self-hosting SH1 lane 13, #1156) and of the hybrid compiler's parse module
+# (lane 12, #1155).
 vesper_package(
     name = "std_arena_package",
     srcs = glob(["packages/vesper-std/arena/src/**/*.ves"]),

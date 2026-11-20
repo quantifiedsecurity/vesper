@@ -26,10 +26,15 @@ test = false
 # A deliberately wrong pilot module: the differential harness must fail
 # (tests/differential.rs, asserted by the Hybrid compiler workflow).
 divergent = []
+# The same check for the parse module (#1155): every AST flag reads back
+# inverted.
+divergent-parse = []
 
 [dependencies]
 vesper = { path = "../.." }
 vesper-port-abi = { path = "../vesper-port-abi" }
+# The parse swap rebuilds the rowan CST (src/parse_words.rs).
+rowan = { workspace = true }
 # Everything below is the root package's [dependencies], for the included
 # CLI sources; tests/manifest.rs keeps the lists in step.
 blake3 = "1.8"
