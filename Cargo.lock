@@ -5588,6 +5588,7 @@ dependencies = [
  "vesper-nexus",
  "vesper-pact-binding",
  "vesper-pact-seed",
+ "vesper-port-abi",
  "vesper-pulse",
  "vesper-resonance-seed",
  "vesper-semver-seed",
