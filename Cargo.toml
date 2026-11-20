@@ -16,6 +16,7 @@ members = [
     "crates/vesper-fmt",
     "crates/vesper-fmt/seed",
     "crates/vesper-lint",
+    "crates/vesper-lint/seed",
     "crates/vesper-bench",
     "crates/vesper-bench/seed",
     "crates/vesper-bench-pmu",
@@ -125,6 +126,7 @@ default-members = [
     "crates/vesper-fmt",
     "crates/vesper-fmt/seed",
     "crates/vesper-lint",
+    "crates/vesper-lint/seed",
     "crates/vesper-bench",
     "crates/vesper-bench/seed",
     "crates/vesper-bench-pmu",
@@ -280,7 +282,8 @@ vesper-lsp = { path = "crates/vesper-lsp" }
 # The compiler links the frozen Rust seed copy of vesper-diagnostics (#1128).
 vesper-diagnostics = { path = "crates/vesper-diagnostics/seed", package = "vesper-diagnostics-seed" }
 vesper-fmt = { path = "crates/vesper-fmt/seed", package = "vesper-fmt-seed" }
-vesper-lint = { path = "crates/vesper-lint" }
+# The compiler links the frozen Rust seed copy of vesper-lint (#1156).
+vesper-lint = { path = "crates/vesper-lint/seed", package = "vesper-lint-seed" }
 vesper-doc = { path = "crates/vesper-doc" }
 vesper-test = { path = "crates/vesper-test" }
 # The compiler links the frozen Rust seed copy, never the port-backed package
