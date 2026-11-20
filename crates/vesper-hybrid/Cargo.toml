@@ -47,7 +47,8 @@ vesper-lsp = { path = "../vesper-lsp" }
 # The compiler links the frozen Rust seed copy of vesper-diagnostics (#1128).
 vesper-diagnostics = { path = "../vesper-diagnostics/seed", package = "vesper-diagnostics-seed" }
 vesper-fmt = { path = "../vesper-fmt/seed", package = "vesper-fmt-seed" }
-vesper-lint = { path = "../vesper-lint" }
+# The compiler links the frozen Rust seed copy of vesper-lint (#1156).
+vesper-lint = { path = "../vesper-lint/seed", package = "vesper-lint-seed" }
 # The compiler links the frozen Rust seed copy of vesper-bench (#1040).
 vesper-bench = { path = "../vesper-bench/seed", package = "vesper-bench-seed" }
 vesper-bench-pmu = { path = "../vesper-bench-pmu" }
