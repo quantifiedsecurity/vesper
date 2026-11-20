@@ -236,6 +236,9 @@ impl Enc {
 pub fn encodable(t: &Type) -> bool {
     match t {
         Type::IntLiteral(n) => n.unsigned_abs() <= u64::MAX as u128,
+        // `i128` and `u128` (#1174) are not in the check-data format yet:
+        // Rust answers for them.
+        Type::Named(n, _) if vesper::numeric::is_wide_name(n) => false,
         Type::Named(_, a) | Type::Tuple(a) => a.iter().all(encodable),
         Type::Function {
             params,

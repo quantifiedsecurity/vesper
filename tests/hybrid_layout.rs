@@ -161,9 +161,22 @@ fn layout_words_depend_on_the_type() {
     );
 }
 
+/// `i128` and `u128` (#1174) are two words in Rust and not in the
+/// check-data format yet, so the hybrid build sends them to Rust.
+#[test]
+fn wide_integers_stay_on_rust() {
+    let w = &corpus()[0].world;
+    for n in ["i128", "u128"] {
+        let wide = Type::Named(n.into(), vec![]);
+        assert!(check_words::layout_input(w, &wide).is_none(), "{n}");
+        let pair = Type::Tuple(vec![Type::Named("u8".into(), vec![]), wide]);
+        assert!(check_words::layout_input(w, &pair).is_none(), "({n})");
+    }
+}
+
 /// ABBA: `Layout::of` in Rust against the Vesper layout with its input
-/// encoding and result decoding (the hybrid build's cost per call), and
-/// against the Vesper layout alone over whole-world inputs.
+/// encoding and result decoding (the hybrid build's cost per call), one
+/// call per type of every world.
 #[test]
 #[ignore = "timing; CHECK_HARNESS_SPEED=1"]
 fn layout_speed() {
