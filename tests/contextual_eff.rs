@@ -21,7 +21,10 @@ fn accepted(source: &str) -> check::World {
 /// The evaluator and the native JIT agree; the result as text.
 fn both(source: &str) -> String {
     let world = accepted(source);
-    let evaluated = Runtime::new(&world).run("main", vec![]).unwrap().to_string();
+    let evaluated = Runtime::new(&world)
+        .run("main", vec![])
+        .unwrap()
+        .to_string();
     let jit = native::jit(&world, "main").unwrap().to_string();
     assert_eq!(evaluated, jit, "evaluator and native JIT agree");
     evaluated
@@ -40,7 +43,7 @@ fn census_repro_field_named_eff() {
 fn eff_as_binding_parameter_and_method() {
     assert_eq!(
         both(
-            "struct Row { eff: u64 }
+            "copy struct Row { eff: u64 }
 impl Row { fn eff(in self) -> u64 { self.eff } }
 fn add(eff: u64, n: u64) -> u64 { wrapping_add(eff, n) }
 fn main() -> u64 {
@@ -63,7 +66,7 @@ fn eff_still_opens_effect_rows_in_signatures() {
         both(
             "linear effect Ask { fn ask() -> u64; }
 fn twice(eff: u64) -> u64 eff [Ask] { wrapping_add(eff, Ask::ask()) }
-fn apply[e: eff](f: fn(u64) -> u64 eff [e], x: u64) -> u64 eff [e] { f(x) }
+fn apply[e: eff](sink f: fn(u64) -> u64 eff [e], x: u64) -> u64 eff [e] { f(x) }
 fn main() -> u64 {
     let eff: u64 = 1;
     handle Ask in {
@@ -95,4 +98,18 @@ fn a_closure_body_may_start_with_a_name_eff() {
 fn eff_without_a_row_after_a_signature_is_still_an_error() {
     let p = parser::parse("fn f() -> u64 eff { 1 }");
     assert!(!p.diagnostics.is_empty());
+}
+
+/// The fixture the front end v2 differential parses also checks and runs.
+#[test]
+fn the_differential_fixture_runs() {
+    let source = include_str!("fixtures/contextual_eff.ves");
+    let world = accepted(source);
+    assert_eq!(
+        Runtime::new(&world)
+            .run("main", vec![])
+            .unwrap()
+            .to_string(),
+        native::jit(&world, "main").unwrap().to_string()
+    );
 }

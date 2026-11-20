@@ -890,8 +890,6 @@ fn reserved_word(k: u8) -> bool {
         || k
         == k_mod()
         || k
-        == k_eff()
-        || k
         == k_in()
         || k
         == k_inout()
@@ -921,10 +919,11 @@ fn reserved_word(k: u8) -> bool {
         == k_impl()
 }
 
-// `state`, `linear` and `with` are keywords only where their forms start;
-// wherever a name is expected they are names (`at_contextual_name`).
+// `state`, `linear`, `with` and `eff` are keywords only where their forms
+// start; wherever a name is expected they are names (`at_contextual_name`).
+// `eff` opens an effect row only after a signature and as the `e: eff` bound.
 fn contextual_name(k: u8) -> bool {
-    k == k_state() || k == k_linear() || k == k_with()
+    k == k_state() || k == k_linear() || k == k_with() || k == k_eff()
 }
 
 fn at_contextual_name(in p: P) -> bool {
@@ -2503,7 +2502,11 @@ fn closure(inout p: P) -> Ex {
     if eat(inout p, k_arrow()) {
         ty(inout p);
     }
-    effects(inout p);
+    // `Parser::closure`: after the head `eff [` opens an effect row; a body
+    // that starts with any other use of the name `eff` is an expression.
+    if at(in p, k_eff()) && nth(in p, 1) == k_l_bracket() {
+        effects(inout p);
+    }
     let outer = p.vals_trail.len();
     bind_values(inout p, mark);
     let body = expr(inout p);
