@@ -97,8 +97,11 @@ pub(crate) fn parse_source_item(
     let Some(item) = item else {
         return Err(Error::new(ErrorKind::Unsupported, None));
     };
+    // A value enum is one item per member.
+    let mut items = vec![item];
+    items.append(&mut p.extra_items);
     Ok(Module {
-        items: vec![item],
+        items,
         model_uses: p.model_uses,
         trait_bounds: p.trait_bounds,
         public_items: p.public_items,

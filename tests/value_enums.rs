@@ -359,3 +359,79 @@ fn main() -> (i32, u64, u64) {
         String::from_utf8_lossy(&jit.stderr)
     );
 }
+
+#[test]
+fn single_item_parsers_keep_every_member() {
+    let source = "enum E: u8 { A, B, C = 7 }\nfn f() -> u8 { E::B }\n";
+    let syntax = parser::parse_recovery(source, Default::default()).unwrap();
+    let module = parser::parse_complete_items(&syntax, &[0], Default::default()).unwrap();
+    let names: Vec<String> = module
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            vesper::ast::Item::Function(f) => Some(f.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["const$E::A", "const$E::B", "const$E::C"]);
+    let with_macro = format!("macro two()->expr{{quote{{2}}}} {source}");
+    let support = vesper_syntax::macro_source::parse(&with_macro, Default::default()).unwrap();
+    let items = &support.support_items().items;
+    assert_eq!(items.len(), 4, "{items:?}");
+}
+
+#[test]
+fn untyped_members_alias_other_untyped_members() {
+    assert_eq!(
+        run("enum A: _ { X = 1 } enum B: _ { Y = A::X } fn main() -> u64 { B::Y }"),
+        "1"
+    );
+}
+
+#[test]
+fn untyped_members_get_the_declaration_checks() {
+    for (source, code) in [
+        (
+            "enum E: _ { A = 1, A = 2 } fn main() -> u64 { E::A }",
+            "E0100",
+        ),
+        (
+            "struct E { x: u64 } enum E: _ { A = 1 } fn main() -> u64 { 0 }",
+            "E1542",
+        ),
+    ] {
+        let p = parser::parse(source);
+        let codes: Vec<String> = p
+            .diagnostics
+            .iter()
+            .map(|d| d.code.clone())
+            .chain(
+                check::check(&p.module)
+                    .diagnostics
+                    .iter()
+                    .map(|d| d.code.clone()),
+            )
+            .collect();
+        assert!(codes.iter().any(|c| c == code), "{source}: {codes:?}");
+    }
+}
+
+#[test]
+fn one_enum_name_cannot_import_two_enums() {
+    for lib in [
+        "use self::a::E;\nuse self::b::E;\nfn main() -> u64 { E::X }\n",
+        "use self::a::E;\nenum E: u64 { Z }\nfn main() -> u64 { E::Z }\n",
+    ] {
+        let dir = package(
+            "clash",
+            &[
+                ("Loom.toml", &manifest("@demo/clash", "")),
+                ("src/a.ves", "pub enum E: u64 { X = 1 }\n"),
+                ("src/b.ves", "pub enum E: u64 { X = 2, Y }\n"),
+                ("src/lib.ves", lib),
+            ],
+        );
+        let codes = package_codes(&dir);
+        assert!(codes.iter().any(|c| c == "E0113"), "{lib}: {codes:?}");
+    }
+}

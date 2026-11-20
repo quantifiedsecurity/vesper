@@ -803,6 +803,7 @@ impl Loader {
                     names.insert(n.clone(), (mangled, *kind));
                 }
                 let mut exported = vec![];
+                let mut groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
                 for u in &m.parsed.uses {
                     let (target_pkg, target_path, module_shown) =
                         match resolver.use_module(p, &m.path, u) {
@@ -829,15 +830,63 @@ impl Loader {
                         ) {
                             match members {
                                 Ok(members) => {
-                                    for (member, key) in members {
-                                        let target = resolver.name_of(&key);
+                                    let local = n.local();
+                                    let prefix = format!("{CONST_PREFIX}{local}::");
+                                    if own.contains_key(local)
+                                        || own.keys().any(|k| k.starts_with(&prefix))
+                                    {
+                                        self.error(
+                                            file,
+                                            AMBIGUOUS,
+                                            format!("'{local}' is both declared in this module and imported"),
+                                            n.span.clone(),
+                                        );
+                                        continue;
+                                    }
+                                    let targets = members
+                                        .into_iter()
+                                        .map(|(member, key)| {
+                                            (format!("{local}::{member}"), resolver.name_of(&key))
+                                        })
+                                        .collect::<Vec<_>>();
+                                    // Two imports of one local enum name must
+                                    // be the same enum: no member may differ
+                                    // and the member sets must agree.
+                                    let source = targets
+                                        .iter()
+                                        .map(|(_, t)| t.clone())
+                                        .collect::<BTreeSet<_>>();
+                                    match groups.get(local) {
+                                        Some(existing) if *existing != source => {
+                                            self.error(
+                                                file,
+                                                AMBIGUOUS,
+                                                format!("'{local}' is imported twice from different items"),
+                                                n.span.clone(),
+                                            );
+                                            continue;
+                                        }
+                                        _ => {}
+                                    }
+                                    if targets.iter().any(|(m, t)| {
+                                        names.get(m).is_some_and(|(existing, _)| existing != t)
+                                    }) {
+                                        self.error(
+                                            file,
+                                            AMBIGUOUS,
+                                            format!(
+                                                "'{local}' is imported twice from different items"
+                                            ),
+                                            n.span.clone(),
+                                        );
+                                        continue;
+                                    }
+                                    groups.insert(local.to_owned(), source);
+                                    for (member, target) in targets {
                                         if u.public {
                                             exported.push(target.clone());
                                         }
-                                        names.insert(
-                                            format!("{}::{member}", n.local()),
-                                            (target, Kind::Value),
-                                        );
+                                        names.insert(member, (target, Kind::Value));
                                     }
                                 }
                                 Err(d) => self.diagnostics.push(PackageDiagnostic {

@@ -91,11 +91,114 @@ pub fn untyped_members(module: &Module) -> Option<(Module, Vec<Diagnostic>)> {
     }
     let mut out = module.clone();
     let mut diagnostics = vec![];
-    out.items.retain(|i| {
+    // The literal of each member. A member that names a member of another
+    // untyped enum (`Y = A::X`) is still a call here: it takes that
+    // member's literal, to a fixed point.
+    let mut literals: BTreeMap<String, Literal> = BTreeMap::new();
+    loop {
+        let before = literals.len();
+        for i in &out.items {
+            if let Item::Function(f) = i
+                && untyped(i)
+                && !literals.contains_key(&f.name)
+            {
+                let value = match crate::parser::const_literal(f) {
+                    Some(l) => Some(l),
+                    None => f
+                        .body
+                        .as_ref()
+                        .and_then(|b| const_call(b))
+                        .and_then(|callee| literals.get(callee).cloned()),
+                };
+                if let Some(Literal::Int(v)) = value {
+                    literals.insert(f.name.clone(), Literal::Int(v));
+                }
+            }
+        }
+        if literals.len() == before {
+            break;
+        }
+    }
+    // Uses still spelled as calls (aliases, imports lowered before their
+    // literal was known) become the literal.
+    let mut rewrite = |e: &mut Expr| {
+        if let Some(callee) = const_call(e)
+            && let Some(l) = literals.get(callee)
+        {
+            e.kind = ExprKind::Literal(l.clone());
+        }
+    };
+    for item in &mut out.items {
+        match item {
+            Item::Function(f) => {
+                if let Some(body) = &mut f.body {
+                    crate::parser::walk_exprs(body, &mut rewrite);
+                }
+            }
+            Item::Impl { methods, .. } => {
+                for f in methods {
+                    if let Some(body) = &mut f.body {
+                        crate::parser::walk_exprs(body, &mut rewrite);
+                    }
+                }
+            }
+            Item::Conformance(c) => {
+                for f in &mut c.methods {
+                    if let Some(body) = &mut f.body {
+                        crate::parser::walk_exprs(body, &mut rewrite);
+                    }
+                }
+            }
+            Item::Trait(t) => {
+                for f in &mut t.methods {
+                    if let Some(body) = &mut f.body {
+                        crate::parser::walk_exprs(body, &mut rewrite);
+                    }
+                }
+            }
+            Item::Adt(_) | Item::Effect(_) => {}
+        }
+    }
+    // The declaration checks the checker would make on a typed member:
+    // one function per name, and no enum named like a type or effect.
+    let mut seen = BTreeSet::new();
+    let mut kinds = BTreeSet::new();
+    for i in &out.items {
+        match i {
+            Item::Function(f) if !untyped(i) => {
+                seen.insert(f.name.clone());
+            }
+            Item::Adt(a) => {
+                kinds.insert(a.name.clone());
+            }
+            Item::Effect(e) => {
+                kinds.insert(e.name.clone());
+            }
+            _ => {}
+        }
+    }
+    for i in &out.items {
         if let Item::Function(f) = i
             && untyped(i)
         {
-            if !matches!(crate::parser::const_literal(f), Some(Literal::Int(_))) {
+            if !seen.insert(f.name.clone()) {
+                diagnostics.push(Diagnostic::new(
+                    "E0100",
+                    format!("duplicate function '{}'", f.name),
+                    f.span.clone(),
+                ));
+            }
+            if let Some((module, member)) = f.name.rsplit_once(CONST_PREFIX)
+                && let Some((group, _)) = member.split_once("::")
+                && kinds.contains(&format!("{module}{group}"))
+            {
+                diagnostics.push(Diagnostic::new(
+                    CONST_NAME,
+                    format!("value enum `{group}` has the name of a type or effect"),
+                    f.span.clone(),
+                ));
+            }
+            if !literals.contains_key(&f.name) {
                 diagnostics.push(
                     Diagnostic::new(
                         NOT_CONSTANT,
@@ -108,11 +211,26 @@ pub fn untyped_members(module: &Module) -> Option<(Module, Vec<Diagnostic>)> {
                     .with_help("give the enum a type (`enum E: u64 { .. }`) to use other constant expressions"),
                 );
             }
-            return false;
         }
-        true
-    });
+    }
+    out.items.retain(|i| !untyped(i));
     Some((out, diagnostics))
+}
+
+/// The constant function `e` calls, when `e` is a call of one with no
+/// arguments (or a block whose only content is such a call).
+fn const_call(e: &Expr) -> Option<&str> {
+    match &e.kind {
+        ExprKind::Call { callee, args, .. } if args.is_empty() => match &callee.kind {
+            ExprKind::Name(n) if is_const_function(n) => Some(n),
+            _ => None,
+        },
+        ExprKind::Block {
+            statements,
+            tail: Some(t),
+        } if statements.is_empty() => const_call(t),
+        _ => None,
+    }
 }
 
 /// Rewrites the checked array operations of every function into the forms
