@@ -65,6 +65,7 @@ fn parser<'a>(source: &'a str, tokens: Vec<Token>, limits: Limits) -> Parser<'a>
         trait_bounds: vec![],
         uses: vec![],
         public_items: vec![],
+        extra_items: vec![],
         pending_bounds: vec![],
         limits: limits.parse,
         depth: 0,

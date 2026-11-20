@@ -241,6 +241,21 @@ pub fn check_world(world: &World) -> Vec<Diagnostic> {
                 f.span.clone(),
             ));
         }
+        // A value enum `E` (members `const$E::M`) may not share its name
+        // with a type or effect of its module either: `E::M` would be
+        // ambiguous.
+        if let Some((module, member)) = name.rsplit_once(CONST_PREFIX)
+            && let Some((group, _)) = member.split_once("::")
+        {
+            let shared = format!("{module}{group}");
+            if world.adts.contains_key(&shared) || world.effects.contains_key(&shared) {
+                out.push(Diagnostic::new(
+                    CONST_NAME,
+                    format!("value enum `{group}` has the name of a type or effect"),
+                    f.span.clone(),
+                ));
+            }
+        }
         if let Some(body) = &f.body
             && let Some(at) = non_constant(world, body, &mut BTreeSet::new())
         {

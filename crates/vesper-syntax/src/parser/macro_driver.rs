@@ -34,6 +34,7 @@ fn parser<'a>(
         trait_bounds: vec![],
         uses: vec![],
         public_items: vec![],
+        extra_items: vec![],
         pending_bounds: vec![],
         limits: ParseLimits {
             max_source_bytes: limits.max_source_bytes,

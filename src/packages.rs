@@ -31,6 +31,7 @@
 //!   of all sources ([`SourceMap`]), so span-keyed checker tables never
 //!   collide and diagnostics map back to the right file.
 use crate::ast::*;
+use crate::parser::CONST_PREFIX;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -743,6 +744,21 @@ impl Loader {
                 }
             }
         }
+        // The literal value of every constant that has one, by internal
+        // name: such a constant may be a match pattern in any module.
+        let mut literals: BTreeMap<String, Literal> = BTreeMap::new();
+        for (p, package) in packages.iter().enumerate() {
+            for m in &package.modules {
+                for item in &m.parsed.items {
+                    if let Item::Function(f) = item
+                        && f.name.starts_with(CONST_PREFIX)
+                        && let Some(l) = crate::parser::const_literal(f)
+                    {
+                        literals.insert(resolver.name_of(&(p, m.path.clone(), f.name.clone())), l);
+                    }
+                }
+            }
+        }
         let mut out = Module::default();
         // Variant and operation names stay global; record their owners.
         let mut globals: BTreeMap<String, (String, usize, Span)> = BTreeMap::new();
@@ -778,6 +794,36 @@ impl Loader {
                         };
                     let same_module = target_pkg == p && target_path == m.path;
                     for n in &u.names {
+                        // A value enum imports each member `E::M` as a
+                        // constant.
+                        if let Some(members) = resolver.group(
+                            target_pkg,
+                            &target_path,
+                            &n.name,
+                            same_module,
+                            &module_shown,
+                            n.span.clone(),
+                        ) {
+                            match members {
+                                Ok(members) => {
+                                    for (member, key) in members {
+                                        let target = resolver.name_of(&key);
+                                        if u.public {
+                                            exported.push(target.clone());
+                                        }
+                                        names.insert(
+                                            format!("{}::{member}", n.local()),
+                                            (target, Kind::Value),
+                                        );
+                                    }
+                                }
+                                Err(d) => self.diagnostics.push(PackageDiagnostic {
+                                    file: Some(file),
+                                    diagnostic: d,
+                                }),
+                            }
+                            continue;
+                        }
                         let (key, kind) = match resolver.lookup(
                             target_pkg,
                             &target_path,
@@ -829,6 +875,7 @@ impl Loader {
                     names: &names,
                     hidden: if is_root_module { None } else { Some(&hidden) },
                     variants: &variants,
+                    literals: &literals,
                     resolver: &resolver,
                     package: p,
                     module: &m.path,
@@ -935,6 +982,21 @@ impl Kind {
 struct Table {
     items: BTreeMap<String, Kind>,
     public: BTreeSet<String>,
+}
+impl Table {
+    /// The members `M` of the value enum `group` (its constants
+    /// `const$group::M`), or `None` when the module declares no such enum.
+    fn group(&self, group: &str) -> Option<Vec<String>> {
+        let prefix = format!("{CONST_PREFIX}{group}::");
+        let members = self
+            .items
+            .range(prefix.clone()..)
+            .take_while(|(n, _)| n.starts_with(&prefix))
+            .map(|(n, _)| n[prefix.len()..].to_owned())
+            .filter(|m| !m.contains("::"))
+            .collect::<Vec<_>>();
+        (!members.is_empty()).then_some(members)
+    }
 }
 
 /// (package index, module path, item name).
@@ -1096,10 +1158,19 @@ impl<'a> Resolver<'a> {
         span: Span,
     ) -> Result<(ItemKey, Kind), Diagnostic> {
         let key = (pkg, path.to_vec());
+        // A constant `NAME` (or a value enum member `E::M`) is the function
+        // `const$NAME`.
+        let constant = format!("{CONST_PREFIX}{name}");
+        let item = match self.tables.get(&key) {
+            Some(t) if !t.items.contains_key(name) && t.items.contains_key(&constant) => {
+                constant.as_str()
+            }
+            _ => name,
+        };
         if let Some(table) = self.tables.get(&key)
-            && let Some(&kind) = table.items.get(name)
+            && let Some(&kind) = table.items.get(item)
         {
-            if !same_module && !table.public.contains(name) {
+            if !same_module && !table.public.contains(item) {
                 return Err(Diagnostic::new(
                     PRIVATE_ITEM,
                     format!("'{name}' is private to module {module_shown}"),
@@ -1107,7 +1178,7 @@ impl<'a> Resolver<'a> {
                 )
                 .with_help("mark the item `pub` to export it"));
             }
-            return Ok(((pkg, path.to_vec(), name.to_owned()), kind));
+            return Ok(((pkg, path.to_vec(), item.to_owned()), kind));
         }
         if let Some((target, kind)) = self.reexported.get(&key).and_then(|r| r.get(name)) {
             return Ok((target.clone(), *kind));
@@ -1126,6 +1197,51 @@ impl<'a> Resolver<'a> {
                 d
             },
         )
+    }
+    /// The members of a value enum `name` of a module, declared there (and
+    /// `pub`, unless the lookup comes from that module) or re-exported by
+    /// it: each member `M` with the item of its constant. `None` when the
+    /// module has no value enum of that name.
+    fn group(
+        &self,
+        pkg: usize,
+        path: &[String],
+        name: &str,
+        same_module: bool,
+        module_shown: &str,
+        span: Span,
+    ) -> Option<Result<Vec<(String, ItemKey)>, Diagnostic>> {
+        let key = (pkg, path.to_vec());
+        if let Some(table) = self.tables.get(&key)
+            && let Some(members) = table.group(name)
+        {
+            let mut out = vec![];
+            for m in members {
+                let item = format!("{CONST_PREFIX}{name}::{m}");
+                if !same_module && !table.public.contains(&item) {
+                    return Some(Err(Diagnostic::new(
+                        PRIVATE_ITEM,
+                        format!("value enum '{name}' is private to module {module_shown}"),
+                        span,
+                    )
+                    .with_help("mark the enum `pub` to export it")));
+                }
+                out.push((m, (pkg, path.to_vec(), item)));
+            }
+            return Some(Ok(out));
+        }
+        let prefix = format!("{name}::");
+        let members = self
+            .reexported
+            .get(&key)?
+            .iter()
+            .filter_map(|(local, (target, _))| {
+                local
+                    .strip_prefix(&prefix)
+                    .map(|m| (m.to_owned(), target.clone()))
+            })
+            .collect::<Vec<_>>();
+        (!members.is_empty()).then_some(Ok(members))
     }
     /// Resolve every module's `pub use` names to the items they re-export,
     /// following chains of re-exports to a fixed point. Names that do not
@@ -1149,7 +1265,18 @@ impl<'a> Resolver<'a> {
                             {
                                 continue;
                             }
-                            if let Ok(found) =
+                            if let Some(Ok(members)) =
+                                self.group(tp, &tpath, &n.name, same, &shown, n.span.clone())
+                            {
+                                let r = self.reexported.entry(key).or_default();
+                                for (m, target) in members {
+                                    let local = format!("{}::{m}", n.local());
+                                    if !r.contains_key(&local) {
+                                        r.insert(local, (target, Kind::Value));
+                                        changed = true;
+                                    }
+                                }
+                            } else if let Ok(found) =
                                 self.lookup(tp, &tpath, &n.name, same, &shown, n.span.clone())
                             {
                                 self.reexported
@@ -1185,6 +1312,12 @@ impl<'a> Resolver<'a> {
             // `pub use self::f;` in the root module re-exports a root item
             // under its own name: nothing to rename. `pub use self::f as g;`
             // renames the root item `f` to `g` like any other re-export.
+            // A constant keeps its function prefix under its new name.
+            let local = &if item.2.starts_with(CONST_PREFIX) {
+                format!("{CONST_PREFIX}{local}")
+            } else {
+                local.clone()
+            };
             if item.0 == self.root && item.1.is_empty() && item.2 == *local {
                 continue;
             }
@@ -1270,6 +1403,14 @@ impl<'a> Resolver<'a> {
             .collect::<Vec<_>>()
             .join("::");
         let same = pkg == p && module == current;
+        // `m::E::M` names the member `M` of the value enum `E` of `m`.
+        if j + 2 == rest.len()
+            && let Some(Ok(members)) =
+                self.group(pkg, &module, rest[j], same, &module_shown, span.clone())
+            && let Some((_, key)) = members.into_iter().find(|(m, _)| m == rest[j + 1])
+        {
+            return Ok(self.name_of(&key));
+        }
         let found = self.lookup(pkg, &module, rest[j], same, &module_shown, span.clone());
         let (key, _) = match found {
             // `self::nope::f`: a lower-case segment followed by more is a
@@ -1366,6 +1507,8 @@ struct Renamer<'a> {
     hidden: Option<&'a BTreeMap<String, Kind>>,
     /// Enum variant -> (owning enum's internal name, its display name).
     variants: &'a BTreeMap<String, (String, String)>,
+    /// Constant function (internal name) -> its literal value.
+    literals: &'a BTreeMap<String, Literal>,
     /// Qualified paths resolve against the whole package graph.
     resolver: &'a Resolver<'a>,
     package: usize,
@@ -1432,6 +1575,13 @@ impl Renamer<'_> {
     }
     /// A path name `Head::rest` or plain type/effect name.
     fn type_name(&mut self, n: &mut String, span: &Span) {
+        // A value enum member `E::M` (own `const$E::M` or imported).
+        if n.contains("::")
+            && let Some((t, _)) = self.names.get(n.as_str())
+        {
+            *n = t.clone();
+            return;
+        }
         if is_qualified(n) {
             self.qualified(n, span);
             return;
@@ -1652,6 +1802,7 @@ impl Renamer<'_> {
     /// Rename a pattern and bind its variables (the caller restores scope).
     fn pattern(&mut self, p: &mut Pattern) {
         let span = p.span.clone();
+        let mut literal = None;
         match &mut p.kind {
             PatternKind::Wild | PatternKind::Literal(_) => {}
             PatternKind::Bind(n) => self.values.push(n.clone()),
@@ -1660,12 +1811,31 @@ impl Renamer<'_> {
                     self.pattern(p);
                 }
             }
-            PatternKind::Constructor { name, fields, .. } => {
-                self.type_name(name, &span);
-                for (_, p) in fields {
-                    self.pattern(p);
+            PatternKind::Constructor {
+                name,
+                fields,
+                named,
+            } => {
+                let local = self.names.get(name.as_str()).map(|(t, _)| t.clone());
+                if let Some(t) = local.filter(|t| crate::arrays::is_const_function(t)) {
+                    *name = t;
+                } else {
+                    self.type_name(name, &span);
+                }
+                if fields.is_empty()
+                    && !*named
+                    && let Some(l) = self.literals.get(name.as_str())
+                {
+                    literal = Some(l.clone());
+                } else {
+                    for (_, p) in fields {
+                        self.pattern(p);
+                    }
                 }
             }
+        }
+        if let Some(l) = literal {
+            p.kind = PatternKind::Literal(l);
         }
         self.span(&mut p.span);
     }
@@ -1681,7 +1851,24 @@ impl Renamer<'_> {
         let span = e.span.clone();
         match &mut e.kind {
             ExprKind::Literal(_) => {}
-            ExprKind::Name(n) => self.value_name(n, &span),
+            ExprKind::Name(n) => {
+                let written = n.contains(CONST_PREFIX);
+                self.value_name(n, &span);
+                // An imported constant or a path to one is a call of its
+                // function, as the parser makes a module's own (empty
+                // callee span: see `parser::lower_const_names`).
+                if !written && crate::arrays::is_const_function(n) {
+                    let callee = Expr {
+                        kind: ExprKind::Name(std::mem::take(n)),
+                        span: span.start + self.shift..span.start + self.shift,
+                    };
+                    e.kind = ExprKind::Call {
+                        callee: Box::new(callee),
+                        types: vec![],
+                        args: vec![],
+                    };
+                }
+            }
             ExprKind::Tuple(es) => {
                 for e in es {
                     self.expr(e);
