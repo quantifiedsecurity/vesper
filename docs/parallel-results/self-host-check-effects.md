@@ -107,12 +107,11 @@ test is the harness for them, and they come with the hybrid swap.
    `ename`.
 2. **A `const` cannot be imported from another module** (check-data gap 1):
    `walker.ves` and `check.ves` each declare the capability bits.
-3. **`vesper fmt` stops at `DepthLimit` on a long `else if` chain.**
-   `walker.ves`'s `expr` dispatches the 22 expression kinds with one
-   `if k == 1 {..} else if k == 2 {..} ...` chain used as a value, and fmt
-   refuses the file (the other four files format). Repro: a function whose
-   body is `let t = if k == 1 { false } else if k == 2 { false } ...` with
-   22 branches.
+3. **`vesper fmt` stops at `DepthLimit` on a long `||` chain.** A
+   function whose body is one `a || b || ... ` of 24 calls is refused
+   (`walker.ves`'s intrinsic-name test). The port checks the names in two
+   halves of 10 and 14 terms, and all five files are formatted. Repro: a
+   `-> bool` function returning 24 `f(x)` terms joined by `||`.
 4. **No borrowed compiler trees for the AST.** The bodies cross as
    hand-encoded words (`encode_task`): 0.47 s, 42% of the Vesper side's
    total.

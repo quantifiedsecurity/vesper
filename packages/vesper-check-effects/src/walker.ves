@@ -308,18 +308,42 @@ fn is_secret_name(k: Syms, s: u32) -> bool {
 
 // `REALTIME_FORBIDDEN`.
 pub fn forbidden(in c: Ctx, s: u32) -> bool {
-    c.names.spells(s, in "Alloc".as_bytes())
-        || c.names.spells(s, in "Async".as_bytes())
-        || c.names.spells(s, in "Net".as_bytes())
-        || c.names.spells(s, in "Storage".as_bytes())
-        || c.names.spells(s, in "Scope".as_bytes())
-        || c.names.spells(s, in "Mutex".as_bytes())
-        || c.names.spells(s, in "Lock".as_bytes())
-        || c.names.spells(s, in "Block".as_bytes())
-        || c.names.spells(s, in "Blocking".as_bytes())
-        || c.names.spells(s, in "Ffi".as_bytes())
-        || c.names.spells(s, in "Io".as_bytes())
-        || c.names.spells(s, in "Sleep".as_bytes())
+    c
+        .names
+        .spells(s, in "Alloc".as_bytes())
+        || c
+        .names
+        .spells(s, in "Async".as_bytes())
+        || c
+        .names
+        .spells(s, in "Net".as_bytes())
+        || c
+        .names
+        .spells(s, in "Storage".as_bytes())
+        || c
+        .names
+        .spells(s, in "Scope".as_bytes())
+        || c
+        .names
+        .spells(s, in "Mutex".as_bytes())
+        || c
+        .names
+        .spells(s, in "Lock".as_bytes())
+        || c
+        .names
+        .spells(s, in "Block".as_bytes())
+        || c
+        .names
+        .spells(s, in "Blocking".as_bytes())
+        || c
+        .names
+        .spells(s, in "Ffi".as_bytes())
+        || c
+        .names
+        .spells(s, in "Io".as_bytes())
+        || c
+        .names
+        .spells(s, in "Sleep".as_bytes())
 }
 
 fn secret_visit(in c: Ctx, k: Syms, ty: u32, inout seen: ChunkSeq[u32]) -> bool {
@@ -388,11 +412,16 @@ pub fn secret_type(in c: Ctx, inout s: Walk, ty: u32) -> bool {
         }
         s.secret_memo.push(0);
     }
-    let ok = s.secret_memo.try_set(w(ty), if r {
-        2
-    } else {
-        1
-    });
+    let ok = s
+        .secret_memo
+        .try_set(
+        w(ty),
+        if r {
+            2
+        } else {
+            1
+        }
+    );
     r
 }
 
@@ -501,10 +530,22 @@ fn int_kind_after(in c: Ctx, s: u32, skip: u64) -> bool {
     if rest == 5 {
         // usize, isize
         return (b0 == 117 || b0 == 105)
-            && c.names.byte(s, add(skip, 1)) == 115
-            && c.names.byte(s, add(skip, 2)) == 105
-            && c.names.byte(s, add(skip, 3)) == 122
-            && c.names.byte(s, add(skip, 4)) == 101;
+            && c
+            .names
+            .byte(s, add(skip, 1))
+            == 115
+            && c
+            .names
+            .byte(s, add(skip, 2))
+            == 105
+            && c
+            .names
+            .byte(s, add(skip, 3))
+            == 122
+            && c
+            .names
+            .byte(s, add(skip, 4))
+            == 101;
     }
     if b0 != 117 && b0 != 105 {
         return false;
@@ -519,9 +560,18 @@ fn int_kind_after(in c: Ctx, s: u32, skip: u64) -> bool {
     }
     if rest == 4 {
         // i128, u128
-        return c.names.byte(s, add(skip, 1)) == 49
-            && c.names.byte(s, add(skip, 2)) == 50
-            && c.names.byte(s, add(skip, 3)) == 56;
+        return c
+            .names
+            .byte(s, add(skip, 1))
+            == 49
+            && c
+            .names
+            .byte(s, add(skip, 2))
+            == 50
+            && c
+            .names
+            .byte(s, add(skip, 3))
+            == 56;
     }
     false
 }
@@ -546,33 +596,80 @@ fn prefixed_float(in c: Ctx, s: u32, in prefix: Str) -> bool {
 
 // `numeric::wrapping_intrinsic(name).is_some()`.
 fn wrapping_intrinsic(in c: Ctx, s: u32) -> bool {
-    c.names.spells(s, in "wrapping_add".as_bytes())
-        || c.names.spells(s, in "wrapping_sub".as_bytes())
-        || c.names.spells(s, in "wrapping_mul".as_bytes())
+    c
+        .names
+        .spells(s, in "wrapping_add".as_bytes())
+        || c
+        .names
+        .spells(s, in "wrapping_sub".as_bytes())
+        || c
+        .names
+        .spells(s, in "wrapping_mul".as_bytes())
 }
 
 // `bit_intrinsic`, `numeric::conversion`, `numeric::rotate_intrinsic` or
 // `numeric::float::is_float_intrinsic` knows `s`.
+// One `||` chain of 24 terms makes `vesper fmt` stop at DepthLimit, so the
+// names are checked in two halves.
 fn other_intrinsic(in c: Ctx, s: u32) -> bool {
-    c.names.spells(s, in "bit_and".as_bytes())
-        || c.names.spells(s, in "bit_or".as_bytes())
-        || c.names.spells(s, in "bit_xor".as_bytes())
-        || c.names.spells(s, in "bit_shl".as_bytes())
-        || c.names.spells(s, in "bit_shr".as_bytes())
+    bit_or_int_intrinsic(in c, s) || float_intrinsic(in c, s)
+}
+
+fn bit_or_int_intrinsic(in c: Ctx, s: u32) -> bool {
+    c
+        .names
+        .spells(s, in "bit_and".as_bytes())
+        || c
+        .names
+        .spells(s, in "bit_or".as_bytes())
+        || c
+        .names
+        .spells(s, in "bit_xor".as_bytes())
+        || c
+        .names
+        .spells(s, in "bit_shl".as_bytes())
+        || c
+        .names
+        .spells(s, in "bit_shr".as_bytes())
         || prefixed_int(in c, s, "widen_")
         || prefixed_int(in c, s, "narrow_")
         || prefixed_int(in c, s, "wrapping_")
-        || c.names.spells(s, in "rotate_left".as_bytes())
-        || c.names.spells(s, in "rotate_right".as_bytes())
-        || c.names.spells(s, in "sqrt".as_bytes())
-        || c.names.spells(s, in "abs".as_bytes())
-        || c.names.spells(s, in "floor".as_bytes())
-        || c.names.spells(s, in "ceil".as_bytes())
-        || c.names.spells(s, in "round".as_bytes())
-        || c.names.spells(s, in "trunc".as_bytes())
-        || c.names.spells(s, in "min".as_bytes())
-        || c.names.spells(s, in "max".as_bytes())
-        || c.names.spells(s, in "fma".as_bytes())
+        || c
+        .names
+        .spells(s, in "rotate_left".as_bytes())
+        || c
+        .names
+        .spells(s, in "rotate_right".as_bytes())
+}
+
+fn float_intrinsic(in c: Ctx, s: u32) -> bool {
+    c
+        .names
+        .spells(s, in "sqrt".as_bytes())
+        || c
+        .names
+        .spells(s, in "abs".as_bytes())
+        || c
+        .names
+        .spells(s, in "floor".as_bytes())
+        || c
+        .names
+        .spells(s, in "ceil".as_bytes())
+        || c
+        .names
+        .spells(s, in "round".as_bytes())
+        || c
+        .names
+        .spells(s, in "trunc".as_bytes())
+        || c
+        .names
+        .spells(s, in "min".as_bytes())
+        || c
+        .names
+        .spells(s, in "max".as_bytes())
+        || c
+        .names
+        .spells(s, in "fma".as_bytes())
         || prefixed_float(in c, s, "widen_")
         || prefixed_float(in c, s, "nearest_")
         || prefixed_int(in c, s, "saturating_")
@@ -802,17 +899,20 @@ pub fn start(inout c: Ctx, in p: Prog, inout s: Walk, f: u32, caps: u8, infer: b
         let q = p.param(add(w(g.pa), i));
         let secret = secret_type(in c, inout s, q.ty);
         let inferred = infer && s.cur.inferred.has(pair(g.name, n32(i)));
-        bind(inout s, Local {
-            name: q.name,
-            tainted: secret || inferred,
-            lexical: false,
-            public: !secret,
-            ty: q.ty,
-            r_eff: NONE32,
-            r_op: NONE32,
-            r_result: false,
-            r_state: false
-        });
+        bind(
+            inout s,
+            Local {
+                name: q.name,
+                tainted: secret || inferred,
+                lexical: false,
+                public: !secret,
+                ty: q.ty,
+                r_eff: NONE32,
+                r_op: NONE32,
+                r_result: false,
+                r_state: false
+            }
+        );
     }
 }
 
@@ -828,7 +928,10 @@ fn denorm_conflict(in c: Ctx, inout s: Walk, closure: bool, name: u32, start: u6
         put_name(in c, inout s, name);
         put(inout s, "'");
     }
-    put(inout s, " combines DetFloat and ConstDenorm: flushing subnormals to zero changes IEEE 754 results, so it cannot be bit deterministic");
+    put(
+        inout s,
+        " combines DetFloat and ConstDenorm: flushing subnormals to zero changes IEEE 754 results, so it cannot be bit deterministic"
+    );
     finish(inout s, a, "keep bit-deterministic float code out of ConstDenorm scopes", start, end);
 }
 
@@ -849,7 +952,13 @@ fn function_rules(in c: Ctx, in p: Prog, inout s: Walk, g: Fun) {
             put(inout s, "' carries '");
             put_name(in c, inout s, e.name);
             put(inout s, "', which may allocate, block or suspend");
-            finish(inout s, a, "realtime rows exclude Alloc, Async, Net, Storage, Scope, locks, Ffi and blocking I/O", g.start, g.end);
+            finish(
+                inout s,
+                a,
+                "realtime rows exclude Alloc, Async, Net, Storage, Scope, locks, Ffi and blocking I/O",
+                g.start,
+                g.end
+            );
         }
     }
     let tail = row_tail(in c, g.row);
@@ -872,10 +981,14 @@ pub fn function_body(inout c: Ctx, in p: Prog, inout s: Walk) -> bool {
     if g.body == NONE32 {
         return false;
     }
-    s.returns.push(Ret {
-        ty: g.result,
-        tainted: false
-    });
+    s
+        .returns
+        .push(
+        Ret {
+            ty: g.result,
+            tainted: false
+        }
+    );
     let t = expr(inout c, in p, inout s, g.body);
     let returned = pop_return(inout s);
     coerce(inout c, in p, inout s, g.body, g.result);
@@ -944,8 +1057,15 @@ fn same_bools(in a: ChunkSeq[bool], in b: ChunkSeq[bool]) -> bool {
 // `for` whose pattern binds with taint `bound` and type `element`: walks to
 // a taint fixpoint, keeping only the last walk's findings. Returns whether
 // a `break` value is secret-derived.
-fn loop_body(inout c: Ctx, in p: Prog, inout s: Walk, body: u32, pat: u32, bound: bool, element: u32)
-    -> bool {
+fn loop_body(
+    inout c: Ctx,
+    in p: Prog,
+    inout s: Walk,
+    body: u32,
+    pat: u32,
+    bound: bool,
+    element: u32
+) -> bool {
     let nd = s.rows.len();
     let nt = s.text.len();
     let nc = s.direct.len();
@@ -993,16 +1113,29 @@ fn bind_names(inout s: Walk, in p: Prog, pat: u32, tainted: bool, ty: u32) {
 }
 
 // `Walker::bind_pattern`; `scrutinee` is NONE32 for none.
-pub fn bind_pattern(inout c: Ctx, in p: Prog, inout s: Walk, pat: u32, tainted: bool, scrutinee: u32) {
+pub fn bind_pattern(
+    inout c: Ctx,
+    in p: Prog,
+    inout s: Walk,
+    pat: u32,
+    tainted: bool,
+    scrutinee: u32
+) {
     if scrutinee != NONE32 {
         secret_access_pattern(inout c, in p, inout s, pat, scrutinee);
     }
     let whole = p.pat(pat).kind == 2;
-    bind_names(inout s, in p, pat, tainted, if whole {
-        scrutinee
-    } else {
-        NONE32
-    });
+    bind_names(
+        inout s,
+        in p,
+        pat,
+        tainted,
+        if whole {
+            scrutinee
+        } else {
+            NONE32
+        }
+    );
 }
 
 // Whether `name` is a decimal number (`str::parse::<usize>` succeeds).
@@ -1074,7 +1207,13 @@ fn secret_access_pattern(inout c: Ctx, in p: Prog, inout s: Walk, pat: u32, ty: 
                 put_ty(in c, inout s, ty);
                 put(inout s, "' can only be read inside eff [ConstTime]");
                 put_in_fn(in c, in p, inout s);
-                finish(inout s, d, "move the computation into an eff [ConstTime] function", x.start, x.end);
+                finish(
+                    inout s,
+                    d,
+                    "move the computation into an eff [ConstTime] function",
+                    x.start,
+                    x.end
+                );
             }
         }
     }
@@ -1129,7 +1268,13 @@ fn branch_on_secret(in c: Ctx, in p: Prog, inout s: Walk, in what: Str, start: u
     put(inout s, what);
     put(inout s, " depends on a secret value");
     put_in_fn(in c, in p, inout s);
-    finish(inout s, a, "select with constant-time arithmetic and declassify only the final verdict", start, end);
+    finish(
+        inout s,
+        a,
+        "select with constant-time arithmetic and declassify only the final verdict",
+        start,
+        end
+    );
 }
 
 fn tail_span(in p: Prog, e: u32) -> ExprNode {
@@ -1222,7 +1367,13 @@ pub fn expr(inout c: Ctx, in p: Prog, inout s: Walk, e: u32) -> bool {
                     put_ty(in c, inout s, bt);
                     put(inout s, "' can only be read inside eff [ConstTime]");
                     put_in_fn(in c, in p, inout s);
-                    finish(inout s, a, "move the computation into an eff [ConstTime] function", x.start, x.end);
+                    finish(
+                        inout s,
+                        a,
+                        "move the computation into an eff [ConstTime] function",
+                        x.start,
+                        x.end
+                    );
                 }
             }
         }
@@ -1235,7 +1386,13 @@ pub fn expr(inout c: Ctx, in p: Prog, inout s: Walk, e: u32) -> bool {
             let a = begin(inout s, "E0704");
             put(inout s, "eff [ConstTime] index depends on a secret value");
             put_in_fn(in c, in p, inout s);
-            finish(inout s, a, "secret-indexed loads leak through the cache; select over all elements instead", ix.start, ix.end);
+            finish(
+                inout s,
+                a,
+                "secret-indexed loads leak through the cache; select over all elements instead",
+                ix.start,
+                ix.end
+            );
         }
         bt || it
     } else if k == 9 {
@@ -1342,10 +1499,15 @@ pub fn expr(inout c: Ctx, in p: Prog, inout s: Walk, e: u32) -> bool {
                     },
                 };
                 coerce(inout c, in p, inout s, x.a, r.ty);
-                let ok = s.returns.try_set(last, Ret {
-                    ty: r.ty,
-                    tainted: r.tainted || t
-                });
+                let ok = s
+                    .returns
+                    .try_set(
+                    last,
+                    Ret {
+                        ty: r.ty,
+                        tainted: r.tainted || t
+                    }
+                );
             }
         }
         false
@@ -1400,17 +1562,20 @@ fn block(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode) -> bool {
             bind_pattern(inout c, in p, inout s, pat, t, scrutinee);
             let px = p.pat(pat);
             if lexical && px.kind == 2 {
-                bind(inout s, Local {
-                    name: px.a,
-                    tainted: t,
-                    lexical: true,
-                    public: false,
-                    ty: scrutinee,
-                    r_eff: NONE32,
-                    r_op: NONE32,
-                    r_result: false,
-                    r_state: false
-                });
+                bind(
+                    inout s,
+                    Local {
+                        name: px.a,
+                        tainted: t,
+                        lexical: true,
+                        public: false,
+                        ty: scrutinee,
+                        r_eff: NONE32,
+                        r_op: NONE32,
+                        r_result: false,
+                        r_state: false
+                    }
+                );
             }
         } else {
             let t = expr(inout c, in p, inout s, value);
@@ -1464,7 +1629,17 @@ fn assign(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode) -> bool {
 }
 
 // `Walker::binary` at node `x` with operator `op` over `l` and `r`.
-fn binary(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, op: u32, l: u32, r: u32, left: bool, tainted: bool) {
+fn binary(
+    inout c: Ctx,
+    in p: Prog,
+    inout s: Walk,
+    x: ExprNode,
+    op: u32,
+    l: u32,
+    r: u32,
+    left: bool,
+    tainted: bool
+) {
     let ct = has(in s, CT);
     let k = s.k;
     if ct && left && (op == k.and_and || op == k.or_or) {
@@ -1478,16 +1653,30 @@ fn binary(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, op: u32, l: u32,
             put_name(in c, inout s, op);
             put(inout s, "' on a secret value has data-dependent latency");
             put_in_fn(in c, in p, inout s);
-            finish(inout s, a, "secret division and remainder are variable time; restructure without them", x.start, x.end);
+            finish(
+                inout s,
+                a,
+                "secret division and remainder are variable time; restructure without them",
+                x.start,
+                x.end
+            );
         }
-    } else if ct && tainted && (c.world.may_overflow(x.start, x.end) || c.world.is_partial(x.start, x.end)) {
+    } else if ct
+        && tainted
+        && (c.world.may_overflow(x.start, x.end) || c.world.is_partial(x.start, x.end)) {
         if s.emit {
             let a = begin(inout s, "E0703");
             put(inout s, "eff [ConstTime] checked '");
             put_name(in c, inout s, op);
             put(inout s, "' on a secret value may abort depending on the secret");
             put_in_fn(in c, in p, inout s);
-            finish(inout s, a, "use wrapping_add, wrapping_sub or wrapping_mul on secrets", x.start, x.end);
+            finish(
+                inout s,
+                a,
+                "use wrapping_add, wrapping_sub or wrapping_mul on secrets",
+                x.start,
+                x.end
+            );
         }
     }
     let compare = op == k.eq || op == k.ne || op == k.lt || op == k.le || op == k.gt || op == k.ge;
@@ -1504,7 +1693,13 @@ fn binary(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, op: u32, l: u32,
             put_name(in c, inout s, op);
             put(inout s, "'");
             put_in_fn(in c, in p, inout s);
-            finish(inout s, a, "secret types omit Eq and Ord; compare payloads inside eff [ConstTime] and declassify the verdict", x.start, x.end);
+            finish(
+                inout s,
+                a,
+                "secret types omit Eq and Ord; compare payloads inside eff [ConstTime] and declassify the verdict",
+                x.start,
+                x.end
+            );
         }
     }
     if has(in s, DF) && op == k.rem && s.emit {
@@ -1512,9 +1707,18 @@ fn binary(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, op: u32, l: u32,
         let rt = ty_of(inout c, in p, in s, r);
         if is_float_type(in c, k, lt) || is_float_type(in c, k, rt) {
             let a = begin(inout s, "E0730");
-            put(inout s, "eff [DetFloat] float remainder is not a correctly rounded basic operation");
+            put(
+                inout s,
+                "eff [DetFloat] float remainder is not a correctly rounded basic operation"
+            );
             put_in_fn(in c, in p, inout s);
-            finish(inout s, a, "only + - * / and comparisons are bit deterministic across targets", x.start, x.end);
+            finish(
+                inout s,
+                a,
+                "only + - * / and comparisons are bit deterministic across targets",
+                x.start,
+                x.end
+            );
         }
     }
 }
@@ -1543,7 +1747,13 @@ fn closure(inout c: Ctx, in p: Prog, inout s: Walk, e: u32, x: ExprNode) -> bool
                 put(inout s, "eff [Realtime] closure carries '");
                 put_name(in c, inout s, en.name);
                 put(inout s, "', which may allocate, block or suspend");
-                finish(inout s, a, "realtime rows exclude Alloc, Async, Net, Storage, Scope, locks, Ffi and blocking I/O", x.start, x.end);
+                finish(
+                    inout s,
+                    a,
+                    "realtime rows exclude Alloc, Async, Net, Storage, Scope, locks, Ffi and blocking I/O",
+                    x.start,
+                    x.end
+                );
             }
         }
     }
@@ -1558,10 +1768,14 @@ fn closure(inout c: Ctx, in p: Prog, inout s: Walk, e: u32, x: ExprNode) -> bool
         s.indirect.insert(widen_u64(node));
         s.node = node;
     }
-    s.returns.push(Ret {
-        ty: x.c,
-        tainted: false
-    });
+    s
+        .returns
+        .push(
+        Ret {
+            ty: x.c,
+            tainted: false
+        }
+    );
     open_scope(inout s);
     for i in 0..w(x.b) {
         let at = add(w(x.a), wrapping_mul(i, 3));
@@ -1583,11 +1797,21 @@ fn closure(inout c: Ctx, in p: Prog, inout s: Walk, e: u32, x: ExprNode) -> bool
         } else {
             NONE32
         };
-        if declared == NONE32 || (!secret_type(in c, inout s, declared) && !carries_no_information(in c, s.k, declared)) {
+        if declared
+            == NONE32
+            || (
+            !secret_type(in c, inout s, declared) && !carries_no_information(in c, s.k, declared)
+        ) {
             let tx = tail_span(in p, x.e);
             let a = begin(inout s, "E0706");
             put(inout s, "eff [ConstTime] closure returns a secret-derived value as non-secret");
-            finish(inout s, a, "wrap the result in a secret type or pass it through an explicit declassify gate", tx.start, tx.end);
+            finish(
+                inout s,
+                a,
+                "wrap the result in a secret type or pass it through an explicit declassify gate",
+                tx.start,
+                tx.end
+            );
         }
     }
     s.node = outer_node;
@@ -1617,7 +1841,13 @@ fn handler(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode) -> bool {
                 put(inout s, "eff [Realtime] body installs a resumable handler for '");
                 put_name(in c, inout s, ename);
                 put(inout s, "'; its continuation may need a suspended fiber stack");
-                finish(inout s, a, "realtime bodies may only handle abortive effects such as Fail", x.start, x.end);
+                finish(
+                    inout s,
+                    a,
+                    "realtime bodies may only handle abortive effects such as Fail",
+                    x.start,
+                    x.end
+                );
             }
         }
     }
@@ -1656,7 +1886,14 @@ fn handler(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode) -> bool {
         }
         if !pair_bound {
             for i in 0..w(ret_len) {
-                bind_pattern(inout c, in p, inout s, p.at(add(w(ret_first), i)), b || final_state, NONE32);
+                bind_pattern(
+                    inout c,
+                    in p,
+                    inout s,
+                    p.at(add(w(ret_first), i)),
+                    b || final_state,
+                    NONE32
+                );
             }
         }
         let r = expr(inout c, in p, inout s, ret_body);
@@ -1670,8 +1907,15 @@ fn handler(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode) -> bool {
     t
 }
 
-fn op_clauses(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, state: bool, state_taint: bool, resume_result: bool)
-    -> bool {
+fn op_clauses(
+    inout c: Ctx,
+    in p: Prog,
+    inout s: Walk,
+    x: ExprNode,
+    state: bool,
+    state_taint: bool,
+    resume_result: bool
+) -> bool {
     let ename = x.a;
     let bus = ename == s.k.rtbus;
     let outer_caps = s.caps;
@@ -1697,17 +1941,20 @@ fn op_clauses(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, state: bool,
             if inc(i) == n {
                 let px = p.pat(pat);
                 if px.kind == 2 {
-                    bind(inout s, Local {
-                        name: px.a,
-                        tainted: false,
-                        lexical: true,
-                        public: false,
-                        ty: NONE32,
-                        r_eff: ename,
-                        r_op: op_name,
-                        r_result: resume_result,
-                        r_state: state
-                    });
+                    bind(
+                        inout s,
+                        Local {
+                            name: px.a,
+                            tainted: false,
+                            lexical: true,
+                            public: false,
+                            ty: NONE32,
+                            r_eff: ename,
+                            r_op: op_name,
+                            r_result: resume_result,
+                            r_state: state
+                        }
+                    );
                 }
             } else {
                 // Operation arguments are secret only when their declared
@@ -1881,14 +2128,28 @@ fn call(inout c: Ctx, in p: Prog, inout s: Walk, e: u32, x: ExprNode) -> bool {
     if r.kind == C_INTRINSIC {
         if any && has(in s, CT) && c.world.may_overflow(x.start, x.end) && s.emit {
             let a = begin(inout s, "E0703");
-            put(inout s, "eff [ConstTime] checked conversion of a secret value may abort depending on the secret");
+            put(
+                inout s,
+                "eff [ConstTime] checked conversion of a secret value may abort depending on the secret"
+            );
             put_in_fn(in c, in p, inout s);
             finish(inout s, a, "use wrapping_k conversions on secrets", x.start, x.end);
         }
         return any;
     }
     if r.kind == C_FUNCTION {
-        return call_function(inout c, in p, inout s, x, cx, r.f, receiver, callee_taint, in taints, any);
+        return call_function(
+            inout c,
+            in p,
+            inout s,
+            x,
+            cx,
+            r.f,
+            receiver,
+            callee_taint,
+            in taints,
+            any
+        );
     }
     if r.kind == C_EFFECT_OP {
         effect_op(inout c, in p, inout s, x, r.d, r.f, in taints);
@@ -1963,7 +2224,13 @@ fn call_function(
                 put(inout s, "' of '");
                 put_name(in c, inout s, g.name);
                 put(inout s, "'");
-                finish(inout s, a, "give the parameter a secret type, or declassify explicitly", ax.start, ax.end);
+                finish(
+                    inout s,
+                    a,
+                    "give the parameter a secret type, or declassify explicitly",
+                    ax.start,
+                    ax.end
+                );
             }
         }
     }
@@ -2073,13 +2340,24 @@ fn call_value(
             let arg = arg_expr(in p, x, i);
             let pty = c.types.arg(ty, i);
             coerce(inout c, in p, inout s, arg, pty);
-            if bool_at(in taints, i) && has(in s, CT) && !lexical && !secret_type(in c, inout s, pty) && s.emit {
+            if bool_at(in taints, i)
+                && has(in s, CT)
+                && !lexical
+                && !secret_type(in c, inout s, pty)
+                && s
+                .emit {
                 let ax = p.expr(arg);
                 let a = begin(inout s, "E0705");
                 put(inout s, "eff [ConstTime] passes a secret-derived value to public parameter '");
                 put_ty(in c, inout s, pty);
                 put(inout s, "' of a function value");
-                finish(inout s, a, "give the parameter a secret type, or declassify explicitly", ax.start, ax.end);
+                finish(
+                    inout s,
+                    a,
+                    "give the parameter a secret type, or declassify explicitly",
+                    ax.start,
+                    ax.end
+                );
             }
         }
     }
@@ -2095,7 +2373,15 @@ fn put_callee_name(in c: Ctx, inout s: Walk, name: u32) {
 }
 
 // `Walker::effect_op` at call node `x` of operation `oi` of declaration `d`.
-fn effect_op(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, d: u32, oi: u32, in taints: ChunkSeq[bool]) {
+fn effect_op(
+    inout c: Ctx,
+    in p: Prog,
+    inout s: Walk,
+    x: ExprNode,
+    d: u32,
+    oi: u32,
+    in taints: ChunkSeq[bool]
+) {
     let decl = p.decl(d);
     let op = p.op(w(oi));
     if decl.name == s.k.rtbus && !has(in s, RT) && s.emit {
@@ -2104,7 +2390,13 @@ fn effect_op(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, d: u32, oi: u
         put_name(in c, inout s, op.name);
         put(inout s, "' is performed outside eff [Realtime] code");
         put_in_fn(in c, in p, inout s);
-        finish(inout s, a, "the realtime bus is only available to eff [Realtime] callbacks", x.start, x.end);
+        finish(
+            inout s,
+            a,
+            "the realtime bus is only available to eff [Realtime] callbacks",
+            x.start,
+            x.end
+        );
     }
     if has(in s, RT) && forbidden(in c, decl.name) && s.emit {
         let a = begin(inout s, "E0720");
@@ -2113,7 +2405,13 @@ fn effect_op(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, d: u32, oi: u
         put(inout s, "::");
         put_name(in c, inout s, op.name);
         put(inout s, "', which may allocate, block or suspend");
-        finish(inout s, a, "realtime rows exclude Alloc, Async, Net, Storage, Scope, locks, Ffi and blocking I/O", x.start, x.end);
+        finish(
+            inout s,
+            a,
+            "realtime rows exclude Alloc, Async, Net, Storage, Scope, locks, Ffi and blocking I/O",
+            x.start,
+            x.end
+        );
     }
     if has(in s, DF) && caps_of(in c, s.k, op.row) & DF == 0 && s.emit {
         let mut float = mentions_float(in c, s.k, op.result);
@@ -2129,7 +2427,13 @@ fn effect_op(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, d: u32, oi: u
             put(inout s, "::");
             put_name(in c, inout s, op.name);
             put(inout s, "', whose rounding is platform dependent");
-            finish(inout s, a, "compute the value with DetFloat functions built from + - * /", x.start, x.end);
+            finish(
+                inout s,
+                a,
+                "compute the value with DetFloat functions built from + - * /",
+                x.start,
+                x.end
+            );
         }
     }
     if has(in s, CT) && s.emit {
@@ -2156,12 +2460,21 @@ fn effect_op(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, d: u32, oi: u
                 if !secret_type(in c, inout s, pty) {
                     let ax = p.expr(arg_expr(in p, x, i));
                     let a = begin(inout s, "E0705");
-                    put(inout s, "eff [ConstTime] passes a secret-derived value to effect operation '");
+                    put(
+                        inout s,
+                        "eff [ConstTime] passes a secret-derived value to effect operation '"
+                    );
                     put_name(in c, inout s, decl.name);
                     put(inout s, "::");
                     put_name(in c, inout s, op.name);
                     put(inout s, "'");
-                    finish(inout s, a, "handlers are not checked as constant time; pass only secret-typed values", ax.start, ax.end);
+                    finish(
+                        inout s,
+                        a,
+                        "handlers are not checked as constant time; pass only secret-typed values",
+                        ax.start,
+                        ax.end
+                    );
                 }
             }
         }
@@ -2169,12 +2482,28 @@ fn effect_op(inout c: Ctx, in p: Prog, inout s: Walk, x: ExprNode, d: u32, oi: u
 }
 
 // `Walker::require_carried` with the row of effect-row type `row`.
-fn require_carried(in c: Ctx, in p: Prog, inout s: Walk, name: u32, row: u32, start: u64, end: u64) {
+fn require_carried(
+    in c: Ctx,
+    in p: Prog,
+    inout s: Walk,
+    name: u32,
+    row: u32,
+    start: u64,
+    end: u64
+) {
     require_caps(in c, in p, inout s, name, caps_of(in c, s.k, row), start, end);
 }
 
 // The same with a row id (a function type's `r2`).
-fn require_carried_row(in c: Ctx, in p: Prog, inout s: Walk, name: u32, row: u32, start: u64, end: u64) {
+fn require_carried_row(
+    in c: Ctx,
+    in p: Prog,
+    inout s: Walk,
+    name: u32,
+    row: u32,
+    start: u64,
+    end: u64
+) {
     let r = c.types.row(row);
     let mut carried: u8 = 0;
     for i in 0..w(r.n) {
@@ -2192,7 +2521,15 @@ fn require_carried_row(in c: Ctx, in p: Prog, inout s: Walk, name: u32, row: u32
     require_caps(in c, in p, inout s, name, carried, start, end);
 }
 
-fn require_caps(in c: Ctx, in p: Prog, inout s: Walk, name: u32, carried: u8, start: u64, end: u64) {
+fn require_caps(
+    in c: Ctx,
+    in p: Prog,
+    inout s: Walk,
+    name: u32,
+    carried: u8,
+    start: u64,
+    end: u64
+) {
     let missing = s.caps & (carried ^ 15);
     if missing != 0 && s.emit {
         let a = begin(inout s, "E0700");
@@ -2202,7 +2539,13 @@ fn require_caps(in c: Ctx, in p: Prog, inout s: Walk, name: u32, carried: u8, st
         put_callee_name(in c, inout s, name);
         put(inout s, "', which does not carry ");
         put_caps(inout s, missing);
-        finish(inout s, a, "a capability body may only call functions that carry the same capability", start, end);
+        finish(
+            inout s,
+            a,
+            "a capability body may only call functions that carry the same capability",
+            start,
+            end
+        );
     }
 }
 
@@ -2301,5 +2644,11 @@ fn coerce_error(inout s: Walk, missing: u8, start: u64, end: u64) {
     put(inout s, "this function value is not checked under ");
     put_caps(inout s, missing);
     put(inout s, ", which its expected type requires");
-    finish(inout s, a, "declare the capability on the closure (|..| -> T eff [..] { .. }) or pass a function carrying it", start, end);
+    finish(
+        inout s,
+        a,
+        "declare the capability on the closure (|..| -> T eff [..] { .. }) or pass a function carrying it",
+        start,
+        end
+    );
 }
