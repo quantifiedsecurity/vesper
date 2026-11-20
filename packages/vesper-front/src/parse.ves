@@ -96,6 +96,8 @@ use self::words::{
     w_fip,
     w_trait,
     w_tiled,
+    w_test,
+    w_test_case,
     w_wire,
     w_for,
     w_where,
@@ -1105,6 +1107,51 @@ fn fip_attr(inout p: P) -> bool {
     }
 }
 
+// `Parser::attr_paren_args`: a balanced `(...)` list for `@test(...)` or
+// `@test_case(...)`.
+fn attr_paren_args(inout p: P) {
+    expect(inout p, k_l_paren());
+    let mut depth: u64 = 1;
+    loop {
+        if depth == 0 || at(in p, k_eof()) || p.halted {
+            break;
+        }
+        let k = kind(in p);
+        if k == k_l_paren() {
+            depth = inc(depth);
+        } else if k == k_r_paren() {
+            depth = wrapping_sub(depth, 1);
+        }
+        bump(inout p);
+    }
+    if depth > 0 && !p.halted {
+        err(inout p, in "unterminated attribute argument list");
+    }
+}
+
+// `Parser::test_attr`: `@test`, `@test(...)` or `@test_case(...)`.
+fn test_attr(inout p: P) -> bool {
+    if at(in p, k_at()) && at_word(in p, 1, w_test()) {
+        bump(inout p);
+        bump(inout p);
+        if at(in p, k_l_paren()) {
+            attr_paren_args(inout p);
+        }
+        true
+    } else if at(in p, k_at()) && at_word(in p, 1, w_test_case()) {
+        bump(inout p);
+        bump(inout p);
+        if at(in p, k_l_paren()) {
+            attr_paren_args(inout p);
+        } else {
+            err(inout p, in "@test_case requires an argument list in parentheses");
+        }
+        true
+    } else {
+        false
+    }
+}
+
 fn is_mode_kind(k: u8) -> bool {
     k == k_copy() || k == k_affine() || k == k_linear()
 }
@@ -1120,8 +1167,53 @@ fn import_root(in p: P, n: u64) -> bool {
     k == k_at() || k == k_self_kw() || at_word(in p, n, w_super())
 }
 
+// The item kinds `pub` may precede in `Parser::declaration`.
+fn pub_item_follows(in p: P) -> bool {
+    at_word(in p, 1, w_trait())
+        || (at_word(in p, 1, w_const()) && nth(in p, 2) == k_upper())
+        || at_word(in p, 1, w_model())
+        || nth(in p, 1)
+        == k_fn()
+        || is_type_decl_kind(nth(in p, 1))
+        || (is_mode_kind(nth(in p, 1)) && is_type_decl_kind(nth(in p, 2)))
+        || (
+        nth(in p, 1)
+            == k_at()
+            && (
+            at_word(in p, 2, w_fip())
+                || at_word(in p, 2, w_test())
+                || at_word(in p, 2, w_test_case())
+        )
+    )
+}
+
+// Keep inactive test declarations as lossless tokens in the ordinary CST.
+fn skip_test_block(inout p: P) {
+    bump(inout p);
+    bump(inout p);
+    let mut depth: u64 = 1;
+    loop {
+        if depth == 0 || at(in p, k_eof()) {
+            break;
+        }
+        if at(in p, k_l_brace()) {
+            depth = inc(depth);
+        } else if at(in p, k_r_brace()) {
+            depth = wrapping_sub(depth, 1);
+        }
+        bump(inout p);
+    }
+    if depth != 0 {
+        expect(inout p, k_r_brace());
+    }
+}
+
 // `Parser::declaration`: whether it produced an item.
 fn declaration(inout p: P) -> bool {
+    if at_word(in p, 0, w_test()) && nth(in p, 1) == k_l_brace() {
+        skip_test_block(inout p);
+        return false;
+    }
     if at_word(in p, 0, w_use()) && at_word(in p, 1, w_model()) {
         use_model(inout p);
         return false;
@@ -1151,28 +1243,30 @@ fn declaration(inout p: P) -> bool {
         return false;
     }
     p.item_start = cur_start(in p);
-    let mut fip = fip_attr(inout p);
-    let public = at_word(in p, 0, w_pub())
-        && (
-        at_word(in p, 1, w_trait())
-            || (at_word(in p, 1, w_const()) && nth(in p, 2) == k_upper())
-            || at_word(in p, 1, w_model())
-            || nth(in p, 1)
-            == k_fn()
-            || is_type_decl_kind(nth(in p, 1))
-            || (is_mode_kind(nth(in p, 1)) && is_type_decl_kind(nth(in p, 2)))
-            || (
-            !fip && nth(in p, 1) == k_at() && at_word(in p, 2, w_fip()) && nth(in p, 3) == k_fn()
-        )
-    );
-    if public {
-        bump(inout p);
-    }
-    if !fip {
-        fip = fip_attr(inout p);
+    let mut fip = false;
+    let mut has_test_attr = false;
+    let mut public = false;
+    loop {
+        if fip_attr(inout p) {
+            fip = true;
+            continue;
+        }
+        if test_attr(inout p) {
+            has_test_attr = true;
+            continue;
+        }
+        if !public && at_word(in p, 0, w_pub()) && pub_item_follows(in p) {
+            bump(inout p);
+            public = true;
+            continue;
+        }
+        break;
     }
     if fip && !at(in p, k_fn()) {
         err(inout p, in "@fip may only annotate a fn declaration");
+    }
+    if has_test_attr && !at(in p, k_fn()) {
+        err(inout p, in "@test and @test_case may only annotate a fn declaration");
     }
     if at_word(in p, 0, w_const()) && nth(in p, 1) == k_upper() {
         const_item(inout p);
@@ -3239,16 +3333,42 @@ fn index_tokens(inout p: P) {
 // `contextual_item_names`: `fn break()` and friends keep the word a name.
 fn contextual_item_names(inout p: P) {
     let mut previous: u8 = 255;
+    let mut depth: u64 = 0;
+    let mut skipping_test = false;
     for j in 0..p.sig.len() {
         let i = w32(in p.sig, j);
         let k = tk(in p, i);
-        if previous == k_fn() && k == k_lower() {
+        if depth
+            == 0
+            && k
+            == k_lower()
+            && tword(in p, i)
+            == w_test()
+            && inc(j)
+            < p
+            .sig
+            .len()
+            && tk(in p, w32(in p.sig, inc(j)))
+            == k_l_brace() {
+            skipping_test = true;
+        }
+        if !skipping_test && previous == k_fn() && k == k_lower() {
             let w = tword(in p, i);
             if w == w_break() || w == w_continue() || w == w_for() || w == w_loop() {
                 let sym = tsym(in p, i);
                 if !bound(in p, sym) {
                     val_insert(inout p, sym);
                 }
+            }
+        }
+        if k == k_l_brace() {
+            depth = inc(depth);
+        } else if k == k_r_brace() {
+            if depth > 0 {
+                depth = wrapping_sub(depth, 1);
+            }
+            if depth == 0 {
+                skipping_test = false;
             }
         }
         previous = k;
