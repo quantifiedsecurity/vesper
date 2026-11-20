@@ -1370,6 +1370,7 @@ fn define_instances_observed_with_trace<M: Module>(
                 own_abi,
                 result_buffer: own_abi.result_words.and(sret),
                 forced_call_vars: None,
+                discard_slot: None,
             };
             c.set_location(f.span.start);
             // Function-value parameters bound to top-level functions by
@@ -1434,7 +1435,11 @@ fn define_instances_observed_with_trace<M: Module>(
             rewrite(key, &mut ctx.func)?;
         }
         linkage.normalize_references(&mut ctx.func);
-        clif.push_str(&format!("; {key}\n{}\n", ctx.func.display()));
+        // No JIT caller reads the CLIF text, and printing it costs as much
+        // as half of Cranelift's own work on a large function (#1151).
+        if matches!(linkage, DefinitionLinkage::Object) {
+            clif.push_str(&format!("; {key}\n{}\n", ctx.func.display()));
+        }
         if let Some(observe) = observer.as_mut() {
             let mut function = ctx.func.clone();
             function.name = ir::UserFuncName::user(0, define_id.as_u32());
@@ -2274,10 +2279,16 @@ struct Codegen<'a, 'b, M: Module> {
     /// vtable slot names the selected conformance method directly
     /// ([`Codegen::dyn_call_effectful`]).
     forced_call_vars: Option<BTreeMap<String, Type>>,
+    /// The slot an optimized out-of-bounds `try_set` writes instead of the
+    /// sequence (#1151), created by the first such store.
+    discard_slot: Option<ir::StackSlot>,
 }
 /// The Cranelift source location of source byte `offset`. Locations are
 /// byte offsets into the checked module's source; the all-ones value is
 /// Cranelift's "no location", so larger offsets saturate below it.
+/// Graphs with more values than this read only each instruction's operands
+/// from their variables even when unoptimized ([`Codegen::ir_graph_at`]).
+const FULL_REFRESH_VALUES: usize = 256;
 fn source_loc(offset: usize) -> ir::SourceLoc {
     ir::SourceLoc::new(
         u32::try_from(offset)
@@ -3164,6 +3175,14 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.def_var(register, zero);
             registers.insert(*id, register);
         }
+        // Read every value of the graph from its variable before each
+        // instruction, or only the instruction's operands. Reading all of
+        // them gives every block a parameter per value and costs values x
+        // instructions (#931, #1151), so the optimize path and any graph
+        // with more than `FULL_REFRESH_VALUES` values read operands only.
+        // Small unoptimized graphs, which the Stage 1 corpus uses, keep the
+        // full refresh and so their exact code.
+        let refresh_all = !self.operands_only && registers.len() <= FULL_REFRESH_VALUES;
         let mut parameters = BTreeMap::new();
         for (i, block) in f.blocks.iter().enumerate() {
             for id in &block.params {
@@ -3323,12 +3342,29 @@ impl<M: Module> Codegen<'_, '_, M> {
                 self.generic_vars.clone(),
             )),
         });
+        // Seal each block once every predecessor is lowered (#1151): a block
+        // left unsealed until `seal_all_blocks` gets a parameter for every
+        // variable read in or below it, and removing the trivial ones again
+        // is quadratic in large functions. Only the terminators below jump
+        // to `blocks`, so an acyclic block whose predecessors are all done
+        // can take no new edge. The entry and blocks on cycles are left to
+        // `seal_all_blocks`.
+        let mut lowered = vec![false; f.blocks.len()];
         for i in order {
             let block = &f.blocks[i];
             self.cycle_depth = base_cycle_depth + usize::from(cyclic.contains(&i));
             if self.b.current_block() != Some(blocks[i]) {
                 self.b.switch_to_block(blocks[i]);
             }
+            if i != 0
+                && !cyclic.contains(&i)
+                && graph
+                    .neighbors_directed(i, petgraph::Direction::Incoming)
+                    .all(|p| lowered[p])
+            {
+                self.b.seal_block(blocks[i]);
+            }
+            lowered[i] = true;
             for id in &block.params {
                 self.def_var(registers[id], parameters[id]);
                 values.insert(*id, parameters[id]);
@@ -3360,8 +3396,7 @@ impl<M: Module> Codegen<'_, '_, M> {
             let before_inst_drops = f.box_drops_before_inst.get(&i);
             let after_inst_drops = f.box_drops_after_inst.get(&i);
             for (inst_idx, inst) in block.instructions.iter().enumerate() {
-                if !self.operands_only || before_inst_drops.is_some() || after_inst_drops.is_some()
-                {
+                if refresh_all || before_inst_drops.is_some() || after_inst_drops.is_some() {
                     for (id, register) in &registers {
                         values.insert(*id, self.use_var(*register));
                     }
@@ -3480,6 +3515,18 @@ impl<M: Module> Codegen<'_, '_, M> {
                             let value = self.expr(&e)?;
                             if *pass == Pass::Sink && path.is_empty() {
                                 self.seq_drop_moved(root);
+                            } else if *pass == Pass::Sink
+                                && self.needs_drop(&ty)
+                                && self.split_place(&e).is_none()
+                                && self.seq_drop_slot_kind(root).is_some_and(|k| {
+                                    matches!(
+                                        k,
+                                        crate::fip::SeqDrop::Owned | crate::fip::SeqDrop::Fields
+                                    )
+                                })
+                            {
+                                let ptr = self.address(&e)?;
+                                self.seq_drop_field_moved(root, ptr, &ty);
                             }
                             value
                         }
@@ -3910,7 +3957,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                     }
                 }
             }
-            if !self.operands_only || f.box_drops_before_term.contains_key(&i) {
+            if refresh_all || f.box_drops_before_term.contains_key(&i) {
                 for (id, register) in &registers {
                     values.insert(*id, self.use_var(*register));
                 }
@@ -4061,6 +4108,8 @@ impl<M: Module> Codegen<'_, '_, M> {
                             }
                         }
                         self.branch(condition, blocks[*target], &arm_args, next, &[]);
+                        // `next` has this branch as its only predecessor.
+                        self.b.seal_block(next);
                         self.b.switch_to_block(next);
                     }
                     if !closed {
@@ -7070,7 +7119,21 @@ impl<M: Module> Codegen<'_, '_, M> {
             for exit in self.exits.iter_mut().skip(h.control.exits_depth) {
                 exit.at = None;
             }
+            // So are the strings and sequences they own (#1145). The clause
+            // is emitted without those slots, so that a failure it raises
+            // does not free them again; the body's own code after this
+            // point (never reached once `raise` aborts) keeps them.
+            self.seq_drop_exit(h.control.exits_depth)?;
         }
+        let unwound: Vec<Vec<SeqDropSlot>> = if effect == "Fail" {
+            self.exits
+                .iter_mut()
+                .skip(h.control.exits_depth)
+                .map(|exit| std::mem::take(&mut exit.drops))
+                .collect()
+        } else {
+            vec![]
+        };
         let captures = self.copy_bindings(&h.captured, &h.captured_types)?;
         let old_vars = std::mem::replace(&mut self.vars, captures);
         let old_types = std::mem::replace(&mut self.local_types, h.captured_types.clone());
@@ -7167,6 +7230,14 @@ impl<M: Module> Codegen<'_, '_, M> {
         // resumed body has freed them already).
         self.free_sink_blocks_within(Some(index))?;
         self.jump(h.control.dispatch, &[output.into()]);
+        for (exit, drops) in self
+            .exits
+            .iter_mut()
+            .skip(h.control.exits_depth)
+            .zip(unwound)
+        {
+            exit.drops = drops;
+        }
         self.b.switch_to_block(entry);
         if let Some(state) = h.state {
             self.def_var(state, self.b.block_params(entry)[1]);
