@@ -1377,69 +1377,7 @@ impl Checker<'_> {
         }
     }
     fn join_types(&mut self, a: &Type, b: &Type, span: Span) -> Type {
-        if a.name() == "Never" || *a == Type::Infer {
-            return b.clone();
-        }
-        if b.name() == "Never" || *b == Type::Infer {
-            return a.clone();
-        }
-        match (a, b) {
-            (Type::IntLiteral(x), Type::IntLiteral(y)) => {
-                let n = if (*x).max(*y) > i64::MAX as i128 {
-                    (*x).max(*y)
-                } else if (*x).min(*y) < 0 {
-                    (*x).min(*y)
-                } else {
-                    (*x).max(*y)
-                };
-                let kind = crate::numeric::IntegerKind::default_for(n);
-                if !kind.fits(*x) || !kind.fits(*y) {
-                    self.error("E0200", "branches have no common integer type", span);
-                }
-                Type::IntLiteral(n)
-            }
-            (Type::IntLiteral(_), _) => b.clone(),
-            (_, Type::IntLiteral(_)) => a.clone(),
-            (Type::Named(n, aa), Type::Named(m, bb)) if n == m && aa.len() == bb.len() => {
-                Type::Named(
-                    n.clone(),
-                    aa.iter()
-                        .zip(bb)
-                        .map(|(a, b)| self.join_types(a, b, span.clone()))
-                        .collect(),
-                )
-            }
-            (Type::Tuple(aa), Type::Tuple(bb)) if aa.len() == bb.len() => Type::Tuple(
-                aa.iter()
-                    .zip(bb)
-                    .map(|(a, b)| self.join_types(a, b, span.clone()))
-                    .collect(),
-            ),
-            (
-                Type::Function {
-                    params,
-                    result,
-                    effects,
-                    mode,
-                },
-                Type::Function {
-                    result: br,
-                    effects: be,
-                    mode: bm,
-                    ..
-                },
-            ) => {
-                let mut row = effects.clone();
-                union_effects(&mut row, be);
-                Type::Function {
-                    params: params.clone(),
-                    result: Box::new(self.join_types(result, br, span)),
-                    effects: row,
-                    mode: mode.join(*bm),
-                }
-            }
-            _ => a.clone(),
-        }
+        join_types(a, b, &span, &mut self.diagnostics)
     }
     fn expect_type(&mut self, expected: &Type, actual: &Type, span: Span) {
         if !compatible(expected, actual) {
@@ -2444,6 +2382,12 @@ impl Checker<'_> {
         let ty = instantiate_latent_effects(&ty, expected);
         if *expected != Type::Infer {
             self.expect_type(expected, &ty, e.span.clone());
+            // A literal in an aggregate takes its 128-bit field's kind, whose
+            // layout is two words (SH2 lane 2, #1174). Only types holding
+            // `i128` or `u128` change.
+            if crate::integer_widths::holds_wide(expected) {
+                self.constrain_literals(e, expected);
+            }
         }
         if let Some(before) = before {
             let mut moved = vec![];
@@ -4290,6 +4234,11 @@ impl Checker<'_> {
             Type::IntLiteral(_) => (i128::MIN, i128::MAX),
             t => {
                 let k = crate::numeric::IntegerKind::from_type(t)?;
+                // `u128` values pass the exact domain's `i128::MAX`: no
+                // bounds (SH2 lane 2, #1174).
+                if k == crate::numeric::IntegerKind::U128 {
+                    return None;
+                }
                 (k.min(), k.max())
             }
         };
@@ -4897,6 +4846,9 @@ impl Checker<'_> {
             self.leave_control();
             union_effects(&mut outgoing, &self.finish_observing());
             self.expect_type(&out, &actual, op.body.span.clone());
+            if crate::integer_widths::holds_wide(&out) {
+                self.constrain_literals(&op.body, &out);
+            }
             self.exhaust(
                 &local,
                 local.bindings.keys().cloned().collect(),
@@ -5357,6 +5309,75 @@ fn matrix_covered(world: &World, rows: &[Vec<Pattern>], types: &[Type], depth: u
     })
 }
 
+/// The common type of two branches; an `E0200` for integer literals no
+/// integer kind holds both of (`Checker::join_types`).
+fn join_types(a: &Type, b: &Type, span: &Span, diagnostics: &mut Vec<Diagnostic>) -> Type {
+    if a.name() == "Never" || *a == Type::Infer {
+        return b.clone();
+    }
+    if b.name() == "Never" || *b == Type::Infer {
+        return a.clone();
+    }
+    match (a, b) {
+        (Type::IntLiteral(x), Type::IntLiteral(y)) => {
+            let n = if (*x).max(*y) > i64::MAX as i128 {
+                (*x).max(*y)
+            } else if (*x).min(*y) < 0 {
+                (*x).min(*y)
+            } else {
+                (*x).max(*y)
+            };
+            let kind = crate::numeric::IntegerKind::default_for(n);
+            if !kind.fits(*x) || !kind.fits(*y) {
+                diagnostics.push(Diagnostic::new(
+                    "E0200",
+                    "branches have no common integer type",
+                    span.clone(),
+                ));
+            }
+            Type::IntLiteral(n)
+        }
+        (Type::IntLiteral(_), _) => b.clone(),
+        (_, Type::IntLiteral(_)) => a.clone(),
+        (Type::Named(n, aa), Type::Named(m, bb)) if n == m && aa.len() == bb.len() => Type::Named(
+            n.clone(),
+            aa.iter()
+                .zip(bb)
+                .map(|(a, b)| join_types(a, b, span, diagnostics))
+                .collect(),
+        ),
+        (Type::Tuple(aa), Type::Tuple(bb)) if aa.len() == bb.len() => Type::Tuple(
+            aa.iter()
+                .zip(bb)
+                .map(|(a, b)| join_types(a, b, span, diagnostics))
+                .collect(),
+        ),
+        (
+            Type::Function {
+                params,
+                result,
+                effects,
+                mode,
+            },
+            Type::Function {
+                result: br,
+                effects: be,
+                mode: bm,
+                ..
+            },
+        ) => {
+            let mut row = effects.clone();
+            union_effects(&mut row, be);
+            Type::Function {
+                params: params.clone(),
+                result: Box::new(join_types(result, br, span, diagnostics)),
+                effects: row,
+                mode: mode.join(*bm),
+            }
+        }
+        _ => a.clone(),
+    }
+}
 fn unresolved(t: &Type) -> bool {
     match t {
         Type::Infer => true,
@@ -5681,6 +5702,39 @@ fn instantiate_latent_effects(actual: &Type, target: &Type) -> Type {
     rename_capabilities(actual, &labels)
 }
 
+/// The core-typing relations and the exhaustiveness matrix, unchanged, for
+/// the differential of their Vesper port (self-hosting SH2 lane 7, #1179,
+/// `tests/self_host_check_core_typing.rs`). Not an API.
+#[doc(hidden)]
+pub mod core_typing_probe {
+    use super::*;
+    pub fn matrix_covered(world: &World, rows: &[Vec<Pattern>], types: &[Type]) -> bool {
+        super::matrix_covered(world, rows, types, 0)
+    }
+    pub fn is_uninhabited(world: &World, ty: &Type) -> bool {
+        super::is_uninhabited(world, ty, &mut BTreeSet::new())
+    }
+    pub fn infer(
+        expected: &Type,
+        actual: &Type,
+        generics: &[Generic],
+        vars: &mut BTreeMap<String, Type>,
+    ) {
+        super::infer(expected, actual, generics, vars)
+    }
+    pub fn refine_annotation(expected: &Type, actual: &Type) -> Type {
+        super::refine_annotation(expected, actual)
+    }
+    pub fn unresolved(t: &Type) -> bool {
+        super::unresolved(t)
+    }
+    /// The joined type and the number of `E0200` diagnostics.
+    pub fn join_types(a: &Type, b: &Type) -> (Type, usize) {
+        let mut diagnostics = vec![];
+        let t = super::join_types(a, b, &(0..0), &mut diagnostics);
+        (t, diagnostics.len())
+    }
+}
 #[cfg(test)]
 mod isolated_item_tests {
     use super::*;
