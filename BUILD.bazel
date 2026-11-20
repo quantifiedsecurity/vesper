@@ -167,6 +167,11 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        "test/self_host_check_core_typing_exprs": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # @vesper-std/fs, process and env (#1125): drivers over the packages
         # and their .vsys imports.
         "test/std_env": [":files"],
@@ -484,6 +489,7 @@ vesper_crate(
         "test/self_host_check_harness": "long",
         # The core typing differential (#1179) checks every corpus world.
         "test/self_host_check_core_typing": "long",
+        "test/self_host_check_core_typing_exprs": "long",
     },
 )
 
