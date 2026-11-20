@@ -427,20 +427,16 @@ impl<'a> Facts<'a> {
                     Term::Value(v)
                 }
             }
-            Op::Seq { op, args }
-                if matches!(
-                    op,
-                    SeqOp::Len | SeqOp::SliceLen | SeqOp::Str(crate::strings::StrOp::Len)
-                ) =>
-            {
-                match args.first().and_then(|a| a.place.as_ref()) {
-                    Some(place) if self.receiver_read(args, place) => Term::Len {
-                        place: self.length_place(place),
-                        at,
-                    },
-                    _ => Term::Value(v),
-                }
-            }
+            Op::Seq {
+                op: SeqOp::Len | SeqOp::SliceLen | SeqOp::Str(crate::strings::StrOp::Len),
+                args,
+            } => match args.first().and_then(|a| a.place.as_ref()) {
+                Some(place) if self.receiver_read(args, place) => Term::Len {
+                    place: self.length_place(place),
+                    at,
+                },
+                _ => Term::Value(v),
+            },
             Op::Binary(op, a, c) if matches!(op.as_str(), "+" | "wrapping_add") => {
                 let exact = op == "+";
                 match (self.term_at(*a, depth + 1), self.term_at(*c, depth + 1)) {
@@ -491,10 +487,7 @@ impl<'a> Facts<'a> {
         let insts = |b: usize| &self.f.blocks[b].instructions;
         if p.0 == q.0 && p.1 <= q.1 {
             // Entering the block again runs `p` again before `q`.
-            return !block_changes(p.0)
-                && !insts(p.0)[(p.1 + 1).min(q.1)..q.1]
-                    .iter()
-                    .any(|i| changes(i));
+            return !block_changes(p.0) && !insts(p.0)[(p.1 + 1).min(q.1)..q.1].iter().any(changes);
         }
         // The blocks a path from `p` to `q` passes, never through `p`'s
         // block again: forward from `p`'s successors, back from `q`.
@@ -518,7 +511,7 @@ impl<'a> Facts<'a> {
         if block_changes(p.0) || block_changes(q.0) {
             return false;
         }
-        if insts(p.0).iter().skip(p.1 + 1).any(|i| changes(i)) {
+        if insts(p.0).iter().skip(p.1 + 1).any(changes) {
             return false;
         }
         // `q`'s block counts whole when a path from it returns to it.
@@ -527,13 +520,13 @@ impl<'a> Facts<'a> {
         } else {
             q.1
         };
-        if insts(q.0).iter().take(upto).any(|i| changes(i)) {
+        if insts(q.0).iter().take(upto).any(changes) {
             return false;
         }
         forward
             .intersection(&back)
             .filter(|&&b| b != q.0)
-            .all(|&b| !block_changes(b) && !insts(b).iter().any(|i| changes(i)))
+            .all(|&b| !block_changes(b) && !insts(b).iter().any(changes))
     }
 
     /// Whether the length of `place` is the same at the points `p` and `q`:
