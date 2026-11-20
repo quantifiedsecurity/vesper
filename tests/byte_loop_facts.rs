@@ -567,10 +567,7 @@ pub fn shrunk(n: u64) -> u64 {
 
 #[test]
 fn local_lengths_count_between_the_compare_and_the_access() {
-    let source = program(
-        LOCALS,
-        "    wrapping_add(filled(20), shrunk(6))",
-    );
+    let source = program(LOCALS, "    wrapping_add(filled(20), shrunk(6))");
     let p = hoisted(&source);
     // `v` grows before `v.len()` is read, not after.
     assert_eq!((checked(&p, "filled"), unchecked(&p, "filled")), (0, 1));
@@ -578,6 +575,60 @@ fn local_lengths_count_between_the_compare_and_the_access() {
     assert_eq!(unchecked(&p, "shrunk"), 0);
     let filled: u64 = (0..20).map(|i| i * 3).sum();
     // shrunk(6): k = 0..6 with len 5, 4, 3, 2, 1, 0 after truncate.
-    let shrunk: u64 = (0..6u64).map(|k| if k < 5 - k.min(5) { k } else { 100 }).sum();
+    let shrunk: u64 = (0..6u64)
+        .map(|k| if k < 5 - k.min(5) { k } else { 100 })
+        .sum();
     assert_eq!(differential("byte_facts_locals", &source), filled + shrunk);
+}
+
+const SNAPSHOTS: &str = "pub fn snapshot_end(in b: Slice[u8], inout limit: u64) -> u64 {
+    let end = limit;
+    limit = 0;
+    let mut h: u64 = 0;
+    let mut i: u64 = 0;
+    loop {
+        if i >= end {
+            break;
+        }
+        h = wrapping_add(h, widen_u64(byte(in b, i)));
+        i = wrapping_add(i, 1);
+    }
+    h
+}
+pub fn snapshot_index(in b: Slice[u8]) -> u64 {
+    let mut h: u64 = 0;
+    let mut i: u64 = 0;
+    loop {
+        let j = i;
+        if j >= b.len() {
+            break;
+        }
+        h = wrapping_add(h, widen_u64(byte(in b, j)));
+        i = wrapping_add(j, 1);
+    }
+    h
+}";
+
+/// A bound read from a local before the local changes is not the local's
+/// value in the preheader; an index bound once to a read of a changing
+/// local compares and accesses the same read.
+#[test]
+fn snapshots_of_changing_locals() {
+    let source = program(
+        SNAPSHOTS,
+        "    let s = bytes(64);
+    let mut far: u64 = 70;
+    let mut near: u64 = 40;
+    let a = snapshot_end(in s.as_slice(), inout far);
+    let b = snapshot_end(in s.as_slice(), inout near);
+    wrapping_add(wrapping_add(a, b), wrapping_add(snapshot_index(in s.as_slice()), wrapping_add(far, near)))",
+    );
+    let p = hoisted(&source);
+    assert_eq!(unchecked(&p, "snapshot_index"), 1, "snapshot_index");
+    assert_eq!(guards(&p, "snapshot_end"), 0, "snapshot_end");
+    let s = source_bytes(64);
+    let all: u64 = s.iter().sum();
+    // Bytes past the end read as 0.
+    let expected = all + s[..40].iter().sum::<u64>() + all;
+    assert_eq!(differential("byte_facts_snapshots", &source), expected);
 }

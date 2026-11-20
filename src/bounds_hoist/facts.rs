@@ -44,7 +44,10 @@ enum Term {
     Const(i128),
     /// The length of a place (canonical, see [`Facts::length_place`]),
     /// read at (block, instruction).
-    Len { place: Place, at: (usize, usize) },
+    Len {
+        place: Place,
+        at: (usize, usize),
+    },
     /// A local the function never changes (a parameter, or a field path of
     /// one).
     Fixed(String),
@@ -213,9 +216,10 @@ impl<'a> Facts<'a> {
         }
         let mut bound = BTreeMap::new();
         let mut once = BTreeSet::new();
+        let single = single_bindings(f);
         for (name, values) in &binds_of {
             if let [v] = values.as_slice()
-                && single_binding(f, name)
+                && single.contains(name)
             {
                 bound.insert(name.clone(), *v);
                 once.insert(name.clone());
@@ -487,7 +491,10 @@ impl<'a> Facts<'a> {
         let insts = |b: usize| &self.f.blocks[b].instructions;
         if p.0 == q.0 && p.1 <= q.1 {
             // Entering the block again runs `p` again before `q`.
-            return !block_changes(p.0) && !insts(p.0)[p.1 + 1..q.1].iter().any(|i| changes(i));
+            return !block_changes(p.0)
+                && !insts(p.0)[(p.1 + 1).min(q.1)..q.1]
+                    .iter()
+                    .any(|i| changes(i));
         }
         // The blocks a path from `p` to `q` passes, never through `p`'s
         // block again: forward from `p`'s successors, back from `q`.
@@ -511,7 +518,7 @@ impl<'a> Facts<'a> {
         if block_changes(p.0) || block_changes(q.0) {
             return false;
         }
-        if insts(p.0)[p.1 + 1..].iter().any(|i| changes(i)) {
+        if insts(p.0).iter().skip(p.1 + 1).any(|i| changes(i)) {
             return false;
         }
         // `q`'s block counts whole when a path from it returns to it.
@@ -520,7 +527,7 @@ impl<'a> Facts<'a> {
         } else {
             q.1
         };
-        if insts(q.0)[..upto].iter().any(|i| changes(i)) {
+        if insts(q.0).iter().take(upto).any(|i| changes(i)) {
             return false;
         }
         forward
@@ -533,14 +540,9 @@ impl<'a> Facts<'a> {
     /// nothing in the function can change it, or nothing between them does.
     fn length_kept(&self, place: &Place, p: (usize, usize), q: (usize, usize)) -> bool {
         self.is_stable(place)
-            || self.unchanged_by(
-                p,
-                q,
-                &|i| changes_len(i, place),
-                &|b| {
-                    box_drops(self.f, &BTreeSet::from([b])).any(|d| d.overlaps(place))
-                },
-            )
+            || self.unchanged_by(p, q, &|i| changes_len(i, place), &|b| {
+                box_drops(self.f, &BTreeSet::from([b])).any(|d| d.overlaps(place))
+            })
     }
 
     /// Whether `a` and `b` are the same number.
@@ -706,17 +708,14 @@ struct Guarded {
 /// accesses. Returns how many loops it versioned.
 pub(super) fn version_compared_loops(f: &mut FunctionIr) -> usize {
     let mut count = 0;
-    // One loop at a time: versioning adds blocks and changes dominators.
-    // Each loop is tried once, by its header, innermost first.
+    // One loop at a time: versioning adds blocks and changes dominators, so
+    // the facts are recomputed only after a loop is versioned. Each loop is
+    // tried once, by its header, innermost first.
     let mut tried = BTreeSet::new();
     loop {
-        let Some((h, pre, blocks, guarded, convert)) = next_loop(f, &tried) else {
+        let Some((h, pre, blocks, guarded, convert)) = next_loop(f, &mut tried) else {
             return count;
         };
-        tried.insert(h);
-        if guarded.is_empty() {
-            continue;
-        }
         let base = f.blocks.len();
         guard_and_copy(f, h, pre, &blocks, &guarded, &convert);
         // The copy's blocks are versioned already.
@@ -733,9 +732,9 @@ type Candidate = (
     BTreeMap<(usize, usize), Access>,
 );
 
-/// The next untried loop and what to guard in it.
-fn next_loop(f: &FunctionIr, tried: &BTreeSet<usize>) -> Option<Candidate> {
-    let facts = Facts::new(f);
+/// The next untried loop with something to guard; marks every loop it
+/// tries.
+fn next_loop(f: &FunctionIr, tried: &mut BTreeSet<usize>) -> Option<Candidate> {
     // Loops and their entries on the whole graph.
     let preds = reached_preds(f);
     let idom = idoms(f, &preds);
@@ -745,28 +744,48 @@ fn next_loop(f: &FunctionIr, tried: &BTreeSet<usize>) -> Option<Candidate> {
             // Counted loops are the counted-loop pass's, with its cost
             // model (a triangle loop is not worth a guard).
             !tried.contains(&h)
-                && header(f, h).is_none()
                 && matches!(
                     f.blocks[h].instructions.first().map(|i| &i.op),
                     Some(Op::Loop)
                 )
                 && preds[h].iter().any(|&p| dominates(&idom, h, p))
+                && header(f, h).is_none()
         })
         .map(|h| (h, natural_loop(h, &preds, &idom)))
         .collect();
+    if loops.is_empty() {
+        return None;
+    }
     loops.sort_by_key(|(h, l)| (l.len(), *h));
-    let (h, blocks) = loops.into_iter().next()?;
-    let empty = Some((h, 0, BTreeSet::new(), vec![], BTreeMap::new()));
-    let Some(pre) = loop_entry(f, &preds, h, &blocks) else {
-        return empty;
-    };
+    let facts = Facts::new(f);
+    if facts.edges.is_empty() {
+        return None;
+    }
+    for (h, blocks) in loops {
+        tried.insert(h);
+        if let Some(c) = loop_candidate(f, &facts, &preds, h, blocks) {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// What to guard in loop `blocks` headed by `h`, if it is worth a guard.
+fn loop_candidate(
+    f: &FunctionIr,
+    facts: &Facts,
+    preds: &[Vec<usize>],
+    h: usize,
+    blocks: BTreeSet<usize>,
+) -> Option<Candidate> {
+    let pre = loop_entry(f, preds, h, &blocks)?;
     // A loop the counted-loop pass versioned already has its checked copy
     // here; its guard failed, so this one would too.
     if matches!(&f.blocks[pre].terminator, Terminator::Branch { condition, .. }
         if matches!(facts.inst(*condition).map(|i| &i.op),
             Some(Op::Seq { op: SeqOp::BoundsGuard { .. }, .. })))
     {
-        return empty;
+        return None;
     }
     let mut guarded: Vec<Guarded> = vec![];
     let mut convert = BTreeMap::new();
@@ -790,7 +809,17 @@ fn next_loop(f: &FunctionIr, tried: &BTreeSet<usize>) -> Option<Candidate> {
                 match facts.term(e.rhs) {
                     Term::Const(c) => Some(Bound::Const(c)),
                     Term::Fixed(name) if !name.contains('.') => Some(Bound::Local(name)),
-                    Term::Slot { root, .. } if invariant_local(f, &blocks, &root) => {
+                    // The guard reads the local in the preheader, so a read
+                    // before the loop must still hold there.
+                    Term::Slot { root, at }
+                        if invariant_local(f, &blocks, &root)
+                            && (blocks.contains(&at.0)
+                                || facts.unchanged(
+                                    &root,
+                                    at,
+                                    (pre, f.blocks[pre].instructions.len()),
+                                )) =>
+                    {
                         Some(Bound::Local(root))
                     }
                     // A value (a join of an inlined call) defined outside
@@ -832,8 +861,8 @@ fn next_loop(f: &FunctionIr, tried: &BTreeSet<usize>) -> Option<Candidate> {
     }
     // Guards are about as cheap as two checked accesses; a loop must drop
     // at least as many checks as it adds guards.
-    if convert.len() < guarded.len() || guarded.len() > MAX_TERMS {
-        return empty;
+    if guarded.is_empty() || convert.len() < guarded.len() || guarded.len() > MAX_TERMS {
+        return None;
     }
     Some((h, pre, blocks, guarded, convert))
 }
@@ -842,6 +871,61 @@ fn next_loop(f: &FunctionIr, tried: &BTreeSet<usize>) -> Option<Candidate> {
 /// entered only through the header, from one block that jumps there with no
 /// arguments, with no closure, handler, indirect call or `@fip` slot, and
 /// no value of it used outside it.
+/// Locals bound by exactly one `Bind` and never written, lent other than
+/// `in` or by value, or captured: [`super::single_binding`] for every name
+/// at once.
+fn single_bindings(f: &FunctionIr) -> BTreeSet<String> {
+    fn names(pattern: &crate::ast::Pattern, out: &mut BTreeSet<String>) {
+        match &pattern.kind {
+            PatternKind::Bind(n) => {
+                out.insert(n.clone());
+            }
+            PatternKind::Tuple(ps) => ps.iter().for_each(|p| names(p, out)),
+            PatternKind::Constructor { fields, .. } => {
+                fields.iter().for_each(|(_, p)| names(p, out));
+            }
+            PatternKind::Wild | PatternKind::Literal(_) => {}
+        }
+    }
+    let mut count: BTreeMap<String, usize> = BTreeMap::new();
+    let mut spoiled = BTreeSet::new();
+    for i in f.blocks.iter().flat_map(|b| &b.instructions) {
+        match &i.op {
+            Op::Bind { pattern, .. } => {
+                let mut bound = BTreeSet::new();
+                names(pattern, &mut bound);
+                for n in bound {
+                    *count.entry(n).or_default() += 1;
+                }
+            }
+            Op::Write { place, .. } => {
+                spoiled.insert(place_root(place).to_string());
+            }
+            Op::Call { args, .. }
+            | Op::Indirect { args, .. }
+            | Op::Seq { args, .. }
+            | Op::Tiled { args, .. }
+            | Op::Fip { args, .. } => {
+                for a in args {
+                    if a.pass != Pass::In
+                        && a.pass != Pass::Sink
+                        && let Some(p) = &a.place
+                    {
+                        spoiled.insert(p.root.clone());
+                    }
+                }
+            }
+            Op::Closure { .. } | Op::Handle { .. } => return BTreeSet::new(),
+            _ => {}
+        }
+    }
+    count
+        .into_iter()
+        .filter(|(n, c)| *c == 1 && !spoiled.contains(n))
+        .map(|(n, _)| n)
+        .collect()
+}
+
 fn loop_entry(
     f: &FunctionIr,
     preds: &[Vec<usize>],
