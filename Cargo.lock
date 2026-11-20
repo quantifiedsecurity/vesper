@@ -5574,7 +5574,7 @@ dependencies = [
  "vesper-ffi",
  "vesper-fiber-abi",
  "vesper-fmt-seed",
- "vesper-forge",
+ "vesper-forge-seed",
  "vesper-highlight-seed",
  "vesper-kinetic-seed",
  "vesper-lean-syntax-seed",
@@ -5980,7 +5980,11 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "vesper-bench",
+ "vesper-forge-seed",
  "vesper-loom-sandbox",
+ "vesper-port-abi",
+ "vesper-port-harness",
  "vesper-syntax",
 ]
 
@@ -5997,6 +6001,17 @@ dependencies = [
  "vesper-forge",
  "vesper-loom-cas",
  "vesper-loom-sandbox",
+]
+
+[[package]]
+name = "vesper-forge-seed"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "vesper-loom-sandbox",
+ "vesper-syntax",
 ]
 
 [[package]]
@@ -6107,7 +6122,7 @@ dependencies = [
  "vesper-ffi",
  "vesper-fiber-abi",
  "vesper-fmt-seed",
- "vesper-forge",
+ "vesper-forge-seed",
  "vesper-grammar-seed",
  "vesper-highlight-seed",
  "vesper-kinetic-seed",
