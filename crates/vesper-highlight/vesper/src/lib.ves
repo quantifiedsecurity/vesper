@@ -12,16 +12,24 @@
 // one ends, so the words partition the source.
 
 use @vesper/front::{
-    Tokens
+    Tokens,
+    Diags
 };
 use @vesper/front::lex::{
-    lex
+    lex_with_limits,
+    hard_source_bytes,
+    hard_tokens,
+    hard_diagnostics,
+    max_diagnostics,
+    token_end,
+    token_sym
 };
 use @vesper/front::diag::{
     diags_new
 };
 use @vesper/front::parse::{
-    parse_tokens
+    parse_tokens,
+    hard_depth
 };
 
 // ---------------------------------------------------------------- kinds
@@ -172,10 +180,7 @@ fn kind_at(in t: Tokens, i: u64) -> u8 {
 }
 
 fn sym_at(in t: Tokens, i: u64) -> u32 {
-    match t.sym.try_get(i) {
-        Option::Some(v) => v,
-        Option::None => 0,
-    }
+    token_sym(in t, i)
 }
 
 fn trivia(k: u8) -> bool {
@@ -557,7 +562,7 @@ fn classify(in src: Slice[u8], in t: Tokens, in in_type: ChunkSeq[bool], token_m
             if after == K_UPPER {
                 let j = w32(in sig, wrapping_add(p, 1));
                 let s = w32(in t.start, j);
-                let e = w32(in t.end, j);
+                let e = token_end(in t, j);
                 if linear {
                     declared.push(wrapping_u32(j));
                 }
@@ -577,7 +582,7 @@ fn classify(in src: Slice[u8], in t: Tokens, in in_type: ChunkSeq[bool], token_m
         } else if k == K_HANDLE {
             if after == K_UPPER {
                 let j = w32(in sig, wrapping_add(p, 1));
-                note(inout fx, in src, w32(in t.start, j), w32(in t.end, j), sym_at(in t, j), 2);
+                note(inout fx, in src, w32(in t.start, j), token_end(in t, j), sym_at(in t, j), 2);
             }
         } else if k == K_L_BRACKET {
             rows.push(p > 0 && before == K_EFF);
@@ -589,13 +594,13 @@ fn classify(in src: Slice[u8], in t: Tokens, in in_type: ChunkSeq[bool], token_m
             let open = row_open(in rows);
             if open && (before == K_L_BRACKET || before == K_COMMA || before == K_COLON) {
                 let i = w32(in sig, p);
-                note(inout fx, in src, w32(in t.start, i), w32(in t.end, i), sym_at(in t, i), 2);
+                note(inout fx, in src, w32(in t.start, i), token_end(in t, i), sym_at(in t, i), 2);
             }
         }
     }
     for d in 0..declared.len() {
         let j = w32(in declared, d);
-        note(inout fx, in src, w32(in t.start, j), w32(in t.end, j), sym_at(in t, j), 1);
+        note(inout fx, in src, w32(in t.start, j), token_end(in t, j), sym_at(in t, j), 1);
     }
 
     let mut out = ChunkSeq::with_capacity[u64](n);
@@ -605,7 +610,7 @@ fn classify(in src: Slice[u8], in t: Tokens, in in_type: ChunkSeq[bool], token_m
     for i in 0..n {
         let k = kind_at(in t, i);
         let s = w32(in t.start, i);
-        let e = w32(in t.end, i);
+        let e = token_end(in t, i);
         let p = w32(in sig_pos, i);
         let significant = p != 4294967295;
         // The significant tokens around this one (K_EOF for none).
@@ -798,7 +803,7 @@ fn next_is(in src: Slice[u8], in t: Tokens, in sig: ChunkSeq[u32], p: u64, in wo
         return false;
     }
     let j = w32(in sig, q);
-    is(in src, w32(in t.start, j), w32(in t.end, j), in word)
+    is(in src, w32(in t.start, j), token_end(in t, j), in word)
 }
 
 // Whether the innermost open bracket is an effect row.
@@ -913,18 +918,13 @@ fn classify_lower(
     }
 }
 
-// Lexes `src` with the front end's default ceilings; `Refused` if it hit one.
-fn lex_or_refuse(in src: Slice[u8]) -> Tokens eff [Fail[Refused]] {
-    if src.len() > 1048576 {
-        Fail::raise(
-            Refused {
-                len: src.len()
-            }
-        );
-    }
-    let mut d = diags_new();
-    let t = lex(in src, inout d);
-    if t.limited {
+// Lexes `src` as `highlight_tier0_tokens_with_limit` (token mode) or
+// `parse_with_limits` (CST mode, `max_diag` diagnostics) do: the caller has
+// checked the byte budget, so the hard byte ceiling admits `src`. `Refused`
+// if the lexer stopped at a ceiling (the Rust code keeps the flat stream).
+fn lex_or_refuse(in src: Slice[u8], inout d: Diags, max_diag: u64) -> Tokens eff [Fail[Refused]] {
+    let t = lex_with_limits(in src, inout d, hard_source_bytes(), hard_tokens(), max_diag);
+    if t.limited || t.rejected {
         Fail::raise(
             Refused {
                 len: src.len()
@@ -937,7 +937,8 @@ fn lex_or_refuse(in src: Slice[u8]) -> Tokens eff [Fail[Refused]] {
 // `highlight_tier0_tokens`: the classes of the lexer's token stream.
 pub fn tier0_tokens(in source: Str) -> ChunkSeq[u64] eff [Fail[Refused]] {
     let src = source.as_bytes();
-    let t = lex_or_refuse(in src);
+    let mut d = diags_new();
+    let t = lex_or_refuse(in src, inout d, hard_diagnostics());
     let none = ChunkSeq::new[bool]();
     classify(in src, in t, in none, true)
 }
@@ -946,8 +947,9 @@ pub fn tier0_tokens(in source: Str) -> ChunkSeq[u64] eff [Fail[Refused]] {
 // the token order; a token is a type inside a `TYPE` node.
 pub fn tier0(in source: Str) -> ChunkSeq[u64] eff [Fail[Refused]] {
     let src = source.as_bytes();
-    let t = lex_or_refuse(in src);
-    let p = parse_tokens(in src, t, diags_new());
+    let mut d = diags_new();
+    let t = lex_or_refuse(in src, inout d, max_diagnostics());
+    let p = parse_tokens(in src, t, d, max_diagnostics(), hard_depth());
     // Walk the builder events: a token event is a leaf in text order.
     let n = p.t.kind.len();
     let mut in_type = ChunkSeq::with_capacity[bool](n);

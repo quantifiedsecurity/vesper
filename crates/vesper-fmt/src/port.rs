@@ -3,16 +3,16 @@
 //! of [`crate::format_source`].
 //!
 //! The port formats every source the Rust code formats with its ordinary
-//! parser. Sources in the macro profile (`m!`, `quote`) come back as
-//! `OpaqueMacro`, and sources the front end's fixed lexer ceilings cannot
-//! hold whole come back as code 13: for both, the Rust code formats the
-//! source, from the start, so the result is the Rust result.
+//! parser, lexing with the same hard ceilings (`lex_with_limits`). Sources
+//! in the macro profile (`m!`, `quote`) come back as `OpaqueMacro`, and the
+//! Rust code formats them from the start, so the result is the Rust
+//! result.
 
 pub use crate::port_binding::*;
 use crate::{Error, FormatResult, Limits};
 
-/// `FmtFail` of the port: `code` is the index of the [`Error`] variant
-/// (13: the source is past the front end's ceilings), `offset` the byte
+/// `FmtFail` of the port: `code` is the index of the [`Error`] variant,
+/// `offset` the byte
 /// offset of [`Error::Syntax`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FmtFail {
@@ -55,7 +55,7 @@ fn error(e: FmtFail) -> Option<Error> {
         },
         11 => Error::Conservation,
         12 => Error::NotIdempotent,
-        // OpaqueMacro (10) and the front-end ceiling (13): the Rust build.
+        // OpaqueMacro (10): the Rust build formats the macro profile.
         _ => return None,
     })
 }

@@ -423,3 +423,30 @@ fn limit_sweeps_fail_at_the_same_point() {
             .join("\n")
     );
 }
+
+/// Sources past the front end's default ceilings (65,536 tokens, 1 MiB),
+/// which the port lexes with the hard ones as Rust does: the 131,072-token
+/// cap refuses at the same point.
+#[test]
+fn large_sources_format_like_rust() {
+    let item = |i: usize| format!("fn f{i}(x: u64) -> u64 {{\n    x + {i}\n}}\n\n");
+    let mut failures = vec![];
+    let mut handed = 0;
+    // About 18 tokens per item: 80,000 tokens, then past the 131,072 cap.
+    for items in [4_500, 7_500] {
+        let source: String = (0..items).map(item).collect();
+        if let Some(d) = compare(&source, Limits::default(), &mut handed) {
+            failures.push(format!("{items} items: {d}"));
+        }
+    }
+    // Over 1 MiB in one comment-heavy file.
+    let long = format!(
+        "// {}\nfn main() -> u64 {{\n    0\n}}\n",
+        "c".repeat(1_100_000)
+    );
+    if let Some(d) = compare(&long, Limits::default(), &mut handed) {
+        failures.push(format!("1.1 MB: {d}"));
+    }
+    assert_eq!(handed, 0);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

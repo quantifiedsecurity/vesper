@@ -43,8 +43,8 @@ pub fn port_live_allocations() -> i64 {
 }
 
 /// [`format_source`] through the port alone, for the differential tests:
-/// `None` when the source is one the Rust code formats (the macro profile,
-/// or past the front end's lexer ceilings).
+/// `None` when the source is one the Rust code formats (the macro
+/// profile).
 #[cfg(vesper_port)]
 #[doc(hidden)]
 pub fn port_format_source(source: &str, limits: Limits) -> Option<Result<FormatResult, Error>> {

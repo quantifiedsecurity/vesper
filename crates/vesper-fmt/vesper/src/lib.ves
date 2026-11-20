@@ -45,13 +45,16 @@ use @vesper/front::diag::{
     diags_new
 };
 use @vesper/front::parse::{
-    parse_tokens
+    parse_tokens,
+    hard_depth
 };
 use @vesper/front::{
     Tokens
 };
 use @vesper/front::lex::{
-    lex
+    lex_with_limits,
+    max_diagnostics,
+    token_end
 };
 use @vesper/front::diag::{
     diags_new
@@ -725,11 +728,6 @@ const PARSE_UNITS_PER_TOKEN: u64 = 64;
 // Chain components the preflight accepts (`MAX_CHAIN`).
 const MAX_CHAIN: u64 = 128;
 const MAX_NESTING: u64 = 24;
-// The front end's own lexer ceilings (`LexLimits::default()`).
-const FRONT_MAX_SOURCE_BYTES: u64 = 1048576;
-// A source the front end's default lexer cannot take whole: the caller
-// formats it with the Rust build.
-const E_FRONT: u64 = 13;
 
 fn tok_kind(in t: Tokens, i: u64) -> u8 {
     match t.kind.try_get(i) {
@@ -746,10 +744,7 @@ fn tok_start(in t: Tokens, i: u64) -> u64 {
 }
 
 fn tok_end(in t: Tokens, i: u64) -> u64 {
-    match t.end.try_get(i) {
-        Option::Some(v) => widen_u64(v),
-        Option::None => 0,
-    }
+    token_end(in t, i)
 }
 
 fn trivia(k: u8) -> bool {
@@ -862,44 +857,22 @@ fn opaque_word(in src: Slice[u8], s: u64, e: u64) -> bool {
         || text_is(in src, s, e, in "syntax_quote".as_bytes())
 }
 
-// Lexes `src` with `lex_with_limits(HARD_SOURCE_BYTES, HARD_TOKENS, 1)`
-// semantics: a second lexer error or a token overflow is `TokenLimit`, one
-// error is `Syntax` at its start.
+// Lexes `src` with `lex_with_limits(HARD_SOURCE_BYTES, HARD_TOKENS, 1)`,
+// as `guarded_lex` does: a lexer limit (a second error or a token overflow)
+// is `TokenLimit`, one error is `Syntax` at its start. The caller has
+// checked the byte ceiling.
 fn lex_hard(in src: Slice[u8]) -> Tokens eff [Fail[FmtFail]] {
-    if src.len() > FRONT_MAX_SOURCE_BYTES {
-        fail(E_FRONT);
-    }
     let mut d = diags_new();
-    let t = lex(in src, inout d);
-    // Lexer errors are code 1 rows, in source order; the limit row is code 3.
-    let mut errors: u64 = 0;
-    let mut first: u64 = 0;
-    let mut limited = false;
-    for i in 0..d.code.len() {
-        let code = match d.code.try_get(i) {
-            Option::Some(c) => c,
-            Option::None => 0,
-        };
-        if code == 1 {
-            if errors == 0 {
-                first = match d.start.try_get(i) {
-                    Option::Some(v) => widen_u64(v),
-                    Option::None => 0,
-                };
-            }
-            errors = wrapping_add(errors, 1);
-        } else {
-            limited = true;
-        }
-    }
-    if errors >= 2 {
+    let t = lex_with_limits(in src, inout d, HARD_SOURCE_BYTES, HARD_TOKENS, 1);
+    if t.limited || t.rejected {
         fail(E_TOKEN);
     }
-    if limited {
-        // The front end stopped at its own token or diagnostic ceiling.
-        fail(E_FRONT);
-    }
-    if errors == 1 {
+    // Lexer errors are code 1 rows, in source order.
+    if d.code.len() != 0 {
+        let first = match d.start.try_get(0) {
+            Option::Some(v) => widen_u64(v),
+            Option::None => 0,
+        };
         fail_at(first);
     }
     t
@@ -1520,7 +1493,9 @@ fn same_pieces(in a: Slice[u8], in ta: Tokens, in b: Slice[u8], in tb: Tokens) -
 // one already).
 fn once_tokens(in src: Slice[u8], sink t: Tokens, in lim: Limits, inout w: Work)
     -> ChunkSeq[u8] eff [Fail[FmtFail]] {
-    let p = parse_tokens(in src, t, diags_new());
+    // `parse_with_limits(HARD_SOURCE_BYTES, HARD_TOKENS)`: the default
+    // diagnostic limit and parse depth.
+    let p = parse_tokens(in src, t, diags_new(), max_diagnostics(), hard_depth());
     if p.d.code.len() != 0 {
         let at = match p.d.start.try_get(0) {
             Option::Some(v) => widen_u64(v),

@@ -315,19 +315,33 @@ fn fuzzed_sources_classify_identically() {
     );
 }
 
-/// Past the front end's default ceilings the port refuses and the public
-/// API gives the Rust result.
+/// Above the front end's default ceilings (65,536 tokens, 128
+/// diagnostics) the port lexes with the hard ones, as Rust does; past a
+/// hard ceiling the lexer stops early, the port refuses and the public API
+/// gives the Rust result.
 #[test]
 fn sources_past_the_front_end_ceilings_are_classified_by_rust() {
+    let flat = |spans: Vec<vesper_highlight::HighlightSpan>| -> Flat {
+        spans
+            .iter()
+            .map(|p| (p.start, p.end, p.class as u16, p.flags))
+            .collect()
+    };
     let many = "x ".repeat(40_000);
     let errors = "# ".repeat(200);
     for src in [many.as_str(), errors.as_str()] {
+        let port = vesper_highlight::port_tier0(src, true).map(flat);
+        assert_eq!(port.map(Ok), Some(seed(src, true)));
+    }
+    let too_many = "x ".repeat(140_000);
+    let too_many_errors = "# ".repeat(1_100);
+    for src in [too_many.as_str(), too_many_errors.as_str()] {
         assert!(vesper_highlight::port_tier0(src, true).is_none());
-        let public: Flat = vesper_highlight::highlight_tier0_tokens(src)
-            .unwrap()
-            .iter()
-            .map(|p| (p.start, p.end, p.class as u16, p.flags))
-            .collect();
+        let public = flat(vesper_highlight::highlight_tier0_tokens(src).unwrap());
         assert_eq!(Ok(public), seed(src, true));
     }
+    // CST mode keeps the parser's default 128 diagnostics.
+    assert!(vesper_highlight::port_tier0(&errors, false).is_none());
+    let public = flat(vesper_highlight::highlight_tier0(&errors).unwrap());
+    assert_eq!(Ok(public), seed(&errors, false));
 }

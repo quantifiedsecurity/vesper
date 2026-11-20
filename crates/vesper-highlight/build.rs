@@ -34,7 +34,7 @@ const EDITS: &[(&str, &str, &str)] = &[
     // The effect pre-pass: `handle E` no longer names an effect.
     (
         "effects",
-        "note(inout fx, in src, w32(in t.start, j), w32(in t.end, j), sym_at(in t, j), 2);\n            }\n        } else if k == K_L_BRACKET {",
+        "note(inout fx, in src, w32(in t.start, j), token_end(in t, j), sym_at(in t, j), 2);\n            }\n        } else if k == K_L_BRACKET {",
         "}\n        } else if k == K_L_BRACKET {",
     ),
     // The identifier classes: `loop` is never a keyword.

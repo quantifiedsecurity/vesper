@@ -2,9 +2,11 @@
 //! lexical classes from the Vesper classifier (`vesper/src/lib.ves`).
 //!
 //! The port returns one word per token, `end | class << 32 | flags << 48`,
-//! in source order. A source past the front end's default lexer ceilings
-//! (1 MiB, 65,536 tokens, 128 diagnostics) comes back as `Refused`, and the
-//! Rust classifier takes it, so the result is always the Rust result.
+//! in source order. The port lexes with the Rust code's ceilings (the hard
+//! token ceiling; the hard diagnostic ceiling in token mode, the parser's
+//! default 128 in CST mode). A source at which the lexer stops early comes
+//! back as `Refused`, and the Rust classifier takes it (with its flat
+//! stream), so the result is always the Rust result.
 
 pub use crate::port_binding::*;
 use crate::{HighlightSpan, VesperTokenClass};

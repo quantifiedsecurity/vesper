@@ -49,7 +49,7 @@ pub fn port_live_allocations() -> i64 {
 
 /// Tier 0 through the port alone, for the differential tests: CST mode, or
 /// token mode with `tokens`. `None` when the Rust classifier takes the
-/// source (past the front end's default lexer ceilings).
+/// source (the lexer stopped at a ceiling).
 #[cfg(vesper_port)]
 #[doc(hidden)]
 pub fn port_tier0(src: &str, tokens: bool) -> Option<Vec<HighlightSpan>> {
