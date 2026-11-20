@@ -36,9 +36,11 @@ under "What is left".
   diagnostic's file, code, span, message and help, the qualified-name map,
   the public items, and every module's renamed items, trait bounds and
   model uses in the canonical AST dump (every name and span of the tree).
-- **Speed: faster than Rust.** The whole load is 0.72x to 0.87x of Rust's
-  time even though Vesper parses every module twice; the assembler alone is
-  0.37x to 0.44x.
+- **Speed.** Wall clock: the whole load takes 0.72x to 0.87x of Rust's
+  time even though Vesper parses every module twice, and the assembler alone
+  takes 0.37x to 0.44x. Instructions (callgrind): the assembler alone is
+  0.99x of Rust; the whole load is 1.54x because of the second parse, and
+  would be about 0.89x without it (lane 1).
 
 ## What changed
 
@@ -105,7 +107,25 @@ includes reading the files and manifests.
 Wall clock on these hosts moves by up to 30% between runs. The
 instruction counts below are the steadier number.
 
-Instruction counts (callgrind) follow in the next commit.
+Instruction counts (callgrind, release, `packages/vesper-compiler`, 33
+modules; collected only inside the measured call with `--toggle-collect`,
+the JIT compile excluded; `callgrind_one_side`):
+
+| Measured call | Rust Ir | Vesper Ir | Vesper / Rust |
+|---|--:|--:|--:|
+| Whole (`packages::load` / `assemble_only`) | 157,558,143 | 242,545,243 | 1.54 |
+| Parse every module once | 120,386,660 | 102,863,091 | 0.85 |
+| Assembler alone (whole minus one parse; Vesper minus two) | 37,171,483 | 36,819,061 | 0.99 |
+
+The instruction counts are less kind than the wall clock. The assembler
+alone runs about as many instructions as Rust's (0.99x), and the whole
+Vesper load runs 1.54x of Rust's instructions because it parses every module
+twice (gap N1). Vesper still wins on wall time (0.72x to 0.87x above): it
+interns names and allocates far less than Rust's cloned `Item` trees and
+`String` maps, so it spends fewer cycles on memory, which callgrind's
+instruction count does not show. Once lane 1 lets the module keep each
+parsed AST, the second parse goes away: about 103M Ir here, which brings
+the whole load to about 0.89x of Rust's instructions.
 
 Why it is faster: Rust's assembler clones every item before renaming it,
 keys its tables by `String` and `Vec<String>` paths, and rebuilds
