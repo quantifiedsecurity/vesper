@@ -455,3 +455,16 @@ pub fn regions_seqs_resolve(in input: Str) -> ChunkSeq[u64] {
     }
     pack_text(in o)
 }
+
+// The decode alone (`read_ctx` and the vector names), which the speed
+// test subtracts from the type task's time.
+pub fn regions_seqs_decode(in input: Str) -> ChunkSeq[u64] {
+    let b = input.as_bytes();
+    let mut r = Reader {
+        pos: 0
+    };
+    let mut c = read_ctx(inout r, in b);
+    let vn = vec_names_new(inout c.names);
+    let o = ChunkSeq::new[u8]();
+    pack_text(in o)
+}

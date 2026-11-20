@@ -601,37 +601,95 @@ fn unoptimized_jit_agrees() {
 
 // ------------------------------------------------------------------ speed
 
-/// ABBA of the type task over the corpus (CHECK_HARNESS_SPEED=1).
+/// ABBA of the type and world tasks over the corpus (CHECK_HARNESS_SPEED=1).
+/// Each Vesper run includes decoding its input; the decode alone is timed
+/// too and reported, so the rules' own time is the difference.
 #[test]
 #[ignore]
-fn speed_types() {
-    if !speed() {
+fn speed_abba() {
+    if !check_harness::speed() {
         return;
     }
-    let f = package().entry("regions_seqs_types", true);
+    let pkg = package();
+    let types = pkg.entry("regions_seqs_types", true);
+    let world = pkg.entry("regions_seqs_world", true);
+    let decode = pkg.entry("regions_seqs_decode", true);
     let cases: Vec<_> = corpus()
         .iter()
         .map(|c| {
-            let types = task_types(&c.world);
-            let input = types_input(&c.world, &types);
-            (c, types, input)
+            let ts = task_types(&c.world);
+            let input = types_input(&c.world, &ts);
+            let ws: Vec<World> = (0..4).map(|m| world_mutant(&c.world, m)).collect();
+            let winputs: Vec<Vec<u8>> = ws.iter().map(world_input).collect();
+            (c, ts, input, ws, winputs)
         })
         .collect();
-    abba(
+    let (r, v) = abba(
         "regions-seqs types",
         &mut || {
             time(|| {
-                for (c, types, _) in &cases {
-                    std::hint::black_box(types_text(&c.world, types));
+                for (c, ts, ..) in &cases {
+                    std::hint::black_box(types_text(&c.world, ts));
                 }
             })
         },
         &mut || {
             time(|| {
-                for (_, _, input) in &cases {
-                    std::hint::black_box(f.text(input));
+                for (_, _, input, ..) in &cases {
+                    std::hint::black_box(types.text(input));
                 }
             })
         },
+    );
+    let d = (0..6)
+        .map(|_| {
+            time(|| {
+                for (_, _, input, ..) in &cases {
+                    std::hint::black_box(decode.text(input));
+                }
+            })
+        })
+        .min()
+        .unwrap();
+    eprintln!(
+        "types: decode {d:?}; rules alone {:.2}x",
+        (v.saturating_sub(d)).as_secs_f64() / r.as_secs_f64()
+    );
+    let (r, v) = abba(
+        "regions-seqs world",
+        &mut || {
+            time(|| {
+                for (.., ws, _) in &cases {
+                    for w in ws {
+                        std::hint::black_box(world_text(w));
+                    }
+                }
+            })
+        },
+        &mut || {
+            time(|| {
+                for (.., winputs) in &cases {
+                    for i in winputs {
+                        std::hint::black_box(world.text(i));
+                    }
+                }
+            })
+        },
+    );
+    let d = (0..6)
+        .map(|_| {
+            time(|| {
+                for (.., winputs) in &cases {
+                    for i in winputs {
+                        std::hint::black_box(decode.text(i));
+                    }
+                }
+            })
+        })
+        .min()
+        .unwrap();
+    eprintln!(
+        "world: decode {d:?}; rules alone {:.2}x",
+        (v.saturating_sub(d)).as_secs_f64() / r.as_secs_f64()
     );
 }

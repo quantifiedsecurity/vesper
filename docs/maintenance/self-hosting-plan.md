@@ -215,6 +215,15 @@ corpus: `vesper check` on 537 files under `bootstrap/corpus`, `examples/` and
 |---|---|--:|--:|---|---|
 | `parse` (front end v2 + AST, read back into `Parse`) | SH1-12 (#1155) | 1.03x | 1.06x | 1.00x wall, 1.19x Ir over 911 sources | [self-host-parser-swap.md](../parallel-results/self-host-parser-swap.md) |
 
+**SH2 checker ports.** Each row is one checker port. Until its swap into
+the hybrid build lands, the numbers are the ported rules alone against the
+Rust rules they replace, over lane 4's corpus (ABBA, release build, Vesper
+time divided by Rust time, input decode subtracted).
+
+| Port | Lane | Ported so far | Differential | Rules alone | Hybrid swap | Report |
+|---|---|---|---|--:|---|---|
+| regions, sequences, strings, arrays, tiled, vectors | SH2-9 (#1181) | type and world rules (part 1) | 0 of 282 worlds; E0200, E0792, E0797, E1404, E1501-E1503, E1520 on mutants | 1.12x types, 1.17x world | with the expression rules | [self-host-check-regions-seqs.md](../parallel-results/self-host-check-regions-seqs.md) |
+
 ## Estimates
 
 These are rough. They come from the port waves so far, where one lane ported

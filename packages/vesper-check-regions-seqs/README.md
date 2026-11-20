@@ -51,4 +51,4 @@ functions over every checked corpus world:
 - `resolve_matches_rust`: `seq::resolve` of 79 callees on 11 receivers,
   with every property of the operation.
 - `unoptimized_jit_agrees`: the JIT with the optimizer off agrees with it on.
-- `speed_types` (ignored, `CHECK_HARNESS_SPEED=1`): ABBA of the type task.
+- `speed_abba` (ignored, `CHECK_HARNESS_SPEED=1`): ABBA of the type and world tasks, with the decode timed alone.
