@@ -2307,6 +2307,12 @@ fn match_expr(inout p: P) -> Ex {
         let before = p.pos;
         let mark = p.binds.len();
         pattern(inout p);
+        loop {
+            if !eat(inout p, k_pipe()) {
+                break;
+            }
+            pattern(inout p);
+        }
         expect(inout p, k_fat_arrow());
         let outer = p.vals_trail.len();
         bind_values(inout p, mark);
