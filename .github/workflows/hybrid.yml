@@ -90,4 +90,6 @@ jobs:
       - name: The differential harness catches a divergent pilot module
         run: cargo test --locked -p vesper-hybrid --features divergent --test differential -- --nocapture
       - name: The differential harness catches a divergent parse module
-        run: cargo test --locked -p vesper-hybrid --features divergent-parse --test differential -- --nocapture
+        # A wrong parse cannot compile the pilot test's program, so only the
+        # harness runs here.
+        run: cargo test --locked -p vesper-hybrid --features divergent-parse --test differential hybrid_matches_the_default_compiler -- --nocapture
