@@ -779,7 +779,37 @@ impl<M: Module> Codegen<'_, '_, M> {
                 let (h, start, len) = self.seq_view(arg(0)?, &arg_types[0]);
                 let i = arg(1)?;
                 let valid = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
-                if op == SeqOp::TrySet {
+                let plain_word = op == SeqOp::TrySet
+                    && self.operands_only
+                    && !Layout::of(self.world, &elem)?.aggregate()
+                    && !(self.drops_enabled() && crate::fip::elem_needs_drop(self.world, &elem));
+                if plain_word {
+                    // Optimized code stores a plain word without a branch
+                    // (#1151): an index past the end writes a private slot
+                    // instead. Cranelift places a pure value at its first
+                    // use, so behind a branch each stored value was built
+                    // inside its store block, where the next store could not
+                    // reuse it, and straight-line code that stores values
+                    // sharing work recomputed all of it for every store.
+                    let slot = match self.discard_slot {
+                        Some(slot) => slot,
+                        None => {
+                            let slot = self.b.create_sized_stack_slot(ir::StackSlotData::new(
+                                ir::StackSlotKind::ExplicitSlot,
+                                16,
+                                3,
+                            ));
+                            self.discard_slot = Some(slot);
+                            slot
+                        }
+                    };
+                    let ptr = self.m.target_config().pointer_type();
+                    let discard = self.b.ins().stack_addr(ptr, slot, 0);
+                    let addr = self.seq_elem_addr(h, start, i, stride);
+                    let target = self.b.ins().select(valid, addr, discard);
+                    self.seq_store_elem(target, arg(2)?, &elem)?;
+                    self.b.ins().uextend(types::I64, valid)
+                } else if op == SeqOp::TrySet {
                     let yes = self.b.create_block();
                     let no = self.b.create_block();
                     let done = self.b.create_block();
