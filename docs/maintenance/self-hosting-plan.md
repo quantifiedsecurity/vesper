@@ -214,6 +214,7 @@ corpus: `vesper check` on 537 files under `bootstrap/corpus`, `examples/` and
 | Swap | Lane | Whole corpus wall | Whole corpus Ir | Swapped module alone | Report |
 |---|---|--:|--:|---|---|
 | `parse` (front end v2 + AST, read back into `Parse`) | SH1-12 (#1155) | 1.03x | 1.06x | 1.00x wall, 1.19x Ir over 911 sources | [self-host-parser-swap.md](../parallel-results/self-host-parser-swap.md) |
+| `effects` (capability rules, `capability_effects::check_world`; differential only, swap pending) | SH2-8 (#1180) | not swapped yet | not swapped yet | 0.28x wall (0.49x with input encoding) over 680 corpus, fixture and mutant worlds | [self-host-check-effects.md](../parallel-results/self-host-check-effects.md) |
 
 ## Estimates
 

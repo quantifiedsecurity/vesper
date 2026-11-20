@@ -161,6 +161,12 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # SH2 lane 8 (#1180): @vesper/check-effects against capability_effects.
+        "test/self_host_check_effects": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # @vesper-std/fs, process and env (#1125): drivers over the packages
         # and their .vsys imports.
         "test/std_env": [":files"],
@@ -476,6 +482,8 @@ vesper_crate(
         # The checker data differential (#1176) checks every corpus world.
         "test/self_host_check_data": "long",
         "test/self_host_check_harness": "long",
+        # The capability-effect differential (#1180): corpus, fixtures, mutants.
+        "test/self_host_check_effects": "long",
     },
 )
 
