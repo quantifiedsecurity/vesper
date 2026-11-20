@@ -35,6 +35,10 @@ use self::parse::{
     parse_tokens,
     hard_depth
 };
+use self::recover::{
+    editor_limits,
+    parse_recovery_tables
+};
 use self::tree::{
     tree_new,
     build_tree,
@@ -67,8 +71,10 @@ pub struct Tokens {
     sym_start: ChunkSeq[u32],
     sym_end: ChunkSeq[u32],
     sym_hash: ChunkSeq[u64],
-    // The lexer stopped at a token or diagnostic limit.
+    // The lexer stopped at a token or diagnostic limit, and which (1 Tokens,
+    // 2 Diagnostics).
     limited: bool,
+    limit_kind: u8,
     // `lex_with_limits` refused the limits or the source size (no rows).
     rejected: bool
 }
@@ -128,7 +134,25 @@ pub struct P {
     halted: bool,
     // `ParseLimits::max_diagnostics` and `max_depth`.
     max_diag: u64,
-    max_depth: u64
+    max_depth: u64,
+    // Editor mode (`Parser::editor`, recovery.ves): BLOCK, ERROR_NODE and
+    // INCOMPLETE nodes, statement recovery and recovery sites.
+    editor: bool,
+    site_limit: u64,
+    site_exhausted: bool,
+    // The limit that halted the parser: 0 none, 2 Diagnostics, 3 Depth.
+    halt_kind: u64,
+    // Sites, four words each: start, end, kind (`SiteKind` order: 0
+    // MissingMember, 1 MissingDelimiter, 2 Unexpected, 3 OpaqueLexical, 4
+    // OpaqueMacro) and the token of the receiver root plus 1, else 0.
+    sites: ChunkSeq[u32],
+    // The first function header note (`HeaderNote`): start, body start,
+    // clean, nongeneric and the number of row names, then the symbols of
+    // the row names and the bound values in `hdr_syms`. Empty when none.
+    hdr: ChunkSeq[u64],
+    hdr_syms: ChunkSeq[u32],
+    // Start of the span of the last declaration (`item_span`).
+    item_start: u64
 }
 
 // What the parser keeps of a parsed expression: its kind (parse.ves
@@ -146,7 +170,10 @@ pub copy struct Ex {
     tiled: bool,
     path: u32,
     leaves: u64,
-    pure: bool
+    pure: bool,
+    // For a lower-case name and the fields read from it, the name's token
+    // plus 1 (the root of a recovery `Receiver`), else 0.
+    rcv: u32
 }
 
 // Parses `source` (`vesper_syntax::parser::parse`) into the token, node and
@@ -268,6 +295,33 @@ fn report_oversized(retained: u64, in d: Diags) -> ChunkSeq[u64] {
         );
     }
     out
+}
+
+// `vesper_syntax::parser::parse_recovery(source, limits)` (recover.ves) as
+// rows: a status word, 0 when the parse succeeded, else the
+// `recovery::Error` (recover.ves) and nothing more. On success: the
+// declaration and site counts, the rows of `parse_tables`, then for each
+// declaration 12 words (kind in `DeclarationKind` order, name, span,
+// header, body and body green spans as start/end pairs, u64::MAX pairs
+// when absent, and the status: 0 complete, 1 recovered, 2 opaque), then
+// for each site its start, end, kind (`SiteKind` order), owner and the
+// receiver's projection count (u64::MAX for none) followed by the root and
+// each projection as start/end pairs. `limits` is `Limits::default()` with
+// the nonzero fields of `a` and `b` (recover.ves `editor_limits`).
+pub fn parse_editor_tables(in source: Str, a: u64, b: u64) -> ChunkSeq[u64] {
+    let lim = editor_limits(a, b);
+    parse_recovery_tables(in source, in lim)
+}
+
+// `parse_editor_tables` under the default limits, for benchmarks: the
+// status word, or the number of result words.
+pub fn parse_editor_count(in source: Str) -> u64 {
+    let rows = parse_editor_tables(in source, 0, 0);
+    match rows.try_get(0) {
+        Option::Some(0) => rows.len(),
+        Option::Some(code) => code,
+        Option::None => 0,
+    }
 }
 
 // Parses `source` and returns tokens * 2^32 + nodes, for benchmarks: the

@@ -10,7 +10,7 @@ Base: `main` at `e29e63d` (the SH1 plan, #1158).
 This lane lands in two parts. Part 1 (this report's first half) is the lexer:
 speed, the table moves of implementation step 1, and the explicit-limit
 entry points that the fmt port (lane 11, #1154) asked for. Part 2 is the
-editor mode (steps 3 and 4) and adds its own sections here.
+editor mode (steps 3 and 4), in its own sections below.
 
 ## Part 1: what changed
 
@@ -155,6 +155,100 @@ instructions) and not for the lexer that also interns every identifier
 (1.61-1.68x). The gap is the profile above and the repros below. The whole
 Vesper parse, which uses the interned lexer, is 0.29x of the Rust parse.
 
+## Part 2: editor mode
+
+`parse_editor_tables` (`src/lib.ves`) is
+`vesper_syntax::parser::parse_recovery(source, limits)`: the editor syntax
+that the incremental parser and the formatter's recovery read. Its rows are
+the CST and diagnostics of `parse_tables`, then each declaration (kind,
+name, span, header, body and body green spans, status) and each recovery
+site (span, kind, owner and receiver).
+
+### Parser (`src/parse.ves`)
+
+`P` has the editor fields of `Parser`: `editor`, the site rows and
+`site_limit`/`site_exhausted`, `halt_kind`, the first `HeaderNote` and the
+start of the last declaration's span. With `editor` set, as in
+`parser.rs`:
+
+- `expect` adds a `MissingDelimiter` site for `)`, `]` and `}` and an
+  `Unexpected` site otherwise;
+- `block_inner` wraps the block in `BLOCK`, recovers a `let` without `;`
+  and a statement followed by an anchor (`let`, `match`, `handle`,
+  `return`, `if`) or by its own errors, with "expected ';' before following
+  statement";
+- `recover_statement` puts the skipped tokens in an `ERROR_NODE` (balanced
+  brackets, a `Depth` halt past `max_depth` open brackets) with an
+  `Unexpected` site;
+- a `.` with no member name gets a `MissingMember` site with its receiver,
+  an error and an `INCOMPLETE` node started at the postfix checkpoint (an
+  event inserted at the checkpoint's position);
+- a missing primary before a closer, `,`, `;`, `let` or the end is an empty
+  `Unexpected` site, any other token an `ERROR_NODE`;
+- `function` records the header note (start, body start, clean,
+  nongeneric, and the live row-name and bound-value symbols).
+
+The receiver needs no AST: `Ex` carries the token of a lower-case name, the
+`Field` of a receiver keeps it, and the projections are the tokens after
+each `.` from that root to the site. The batch parser does not set
+`editor`; its rows are unchanged (the twelve-test differential passes).
+
+### Driver (`src/recover.ves`)
+
+`recovery_driver.rs` and the checks of `recovery::assemble`, in order:
+`Limits::preflight`, the lexer under the parse limits and the identifier
+budget, the `Work` budget (one per token and scan step, `n * (n + 1) +
+4 * bytes` per parsed declaration), `prefix`, `anchor`, `macro_start`,
+`macro_end`, `extent`, opaque declarations as raw `ERROR_NODE`s, and one
+editor parse per other declaration over its own tokens plus an Eof at its
+end (`editor_reset` reuses one `P`). Statuses, header spans, the
+"declaration syntax is recovered or opaque" diagnostic and every quota
+error follow Rust. `assemble`'s checks are mirrored with its work count
+(the CST walk, spans, names, the body-node search and the body context's
+names): CST depth and token bounds, span boundaries (char and `\r\n`),
+and the token kinds of names, receiver roots and projections.
+
+Not mirrored: the metadata budget (`max_metadata_bytes`), which counts Rust
+struct sizes. Under the default limits it cannot be reached (at most 64
+diagnostics, 256 declarations and 256 sites, and body-context names fewer
+than the 16,384 tokens, well under 1 MiB). The `parse_editor_tables`
+limits can change every other field but the source budget.
+
+### Tests
+
+Five new tests in `tests/self_host_front_v2.rs` compare every row with
+`parse_recovery`:
+
+- every repository `.ves` file, and every third one also cut at a third,
+  a half and nine tenths of its length;
+- 57 hand-written recovery cases (each editor branch, macros and quotes,
+  opaque lexical tails, `\r\n`, deep nesting, 300 declarations and sites,
+  the work budget) and the string literals of the recovery, incremental
+  and macro-source test suites;
+- 3,000 fuzzed sources (`VESPER_FRONT_FUZZ`), the same mutations and token
+  soup as the batch fuzz test;
+- 12 limit sets (diagnostics, depth, tokens, sites, declarations,
+  identifier bytes, work, the hard limits and an invalid depth) over every
+  23rd repository file and six small cases;
+- no sequence leaks across an editor parse.
+
+All 12 tests pass (44 s in release).
+
+### Speed
+
+`editor_abba_against_parse_recovery` (bench file, 9 ABBA rounds, medians)
+over the 899 repository files within the 128 KiB source budget: Rust
+`parse_recovery` 450 ms, Vesper `parse_editor_tables` 159 ms, 0.35x of
+Rust's time, including the Vesper result rows. The editor parse needs no
+new compiler fix; the gaps above are the ones it meets.
+
+### Macro sources
+
+`macro_source.rs` (the `quote`/`syntax_quote` source model the formatter
+and `vesper forge` read) is not ported in this lane: `parse_recovery` uses
+only its `FunctionHeader` struct (macros make a declaration opaque, which is mirrored), so the
+editor rows do not depend on it. It is left for the macro lanes.
+
 ## Stage 1 guard
 
 No file under `src/verified_codegen/**`, `src/ir.rs`, `ir_opt`, `lean/**`,
@@ -237,6 +331,8 @@ No file under `src/verified_codegen/**`, `src/ir.rs`, `ir_opt`, `lean/**`,
 
 ## What is left
 
-- Part 2: the editor mode (recovery sites, `BLOCK`, `ERROR_NODE`,
-  `INCOMPLETE`, header notes and macro sources) and its differential test.
+- The macro source model (`macro_source.rs`), above.
+- `parse_complete_items` and `parse_body_fragment` (incremental reparsing
+  of selected declarations and of one body), which build on the editor
+  parse.
 - The rest of the lexer gap is the interning cost and gaps 5 and 6 above.

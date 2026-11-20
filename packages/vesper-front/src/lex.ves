@@ -790,6 +790,7 @@ pub fn tokens_new(len: u64) -> Tokens {
         sym_end: ChunkSeq::new[u32](),
         sym_hash: ChunkSeq::new[u64](),
         limited: false,
+        limit_kind: 0,
         rejected: false
     }
 }
@@ -925,6 +926,7 @@ fn lex_tokens(in b: Slice[u8], inout d: Diags, classify: bool, max_tok: u64, max
             limit_message(inout m, 1, max_tok, n);
             diag_push_limit(inout d, 3, at, at, in m.as_slice(), max_diag);
             t.limited = true;
+            t.limit_kind = 1;
             break;
         }
         if kind == k_error() {
@@ -937,6 +939,7 @@ fn lex_tokens(in b: Slice[u8], inout d: Diags, classify: bool, max_tok: u64, max
                     t.sym.push(0);
                 }
                 t.limited = true;
+                t.limit_kind = 2;
                 break;
             }
             diag_push(inout d, 1, at, end, in "invalid token or unterminated comment".as_bytes());

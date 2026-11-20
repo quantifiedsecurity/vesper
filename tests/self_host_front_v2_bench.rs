@@ -79,6 +79,7 @@ struct Front {
     counts: native::WordFunction,
     lex: native::WordFunction,
     lex_raw: native::WordFunction,
+    editor: native::WordFunction,
 }
 
 fn front() -> Front {
@@ -91,6 +92,7 @@ fn front() -> Front {
         counts: compile("parse_counts"),
         lex: compile("lex_count"),
         lex_raw: compile("lex_raw_count"),
+        editor: compile("parse_editor_count"),
     }
 }
 
@@ -350,4 +352,54 @@ fn lex_once_for_callgrind() {
     let d = run_vesper_lex(&f, &corpus);
     let e = run_vesper_lex_raw(&f, &corpus);
     println!("{c} {d} {e}");
+}
+
+#[inline(never)]
+fn run_rust_editor(corpus: &[String]) -> usize {
+    corpus
+        .iter()
+        .map(|s| {
+            vesper_syntax::parser::parse_recovery(s, vesper_syntax::recovery::Limits::default())
+                .map_or(0, |r| r.declarations().len())
+        })
+        .sum()
+}
+
+#[inline(never)]
+fn run_vesper_editor(f: &Front, corpus: &[String]) -> u64 {
+    corpus.iter().map(|s| call(&f.editor, s)).sum()
+}
+
+/// Editor mode (`parse_recovery`, default limits) in ABBA order over the
+/// corpus files within its 128 KiB source budget.
+#[test]
+#[ignore = "benchmark"]
+fn editor_abba_against_parse_recovery() {
+    let corpus: Vec<String> = corpus()
+        .into_iter()
+        .filter(|s| s.len() <= 128 * 1024)
+        .collect();
+    let f = front();
+    let rounds = 9;
+    let (mut r, mut v) = (vec![], vec![]);
+    for _ in 0..rounds {
+        r.push(time(|| {
+            std::hint::black_box(run_rust_editor(&corpus));
+        }));
+        v.push(time(|| {
+            std::hint::black_box(run_vesper_editor(&f, &corpus));
+        }));
+        v.push(time(|| {
+            std::hint::black_box(run_vesper_editor(&f, &corpus));
+        }));
+        r.push(time(|| {
+            std::hint::black_box(run_rust_editor(&corpus));
+        }));
+    }
+    let (r, v) = (median(r), median(v));
+    println!(
+        "editor rust {r:?}; vesper {v:?} ({:.2}x); {} files",
+        v.as_secs_f64() / r.as_secs_f64(),
+        corpus.len()
+    );
 }
