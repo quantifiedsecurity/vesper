@@ -215,6 +215,15 @@ corpus: `vesper check` on 537 files under `bootstrap/corpus`, `examples/` and
 |---|---|--:|--:|---|---|
 | `parse` (front end v2 + AST, read back into `Parse`) | SH1-12 (#1155) | 1.03x | 1.06x | 1.00x wall, 1.19x Ir over 911 sources | [self-host-parser-swap.md](../parallel-results/self-host-parser-swap.md) |
 
+**SH2 compile-time scoreboard.** The same corpus and profile, with two
+commands: `vesper check --json`, and `vesper emit --emit object`, which
+asks for many more layouts. Each ratio is against the default (Rust)
+compiler, and the hybrid includes the swaps above it.
+
+| Swap | Lane | `check` wall | `check` Ir | `emit object` wall | `emit object` Ir | Swapped module alone | Report |
+|---|---|--:|--:|--:|--:|---|---|
+| `Layout::of` (`@vesper/check-layout`) and `ir_check::validate` (`@vesper/ir-check`), both in one build | SH2-5 (#1177) | 1.08x | 1.070x | 1.14x | 1.312x | layout 5.43x per call (one call per type, world rebuilt each call); IR check 0.53x per call, boundary included | [self-host-layout-ir-check-swap.md](../parallel-results/self-host-layout-ir-check-swap.md) |
+
 ## Estimates
 
 These are rough. They come from the port waves so far, where one lane ported
