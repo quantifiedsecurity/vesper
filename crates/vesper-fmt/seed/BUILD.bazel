@@ -53,6 +53,7 @@ rust_test(
         deps = [":seed"] + _NORMAL,
     )
     for t in [
+        "else_if_chains",
         "format",
         "macro_source",
         "proof_model",

@@ -923,6 +923,10 @@ fn gate(in src: Slice[u8], in lim: Limits, inout w: Work) -> Tokens eff [Fail[Fm
     let mut stack = ChunkSeq::with_capacity[u8](32);
     let mut counts = ChunkSeq::with_capacity[u64](32);
     counts.push(0);
+    // Per delimiter level: the chain count where the latest `if` that does
+    // not continue an `else` started (NONE for none).
+    let mut if_bases = ChunkSeq::with_capacity[u64](32);
+    if_bases.push(NONE);
     let mut total: u64 = 0;
     let mut previous: u8 = K_EOF;
     let mut after_block = false;
@@ -945,10 +949,25 @@ fn gate(in src: Slice[u8], in lim: Limits, inout w: Work) -> Tokens eff [Fail[Fm
             Option::None => 0,
         };
         total = wrapping_sub(total, counter);
-        if after_block && !continues_chain(k, in src, s, e) {
+        let ifs = wrapping_sub(if_bases.len(), 1);
+        if after_block && k == K_ELSE {
+            // `} else` goes back to where its `if` started: every arm of an
+            // `else if` chain is one component of the same expression, so a
+            // chain of any length counts like a single `if`.
+            let base = match if_bases.try_get(ifs) {
+                Option::Some(b) => b,
+                Option::None => NONE,
+            };
+            if base != NONE {
+                counter = base;
+            }
+        } else if after_block && !continues_chain(k, in src, s, e) {
             counter = 0;
         }
         after_block = false;
+        if k == K_IF && previous != K_ELSE {
+            if_bases.try_set(ifs, counter);
+        }
         if k == K_SEMI || k == K_COMMA {
             counter = 0;
         } else {
@@ -962,6 +981,7 @@ fn gate(in src: Slice[u8], in lim: Limits, inout w: Work) -> Tokens eff [Fail[Fm
         if k == K_L_PAREN || k == K_L_BRACKET || k == K_L_BRACE {
             stack.push(k);
             counts.push(0);
+            if_bases.push(NONE);
             if stack.len() > max_depth {
                 fail(E_DEPTH);
             }
@@ -993,6 +1013,7 @@ fn gate(in src: Slice[u8], in lim: Limits, inout w: Work) -> Tokens eff [Fail[Fm
             };
             total = wrapping_sub(total, dropped);
             counts.truncate(last);
+            if_bases.truncate(wrapping_sub(if_bases.len(), 1));
             if stack.len() == 0 {
                 let base = match counts.try_get(0) {
                     Option::Some(c) => c,

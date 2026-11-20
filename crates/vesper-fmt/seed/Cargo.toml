@@ -27,6 +27,10 @@ vesper-lean-syntax = { path = "../../vesper-lean-syntax/seed", package = "vesper
 vesper-syntax = { path = "../../vesper-syntax" }
 
 [[test]]
+name = "else_if_chains"
+path = "../tests/else_if_chains.rs"
+
+[[test]]
 name = "format"
 path = "../tests/format.rs"
 

@@ -16,7 +16,7 @@ trap 'rm -f "$log"' EXIT HUP INT TERM
 while read -r area failing passing; do
     if VESPER_FMT_DIVERGE=$area cargo test --locked -p vesper-fmt \
         --features vesper-port,vesper-port-divergent --no-fail-fast \
-        --test differential >"$log" 2>&1; then
+        --test differential --test format >"$log" 2>&1; then
         cat "$log"
         echo "the divergent fmt port ($area) passed its tests" >&2
         exit 1
@@ -31,5 +31,5 @@ while read -r area failing passing; do
 done <<'CHECKS'
 doc repository_sources_format_byte_identically limit_sweeps_fail_at_the_same_point
 gate repository_sources_format_byte_identically limit_sweeps_fail_at_the_same_point
-layout repository_sources_format_byte_identically fuzzed_sources_give_the_same_result
+layout repository_sources_format_byte_identically line_comment_never_absorbs_next_token
 CHECKS
