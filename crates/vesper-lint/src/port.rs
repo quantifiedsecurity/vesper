@@ -142,7 +142,18 @@ fn lint_error(e: LintFail) -> LintError {
 pub(crate) struct Encoded {
     pub words: Vec<u64>,
     pub blob: String,
+    /// The nesting of the type being written.
+    depth: usize,
+    /// Whether a type nests deeper than [`MAX_ENCODED_DEPTH`]; its subtree
+    /// is not written.
+    pub too_deep: bool,
 }
+
+/// Types nested deeper than this are not encoded. The Rust checks refuse
+/// any type deeper than 32 (`validate_type`), and both the encoder and the
+/// port's decoder recurse, so such programs go to the Rust code instead of
+/// the port (the error is the same, and the stack stays bounded).
+const MAX_ENCODED_DEPTH: usize = 40;
 
 impl Encoded {
     fn name(&mut self, s: &str) {
@@ -167,6 +178,16 @@ impl Encoded {
         });
     }
     fn ty(&mut self, t: &Type) {
+        if self.depth > MAX_ENCODED_DEPTH {
+            self.too_deep = true;
+            self.words.push(5);
+            return;
+        }
+        self.depth += 1;
+        self.ty_node(t);
+        self.depth -= 1;
+    }
+    fn ty_node(&mut self, t: &Type) {
         match t {
             Type::IntLiteral(n) => {
                 self.words.push(0);
@@ -350,6 +371,9 @@ impl Words<'_> {
 /// [`crate::analyze`] through the port.
 pub(crate) fn analyze(program: &CheckedProgram, limits: Limits) -> Result<LintReport, LintError> {
     let encoded = encode(program);
+    if encoded.too_deep {
+        return crate::analyze_rust(program, limits);
+    }
     let words = crate::port_binding::analyze(
         &encoded.words,
         &encoded.blob,

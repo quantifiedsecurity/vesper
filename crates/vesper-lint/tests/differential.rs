@@ -331,6 +331,12 @@ fn fact_limits_fail_identically() {
     for _ in 0..40 {
         deep = Type::Named("Vec".into(), vec![deep]);
     }
+    // Past the port's encoding depth: the facts go to the Rust code, whose
+    // checks are iterative, rather than through recursive encoding.
+    let mut deeper = Type::named("u32");
+    for _ in 0..300 {
+        deeper = Type::Named("Vec".into(), vec![deeper]);
+    }
     let wide = Type::Tuple(vec![Type::named("u8"); 600]);
     let bushy = Type::Tuple(vec![Type::Tuple(vec![Type::named("u8"); 30]); 30]);
     let arrow = Type::Function {
@@ -355,7 +361,10 @@ fn fact_limits_fail_identically() {
         name: "E".into(),
         args: vec![Type::named("u8"); 65],
     };
-    for (i, ty) in [deep, wide, bushy, arrow, row].into_iter().enumerate() {
+    for (i, ty) in [deep, deeper, wide, bushy, arrow, row]
+        .into_iter()
+        .enumerate()
+    {
         for slot in 0..4 {
             let mut p = base();
             let f = p.functions.values_mut().next().unwrap();
