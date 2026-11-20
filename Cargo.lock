@@ -5598,6 +5598,7 @@ dependencies = [
  "vesper-std-host",
  "vesper-syntax",
  "vesper-tensor-seed",
+ "vesper-test",
  "vesper-vault",
  "wasm-encoder 0.261.0",
  "wasmtime",
@@ -6086,6 +6087,7 @@ dependencies = [
  "vesper-std-host",
  "vesper-syntax",
  "vesper-tensor-seed",
+ "vesper-test",
  "vesper-vault",
  "wasm-encoder 0.261.0",
  "wit-component",
@@ -6675,6 +6677,16 @@ name = "vesper-tensor-seed"
 version = "0.1.0"
 dependencies = [
  "memmap2",
+]
+
+[[package]]
+name = "vesper-test"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "vesper-vault",
 ]
 
 [[package]]
