@@ -61,7 +61,8 @@ fn value(k: IntegerKind, pattern: u128) -> String {
     format!("w_{}({hi}, {lo})", k.name())
 }
 /// The constructors [`value`] calls.
-const WORDS: &str = "fn w_u128(hi: u64, lo: u64) -> u128 { (widen_u128(hi) << 64) | widen_u128(lo) }
+const WORDS: &str =
+    "fn w_u128(hi: u64, lo: u64) -> u128 { (widen_u128(hi) << 64) | widen_u128(lo) }
 fn w_i128(hi: u64, lo: u64) -> i128 { wrapping_i128(w_u128(hi, lo)) }
 ";
 /// How a pattern of `k` prints.
@@ -201,21 +202,30 @@ fn binary_operators_agree_at_boundaries() {
         ("a & b", |_, a, b| Outcome::Ok(a & b)),
         ("a | b", |_, a, b| Outcome::Ok(a | b)),
         ("a ^ b", |_, a, b| Outcome::Ok(a ^ b)),
-        ("wrapping_add(a, b)", |_, a, b| Outcome::Ok(a.wrapping_add(b))),
-        ("wrapping_sub(a, b)", |_, a, b| Outcome::Ok(a.wrapping_sub(b))),
-        ("wrapping_mul(a, b)", |_, a, b| Outcome::Ok(a.wrapping_mul(b))),
+        ("wrapping_add(a, b)", |_, a, b| {
+            Outcome::Ok(a.wrapping_add(b))
+        }),
+        ("wrapping_sub(a, b)", |_, a, b| {
+            Outcome::Ok(a.wrapping_sub(b))
+        }),
+        ("wrapping_mul(a, b)", |_, a, b| {
+            Outcome::Ok(a.wrapping_mul(b))
+        }),
         ("if a < b { a } else { b }", |k, a, b| {
             Outcome::Ok(if less(k, a, b) { a } else { b })
         }),
-        ("if a == b { a } else if a >= b { ~b } else { b }", |k, a, b| {
-            Outcome::Ok(if a == b {
-                a
-            } else if !less(k, a, b) {
-                !b
-            } else {
-                b
-            })
-        }),
+        (
+            "if a == b { a } else if a >= b { ~b } else { b }",
+            |k, a, b| {
+                Outcome::Ok(if a == b {
+                    a
+                } else if !less(k, a, b) {
+                    !b
+                } else {
+                    b
+                })
+            },
+        ),
     ];
     for k in WIDE {
         let values = boundaries(k);
@@ -234,7 +244,10 @@ fn binary_operators_agree_at_boundaries() {
                     .map(|(a, b)| outcome(k, reference(k, *a, *b)))
                     .collect::<Vec<_>>(),
             );
-            agree(&program(k.name(), k.name(), k.name(), body, &cases), &expected);
+            agree(
+                &program(k.name(), k.name(), k.name(), body, &cases),
+                &expected,
+            );
         }
     }
 }
@@ -258,7 +271,10 @@ fn negation_agrees() {
                 })
                 .collect::<Vec<_>>(),
         );
-        agree(&program(k.name(), k.name(), k.name(), "-a", &cases), &expected);
+        agree(
+            &program(k.name(), k.name(), k.name(), "-a", &cases),
+            &expected,
+        );
     }
 }
 
@@ -271,11 +287,15 @@ fn shifts_and_rotations_agree() {
             .iter()
             .flat_map(|a| amounts.iter().map(move |n| (*a, *n)))
             .collect();
-        let cases: Vec<(String, String)> =
-            pairs.iter().map(|(a, n)| (value(k, *a), n.to_string())).collect();
+        let cases: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(a, n)| (value(k, *a), n.to_string()))
+            .collect();
         type Reference = fn(IntegerKind, u128, u32) -> Outcome;
         let operators: [(&str, Reference); 4] = [
-            ("a << b", |_, a, n| a.checked_shl(n).map_or(Outcome::Overflow, Outcome::Ok)),
+            ("a << b", |_, a, n| {
+                a.checked_shl(n).map_or(Outcome::Overflow, Outcome::Ok)
+            }),
             ("a >> b", |k, a, n| {
                 if n >= 128 {
                     Outcome::Overflow
@@ -286,7 +306,9 @@ fn shifts_and_rotations_agree() {
                 }
             }),
             ("rotate_left(a, b)", |_, a, n| Outcome::Ok(a.rotate_left(n))),
-            ("rotate_right(a, b)", |_, a, n| Outcome::Ok(a.rotate_right(n))),
+            ("rotate_right(a, b)", |_, a, n| {
+                Outcome::Ok(a.rotate_right(n))
+            }),
         ];
         for (body, reference) in operators {
             let expected = tuple(
@@ -300,10 +322,8 @@ fn shifts_and_rotations_agree() {
     }
     // A 128-bit amount shifts a narrow value.
     agree(
-        &format!(
-            "fn sh(x: u64, n: u128) -> u64 eff [Fail[ArithOverflow]] {{ x << n }}
-fn main() -> u64 {{ handle Fail[ArithOverflow] in {{ sh(1, 3) }} with {{ return v => v, raise(e, k) => 0, }} }}"
-        ),
+        "fn sh(x: u64, n: u128) -> u64 eff [Fail[ArithOverflow]] { x << n }
+fn main() -> u64 { handle Fail[ArithOverflow] in { sh(1, 3) } with { return v => v, raise(e, k) => 0, } }",
         "8",
     );
 }
@@ -327,7 +347,11 @@ fn fits(to: IntegerKind, (negative, p): (bool, u128)) -> bool {
     }
 }
 fn low(to: IntegerKind, p: u128) -> u128 {
-    if to.bits() == 128 { p } else { p & ((1u128 << to.bits()) - 1) }
+    if to.bits() == 128 {
+        p
+    } else {
+        p & ((1u128 << to.bits()) - 1)
+    }
 }
 fn one_word_boundaries(k: IntegerKind) -> Vec<u128> {
     let mut v: Vec<u128> = [k.min(), k.min() + 1, -1, 0, 1, k.max() - 1, k.max()]
@@ -367,7 +391,7 @@ fn conversions_agree_with_every_kind() {
                         value(from, p)
                     } else {
                         // One-word values are literals of the kind.
-                        format!("{}", show_any(from, p))
+                        show_any(from, p)
                     }
                 };
                 let cases: Vec<(String, String)> =
@@ -386,7 +410,10 @@ fn conversions_agree_with_every_kind() {
                         .collect::<Vec<_>>(),
                 );
                 let body = format!("{conversion}{}(a)", to.name());
-                agree(&program(from.name(), "u8", to.name(), &body, &cases), &expected);
+                agree(
+                    &program(from.name(), "u8", to.name(), &body, &cases),
+                    &expected,
+                );
             }
         }
     }
@@ -446,7 +473,11 @@ fn checked_and_bit_builtins_agree() {
             let result_kind = if result == "K" { k } else { IntegerKind::U32 };
             let rk = result_kind.name();
             let shifts = op.starts_with("wrapping_sh");
-            for amount in if shifts { vec![0u32, 1, 64, 127, 128, 200] } else { vec![0] } {
+            for amount in if shifts {
+                vec![0u32, 1, 64, 127, 128, 200]
+            } else {
+                vec![0]
+            } {
                 let body = if shifts {
                     format!("{op}_{n}(a, {amount})")
                 } else {
@@ -455,7 +486,9 @@ fn checked_and_bit_builtins_agree() {
                 let expected = tuple(
                     &values
                         .iter()
-                        .map(|a| format!("(0, {})", show_any(result_kind, reference(k, *a, amount))))
+                        .map(|a| {
+                            format!("(0, {})", show_any(result_kind, reference(k, *a, amount)))
+                        })
                         .collect::<Vec<_>>(),
                 );
                 agree(&program(n, "u8", rk, &body, &unary), &expected);
@@ -489,7 +522,9 @@ fn checker_rules() {
     rejects("fn f(a: i128) -> u128 { widen_u128(a) }", "E0200");
     rejects("fn f(a: i8) -> u128 { widen_u128(a) }", "E0200");
     rejects("fn f(a: i128) -> i64 { widen_i64(a) }", "E0200");
-    accepted("fn f(a: u64, b: i64, c: usize) -> (u128, i128, i128) { (widen_u128(a), widen_i128(b), widen_i128(c)) }");
+    accepted(
+        "fn f(a: u64, b: i64, c: usize) -> (u128, i128, i128) { (widen_u128(a), widen_i128(b), widen_i128(c)) }",
+    );
     // No implicit conversions.
     rejects("fn f(a: u128) -> i128 { a }", "E0200");
     rejects("fn f(a: i64) -> i128 { a }", "E0200");
@@ -500,8 +535,17 @@ fn checker_rules() {
     rejects("fn f(a: i128) -> i64 { narrow_i64(a) }", "E0401");
     accepted("fn f(a: u128, b: u128) -> u128 { wrapping_mul(a, b) ^ (a & b) }");
     accepted("fn f() -> u128 { let a: u128 = 18446744073709551615; a * 3 }");
+    // No float conversions yet.
+    rejects("fn f(a: i128) -> f64 { nearest_f64(a) }", "E0200");
+    rejects("fn f(a: f64) -> i128 { saturating_i128(a) }", "E0200");
+    rejects(
+        "fn f(a: f64) -> u128 eff [Fail[ArithOverflow]] { narrow_u128(a) }",
+        "E0200",
+    );
     // No 128-bit atomics.
-    let c = checked("fn f() -> u128 { let c: Atomic[u128] = Atomic::new(5); c.load(MemoryOrder::Relaxed) }");
+    let c = checked(
+        "fn f() -> u128 { let c: Atomic[u128] = Atomic::new(5); c.load(MemoryOrder::Relaxed) }",
+    );
     assert!(!c.diagnostics.is_empty(), "Atomic[u128] was accepted");
 }
 
@@ -539,5 +583,104 @@ fn export_abi_refuses_wide_integers() {
             .unwrap_or_else(|| panic!("exported {source}"))
             .to_string();
         assert!(error.contains("128-bit integer"), "{source}: {error}");
+    }
+}
+
+/// An executable's exit status matches the evaluator on a digest of every
+/// operator (Unix hosts with a C compiler, as the other executable tests).
+#[test]
+fn executable_agrees_with_the_evaluator() {
+    use std::process::Command;
+    if !cfg!(unix)
+        || !Command::new("cc")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    {
+        return;
+    }
+    let source = format!(
+        "{WORDS}fn mix(h: u128, x: u128) -> u128 {{ wrapping_mul(h ^ x, w_u128(1099511628211, 14695981039346656037)) }}
+fn digest(n: u64) -> u128 eff [Fail[ArithOverflow], Fail[RuntimeError]] {{
+    let mut h: u128 = 7;
+    for i in 0..n {{
+        let a: u128 = (widen_u128(i) << 70) | widen_u128(n);
+        let b: i128 = wrapping_i128(a) >> 3;
+        let c: i128 = b / wrapping_i128(widen_u128(i) + 3);
+        let d: u128 = a % (widen_u128(i) + 1);
+        h = mix(h, wrapping_u128(c) + d);
+        h = mix(h, rotate_left(a, i) ^ widen_u128(count_ones_u128(a)));
+        if wrapping_i128(h) < c {{ h = mix(h, 1); }}
+    }}
+    h
+}}
+fn main() -> i64 {{
+    handle Fail[RuntimeError] in {{
+        handle Fail[ArithOverflow] in {{ wrapping_i64(digest(300) >> 57) & 127 }} with {{ return v => v, raise(e, k) => 126, }}
+    }} with {{ return v => v, raise(e, k) => 125, }}
+}}"
+    );
+    let c = accepted(&source);
+    let mut runtime = Runtime::new(&c.world);
+    let expected = runtime.run("main", vec![]).unwrap().to_string();
+    let jit = native::jit_with_options(&c.world, "main", true)
+        .unwrap()
+        .to_string();
+    assert_eq!(jit, expected);
+    let dir = std::env::temp_dir().join(format!("vesper-wide-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("digest.ves");
+    std::fs::write(&file, &source).unwrap();
+    let exe = dir.join("digest");
+    let built = Command::new(env!("CARGO_BIN_EXE_vesper"))
+        .arg("build")
+        .arg(&file)
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&built.stdout),
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let status = Command::new(&exe).output().unwrap().status.code();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(status.map(|s| s.to_string()), Some(expected));
+}
+
+/// Shifts by constant amounts take the two-word path in native code.
+#[test]
+fn constant_shifts_agree() {
+    for k in WIDE {
+        for p in boundaries(k) {
+            let amounts = [1u32, 7, 63, 64, 65, 100, 127];
+            let body: Vec<String> = amounts
+                .iter()
+                .flat_map(|n| [format!("x << {n}"), format!("x >> {n}")])
+                .collect();
+            let expected: Vec<String> = amounts
+                .iter()
+                .flat_map(|n| {
+                    let right = if k.signed() {
+                        ((p as i128) >> n) as u128
+                    } else {
+                        p >> n
+                    };
+                    [show(k, p << n), show(k, right)]
+                })
+                .collect();
+            let n = k.name();
+            agree(
+                &format!(
+                    "{WORDS}fn main() -> ({}) {{ let x: {n} = {}; ({}) }}",
+                    vec![n; body.len()].join(", "),
+                    value(k, p),
+                    body.join(", ")
+                ),
+                &tuple(&expected),
+            );
+        }
     }
 }

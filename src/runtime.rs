@@ -77,7 +77,10 @@ pub enum Value {
     SInt(i64, u32),
     /// An `i128` (`signed`) or `u128` value as its bit pattern (SH2 lane 2,
     /// #1174; `crate::numeric::wide`).
-    Wide { pattern: u128, signed: bool },
+    Wide {
+        pattern: u128,
+        signed: bool,
+    },
     Float(f64),
     /// An `f32` (`vesper.float.ieee754/1`).
     Float32(f32),
@@ -2808,9 +2811,8 @@ fn bind_pattern(p: &Pattern, value: &Value, env: &mut Env) -> bool {
             (Literal::Int(a), Value::Int(b)) => *a == *b as i128,
             (Literal::Int(a), Value::UInt(b, _)) => *a == *b as i128,
             (Literal::Int(a), Value::SInt(b, _)) => *a == *b as i128,
-            (Literal::Int(a), Value::Wide { .. }) => {
-                exact_of(value).is_some_and(|(_, e)| e == crate::numeric::wide::Exact::from_i128(*a))
-            }
+            (Literal::Int(a), Value::Wide { .. }) => exact_of(value)
+                .is_some_and(|(_, e)| e == crate::numeric::wide::Exact::from_i128(*a)),
             (Literal::Float(a), Value::Float(b)) => a == b,
             (Literal::Float(a), Value::Float32(b)) => (*a as f32) == *b,
             (Literal::Bool(a), Value::Bool(b)) => a == b,
@@ -3220,15 +3222,22 @@ fn unary(op: &str, v: Value) -> Result<Value, Fault> {
         }
         (name, v)
             if crate::numeric::conversion(name).is_some()
-                && (wide_kind(&v).is_some() || crate::numeric::conversion(name).unwrap().1.wide()) =>
+                && (wide_kind(&v).is_some()
+                    || crate::numeric::conversion(name).unwrap().1.wide()) =>
         {
             let (conversion, to) = crate::numeric::conversion(name).unwrap();
             let (_, from) = exact_of(&v).ok_or("invalid conversion operand")?;
-            let pattern = crate::numeric::wide::convert(conversion, to, from).map_err(arith_fault)?;
+            let pattern =
+                crate::numeric::wide::convert(conversion, to, from).map_err(arith_fault)?;
             if to.wide() {
                 wide_value(to, pattern)
             } else {
-                integer_value(to, crate::numeric::wide::Exact::of(to, pattern).to_i128().unwrap())
+                integer_value(
+                    to,
+                    crate::numeric::wide::Exact::of(to, pattern)
+                        .to_i128()
+                        .unwrap(),
+                )
             }
         }
         ("~", v) => {
@@ -3383,7 +3392,10 @@ fn wide_binary(op: &str, a: &Value, b: &Value) -> Result<Value, Fault> {
                 if !(0..128).contains(&amount) {
                     return Err(arith_fault(crate::numeric::ArithFailure::Overflow));
                 }
-                wide_value(k, wide::shift(k, op, p, amount as u32).map_err(arith_fault)?)
+                wide_value(
+                    k,
+                    wide::shift(k, op, p, amount as u32).map_err(arith_fault)?,
+                )
             }
             None => {
                 let (k, n) = value_kind(a).ok_or("invalid shift operand")?;
@@ -3413,9 +3425,7 @@ fn wide_binary(op: &str, a: &Value, b: &Value) -> Result<Value, Fault> {
 }
 fn equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Wide { .. }, Value::Wide { .. }) => {
-            wide_kind(a) == wide_kind(b)
-        }
+        (Value::Wide { .. }, Value::Wide { .. }) => wide_kind(a) == wide_kind(b),
         (Value::Int(a), Value::Int(b)) => a == b,
         (Value::UInt(a, ab), Value::UInt(b, bb)) => a == b && ab == bb,
         (Value::SInt(a, ab), Value::SInt(b, bb)) => a == b && ab == bb,

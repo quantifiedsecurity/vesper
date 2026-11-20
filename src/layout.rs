@@ -51,7 +51,9 @@ impl Layout {
             );
         }
         // `i128` and `u128` are two words, low word first (SH2 lane 2, #1174).
-        if crate::numeric::is_wide_name(ty.name()) && matches!(ty, Type::Named(_, a) if a.is_empty()) {
+        if crate::numeric::is_wide_name(ty.name())
+            && matches!(ty, Type::Named(_, a) if a.is_empty())
+        {
             return Ok(Self {
                 ty: ty.clone(),
                 size: 16,

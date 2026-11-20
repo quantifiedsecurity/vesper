@@ -34,8 +34,9 @@ impl<M: Module> Codegen<'_, '_, M> {
         let minus = self.b.ins().ineg(v);
         self.b.ins().select(negative, minus, v)
     }
-    /// Whether the unsigned product `a * b` leaves 128 bits.
-    fn wide_product_overflows(&mut self, a: ir::Value, b: ir::Value) -> ir::Value {
+    /// Whether the unsigned product `a * b` leaves 128 bits, and the
+    /// product modulo 2^128 (from the same partial products).
+    fn wide_product(&mut self, a: ir::Value, b: ir::Value) -> (ir::Value, ir::Value) {
         let (al, ah) = self.b.ins().isplit(a);
         let (bl, bh) = self.b.ins().isplit(b);
         // Both high words nonzero: the product is at least 2^128.
@@ -55,7 +56,9 @@ impl<M: Module> Codegen<'_, '_, M> {
         let high = self.b.ins().iadd(low_high, cross);
         let carry = self.b.ins().icmp(IntCC::UnsignedLessThan, high, cross);
         let x = self.b.ins().bor(both, cross_high);
-        self.b.ins().bor(x, carry)
+        let overflow = self.b.ins().bor(x, carry);
+        let low = self.b.ins().imul(al, bl);
+        (overflow, self.b.ins().iconcat(low, high))
     }
     /// `vesper.arith.checked/1` on a 128-bit kind.
     pub(super) fn wide_checked(
@@ -88,21 +91,30 @@ impl<M: Module> Codegen<'_, '_, M> {
                 let both = self.b.ins().band(x, y);
                 Some(self.wide_negative(both))
             }
-            ("*", false) => Some(self.wide_product_overflows(a, b)),
+            // The product comes from the partial products of the check.
+            ("*", false) => {
+                let (overflow, p) = self.wide_product(a, b);
+                self.check_overflow(overflow)?;
+                return Ok(p);
+            }
             ("*", true) => {
                 let na = self.wide_negative(a);
                 let nb = self.wide_negative(b);
                 let ua = self.wide_magnitude(a, na);
                 let ub = self.wide_magnitude(b, nb);
-                let unsigned = self.wide_product_overflows(ua, ub);
-                let p = self.b.ins().imul(ua, ub);
+                let (unsigned, p) = self.wide_product(ua, ub);
                 // A negative product may reach 2^127; a positive one not.
                 let limit = self.wide_const(i128::MIN);
                 let negative = self.b.ins().bxor(na, nb);
                 let above = self.b.ins().icmp(IntCC::UnsignedGreaterThan, p, limit);
-                let reaches = self.b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, p, limit);
+                let reaches = self
+                    .b
+                    .ins()
+                    .icmp(IntCC::UnsignedGreaterThanOrEqual, p, limit);
                 let out = self.b.ins().select(negative, above, reaches);
-                Some(self.b.ins().bor(unsigned, out))
+                let overflow = self.b.ins().bor(unsigned, out);
+                self.check_overflow(overflow)?;
+                return Ok(self.wide_magnitude(p, negative));
             }
             ("/", true) => {
                 let min = self.wide_const(i128::MIN);
@@ -193,6 +205,104 @@ impl<M: Module> Codegen<'_, '_, M> {
         self.b.switch_to_block(join);
         let params = self.b.block_params(join);
         (params[0], params[1])
+    }
+    /// The nonnegative constant `v` holds, if an `iconst` defines it, as
+    /// seen through the reductions `coerce` applies to a literal (`band_imm`
+    /// with a low mask, `ireduce` then `uextend`).
+    fn constant_of(&self, v: ir::Value) -> Option<i64> {
+        use ir::{InstructionData as D, Opcode as O};
+        let ir::ValueDef::Result(inst, 0) = self.b.func.dfg.value_def(v) else {
+            return None;
+        };
+        let k = match self.b.func.dfg.insts[inst] {
+            D::UnaryImm {
+                opcode: O::Iconst,
+                imm,
+            } => imm.bits(),
+            D::BinaryImm64 {
+                opcode: O::BandImm,
+                arg,
+                imm,
+            } => self.constant_of(arg)? & imm.bits(),
+            D::Unary {
+                opcode: O::Uextend | O::Ireduce,
+                arg,
+            } => {
+                let bits = self
+                    .b
+                    .func
+                    .dfg
+                    .value_type(arg)
+                    .bits()
+                    .min(self.b.func.dfg.value_type(v).bits());
+                let k = self.constant_of(arg)?;
+                if bits >= 64 {
+                    k
+                } else {
+                    k & ((1i64 << bits) - 1)
+                }
+            }
+            _ => return None,
+        };
+        (k >= 0).then_some(k)
+    }
+    /// `<<` or `>>` of an `I128` lane by a constant amount in `1..128`, on
+    /// its two words: Cranelift lowers a 128-bit shift by its variable
+    /// form (both directions and a select), about four times the work.
+    pub(super) fn wide_shift_const(
+        &mut self,
+        op: &str,
+        kind: IntegerKind,
+        a: ir::Value,
+        n: ir::Value,
+    ) -> Option<ir::Value> {
+        if !kind.wide() || !crate::numeric::is_shift(op) {
+            return None;
+        }
+        let k = self.constant_of(n).filter(|k| (1..128).contains(k))?;
+        let (lo, hi) = self.b.ins().isplit(a);
+        let (lo, hi) = match (op, k) {
+            ("<<", 64..) => {
+                let zero = self.b.ins().iconst(types::I64, 0);
+                let hi = if k == 64 {
+                    lo
+                } else {
+                    self.b.ins().ishl_imm(lo, k - 64)
+                };
+                (zero, hi)
+            }
+            ("<<", _) => {
+                let up = self.b.ins().ishl_imm(hi, k);
+                let carried = self.b.ins().ushr_imm(lo, 64 - k);
+                let hi = self.b.ins().bor(up, carried);
+                (self.b.ins().ishl_imm(lo, k), hi)
+            }
+            (_, 64..) => {
+                let fill = if kind.unsigned() {
+                    self.b.ins().iconst(types::I64, 0)
+                } else {
+                    self.b.ins().sshr_imm(hi, 63)
+                };
+                let lo = match (k, kind.unsigned()) {
+                    (64, _) => hi,
+                    (_, true) => self.b.ins().ushr_imm(hi, k - 64),
+                    (_, false) => self.b.ins().sshr_imm(hi, k - 64),
+                };
+                (lo, fill)
+            }
+            _ => {
+                let down = self.b.ins().ushr_imm(lo, k);
+                let carried = self.b.ins().ishl_imm(hi, 64 - k);
+                let lo = self.b.ins().bor(down, carried);
+                let hi = if kind.unsigned() {
+                    self.b.ins().ushr_imm(hi, k)
+                } else {
+                    self.b.ins().sshr_imm(hi, k)
+                };
+                (lo, hi)
+            }
+        };
+        Some(self.b.ins().iconcat(lo, hi))
     }
     /// `widen_k`, `narrow_k` and `wrapping_k` where `from` or `to` is a
     /// 128-bit kind. A one-word lane is canonical (narrow unsigned kinds

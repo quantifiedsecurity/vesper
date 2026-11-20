@@ -251,10 +251,7 @@ fn bit_source(name: &str) -> Option<String> {
         }
     };
     Some(match op {
-        BitOp::CountOnes => format!(
-            "fn {name}(x: {k}) -> u32 {{ {} c }}",
-            popcount(&pattern)
-        ),
+        BitOp::CountOnes => format!("fn {name}(x: {k}) -> u32 {{ {} c }}", popcount(&pattern)),
         BitOp::TrailingZeros => format!(
             "fn {name}(x: {k}) -> u32 {{ let p: {un} = {pattern}; {} c }}",
             popcount("~p & wrapping_sub(p, 1)")

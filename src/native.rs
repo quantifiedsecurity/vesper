@@ -37,9 +37,6 @@ mod ffi;
 /// `f32`, float intrinsics and conversions (`vesper.float.ieee754/1`).
 #[path = "float_math/native.rs"]
 mod float_math;
-/// `i128` and `u128` on Cranelift `I128` values (SH2 lane 2, #1174).
-#[path = "integer_widths/native.rs"]
-mod wide_native;
 /// Lane 27: bare-metal RISC-V and AArch64 images with no runtime.
 #[path = "native_freestanding.rs"]
 pub mod freestanding;
@@ -52,6 +49,9 @@ mod regions;
 /// `ChunkSeq[T]` and `Slice[T]` native lowering (§13).
 #[path = "seq/native.rs"]
 mod seq_native;
+/// `i128` and `u128` on Cranelift `I128` values (SH2 lane 2, #1174).
+#[path = "integer_widths/native.rs"]
+mod wide_native;
 use seq_native::SeqDropSlot;
 /// Checked source entries with declared linear external effects compiled to
 /// ABI v2 fiber entries that park through `vesper-fiber-abi`.
@@ -1747,7 +1747,8 @@ fn jit_run_entry(
         } else if f.result.name() == "f32" {
             let call: unsafe extern "C" fn() -> f32 = std::mem::transmute(code);
             crate::runtime::Value::Float32(call())
-        } else if let Some(k) = crate::numeric::IntegerKind::from_type(&f.result).filter(|k| k.wide())
+        } else if let Some(k) =
+            crate::numeric::IntegerKind::from_type(&f.result).filter(|k| k.wide())
         {
             let call: unsafe extern "C" fn() -> u128 = std::mem::transmute(code);
             crate::runtime::integer_from_pattern(k, call())
@@ -5675,6 +5676,9 @@ impl<M: Module> Codegen<'_, '_, M> {
                     .ins()
                     .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, n, i64::from(kind.bits()));
             self.check_overflow(bad)?;
+        }
+        if let Some(r) = self.wide_shift_const(op, kind, a, n) {
+            return Ok(r);
         }
         Ok(match op {
             "<<" => self.b.ins().ishl(a, n),

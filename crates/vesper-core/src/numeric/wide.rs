@@ -174,15 +174,33 @@ mod tests {
     fn checked_corners() {
         let min = i128::MIN as u128;
         let neg1 = u128::MAX;
-        assert_eq!(checked(K::I128, "/", min, neg1), Err(ArithFailure::Overflow));
+        assert_eq!(
+            checked(K::I128, "/", min, neg1),
+            Err(ArithFailure::Overflow)
+        );
         assert_eq!(checked(K::I128, "%", min, neg1), Ok(0));
-        assert_eq!(checked(K::I128, "+", i128::MAX as u128, 1), Err(ArithFailure::Overflow));
-        assert_eq!(checked(K::U128, "+", u128::MAX, 1), Err(ArithFailure::Overflow));
+        assert_eq!(
+            checked(K::I128, "+", i128::MAX as u128, 1),
+            Err(ArithFailure::Overflow)
+        );
+        assert_eq!(
+            checked(K::U128, "+", u128::MAX, 1),
+            Err(ArithFailure::Overflow)
+        );
         assert_eq!(checked(K::U128, "-", 0, 1), Err(ArithFailure::Overflow));
         assert_eq!(checked(K::U128, "*", 1 << 64, 1 << 63), Ok(1 << 127));
-        assert_eq!(checked(K::U128, "*", 1 << 64, 1 << 64), Err(ArithFailure::Overflow));
-        assert_eq!(checked(K::I128, "*", min, neg1), Err(ArithFailure::Overflow));
-        assert_eq!(checked(K::U128, "/", 1, 0), Err(ArithFailure::DivisionByZero));
+        assert_eq!(
+            checked(K::U128, "*", 1 << 64, 1 << 64),
+            Err(ArithFailure::Overflow)
+        );
+        assert_eq!(
+            checked(K::I128, "*", min, neg1),
+            Err(ArithFailure::Overflow)
+        );
+        assert_eq!(
+            checked(K::U128, "/", 1, 0),
+            Err(ArithFailure::DivisionByZero)
+        );
         assert_eq!(checked_neg(K::I128, min), None);
         assert_eq!(checked_neg(K::U128, 0), Some(0));
         assert_eq!(checked_neg(K::U128, 1), None);
@@ -201,15 +219,33 @@ mod tests {
     fn conversions() {
         let minus_one = Exact::of(K::I64, u64::MAX as u128);
         assert!(minus_one.negative);
-        assert_eq!(convert(Conversion::Widen, K::I128, minus_one), Ok(u128::MAX));
-        assert_eq!(convert(Conversion::Narrow, K::U128, minus_one), Err(ArithFailure::Overflow));
-        assert_eq!(convert(Conversion::Wrapping, K::U128, minus_one), Ok(u128::MAX));
+        assert_eq!(
+            convert(Conversion::Widen, K::I128, minus_one),
+            Ok(u128::MAX)
+        );
+        assert_eq!(
+            convert(Conversion::Narrow, K::U128, minus_one),
+            Err(ArithFailure::Overflow)
+        );
+        assert_eq!(
+            convert(Conversion::Wrapping, K::U128, minus_one),
+            Ok(u128::MAX)
+        );
         let top = Exact::of(K::U128, u128::MAX);
         assert_eq!(top.to_i128(), None);
-        assert_eq!(convert(Conversion::Wrapping, K::U64, top), Ok(u64::MAX as u128));
+        assert_eq!(
+            convert(Conversion::Wrapping, K::U64, top),
+            Ok(u64::MAX as u128)
+        );
         assert_eq!(convert(Conversion::Wrapping, K::I128, top), Ok(u128::MAX));
-        assert_eq!(convert(Conversion::Narrow, K::I128, top), Err(ArithFailure::Overflow));
-        assert_eq!(convert(Conversion::Narrow, K::U64, Exact::of(K::I128, 5)), Ok(5));
+        assert_eq!(
+            convert(Conversion::Narrow, K::I128, top),
+            Err(ArithFailure::Overflow)
+        );
+        assert_eq!(
+            convert(Conversion::Narrow, K::U64, Exact::of(K::I128, 5)),
+            Ok(5)
+        );
         assert!(K::U64.widens_to(K::U128));
         assert!(K::I64.widens_to(K::I128));
         assert!(K::U64.widens_to(K::I128));
