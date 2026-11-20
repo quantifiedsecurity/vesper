@@ -37,6 +37,9 @@ use @vesper/ast::{
     pat_at,
     type_at
 };
+use @vesper-std/collections::flat_table::{
+    FlatTable
+};
 use @vesper-std/arena::{
     idx_from_raw
 };
@@ -79,6 +82,14 @@ fn file(in s: St) -> u32 {
 
 fn sh(in s: St, x: u32) -> u32 {
     wrapping_add(x, s.shift)
+}
+
+// Marks node `k` renamed; whether it already was.
+fn revisit(inout seen: FlatTable[u32, u8], k: u32) -> bool {
+    match seen.insert(k, 1) {
+        Option::Some(_) => true,
+        Option::None => false,
+    }
 }
 
 fn has(in stack: ChunkSeq[u32], x: u32) -> bool {
@@ -359,6 +370,10 @@ fn pattern(inout s: St, inout a: Ast, p: u32) {
         return;
     }
     let mut n = pat_at(in a, p);
+    if revisit(inout s.seen_pat, p) {
+        n.start = wrapping_sub(n.start, s.shift);
+        n.end = wrapping_sub(n.end, s.shift);
+    }
     if n.kind == 2 {
         let g = tr(inout s, in a, n.a);
         s.values.push(g);
@@ -423,6 +438,10 @@ fn param(inout s: St, inout a: Ast, p: u32) {
             end: 0
         }
     );
+    if revisit(inout s.seen_param, p) {
+        n.start = wrapping_sub(n.start, s.shift);
+        n.end = wrapping_sub(n.end, s.shift);
+    }
     ty(inout s, inout a, n.ty, n.start, n.end);
     let g = tr(inout s, in a, n.name);
     s.values.push(g);
@@ -482,6 +501,10 @@ fn expr(inout s: St, inout a: Ast, e: u32) {
         return;
     }
     let mut n = expr_at(in a, e);
+    if revisit(inout s.seen_expr, e) {
+        n.start = wrapping_sub(n.start, s.shift);
+        n.end = wrapping_sub(n.end, s.shift);
+    }
     let k = n.kind;
     if k == 2 {
         let g = tr(inout s, in a, n.a);
@@ -640,15 +663,7 @@ fn fns(inout s: St, inout a: Ast, list: u32, outer: u32) {
     }
 }
 
-fn trait_ref(inout s: St, inout a: Ast, t: u32) {
-    trait_ref_once(inout s, inout a, t, true);
-}
-
-// `shift` is false for a trait reference already renamed: the lowering
-// shares one node between the bounds of every method of a generic `impl`
-// (Rust clones it), so its arguments are renamed again (the same names
-// and diagnostics) but its span moves once.
-fn trait_ref_once(inout s: St, inout a: Ast, t: u32, shift: bool) {
+pub fn trait_ref(inout s: St, inout a: Ast, t: u32) {
     if t == ast_none() {
         return;
     }
@@ -664,15 +679,17 @@ fn trait_ref_once(inout s: St, inout a: Ast, t: u32, shift: bool) {
             end: 0
         }
     );
+    if revisit(inout s.seen_tref, t) {
+        n.start = wrapping_sub(n.start, s.shift);
+        n.end = wrapping_sub(n.end, s.shift);
+    }
     for i in 0..list_len(in a, n.args) {
         let x = list_at(in a, n.args, i);
         ty(inout s, inout a, x, n.start, n.end);
     }
-    if shift {
-        n.start = sh(in s, n.start);
-        n.end = sh(in s, n.end);
-        a.trait_refs.set(idx_from_raw[TraitRefNode](t), n);
-    }
+    n.start = sh(in s, n.start);
+    n.end = sh(in s, n.end);
+    a.trait_refs.set(idx_from_raw[TraitRefNode](t), n);
 }
 
 // The AST symbol of an item's new name: its bound name, else unchanged.
@@ -916,10 +933,4 @@ pub fn owner(inout s: St, o: u32) -> u32 {
     let rest = sym_slice(inout s, o, wrapping_add(cut, 2), len);
     push_sym(in s, rest, inout out);
     s.g.intern(in out).id()
-}
-
-// The trait-bound argument scope: `trait_ref` renamed with the owner's
-// generic parameters in scope.
-pub fn bound_trait_ref(inout s: St, inout a: Ast, t: u32, first: bool) {
-    trait_ref_once(inout s, inout a, t, first);
 }

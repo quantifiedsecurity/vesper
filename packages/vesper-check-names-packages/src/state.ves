@@ -187,6 +187,14 @@ pub struct St {
     shift: u32,
     symmap: ChunkSeq[u32],
     back: FlatTable[u32, u32],
+    // Nodes of the module's AST already renamed. The lowering shares some
+    // nodes where Rust's parser clones them (an array repetition's element,
+    // an or-pattern arm's body, a generic impl's bound): a revisit renames
+    // again from the node's file-local span, and the span moves once.
+    seen_expr: FlatTable[u32, u8],
+    seen_pat: FlatTable[u32, u8],
+    seen_param: FlatTable[u32, u8],
+    seen_tref: FlatTable[u32, u8],
     // `generic_scopes`: owner -> range of `scope_pool`.
     scopes: FlatTable[u32, u64],
     scope_pool: ChunkSeq[u32],
@@ -280,6 +288,10 @@ pub fn st_new() -> St {
         shift: 0,
         symmap: ChunkSeq::new[u32](),
         back: flat_table_new[u32, u32](),
+        seen_expr: flat_table_new[u32, u8](),
+        seen_pat: flat_table_new[u32, u8](),
+        seen_param: flat_table_new[u32, u8](),
+        seen_tref: flat_table_new[u32, u8](),
         scopes: flat_table_new[u32, u64](),
         scope_pool: ChunkSeq::new[u32](),
         s_self: s_self,

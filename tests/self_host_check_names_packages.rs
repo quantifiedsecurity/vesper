@@ -1081,6 +1081,20 @@ fn every_assembler_diagnostic_matches_rust() {
                 ("y.ves", "pub effect Tick { fn ping() -> u64; }\n"),
             ],
         ),
+        // Nodes the AST lowering shares where Rust clones them, in a file
+        // with a nonzero base: an array repetition's element, an
+        // or-pattern arm's body and a generic impl's bound, each holding a
+        // name that is reported (so a revisit's diagnostic span shows).
+        (
+            "shared",
+            &[
+                ("lib.ves", "pub fn top() -> u64 { 1 }\npub trait Show[T] { fn show(self) -> u64; }\n"),
+                (
+                    "s.ves",
+                    "struct W[K] { k: K }\nimpl [K: Show[self::Missing]] W[K] { fn a(self) -> u64 { 1 }\nfn b(self) -> u64 { 2 } }\nfn rep(x: u64) -> u64 { let a = [top(); 2]; match x { 1 | 2 => top(), _ => 0 } }\n",
+                ),
+            ],
+        ),
         // Private items, private and public re-export chains, generics,
         // trait bounds, handlers, closures and impl blocks across modules.
         (

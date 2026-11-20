@@ -43,9 +43,13 @@ input).
   (E1522, SH2 lane 1). Each module is parsed twice: once for its tables and
   once to rename it. Vesper still beats Rust's time, since its parse is about
   half of Rust's.
-- The lowering shares one `TraitRef` node between the bounds of every
-  method of a generic `impl` (Rust clones it), so the renamer moves a shared
-  trait reference's span once.
+- The lowering shares some nodes where Rust's parser clones them: an array
+  repetition's element (`[x; 2]`), an or-pattern arm's body, and one
+  `TraitRef` between the bounds of every method of a generic `impl`. The
+  renamer marks the expressions, patterns, parameters and trait references
+  it has renamed; a revisit renames again from the node's file-local span
+  (the same names and diagnostics as Rust's clones), and the span moves
+  once.
 - Constants cannot be imported across modules yet, so codes and kinds are
   functions (`unknown_import()`, `kind_both()`).
 

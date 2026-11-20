@@ -31,7 +31,7 @@ under "What is left".
 - **Differential: 0 differences** on all 80 corpus packages that load
   (85 package directories under `tests/fixtures`, `examples`, `packages` and
   `crates`; the other 5 stop at manifest errors, which stay in Rust), the
-  loader's reject fixtures included, and on four mutant package graphs
+  loader's reject fixtures included, and on five mutant package graphs
   that fire every assembler diagnostic. The compared text holds every
   diagnostic's file, code, span, message and help, the qualified-name map,
   the public items, and every module's renamed items, trait bounds and
@@ -72,7 +72,9 @@ dependency, `super` above the root (in a `use` and in a path), a private
 item, an item both declared and imported, a name imported twice, one item
 re-exported under two root names, a variant, operation or trait declared
 in two modules, qualified paths that name a module or a missing module,
-variants of unimported enums, root items reached unimported, and the
+variants of unimported enums, root items reached unimported, names inside
+nodes the AST lowering shares (array repetitions, or-pattern bodies, generic
+impl bounds) in a file with a nonzero base, and the
 accepted forms: re-export chains, dependency paths, generics, bounds,
 handlers and closures.
 
@@ -123,10 +125,13 @@ Not gaps, but notes for later lanes:
 - `effect` is a keyword, so it cannot name a function (`fn effect(..)` is
   E0002); the renamer's function is `one_effect`. This is the
   manuscript's grammar (unlike `eff`, which lane 3 makes contextual).
-- The AST lowering shares one `TraitRef` node between the trait bounds of
-  every method of a generic `impl` (`impl [K: Ord] T[K] { .. }`), where
-  Rust clones it. Code that rewrites the AST in place must move a shared
-  node's span once (`trait_ref_once` in `src/rename.ves`).
+- The AST lowering shares nodes where Rust's parser clones them: an array
+  repetition's element (`[x; 2]`), an or-pattern arm's body, and one
+  `TraitRef` between the trait bounds of every method of a generic `impl`
+  (`impl [K: Ord] T[K] { .. }`). Code that rewrites the AST in place must
+  treat it as a graph: the renamer marks renamed nodes, renames a revisited
+  node again from its file-local span, and moves its span once (`revisit`
+  in `src/rename.ves`; the `shared` mutant covers all three).
 
 ## What is left
 

@@ -39,9 +39,6 @@ use @vesper/ast::dump::{
 use @vesper-std/arena::{
     idx_from_raw
 };
-use @vesper-std/collections::flat_table::{
-    flat_table_new
-};
 use @vesper/check-data::{
     pack_text
 };
@@ -93,7 +90,7 @@ use self::rename::{
     conf_at,
     item,
     owner,
-    bound_trait_ref
+    trait_ref
 };
 
 fn text_range(in s: St, m: u64) -> (u64, u64) {
@@ -429,7 +426,6 @@ fn assemble_module(inout s: St, in input: Str, m: u32, dump: bool) {
         item(inout s, inout l.ast, it.kind, it.node);
         check_globals(inout s, in found);
     }
-    let mut seen = flat_table_new[u32, u8]();
     for i in 0..l.ast.m_bounds.len() {
         let bi = at32(in l.ast.m_bounds, i);
         let mut b = l
@@ -462,9 +458,7 @@ fn assemble_module(inout s: St, in input: Str, m: u32, dump: bool) {
         if no != og {
             b.owner = back(inout s, inout l.ast, no);
         }
-        let first = !seen.contains_key(b.trait_ref);
-        seen.insert(b.trait_ref, 1);
-        bound_trait_ref(inout s, inout l.ast, b.trait_ref, first);
+        trait_ref(inout s, inout l.ast, b.trait_ref);
         s.types.truncate(mark);
         b.start = wrapping_add(b.start, s.shift);
         b.end = wrapping_add(b.end, s.shift);
