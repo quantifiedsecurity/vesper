@@ -526,15 +526,17 @@ fn pattern_words(e: &mut Enc, p: &Pattern, out: &mut Vec<u64>) {
             }
         }
         PatternKind::Constructor { name, fields, .. } => {
-            if name.matches("::").count() > 1 {
-                out.extend([3, s0, s1]);
-                return;
-            }
-            let (qual, short) = match name.split_once("::") {
-                Some((q, s)) => (e.name(q) + 1, e.name(s)),
-                None => (0, e.name(name)),
+            // A multi-component path does not resolve (`World::constructor`),
+            // so binding skips it (3); its fields still feed the origin index.
+            let (kind, qual, short) = if name.matches("::").count() > 1 {
+                (3, 0, 0)
+            } else {
+                match name.split_once("::") {
+                    Some((q, s)) => (4, e.name(q) + 1, e.name(s)),
+                    None => (4, 0, e.name(name)),
+                }
             };
-            out.extend([4, s0, s1, qual, short, fields.len() as u64]);
+            out.extend([kind, s0, s1, qual, short, fields.len() as u64]);
             for (f, c) in fields {
                 out.push(e.name(f));
                 pattern_words(e, c, out);

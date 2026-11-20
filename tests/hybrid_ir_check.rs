@@ -131,6 +131,66 @@ fn ir_check_unoptimized_matches_rust() {
     assert_eq!(bad, 0);
 }
 
+/// Origin labels past Rust's indexing limits (`Origins::try_build`): every
+/// parameter renamed to a name over 1,024 bytes, so Rust keeps no origins
+/// for the function and reports its diagnostics without related labels or
+/// help. Over the first two mutants of every tenth world.
+#[test]
+fn ir_check_origin_limits_match_rust() {
+    use vesper::ir::Op;
+    let words = package().entry("check_ir_words", true);
+    let long = |n: &str| format!("{n}_{}", "x".repeat(1100));
+    let (mut bad, mut diags, mut unlabeled) = (0, 0, 0);
+    for c in ir_cases(2).iter().step_by(10) {
+        let mut program = c.program.clone();
+        for f in program.functions.values_mut() {
+            let names: std::collections::BTreeSet<String> =
+                f.params.iter().map(|p| p.name.clone()).collect();
+            for p in &mut f.params {
+                p.name = long(&p.name);
+            }
+            for b in &mut f.blocks {
+                for i in &mut b.instructions {
+                    match &mut i.op {
+                        Op::Read { root, .. } if names.contains(root.as_str()) => {
+                            *root = long(root)
+                        }
+                        Op::Write { place, .. } => {
+                            let (root, rest) = place
+                                .split_once('.')
+                                .map_or((place.as_str(), ""), |(a, b)| (a, b));
+                            if names.contains(root) {
+                                let renamed = long(root);
+                                *place = if rest.is_empty() {
+                                    renamed
+                                } else {
+                                    format!("{renamed}.{rest}")
+                                };
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let rust = vesper::ir_check::validate(c.world, &program);
+        diags += rust.len();
+        unlabeled += rust.iter().filter(|d| d.related.is_empty()).count();
+        let input = check_words::ir_input(c.world, &program).unwrap();
+        if check_words::decode_diagnostics(&words.words(&input)) != rust {
+            bad += 1;
+            if bad <= 3 {
+                eprintln!("origin limits: {} differs", c.name);
+            }
+        }
+    }
+    eprintln!(
+        "origin limits: {bad} cases differ ({diags} diagnostics, {unlabeled} without labels)"
+    );
+    assert!(unlabeled > 0, "no diagnostic lost its labels");
+    assert_eq!(bad, 0);
+}
+
 /// ABBA: `validate` in Rust against the Vesper check with its input
 /// encoding and result decoding (the hybrid build's cost per call).
 #[test]

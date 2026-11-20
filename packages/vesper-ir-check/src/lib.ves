@@ -457,7 +457,10 @@ fn read_pattern(inout r: Reader, in b: Slice[u8], in nmap: ChunkSeq[u32], inout 
         }
         return at;
     }
-    if kind == 4 {
+    // A constructor (4), or one whose multi-component path the checker
+    // cannot resolve (3): binding skips the latter, but the origin index
+    // still walks its fields.
+    if kind == 4 || kind == 3 {
         let q = r.word(in b);
         let qual = if q == 0 {
             NONE32
@@ -486,7 +489,7 @@ fn read_pattern(inout r: Reader, in b: Slice[u8], in nmap: ChunkSeq[u32], inout 
         }
         return at;
     }
-    // Wild (0), unresolvable constructor (3), literal (5).
+    // Wild (0), literal and the rest (5).
     let at = pats.len();
     pats.push(kind);
     pats.push(s0);
@@ -781,6 +784,27 @@ fn sorted_insert(inout s: ChunkSeq[u64], x: u64) {
 }
 
 // Sorted set of u32: insert, false when present.
+// One unit of origin-indexing work (`charge` in Origins::try_build); false
+// once the budget is spent.
+fn charge(inout work: u64) -> bool {
+    if work == 0 {
+        return false;
+    }
+    work = wrapping_sub(work, 1);
+    true
+}
+
+// A slot name against the origin text budget: false for a name over
+// MAX_CAUSE_NAME bytes or once the budget cannot hold it.
+fn charge_name(in names: Names, name: u32, inout text: u64) -> bool {
+    let n = names.size(name);
+    if n > MAX_CAUSE_NAME || n > text {
+        return false;
+    }
+    text = wrapping_sub(text, n);
+    true
+}
+
 // Whether sorted `s` holds `x`.
 fn sorted_contains(in s: ChunkSeq[u32], x: u32) -> bool {
     let mut lo: u64 = 0;
@@ -2759,19 +2783,16 @@ impl Flow {
         }
     }
 
-    fn origins_build(inout self, in p: Program, f: FnRow) {
+    fn origins_build(inout self, in names: Names, in p: Program, f: FnRow) {
         self.origins.clear();
         let mut work = MAX_CAUSE_WORK;
         let mut text = MAX_CAUSE_TEXT;
+        // Rust's `try_build` charges one unit of work per parameter, block,
+        // block parameter, instruction and pattern node, and a name's bytes
+        // against the text budget (a name over 1,024 bytes fails at once);
+        // at the first exhausted limit it keeps no origins at all.
         let mut ok = true;
-        // Rust's `try_build` stops at the first exhausted limit and keeps no
-        // origins at all; the sample counts the same charges.
         for i in 0..w(f.pn) {
-            if work == 0 {
-                ok = false;
-                break;
-            }
-            work = wrapping_sub(work, 1);
             let pr = match p.params.try_get(add(w(f.pa), i)) {
                 Option::Some(x) => x,
                 Option::None => ParamRow {
@@ -2782,25 +2803,42 @@ impl Flow {
                     s1: 0
                 },
             };
+            if !charge(inout work) || !charge_name(in names, pr.name, inout text) {
+                ok = false;
+                break;
+            }
             self.origins.slot(p.rank_of(pr.name), pr.s0, pr.s1, true);
         }
         let mut pending: ChunkSeq[u64] = ChunkSeq::new[u64]();
         for bi in 0..w(f.bc) {
-            if !ok {
+            if !ok || !charge(inout work) {
+                ok = false;
                 break;
             }
             let bk = p.block(add(w(f.b0), bi));
             for j in 0..w(bk.pn) {
+                if !charge(inout work) {
+                    ok = false;
+                    break;
+                }
                 self.origins.value(n32(p.op(add(w(bk.pa), j))), false, 0, 0);
             }
             for ii in 0..w(bk.ic) {
+                if !ok || !charge(inout work) {
+                    ok = false;
+                    break;
+                }
                 let i = p.inst(add(w(bk.i0), ii));
                 self.origins.value(i.dest, true, i.s0, i.s1);
                 if i.op == OP_BIND {
                     pending.clear();
                     pending.push(p.op(inc(w(i.a))));
                     loop {
-                        if pending.len() == 0 {
+                        if pending.len() == 0 || !ok {
+                            break;
+                        }
+                        if !charge(inout work) {
+                            ok = false;
                             break;
                         }
                         let at = u64_at(in pending, wrapping_sub(pending.len(), 1));
@@ -2808,17 +2846,29 @@ impl Flow {
                         let kind = p.pat(at);
                         if kind == 1 {
                             let name = n32(p.pat(add(at, 3)));
+                            if !charge_name(in names, name, inout text) {
+                                ok = false;
+                                break;
+                            }
                             self
                                 .origins
                                 .slot(p.rank_of(name), p.pat(inc(at)), p.pat(add(at, 2)), false);
                         } else if kind == 2 {
                             let n = p.pat(add(at, 3));
                             for c in 0..n {
+                                if !charge(inout work) {
+                                    ok = false;
+                                    break;
+                                }
                                 pending.push(p.pat(add(add(at, 4), c)));
                             }
-                        } else if kind == 4 {
+                        } else if kind == 4 || kind == 3 {
                             let n = p.pat(add(at, 5));
                             for c in 0..n {
+                                if !charge(inout work) {
+                                    ok = false;
+                                    break;
+                                }
                                 pending.push(p.pat(add(add(at, 7), wrapping_mul(c, 2))));
                             }
                         }
@@ -2893,7 +2943,7 @@ impl Flow {
                 let x = set_insert(inout self.scrutinees, n32(p.op(add(inc(w(bk.ta)), n))));
             }
         }
-        self.origins_build(in p, f);
+        self.origins_build(in names, in p, f);
         pool.reset(w(f.bc));
         state.clear();
         for i in 0..w(f.pn) {
