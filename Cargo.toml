@@ -25,6 +25,7 @@ members = [
     "crates/vesper-prism",
     "crates/vesper-ffi",
     "crates/vesper-forge",
+    "crates/vesper-forge/seed",
     "crates/vesper-loom-calculus",
     "crates/vesper-loom-calculus/seed",
     "crates/vesper-lean-syntax",
@@ -135,6 +136,7 @@ default-members = [
     "crates/vesper-prism",
     "crates/vesper-ffi",
     "crates/vesper-forge",
+    "crates/vesper-forge/seed",
     "crates/vesper-loom-calculus",
     "crates/vesper-loom-calculus/seed",
     "crates/vesper-lean-syntax",
@@ -268,7 +270,8 @@ edition = "2024"
 vesper-std-host = { path = "crates/vesper-std-host" }
 blake3 = "1.8"
 vesper-core = { path = "crates/vesper-core" }
-vesper-forge = { path = "crates/vesper-forge", default-features = false }
+# The compiler links the frozen Rust seed copy of vesper-forge (#1157).
+vesper-forge = { path = "crates/vesper-forge/seed", package = "vesper-forge-seed", default-features = false }
 vesper-simd = { path = "crates/vesper-simd" }
 # The compiler links the frozen Rust seed copy of vesper-lean-syntax (#1128).
 vesper-lean-syntax = { path = "crates/vesper-lean-syntax/seed", package = "vesper-lean-syntax-seed" }

@@ -34,7 +34,8 @@ vesper-port-abi = { path = "../vesper-port-abi" }
 # CLI sources; tests/manifest.rs keeps the lists in step.
 blake3 = "1.8"
 vesper-core = { path = "../vesper-core" }
-vesper-forge = { path = "../vesper-forge", default-features = false }
+# The compiler links the frozen Rust seed copy of vesper-forge (#1157).
+vesper-forge = { path = "../vesper-forge/seed", package = "vesper-forge-seed", default-features = false }
 vesper-simd = { path = "../vesper-simd" }
 # The compiler links the frozen Rust seed copies of vesper-lean-syntax and
 # vesper-span (#1128).
