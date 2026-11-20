@@ -7,7 +7,7 @@ default checker; nothing here replaces Rust code.
 
 | File | Rust | Vesper |
 |---|---|---|
-| `src/control.ves` | `src/loops/check.rs` (control frames: `break_expr`, `continue_expr`, `return_expr`, `for_expr`'s iterable, `Range`), `src/loops/try_option.rs` (`try_option`) | `Control` (the frame stack), `visit`, `check_bodies`: E0213 and E0200 |
+| `src/control.ves` | `src/loops/check.rs` (control frames: `break_expr`, `continue_expr`, `return_expr`, `for_expr`'s frame, `Range`; the typed iterable rule stays with core typing), `src/loops/try_option.rs` (`try_option`) | `Control` (the frame stack), `visit`, `check_bodies`: E0213 and E0200 |
 | `src/atomics.ves` | `src/atomics.rs`: `needs_prelude`, `needs_workers`, `is_prelude_function`, `check_world` (`check_expr`, `check_workers`, `worker_body`), `check_program` | the same names: E0820, E0821, E0822, E0823, E0824 |
 | `src/stack.ves` | `src/stack_bound.rs` with `vesper_silicon::stack::analyze_stack` (Tarjan, longest path) and `vesper_ebpf::callgraph::check_stack` | `read_graph`, `validate`, `report`, `ebpf_rules`, `write_report` (with `render`) |
 | `src/ast.ves` | `ast::Expr`, `Pattern`, `Function` | `Exprs`: flat expression, pattern and function rows |

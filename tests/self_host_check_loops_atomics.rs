@@ -517,7 +517,9 @@ fn canonical(text: &str) -> String {
 
 // ------------------------------------------------------------ control
 
-const CONTROL_MESSAGES: [&str; 14] = [
+/// The syntactic E0213 rules. Which iterables a `for` takes is a typed
+/// rule (#1243) and stays out, with its messages.
+const CONTROL_MESSAGES: [&str; 13] = [
     "'break' cannot leave a handled body; return a value from the body instead",
     "'break' cannot leave a handler clause",
     "'break' cannot leave a closure",
@@ -529,7 +531,6 @@ const CONTROL_MESSAGES: [&str; 14] = [
     "'return' cannot leave a region block",
     "'return' cannot leave a handler clause",
     "'return' outside of a function",
-    "'for' iterates an integer range 'a..b' or 'a..=b'",
     "a range is only supported as the iterable of a 'for' loop",
     "'break' in a 'for' loop takes no value",
 ];

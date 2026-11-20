@@ -9,7 +9,7 @@ Rust stays the default checker; no Rust code changed or was deleted.
 - New package [`packages/vesper-check-loops-atomics`](../../packages/vesper-check-loops-atomics/README.md)
   (`@vesper/check-loops-atomics`, on `@vesper/check-data`):
   - `control.ves`: the control-target rules of `src/loops/check.rs`
-    (`break`, `continue` and `return` targets, `for` iterables, stray ranges,
+    (`break`, `continue` and `return` targets, stray ranges,
     `break` values in `for`: E0213) and the `?`-on-`Option` rule of
     `src/loops/try_option.rs` (E0200), with the checker's `ControlFrame`
     stack. It also follows the checker's reachability: a block stops at a
@@ -42,8 +42,8 @@ Every line compares code, span, message, help and related labels.
 
 | Task | Inputs | Lines | Differences |
 |---|---|--:|--:|
-| control (E0213, E0200) | 282 corpus worlds and two mutants of each (jumps where every rule fires, each in `if true { .. }` so a jump does not end its block; every `for` over a non-range), the 9 loop reject fixtures and 15 `?`, jump and handler sources with their mutants (closures whose result comes from a `let` annotation or a call argument, a clause for an undeclared operation, an unknown effect): 894 checked modules | 45,235 | 0 |
-| atomics (E0820-E0824, preludes) | corpus, a program per cell type (10 integer kinds, `bool`, `f64`, a tuple, `Option`) with every operation in every order and both call forms, 8 worker sources, 8 world mutants (orders rotated, made non-literal, `Atomic::new` as a struct literal, `inout` data, a non-function body) and an IR mutant that touches the private cell, an order named only in a `let` annotation: 532 worlds | 11,710 | 0 |
+| control (E0213, E0200) | 282 corpus worlds and two mutants of each (jumps where every rule fires, each in `if true { .. }` so a jump does not end its block; every `for` over a non-range), the 9 loop reject fixtures and 15 `?`, jump and handler sources with their mutants (closures whose result comes from a `let` annotation or a call argument, a clause for an undeclared operation, an unknown effect): 903 checked modules | 49,614 | 0 |
+| atomics (E0820-E0824, preludes) | corpus, a program per cell type (10 integer kinds, `bool`, `f64`, a tuple, `Option`) with every operation in every order and both call forms, 8 worker sources, 8 world mutants (orders rotated, made non-literal, `Atomic::new` as a struct literal, `inout` data, a non-function body) and an IR mutant that touches the private cell, an order named only in a `let` annotation: 535 worlds | 11,713 | 0 |
 | stack bound | 4,000 generated call graphs of both origins and policies (every Silicon rule, the eBPF kernel rule, the analyzer disagreement, invalid graphs) | about 30,000 | 0 |
 
 Cargo runs the whole corpus (Linux, macOS, Windows CI); Bazel's corpus is
@@ -112,7 +112,10 @@ bootstrap-stage1 workflow on the branch confirms the digests against
 
 ## Compiler gaps
 
-1. **`for` iterates only integer ranges.** `for s in ["Relaxed", "Acquire"]
+1. **`for` iterates only integer ranges** (SH3 lane 4, #1243, adds arrays,
+   `ChunkSeq` and `Slice`, and makes the iterable rule a typed one; this
+   port leaves that rule to core typing and only keeps the checker's skip
+   of a rejected `for`'s body). `for s in ["Relaxed", "Acquire"]
    { .. }` is E0213 ("'for' iterates an integer range"). The order table
    is five interned symbols instead. Repro:
    `fn main() -> u64 { let mut n: u64 = 0; for s in ["a", "b"] { n = wrapping_add(n, s.len()); } n }`.

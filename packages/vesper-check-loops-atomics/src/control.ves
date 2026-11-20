@@ -196,13 +196,10 @@ pub fn visit(
         let iter = x.kid(e, 0);
         let ir = x.row(iter);
         if ir.kind != E_RANGE {
-            line(
-                inout o,
-                "E0213",
-                ir.start,
-                ir.end,
-                "'for' iterates an integer range 'a..b' or 'a..=b'"
-            );
+            // Which iterables a `for` takes is a typed rule (E0213 with the
+            // iterable's type, SH3 lane 4, #1243), so it moves with core
+            // typing; the checker leaves the body of a rejected `for`
+            // unchecked.
             visit(inout o, inout c, in x, in types, in world, iter);
             return;
         }
