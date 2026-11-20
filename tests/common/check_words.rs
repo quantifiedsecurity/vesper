@@ -23,7 +23,9 @@
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use vesper::ast::{Diagnostic, DiagnosticLabel, Effect, Effects, Mode, Pass, Pattern, PatternKind, Type};
+use vesper::ast::{
+    Diagnostic, DiagnosticLabel, Effect, Effects, Mode, Pass, Pattern, PatternKind, Type,
+};
 use vesper::check::World;
 use vesper::layout::{Layout, LayoutField, LayoutKind, LayoutVariant};
 
@@ -240,7 +242,9 @@ pub fn encodable(t: &Type) -> bool {
             result,
             effects,
             ..
-        } => params.iter().all(|(_, t)| encodable(t)) && encodable(result) && row_encodable(effects),
+        } => {
+            params.iter().all(|(_, t)| encodable(t)) && encodable(result) && row_encodable(effects)
+        }
         Type::Row(e) => row_encodable(e),
         Type::Infer => true,
     }
@@ -293,9 +297,12 @@ pub fn reachable_adts<'w>(w: &'w World, ty: &Type) -> BTreeSet<&'w str> {
 pub fn layout_input(w: &World, ty: &Type) -> Option<Vec<u8>> {
     let adts = reachable_adts(w, ty);
     if !encodable(ty)
-        || adts
-            .iter()
-            .any(|a| w.adts[*a].variants.iter().any(|v| v.fields.iter().any(|f| !encodable(&f.ty))))
+        || adts.iter().any(|a| {
+            w.adts[*a]
+                .variants
+                .iter()
+                .any(|v| v.fields.iter().any(|f| !encodable(&f.ty)))
+        })
     {
         return None;
     }
@@ -337,7 +344,8 @@ impl<'a> Words<'a> {
             bytes.extend_from_slice(&self.next().to_le_bytes());
         }
         bytes.truncate(len);
-        String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+        String::from_utf8(bytes)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
     }
 
     pub fn done(&self) -> bool {
@@ -554,15 +562,15 @@ fn effectful_row(w: &World, row: &Effects) -> bool {
 
 /// Whether every type the IR check reads can be encoded.
 fn program_encodable(w: &World, p: &vesper::ir::Program) -> bool {
-    w.adts
-        .values()
-        .all(|a| a.variants.iter().all(|v| v.fields.iter().all(|f| encodable(&f.ty))))
-        && w.types.values().all(encodable)
+    w.adts.values().all(|a| {
+        a.variants
+            .iter()
+            .all(|v| v.fields.iter().all(|f| encodable(&f.ty)))
+    }) && w.types.values().all(encodable)
         && p.functions.values().all(|f| {
             f.params.iter().all(|p| encodable(&p.ty))
                 && f.values.values().all(encodable)
-                && f
-                    .blocks
+                && f.blocks
                     .iter()
                     .all(|b| b.instructions.iter().all(|i| encodable(&i.ty)))
         })
@@ -659,8 +667,7 @@ pub fn ir_input(w: &World, program: &vesper::ir::Program) -> Option<Vec<u8>> {
                         }
                     }
                     Op::Handle { expr, .. } => {
-                        if w
-                            .handler_effects
+                        if w.handler_effects
                             .get(&(expr.span.start, expr.span.end))
                             .is_some_and(|r| effectful_row(w, r))
                         {
@@ -783,7 +790,11 @@ pub fn ir_input(w: &World, program: &vesper::ir::Program) -> Option<Vec<u8>> {
                         };
                         ops.push(sv.is_some() as u64);
                         ops.push(sv.unwrap_or(0) as u64);
-                        if matches!(i.op, Op::Handle { .. }) { 15 } else { 14 }
+                        if matches!(i.op, Op::Handle { .. }) {
+                            15
+                        } else {
+                            14
+                        }
                     }
                 };
                 body.push(code);
@@ -805,10 +816,12 @@ pub fn ir_input(w: &World, program: &vesper::ir::Program) -> Option<Vec<u8>> {
                     body.push(*yes as u64);
                     body.push(*no as u64);
                 }
-                Terminator::Match { arms, .. } => {
+                Terminator::Match { value, arms } => {
                     body.push(3);
                     body.push(arms.len() as u64);
                     body.extend(arms.iter().map(|(_, b)| *b as u64));
+                    // The scrutinee (borrowed matching, #1149).
+                    body.push(*value as u64);
                 }
                 Terminator::Unreachable => body.push(4),
             }
@@ -816,7 +829,12 @@ pub fn ir_input(w: &World, program: &vesper::ir::Program) -> Option<Vec<u8>> {
     }
     let world = e.world(w);
     // Name ranks in BTreeMap<String, _> order (the Rust state maps' order).
-    let mut sorted: Vec<(&String, usize)> = e.name_list.iter().enumerate().map(|(i, n)| (n, i)).collect();
+    let mut sorted: Vec<(&String, usize)> = e
+        .name_list
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n, i))
+        .collect();
     sorted.sort();
     let mut rank = vec![0u64; sorted.len()];
     for (r, (_, i)) in sorted.iter().enumerate() {

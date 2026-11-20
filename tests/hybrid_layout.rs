@@ -96,7 +96,12 @@ fn layout_text_unoptimized_matches_rust() {
     let mut bad = 0;
     for c in corpus().iter().step_by(10) {
         let types = world_types(&c.world);
-        if first_difference(&rust_text(&c.world, &types), &vesper_text(&f, &c.world, &types)).is_some() {
+        if first_difference(
+            &rust_text(&c.world, &types),
+            &vesper_text(&f, &c.world, &types),
+        )
+        .is_some()
+        {
             bad += 1;
         }
     }
@@ -133,16 +138,27 @@ fn layout_words_decode_to_rust_layouts() {
 fn layout_words_depend_on_the_type() {
     let f = package().entry("check_layout_words", true);
     let w = &corpus()[0].world;
-    let a = check_words::decode_layout(&f.words(&check_words::layout_input(w, &Type::named("u64")).unwrap()));
+    let a = check_words::decode_layout(
+        &f.words(&check_words::layout_input(w, &Type::named("u64")).unwrap()),
+    );
     let b = check_words::decode_layout(
-        &f.words(&check_words::layout_input(w, &Type::Tuple(vec![Type::named("u64"), Type::named("u8")])).unwrap()),
+        &f.words(
+            &check_words::layout_input(
+                w,
+                &Type::Tuple(vec![Type::named("u64"), Type::named("u8")]),
+            )
+            .unwrap(),
+        ),
     );
     assert_eq!(a.as_ref().map(|l| l.size), Ok(8));
     assert_eq!(b.as_ref().map(|l| l.size), Ok(16));
     let missing = check_words::decode_layout(
         &f.words(&check_words::layout_input(w, &Type::named("HybridLayoutMissing")).unwrap()),
     );
-    assert_eq!(missing.unwrap_err(), "native layout is not defined for HybridLayoutMissing");
+    assert_eq!(
+        missing.unwrap_err(),
+        "native layout is not defined for HybridLayoutMissing"
+    );
 }
 
 /// ABBA: `Layout::of` in Rust against the Vesper layout with its input
@@ -155,7 +171,10 @@ fn layout_speed() {
         return;
     }
     let words = package().entry("check_layout_words", true);
-    let cases: Vec<(&World, Vec<Type>)> = corpus().iter().map(|c| (&c.world, world_types(&c.world))).collect();
+    let cases: Vec<(&World, Vec<Type>)> = corpus()
+        .iter()
+        .map(|c| (&c.world, world_types(&c.world)))
+        .collect();
     abba(
         "layout per call (encode + Vesper + decode)",
         &mut || {

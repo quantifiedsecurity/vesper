@@ -2,6 +2,8 @@
 //! `src/ir_check.rs` over the corpus and the census's IR mutants (which make
 //! the checker's diagnostics fire; the clean corpus has none).
 //!
+//! Both run in one pass per case, so Rust validates each case once.
+//!
 //! - Text: every kept diagnostic as one line (code, span, message, every
 //!   related label and the help), Rust against Vesper.
 //! - Words: the hybrid build's path. The world and the program are encoded
@@ -26,7 +28,12 @@ fn package() -> &'static Package {
 fn diagnostics_text(ds: &[Diagnostic]) -> String {
     let mut o = String::new();
     for d in ds {
-        write!(o, "{} {}-{} {}", d.code, d.span.start, d.span.end, d.message).unwrap();
+        write!(
+            o,
+            "{} {}-{} {}",
+            d.code, d.span.start, d.span.end, d.message
+        )
+        .unwrap();
         for l in &d.related {
             write!(o, " [{}-{} {}]", l.span.start, l.span.end, l.message).unwrap();
         }
@@ -42,67 +49,85 @@ fn input(c: &IrCase) -> Vec<u8> {
     check_words::ir_input(c.world, &c.program).expect("encodable corpus program")
 }
 
-/// Texts of every case, with `mutants` mutants per world; returns how many
-/// cases differ and how many diagnostics Rust gave.
-fn text_differential(f: &Entry, mutants: usize, step: usize) -> (usize, usize, usize) {
+/// Every case (each world's IR and `mutants` mutants of it, every `step`-th
+/// case): Rust's diagnostics against the Vesper text entry and, when
+/// `words` is given, against the hybrid build's decoded word stream.
+/// Returns (differing cases, Rust diagnostics, cases).
+fn differential_cases(
+    text: &Entry,
+    words: Option<&Entry>,
+    mutants: usize,
+    step: usize,
+) -> (usize, usize, usize) {
     let (mut bad, mut diags, mut cases) = (0, 0, 0);
+    let start = std::time::Instant::now();
     for c in ir_cases(mutants).iter().step_by(step) {
         let rust = vesper::ir_check::validate(c.world, &c.program);
         diags += rust.len();
         cases += 1;
         let r = diagnostics_text(&rust);
-        let v = f.text(&input(c));
-        if let Some(d) = first_difference(&r, &v) {
-            bad += 1;
-            if bad <= 5 {
-                eprintln!("ir check: {} differs at {d}", c.name);
+        let input = input(c);
+        let mut differs = false;
+        if let Some(d) = first_difference(&r, &text.text(&input)) {
+            differs = true;
+            if bad < 5 {
+                eprintln!("ir check text: {} differs at {d}", c.name);
             }
         }
+        if let Some(words) = words {
+            let decoded = check_words::decode_diagnostics(&words.words(&input));
+            if decoded != rust {
+                differs = true;
+                if bad < 5 {
+                    eprintln!(
+                        "ir check words: {}:\n  rust:   {r}\n  vesper: {}",
+                        c.name,
+                        diagnostics_text(&decoded)
+                    );
+                }
+            }
+        }
+        bad += differs as usize;
     }
-    eprintln!("ir check text: {bad} of {cases} cases differ ({diags} Rust diagnostics)");
+    eprintln!(
+        "ir check: {bad} of {cases} cases differ ({diags} Rust diagnostics, {:.1} s)",
+        start.elapsed().as_secs_f64()
+    );
     (bad, diags, cases)
 }
 
+/// Every `n`-th case (`HYBRID_IR_CHECK_STEP`, default `default`). The Rust
+/// check of all 1,710 cases takes about 25 minutes in a debug build, so the
+/// default runs a slice of them; `HYBRID_IR_CHECK_STEP=1` runs every case
+/// (the report's numbers).
+fn step(default: usize) -> usize {
+    std::env::var("HYBRID_IR_CHECK_STEP")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(default)
+}
+
+/// Text and the hybrid build's word stream, over every world and five
+/// mutants of each (every fifth case by default).
 #[test]
-fn ir_check_text_matches_rust_with_mutants() {
-    let f = package().entry("check_ir_text", true);
-    let (bad, diags, _) = text_differential(&f, IR_MUTANTS, 1);
-    assert!(diags > 1000, "the mutants produced only {diags} diagnostics");
+fn ir_check_matches_rust_with_mutants() {
+    let text = package().entry("check_ir_text", true);
+    let words = package().entry("check_ir_words", true);
+    let (bad, diags, _) = differential_cases(&text, Some(&words), IR_MUTANTS, step(5));
+    assert!(
+        diags > 1000,
+        "the mutants produced only {diags} diagnostics"
+    );
     assert_eq!(bad, 0);
 }
 
-/// The optimizer off agrees with it on, on every seventh case.
+/// The optimizer off agrees with it on (every 29th case by default, a
+/// different slice from the optimized test's).
 #[test]
-fn ir_check_text_unoptimized_matches_rust() {
-    let f = package().entry("check_ir_text", false);
-    let (bad, _, _) = text_differential(&f, IR_MUTANTS, 7);
-    assert_eq!(bad, 0);
-}
-
-/// The hybrid build's word stream decodes to exactly `validate`'s result.
-#[test]
-fn ir_check_words_decode_to_rust_diagnostics() {
-    let f = package().entry("check_ir_words", true);
-    let (mut bad, mut diags) = (0, 0);
-    let cases = ir_cases(IR_MUTANTS);
-    for c in &cases {
-        let rust = vesper::ir_check::validate(c.world, &c.program);
-        let vesper = check_words::decode_diagnostics(&f.words(&input(c)));
-        diags += rust.len();
-        if rust != vesper {
-            bad += 1;
-            if bad <= 3 {
-                eprintln!(
-                    "{}:\n  rust:   {}\n  vesper: {}",
-                    c.name,
-                    diagnostics_text(&rust),
-                    diagnostics_text(&vesper)
-                );
-            }
-        }
-    }
-    eprintln!("ir check words: {bad} of {} cases differ ({diags} diagnostics)", cases.len());
-    assert!(diags > 1000);
+fn ir_check_unoptimized_matches_rust() {
+    let text = package().entry("check_ir_text", false);
+    let (bad, _, _) = differential_cases(&text, None, IR_MUTANTS, step(29));
     assert_eq!(bad, 0);
 }
 

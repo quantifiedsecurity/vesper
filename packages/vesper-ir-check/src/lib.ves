@@ -692,6 +692,10 @@ pub fn read_program(
                 for i in 0..n {
                     p.ops.push(r.word(in b));
                 }
+                // A match's scrutinee value follows its arms.
+                if term == 3 {
+                    p.ops.push(r.word(in b));
+                }
             } else if term == 2 {
                 p.ops.push(r.word(in b));
                 p.ops.push(r.word(in b));
@@ -777,6 +781,27 @@ fn sorted_insert(inout s: ChunkSeq[u64], x: u64) {
 }
 
 // Sorted set of u32: insert, false when present.
+// Whether sorted `s` holds `x`.
+fn sorted_contains(in s: ChunkSeq[u32], x: u32) -> bool {
+    let mut lo: u64 = 0;
+    let mut hi = s.len();
+    loop {
+        if lo >= hi {
+            return false;
+        }
+        let mid = wrapping_add(lo, hi) / 2;
+        let y = u32_at(in s, mid);
+        if y == x {
+            return true;
+        }
+        if y < x {
+            lo = inc(mid);
+        } else {
+            hi = mid;
+        }
+    }
+}
+
 fn set_insert(inout s: ChunkSeq[u32], x: u32) -> bool {
     let mut lo: u64 = 0;
     let mut hi = s.len();
@@ -1470,6 +1495,8 @@ pub struct Flow {
     bounds: Bounds,
     external: ChunkSeq[u32],
     reservable: ChunkSeq[u32],
+    // The values a `match` terminator inspects (`scrutinees`), sorted.
+    scrutinees: ChunkSeq[u32],
     origins: Origins,
     // local consume witnesses: id -> span, cleared per block
     lc_has: ChunkSeq[u8],
@@ -1485,6 +1512,7 @@ pub fn flow_new() -> Flow {
         bounds: bounds_new(),
         external: ChunkSeq::new[u32](),
         reservable: ChunkSeq::new[u32](),
+        scrutinees: ChunkSeq::new[u32](),
         origins: origins_new(),
         lc_has: ChunkSeq::new[u8](),
         lc0: ChunkSeq::new[u64](),
@@ -1827,6 +1855,10 @@ impl Flow {
         true
     }
 
+    fn scrutinee(in self, id: u32) -> bool {
+        sorted_contains(in self.scrutinees, id)
+    }
+
     fn reserved(in self, id: u32) -> bool {
         let mut lo: u64 = 0;
         let mut hi = self.reservable.len();
@@ -2071,7 +2103,8 @@ impl Flow {
         in p: Program,
         pat: u64,
         ty: u32,
-        origin: u32
+        origin: u32,
+        pass: u8
     ) {
         let kind = p.pat(pat);
         let s0 = p.pat(inc(pat));
@@ -2084,11 +2117,11 @@ impl Flow {
                     rank: p.rank_of(name),
                     name: name,
                     ty: ty,
-                    pass: P_SINK
+                    pass: pass
                 }
             );
         } else if kind == 0 {
-            if self.mode(inout t, in names, in wd, ty) == M_LINEAR {
+            if pass == P_SINK && self.mode(inout t, in names, in wd, ty) == M_LINEAR {
                 self.say("IR wildcard discards a linear value");
                 self
                     .caused(
@@ -2117,7 +2150,8 @@ impl Flow {
                         in p,
                         child,
                         t.arg(ty, i),
-                        origin
+                        origin,
+                        pass
                     );
                 }
             }
@@ -2140,7 +2174,18 @@ impl Flow {
                     let fi = wd.find_field(v, fname);
                     if fi != NONE32 {
                         let ft = substitute(inout t, wd.field(w(fi)).ty, in vars);
-                        self.bind(inout s, inout t, inout names, in wd, in p, child, ft, origin);
+                        self
+                            .bind(
+                            inout s,
+                            inout t,
+                            inout names,
+                            in wd,
+                            in p,
+                            child,
+                            ft,
+                            origin,
+                            pass
+                        );
                     }
                 }
             }
@@ -2315,9 +2360,26 @@ impl Flow {
         let mut loan_n: u64 = 0;
         if i.op == OP_READ {
             let root = n32(p.op(a));
-            let pass = wrapping_u8(p.op(inc(a)));
+            let read_pass = wrapping_u8(p.op(inc(a)));
             let is_fn = p.op(add(a, 2)) != 0;
             let np = p.op(add(a, 3));
+            // A by-value read that only a `match` inspects, of a borrowed
+            // slot's non-copy place, is a borrow (§4.3).
+            let mut pass = read_pass;
+            if pass == P_SINK && self.scrutinee(i.dest) {
+                let si = s.find_slot(p.rank_of(root));
+                if si
+                    < 9223372036854775808
+                    && s
+                    .slot_at(si)
+                    .pass
+                    != P_SINK
+                    && self
+                    .mode(inout t, in names, in wd, i.ty)
+                    != M_COPY {
+                    pass = P_IN;
+                }
+            }
             if s.find_slot(p.rank_of(root)) < 9223372036854775808 || !is_fn {
                 for j in 0..np {
                     let path = n32(p.op(add(add(a, 4), j)));
@@ -2337,9 +2399,14 @@ impl Flow {
             }
             if pass != P_SINK {
                 owned = false;
-                lpass = pass;
-                loan_from = add(a, 4);
-                loan_n = np;
+                // A borrowed scrutinee lends its place to the arms'
+                // bindings, which the checker keeps from conflicting with
+                // any write (§4.3); it takes no value loan.
+                if read_pass != P_SINK {
+                    lpass = pass;
+                    loan_from = add(a, 4);
+                    loan_n = np;
+                }
             }
         } else if i.op == OP_BIND {
             let value = n32(p.op(a));
@@ -2349,8 +2416,15 @@ impl Flow {
             } else {
                 t.infer
             };
-            self.consume(inout s, inout t, in names, in wd, value, s0, s1);
-            self.bind(inout s, inout t, inout names, in wd, in p, p.op(inc(a)), ty, value);
+            // A borrowed scrutinee binds borrows of its payloads.
+            let borrowed = self.scrutinee(value) && at < 9223372036854775808 && !s.val_at(at).owned;
+            let pass = if borrowed {
+                P_IN
+            } else {
+                self.consume(inout s, inout t, in names, in wd, value, s0, s1);
+                P_SINK
+            };
+            self.bind(inout s, inout t, inout names, in wd, in p, p.op(inc(a)), ty, value, pass);
         } else if i.op == OP_WRITE {
             let value = n32(p.op(a));
             let root = n32(p.op(inc(a)));
@@ -2806,6 +2880,17 @@ impl Flow {
                         }
                     }
                 }
+            }
+        }
+        // `scrutinees`: the values a `match` terminator inspects. A by-value
+        // read of a borrowed slot's non-copy place that only a `match`
+        // inspects is a borrow (§4.3).
+        self.scrutinees.clear();
+        for bi in 0..w(f.bc) {
+            let bk = p.block(add(w(f.b0), bi));
+            if bk.term == 3 {
+                let n = p.op(w(bk.ta));
+                let x = set_insert(inout self.scrutinees, n32(p.op(add(inc(w(bk.ta)), n))));
             }
         }
         self.origins_build(in p, f);

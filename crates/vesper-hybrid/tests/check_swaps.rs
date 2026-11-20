@@ -2,7 +2,7 @@
 //! `layout_of_words` and `validate_words` (modules/check_layout and
 //! modules/ir_check, linked by build.rs) through the hybrid's encoder and
 //! decoders (tests/common/check_words.rs) against the Rust `Layout::of`
-//! and `ir_check::validate` on every example program. The root package's
+//! and `ir_check::validate` on the examples and the bootstrap corpus. The root package's
 //! tests/hybrid_layout.rs and tests/hybrid_ir_check.rs run the same
 //! comparison over the whole corpus with the IR mutants.
 #[rustfmt::skip]
@@ -27,13 +27,22 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The checked worlds of `examples/*.ves` that check with no diagnostics.
+/// The checked worlds of the single-file programs under `examples/` and
+/// `bootstrap/corpus/` that check with no diagnostics.
 fn worlds() -> Vec<(String, World)> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(root().join("examples"))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "ves"))
-        .collect();
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|e| e == "ves") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = vec![];
+    walk(&root().join("examples"), &mut files);
+    walk(&root().join("bootstrap/corpus"), &mut files);
     files.sort();
     let mut out = vec![];
     for path in files {
@@ -47,7 +56,7 @@ fn worlds() -> Vec<(String, World)> {
             out.push((path.display().to_string(), checked.world));
         }
     }
-    assert!(out.len() >= 10, "only {} example worlds", out.len());
+    assert!(out.len() >= 20, "only {} corpus worlds", out.len());
     out
 }
 
@@ -60,7 +69,11 @@ fn types(w: &World) -> Vec<Type> {
             a.name.clone(),
             a.generics.iter().map(|g| Type::named(&g.name)).collect(),
         );
-        for t in std::iter::once(own).chain(a.variants.iter().flat_map(|v| v.fields.iter().map(|f| f.ty.clone()))) {
+        for t in std::iter::once(own).chain(
+            a.variants
+                .iter()
+                .flat_map(|v| v.fields.iter().map(|f| f.ty.clone())),
+        ) {
             if seen.insert(format!("{t:?}")) {
                 out.push(t);
             }
@@ -96,6 +109,10 @@ fn ir_check_matches_rust_on_the_examples() {
         let program = vesper::ir::lower_world(&w);
         let input = check_words::ir_input(&w, &program).unwrap();
         let vesper = check_words::decode_diagnostics(&ir_check_binding::validate_words(&input));
-        assert_eq!(vesper, vesper::ir_check::rust_validate(&w, &program), "{name}");
+        assert_eq!(
+            vesper,
+            vesper::ir_check::rust_validate(&w, &program),
+            "{name}"
+        );
     }
 }

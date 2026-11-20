@@ -25,11 +25,7 @@ fn checker_swaps_free_their_allocations() {
     let checked = vesper::check::check(&parsed.module);
     let w = checked.world;
     let program = vesper::ir::lower_world(&w);
-    let mut types: Vec<Type> = w
-        .adts
-        .keys()
-        .map(|n| Type::named(n))
-        .collect();
+    let mut types: Vec<Type> = w.adts.keys().map(|n| Type::named(n)).collect();
     // A failing layout (its message) and a tuple.
     types.push(Type::named("CheckSwapsMissing"));
     types.push(Type::Tuple(vec![Type::named("u8"), Type::named("String")]));

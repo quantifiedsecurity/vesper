@@ -15,7 +15,11 @@ const MODULES: &[(&str, &str, &str)] = &[
     ("hybrid_layout", "modules/layout", "port/layout.rs"),
     ("hybrid_parse", "modules/parse", "port/parse.rs"),
     // SH2 lane 5 (#1177): the whole layout and the IR check.
-    ("hybrid_check_layout", "modules/check_layout", "port/check_layout.rs"),
+    (
+        "hybrid_check_layout",
+        "modules/check_layout",
+        "port/check_layout.rs",
+    ),
     ("hybrid_ir_check", "modules/ir_check", "port/ir_check.rs"),
 ];
 
@@ -31,14 +35,18 @@ const DIVERGENT_EDIT: (&str, &str) = (
 /// only under the Rust fallback, so the `divergent` build also lays out
 /// every type from an empty input: the wrong type, with no ADTs.
 #[cfg(feature = "divergent")]
-const DIVERGENT_CHECK_LAYOUT_EDIT: (&str, &str) =
-    ("    layout_words(in input)\n", "    layout_words(in input[0..0])\n");
+const DIVERGENT_CHECK_LAYOUT_EDIT: (&str, &str) = (
+    "    layout_words(in input)\n",
+    "    layout_words(in input[0..0])\n",
+);
 
 /// The IR check's divergence check: every program gets one made-up E0410
 /// (`divergent_words` in modules/ir_check), so every checked file fails.
 #[cfg(feature = "divergent-ir-check")]
-const DIVERGENT_IR_CHECK_EDIT: (&str, &str) =
-    ("    ir_check_words(in input)\n", "    divergent_words(in input)\n");
+const DIVERGENT_IR_CHECK_EDIT: (&str, &str) = (
+    "    ir_check_words(in input)\n",
+    "    divergent_words(in input)\n",
+);
 
 /// The parse module's divergence check: every AST flag (`let mut`, `pub`,
 /// `@fip`, named fields, ...) reads back inverted (mirrored in BUILD.bazel).
