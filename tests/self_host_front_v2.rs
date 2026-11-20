@@ -116,39 +116,39 @@ fn front() -> &'static Front {
     })
 }
 
-/// The `Str` value `{len, 0, data}` of `source`, which an `in Str`
-/// parameter takes by address.
-fn str_words(source: &str) -> [u64; 3] {
-    [source.len() as u64, 0, source.as_ptr() as u64]
-}
+/// The JIT's sequence runtime, for `HostCall` to free returned sequences.
+const JIT_RUNTIME: vesper_port_abi::SeqRuntime = {
+    extern "C" fn new(cap: i64, stride: i64) -> i64 {
+        vesper::seq::native_runtime::vesper_seq_new(cap as u64, stride as u64) as i64
+    }
+    extern "C" fn free(handle: i64) -> i64 {
+        vesper::seq::native_runtime::vesper_seq_free(handle as u64) as i64
+    }
+    vesper_port_abi::SeqRuntime { new, free }
+};
 
+/// Calls an entry taking one `in Str` and returning a word.
 fn call(f: &native::WordFunction, source: &str) -> u64 {
-    let words = str_words(source);
-    // SAFETY: the entry takes one `in Str`, passed as the address of its
-    // three words, which live across the call; `source` outlives it.
-    unsafe { f.call(&[words.as_ptr() as u64]) }.unwrap()
+    vesper_port_abi::HostCall::new().str(source).with_words(|w| {
+        // SAFETY: the entry takes one `in Str`, which `HostCall` passes as
+        // the address of its three words for the call.
+        unsafe { f.call(w) }.unwrap()
+    })
 }
 
-/// Reads and frees a returned `ChunkSeq[u64]` (header `{len, cap, data}`).
-fn take_words(handle: u64) -> Vec<u64> {
-    // SAFETY: `handle` is a live sequence header the entry returned, whose
-    // `data` holds `len` packed u64 elements.
-    let words = unsafe {
-        let header = handle as *const u64;
-        let len = *header as usize;
-        let data = *header.add(2) as *const u64;
-        if len == 0 {
-            vec![]
-        } else {
-            std::slice::from_raw_parts(data, len).to_vec()
-        }
-    };
-    vesper::seq::native_runtime::vesper_seq_free(handle);
-    words
+/// Calls an entry taking one `in Str` and returning a `ChunkSeq[u64]`.
+fn call_words(f: &native::WordFunction, source: &str) -> Vec<u64> {
+    // SAFETY: as for `call`; the result is a live sequence of the JIT
+    // runtime holding `u64`s, which `HostCall` copies and frees.
+    unsafe {
+        vesper_port_abi::HostCall::new()
+            .str(source)
+            .seq(JIT_RUNTIME, |w| f.call(w).unwrap())
+    }
 }
 
 fn vesper_tables(source: &str) -> Tables {
-    let words = take_words(call(&front().tables, source));
+    let words = call_words(&front().tables, source);
     let (leaves, nodes, diags) = (words[0] as usize, words[1] as usize, words[2] as usize);
     let mut at = 3;
     let mut row = || {

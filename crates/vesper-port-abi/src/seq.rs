@@ -193,7 +193,7 @@ pub unsafe fn seq_from<T: Abi>(rt: SeqRuntime, items: &[T]) -> u64 {
 /// # Safety
 /// `handle` must be a live sequence of `rt`'s library holding `T` elements,
 /// owned by the caller; it is freed.
-pub unsafe fn seq_take<T: Abi>(rt: SeqRuntime, handle: u64) -> Vec<T> {
+pub unsafe fn seq_take<T: Abi + 'static>(rt: SeqRuntime, handle: u64) -> Vec<T> {
     // SAFETY: forwarded from the caller.
     unsafe {
         let items = seq_copy(handle);
@@ -206,10 +206,17 @@ pub unsafe fn seq_take<T: Abi>(rt: SeqRuntime, handle: u64) -> Vec<T> {
 ///
 /// # Safety
 /// `handle` must be a live sequence holding `T` elements.
-pub unsafe fn seq_copy<T: Abi>(handle: u64) -> Vec<T> {
+pub unsafe fn seq_copy<T: Abi + 'static>(handle: u64) -> Vec<T> {
     // SAFETY: forwarded from the caller.
     unsafe {
         let (len, data) = header(handle);
+        if native::<T>() && len > 0 {
+            // Packed scalars: one block copy (#1147).
+            let mut items = Vec::with_capacity(len);
+            core::ptr::copy_nonoverlapping(data.cast::<T>(), items.as_mut_ptr(), len);
+            items.set_len(len);
+            return items;
+        }
         (0..len).map(|i| read_elem(data, i)).collect()
     }
 }
@@ -218,7 +225,7 @@ pub unsafe fn seq_copy<T: Abi>(handle: u64) -> Vec<T> {
 /// copied into a Vesper sequence, `call` runs with a pointer to its handle
 /// word, and the (possibly grown or replaced) sequence is copied back into
 /// `items` and freed.
-pub fn with_seq_mut<T: Abi, R>(
+pub fn with_seq_mut<T: Abi + 'static, R>(
     rt: SeqRuntime,
     items: &mut Vec<T>,
     call: impl FnOnce(*mut u64) -> R,
@@ -502,13 +509,23 @@ pub unsafe fn string_take(rt: SeqRuntime, words: &[u64]) -> String {
 
 /// Borrow the bytes of a live Vesper string value (its three words).
 ///
+/// The bytes are not validated again (#1147): a Vesper `String` or `Str`
+/// holds UTF-8 by construction, since bytes enter one only as a whole
+/// encoded char, another string or a literal (§13). Debug builds still
+/// check.
+///
 /// # Safety
-/// `words` must be a live Vesper string that stays alive and unchanged
-/// while the result is borrowed.
+/// `words` must be a live Vesper string (so its bytes are UTF-8) that stays
+/// alive and unchanged while the result is borrowed.
 pub unsafe fn str_view(words: &[u64]) -> &str {
     // SAFETY: forwarded from the caller.
     let bytes = unsafe { string_bytes(words) };
-    core::str::from_utf8(bytes).expect("a Vesper string holds UTF-8")
+    debug_assert!(
+        core::str::from_utf8(bytes).is_ok(),
+        "a Vesper string holds UTF-8"
+    );
+    // SAFETY: a live Vesper string holds UTF-8 (the caller's contract).
+    unsafe { core::str::from_utf8_unchecked(bytes) }
 }
 
 /// The bytes of a string value `{len, cap, data}`.
