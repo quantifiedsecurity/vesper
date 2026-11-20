@@ -129,11 +129,13 @@ const JIT_RUNTIME: vesper_port_abi::SeqRuntime = {
 
 /// Calls an entry taking one `in Str` and returning a word.
 fn call(f: &native::WordFunction, source: &str) -> u64 {
-    vesper_port_abi::HostCall::new().str(source).with_words(|w| {
-        // SAFETY: the entry takes one `in Str`, which `HostCall` passes as
-        // the address of its three words for the call.
-        unsafe { f.call(w) }.unwrap()
-    })
+    vesper_port_abi::HostCall::new()
+        .str(source)
+        .with_words(|w| {
+            // SAFETY: the entry takes one `in Str`, which `HostCall` passes as
+            // the address of its three words for the call.
+            unsafe { f.call(w) }.unwrap()
+        })
 }
 
 /// Calls an entry taking one `in Str` and returning a `ChunkSeq[u64]`.

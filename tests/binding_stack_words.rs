@@ -29,7 +29,10 @@ pub fn half(x: i64) -> i64 eff [Fail[u64]] {
 ",
     );
     assert!(text.contains("export-abi/1"), "{text}");
-    assert!(!text.contains("vec!"), "a binding allocates per call:\n{text}");
+    assert!(
+        !text.contains("vec!"),
+        "a binding allocates per call:\n{text}"
+    );
     assert!(text.contains("let mut result = [0u64; 2];"), "{text}");
     assert!(
         text.contains("let mut arg_p = [0u64; <P as Abi>::WORDS];"),
@@ -51,6 +54,12 @@ fn v2_string_results_use_stack_words() {
 }
 ",
     );
-    assert!(!text.contains("vec!"), "a binding allocates per call:\n{text}");
-    assert!(text.contains("string_take(RUNTIME, &result[0..])"), "{text}");
+    assert!(
+        !text.contains("vec!"),
+        "a binding allocates per call:\n{text}"
+    );
+    assert!(
+        text.contains("string_take(RUNTIME, &result[0..])"),
+        "{text}"
+    );
 }

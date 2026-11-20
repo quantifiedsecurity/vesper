@@ -197,7 +197,10 @@ fn appended_strings_return_whole() {
 }";
     let c = accepted(source);
     let want: String = std::iter::repeat_n("abcdefghijklmnopqrstuvwxyz-", 100).collect();
-    let evaluated = Runtime::new(&c.world).run("main", vec![]).unwrap().to_string();
+    let evaluated = Runtime::new(&c.world)
+        .run("main", vec![])
+        .unwrap()
+        .to_string();
     for optimize in [true, false] {
         let jit = native::jit_with_options(&c.world, "main", optimize)
             .unwrap()
@@ -235,7 +238,10 @@ fn main() -> u64 {
             Some(&mut observe),
         )
         .unwrap();
-        assert!(!clif.is_empty(), "optimize {optimize}: append was not emitted");
+        assert!(
+            !clif.is_empty(),
+            "optimize {optimize}: append was not emitted"
+        );
         assert!(
             clif.to_ascii_lowercase().contains("memmove"),
             "optimize {optimize}: push_str does not call memmove\n{clif}"
