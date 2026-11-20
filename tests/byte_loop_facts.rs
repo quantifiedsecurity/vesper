@@ -528,3 +528,56 @@ fn main() -> u64 { f(9, 2) }
         c.diagnostics
     );
 }
+
+const LOCALS: &str = "pub fn filled(n: u64) -> u64 {
+    let mut v: ChunkSeq[u64] = ChunkSeq::new();
+    for i in 0..n {
+        v.push(wrapping_mul(i, 3));
+    }
+    let m = v.len();
+    let mut h: u64 = 0;
+    let mut k: u64 = 0;
+    loop {
+        if k >= m {
+            break;
+        }
+        h = wrapping_add(h, match v.try_get(k) { Option::Some(x) => x, Option::None => 0 });
+        k = wrapping_add(k, 1);
+    }
+    h
+}
+pub fn shrunk(n: u64) -> u64 {
+    let mut v: ChunkSeq[u64] = ChunkSeq::new();
+    for i in 0..n {
+        v.push(i);
+    }
+    let m = v.len();
+    let mut h: u64 = 0;
+    let mut k: u64 = 0;
+    loop {
+        if k >= m {
+            break;
+        }
+        v.truncate(wrapping_sub(m, wrapping_add(k, 1)));
+        h = wrapping_add(h, match v.try_get(k) { Option::Some(x) => x, Option::None => 100 });
+        k = wrapping_add(k, 1);
+    }
+    h
+}";
+
+#[test]
+fn local_lengths_count_between_the_compare_and_the_access() {
+    let source = program(
+        LOCALS,
+        "    wrapping_add(filled(20), shrunk(6))",
+    );
+    let p = hoisted(&source);
+    // `v` grows before `v.len()` is read, not after.
+    assert_eq!((checked(&p, "filled"), unchecked(&p, "filled")), (0, 1));
+    // `truncate` between the compare and the access keeps the check.
+    assert_eq!(unchecked(&p, "shrunk"), 0);
+    let filled: u64 = (0..20).map(|i| i * 3).sum();
+    // shrunk(6): k = 0..6 with len 5, 4, 3, 2, 1, 0 after truncate.
+    let shrunk: u64 = (0..6u64).map(|k| if k < 5 - k.min(5) { k } else { 100 }).sum();
+    assert_eq!(differential("byte_facts_locals", &source), filled + shrunk);
+}

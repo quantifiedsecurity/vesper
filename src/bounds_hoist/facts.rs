@@ -42,8 +42,9 @@ const MAX_PROOF_DEPTH: usize = 4;
 #[derive(Clone, Debug, PartialEq)]
 enum Term {
     Const(i128),
-    /// The length of a stable place (canonical, see [`Facts::length_place`]).
-    Len(Place),
+    /// The length of a place (canonical, see [`Facts::length_place`]),
+    /// read at (block, instruction).
+    Len { place: Place, at: (usize, usize) },
     /// A local the function never changes (a parameter, or a field path of
     /// one).
     Fixed(String),
@@ -61,6 +62,52 @@ enum Term {
     /// A block parameter (a join).
     Param(ValueId),
     Value(ValueId),
+}
+
+/// The length an access checks against: of `place`, at (block,
+/// instruction).
+struct Target {
+    place: Place,
+    at: (usize, usize),
+}
+
+/// Whether `i` may change the handle or the length of the sequence at
+/// `place` (the per-instruction rule of [`super::stable_place`]).
+fn changes_len(i: &Instruction, place: &Place) -> bool {
+    let lent =
+        |a: &Argument| a.pass != Pass::In && a.place.as_ref().is_some_and(|p| p.overlaps(place));
+    match &i.op {
+        Op::Write { place: w, .. } => parse_place(w).overlaps(place),
+        Op::Bind { pattern, .. } => binds(pattern, &place.root),
+        Op::Read {
+            root, path, pass, ..
+        } => {
+            *pass == Pass::Sink
+                && Place {
+                    root: root.clone(),
+                    path: path.clone(),
+                }
+                .overlaps(place)
+        }
+        Op::Seq { op, args } => {
+            let receiver = op.has_receiver()
+                && args
+                    .first()
+                    .is_some_and(|a| a.place.as_ref().is_some_and(|p| p.overlaps(place)));
+            let others = if op.has_receiver() && !args.is_empty() {
+                &args[1..]
+            } else {
+                &args[..]
+            };
+            (receiver && !keeps_length(*op) && !matches!(op, SeqOp::Hoisted(_)))
+                || others.iter().any(lent)
+        }
+        Op::Call { args, .. } | Op::Tiled { args, .. } | Op::Fip { args, .. } => {
+            args.iter().any(lent)
+        }
+        Op::Closure { .. } | Op::Handle { .. } | Op::Indirect { .. } => true,
+        _ => false,
+    }
 }
 
 /// `lhs < rhs` (`strict`) or `lhs <= rhs`, on the edge `from -> to`.
@@ -383,9 +430,10 @@ impl<'a> Facts<'a> {
                 ) =>
             {
                 match args.first().and_then(|a| a.place.as_ref()) {
-                    Some(place) if self.receiver_read(args, place) && self.is_stable(place) => {
-                        Term::Len(self.length_place(place))
-                    }
+                    Some(place) if self.receiver_read(args, place) => Term::Len {
+                        place: self.length_place(place),
+                        at,
+                    },
                     _ => Term::Value(v),
                 }
             }
@@ -417,6 +465,18 @@ impl<'a> Facts<'a> {
     /// `q`. One of them dominates the other, so the later one runs after the
     /// latest run of the earlier one; no path between them may change it.
     fn unchanged(&self, root: &str, p: (usize, usize), q: (usize, usize)) -> bool {
+        self.unchanged_by(p, q, &|i| touches(i, root), &|_| false)
+    }
+
+    /// Whether no instruction `changes` (and no block `block_changes`) runs
+    /// between the points `p` and `q`, one of which dominates the other.
+    fn unchanged_by(
+        &self,
+        p: (usize, usize),
+        q: (usize, usize),
+        changes: &dyn Fn(&Instruction) -> bool,
+        block_changes: &dyn Fn(usize) -> bool,
+    ) -> bool {
         let (p, q) = if self.dominates_point(p, q) {
             (p, q)
         } else if self.dominates_point(q, p) {
@@ -427,7 +487,7 @@ impl<'a> Facts<'a> {
         let insts = |b: usize| &self.f.blocks[b].instructions;
         if p.0 == q.0 && p.1 <= q.1 {
             // Entering the block again runs `p` again before `q`.
-            return !insts(p.0)[p.1 + 1..q.1].iter().any(|i| touches(i, root));
+            return !block_changes(p.0) && !insts(p.0)[p.1 + 1..q.1].iter().any(|i| changes(i));
         }
         // The blocks a path from `p` to `q` passes, never through `p`'s
         // block again: forward from `p`'s successors, back from `q`.
@@ -448,7 +508,10 @@ impl<'a> Facts<'a> {
                 stack.extend(self.preds[b].iter().copied());
             }
         }
-        if insts(p.0)[p.1 + 1..].iter().any(|i| touches(i, root)) {
+        if block_changes(p.0) || block_changes(q.0) {
+            return false;
+        }
+        if insts(p.0)[p.1 + 1..].iter().any(|i| changes(i)) {
             return false;
         }
         // `q`'s block counts whole when a path from it returns to it.
@@ -457,13 +520,27 @@ impl<'a> Facts<'a> {
         } else {
             q.1
         };
-        if insts(q.0)[..upto].iter().any(|i| touches(i, root)) {
+        if insts(q.0)[..upto].iter().any(|i| changes(i)) {
             return false;
         }
         forward
             .intersection(&back)
             .filter(|&&b| b != q.0)
-            .all(|&b| !insts(b).iter().any(|i| touches(i, root)))
+            .all(|&b| !block_changes(b) && !insts(b).iter().any(|i| changes(i)))
+    }
+
+    /// Whether the length of `place` is the same at the points `p` and `q`:
+    /// nothing in the function can change it, or nothing between them does.
+    fn length_kept(&self, place: &Place, p: (usize, usize), q: (usize, usize)) -> bool {
+        self.is_stable(place)
+            || self.unchanged_by(
+                p,
+                q,
+                &|i| changes_len(i, place),
+                &|b| {
+                    box_drops(self.f, &BTreeSet::from([b])).any(|d| d.overlaps(place))
+                },
+            )
     }
 
     /// Whether `a` and `b` are the same number.
@@ -484,7 +561,9 @@ impl<'a> Facts<'a> {
                     exact: f,
                 },
             ) => j == k && e == f && self.same(x, y),
-            (Term::Value(_), _) | (_, Term::Value(_)) => a == b,
+            (Term::Len { place: x, at: p }, Term::Len { place: y, at: q }) => {
+                x == y && self.length_kept(x, *p, *q)
+            }
             _ => a == b,
         }
     }
@@ -497,7 +576,7 @@ impl<'a> Facts<'a> {
     }
 
     /// Whether `t` is below the length of `place` wherever block `at` runs.
-    fn below_len(&self, t: &Term, place: &Place, at: usize, depth: usize) -> bool {
+    fn below_len(&self, t: &Term, place: &Target, at: usize, depth: usize) -> bool {
         if depth > MAX_PROOF_DEPTH {
             return false;
         }
@@ -517,12 +596,13 @@ impl<'a> Facts<'a> {
 
     /// Whether `t` is at most the length of `place` wherever block `at`
     /// runs.
-    fn at_most_len(&self, t: &Term, place: &Place, at: usize, depth: usize) -> bool {
+    fn at_most_len(&self, t: &Term, place: &Target, at: usize, depth: usize) -> bool {
         if depth > MAX_PROOF_DEPTH {
             return false;
         }
-        if let Term::Len(p) = t
-            && *p == *place
+        if let Term::Len { place: p, at: read } = t
+            && *p == place.place
+            && self.length_kept(p, *read, place.at)
         {
             return true;
         }
@@ -562,7 +642,7 @@ impl<'a> Facts<'a> {
             let Some(place) = args.first().and_then(|a| a.place.as_ref()) else {
                 continue;
             };
-            if self.receiver_read(args, place) && self.is_stable(place) {
+            if self.receiver_read(args, place) {
                 out.push((k, access, place.clone(), index.value));
             }
         }
@@ -581,8 +661,11 @@ pub(super) fn drop_compared_checks(f: &mut FunctionIr) -> usize {
         let mut found = vec![];
         for &b in &facts.reached {
             for (k, access, place, index) in facts.accesses(b) {
-                let len = facts.length_place(&place);
-                if facts.below_len(&facts.term(index), &len, b, 0) {
+                let target = Target {
+                    place: facts.length_place(&place),
+                    at: (b, k),
+                };
+                if facts.below_len(&facts.term(index), &target, b, 0) {
                     found.push((b, k, access));
                 }
             }
