@@ -286,3 +286,76 @@ fn main() -> u64 {
     );
     assert_eq!(assembled_run(&app), "40");
 }
+
+#[test]
+fn untyped_members_take_the_type_of_their_use() {
+    let source = "enum Helper: _ { Trace = 6, Map = 1, Next, Big = 1 << 40 }
+fn id32(x: i32) -> i32 { x }
+fn wide(x: u64) -> u64 { x }
+fn named(x: u8) -> u64 {
+    match x {
+        Helper::Map => 1,
+        Helper::Next => 2,
+        _ => 0,
+    }
+}
+fn main() -> (i32, u64, u64, u64, u64) {
+    (id32(Helper::Trace), wide(Helper::Next), named(2), wide(Helper::Big) & 1099511627777, wide(Helper::Map))
+}
+";
+    assert_eq!(run(source), "(6, 2, 2, 1099511627776, 1)");
+}
+
+#[test]
+fn untyped_members_must_be_literals() {
+    let p = parser::parse("fn f() -> u64 { 3 } enum E: _ { A = f() } fn main() -> u64 { E::A }");
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let codes: Vec<String> = check::check(&p.module)
+        .diagnostics
+        .iter()
+        .map(|d| d.code.clone())
+        .collect();
+    assert!(codes.contains(&"E1541".to_string()), "{codes:?}");
+}
+
+#[test]
+fn untyped_members_are_shared_across_modules() {
+    let dir = package(
+        "untyped",
+        &[
+            ("Loom.toml", &manifest("@demo/untyped", "")),
+            (
+                "src/ids.ves",
+                "pub enum Helper: _ { Lookup = 1, Update, Trace = 6 }\n",
+            ),
+            (
+                "src/helpers.ves",
+                "use self::ids::Helper;
+pub fn small(id: i32) -> i32 { if id == Helper::Trace { 1 } else { 0 } }
+",
+            ),
+            (
+                "src/lib.ves",
+                "use self::ids::Helper;
+use self::helpers::small;
+fn kind(id: u64) -> u64 {
+    match id {
+        Helper::Update => 20,
+        _ => 0,
+    }
+}
+fn main() -> (i32, u64, u64) {
+    (small(Helper::Trace), kind(Helper::Update), self::ids::Helper::Lookup)
+}
+",
+            ),
+        ],
+    );
+    assert_eq!(assembled_run(&dir), "(1, 20, 1)");
+    let jit = cli().arg("jit").arg(&dir).output().unwrap();
+    assert!(
+        jit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&jit.stderr)
+    );
+}

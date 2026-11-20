@@ -1336,13 +1336,20 @@ impl Parser<'_> {
             span: start..self.end(),
         }
     }
-    /// The rest of a value enum `enum Name: T { A = e, B, .. }` after its
+    /// The rest of a value enum `enum Name: T { A = e, B, .. }` (or `Name: _`) after its
     /// `:` (§2.2 `EnumDecl`): one module constant per member, named
     /// [`CONST_PREFIX`]`Name::A` and read as `Name::A`. A member without a
     /// value is the previous member's plus one (the first is 0), folded to a
     /// literal when the previous value is one.
     fn value_enum(&mut self, name: &str) -> Vec<Item> {
-        let repr = self.ty();
+        // `enum Name: _ { .. }`: untyped members, integer literals that
+        // take their type from each use.
+        let repr = if self.at_word(0, "_") {
+            self.bump();
+            Type::Infer
+        } else {
+            self.ty()
+        };
         self.expect(K::LBrace);
         let mut members: Vec<Item> = vec![];
         let mut previous: Option<(String, Option<i128>)> = None;
@@ -3493,7 +3500,11 @@ pub fn lower_const_uses(module: &mut Module) -> bool {
         .filter_map(|i| match i {
             Item::Function(f) if f.name.starts_with(CONST_PREFIX) => Some((
                 f.name[CONST_PREFIX.len()..].to_owned(),
-                (f.name.clone(), const_literal(f)),
+                ConstUse {
+                    function: f.name.clone(),
+                    literal: const_literal(f),
+                    untyped: f.result == Type::Infer,
+                },
             )),
             _ => None,
         })
@@ -3505,6 +3516,16 @@ pub fn lower_const_uses(module: &mut Module) -> bool {
     true
 }
 
+/// One constant as [`lower_const_names`] rewrites its uses: its function,
+/// its literal value (if any) and whether it is an untyped value enum
+/// member (result type `_`), whose uses are the literal itself.
+#[derive(Debug, Clone)]
+pub struct ConstUse {
+    pub function: String,
+    pub literal: Option<Literal>,
+    pub untyped: bool,
+}
+
 /// Rewrites the uses of the constants `consts` (source name -> the
 /// constant's function and its literal value, if any) in every function of
 /// `module`: a name becomes a call of the function, and a field-less
@@ -3513,11 +3534,20 @@ pub fn lower_const_uses(module: &mut Module) -> bool {
 /// package loader runs it for imported constants.
 pub fn lower_const_names(
     module: &mut Module,
-    consts: &std::collections::BTreeMap<String, (String, Option<Literal>)>,
+    consts: &std::collections::BTreeMap<String, ConstUse>,
 ) {
     let mut rewrite = |e: &mut Expr| {
         if let ExprKind::Name(n) = &e.kind
-            && let Some((function, _)) = consts.get(n)
+            && let Some(ConstUse {
+                untyped: true,
+                literal: Some(l),
+                ..
+            }) = consts.get(n)
+        {
+            // An untyped value enum member is its literal, typed by context.
+            e.kind = ExprKind::Literal(l.clone());
+        } else if let ExprKind::Name(n) = &e.kind
+            && let Some(ConstUse { function, .. }) = consts.get(n)
         {
             // The callee has an empty span of its own: a callee whose span
             // has a type is a function value, and the call's span has one.
@@ -3585,17 +3615,17 @@ fn patterns_of(e: &mut Expr) -> Vec<&mut Pattern> {
 
 /// A pattern with every field-less constructor that names a literal
 /// constant replaced by the literal.
-fn const_patterns(
-    p: &mut Pattern,
-    consts: &std::collections::BTreeMap<String, (String, Option<Literal>)>,
-) {
+fn const_patterns(p: &mut Pattern, consts: &std::collections::BTreeMap<String, ConstUse>) {
     match &mut p.kind {
         PatternKind::Constructor {
             name,
             fields,
             named: false,
         } if fields.is_empty() => {
-            if let Some((_, Some(l))) = consts.get(name.as_str()) {
+            if let Some(ConstUse {
+                literal: Some(l), ..
+            }) = consts.get(name.as_str())
+            {
                 p.kind = PatternKind::Literal(l.clone());
             }
         }

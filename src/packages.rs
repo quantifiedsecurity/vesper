@@ -747,6 +747,8 @@ impl Loader {
         // The literal value of every constant that has one, by internal
         // name: such a constant may be a match pattern in any module.
         let mut literals: BTreeMap<String, Literal> = BTreeMap::new();
+        // Untyped value enum members (`enum E: _`): their uses are literals.
+        let mut untyped: BTreeSet<String> = BTreeSet::new();
         for (p, package) in packages.iter().enumerate() {
             for m in &package.modules {
                 for item in &m.parsed.items {
@@ -754,7 +756,11 @@ impl Loader {
                         && f.name.starts_with(CONST_PREFIX)
                         && let Some(l) = crate::parser::const_literal(f)
                     {
-                        literals.insert(resolver.name_of(&(p, m.path.clone(), f.name.clone())), l);
+                        let name = resolver.name_of(&(p, m.path.clone(), f.name.clone()));
+                        if f.result == Type::Infer {
+                            untyped.insert(name.clone());
+                        }
+                        literals.insert(name, l);
                     }
                 }
             }
@@ -876,6 +882,7 @@ impl Loader {
                     hidden: if is_root_module { None } else { Some(&hidden) },
                     variants: &variants,
                     literals: &literals,
+                    untyped: &untyped,
                     resolver: &resolver,
                     package: p,
                     module: &m.path,
@@ -1511,6 +1518,8 @@ struct Renamer<'a> {
     variants: &'a BTreeMap<String, (String, String)>,
     /// Constant function (internal name) -> its literal value.
     literals: &'a BTreeMap<String, Literal>,
+    /// Untyped value enum members (internal names), used as literals.
+    untyped: &'a BTreeSet<String>,
     /// Qualified paths resolve against the whole package graph.
     resolver: &'a Resolver<'a>,
     package: usize,
@@ -1859,7 +1868,12 @@ impl Renamer<'_> {
                 // An imported constant or a path to one is a call of its
                 // function, as the parser makes a module's own (empty
                 // callee span: see `parser::lower_const_names`).
-                if !written && crate::arrays::is_const_function(n) {
+                if !written
+                    && self.untyped.contains(n.as_str())
+                    && let Some(l) = self.literals.get(n.as_str())
+                {
+                    e.kind = ExprKind::Literal(l.clone());
+                } else if !written && crate::arrays::is_const_function(n) {
                     let callee = Expr {
                         kind: ExprKind::Name(std::mem::take(n)),
                         span: span.start + self.shift..span.start + self.shift,

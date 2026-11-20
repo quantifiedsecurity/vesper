@@ -80,6 +80,41 @@ pub fn lower_consts(module: &Module) -> Option<Module> {
 
 pub use crate::parser::walk_exprs as walk;
 
+/// The module without its untyped value enum members (`enum E: _`), whose
+/// uses the parser and the package loader already replaced by their
+/// literals, with a diagnostic for each member that is not an integer
+/// literal; `None` when the module has no such member.
+pub fn untyped_members(module: &Module) -> Option<(Module, Vec<Diagnostic>)> {
+    let untyped = |i: &Item| matches!(i, Item::Function(f) if is_const_function(&f.name) && f.result == Type::Infer);
+    if !module.items.iter().any(untyped) {
+        return None;
+    }
+    let mut out = module.clone();
+    let mut diagnostics = vec![];
+    out.items.retain(|i| {
+        if let Item::Function(f) = i
+            && untyped(i)
+        {
+            if !matches!(crate::parser::const_literal(f), Some(Literal::Int(_))) {
+                diagnostics.push(
+                    Diagnostic::new(
+                        NOT_CONSTANT,
+                        format!(
+                            "member `{}` of an untyped value enum is not an integer built from literals and earlier members",
+                            const_name(&f.name)
+                        ),
+                        f.span.clone(),
+                    )
+                    .with_help("give the enum a type (`enum E: u64 { .. }`) to use other constant expressions"),
+                );
+            }
+            return false;
+        }
+        true
+    });
+    Some((out, diagnostics))
+}
+
 /// Rewrites the checked array operations of every function into the forms
 /// Place IR carries (see the module docs). Runs before IR lowering.
 pub fn lower_world(world: &mut World) {

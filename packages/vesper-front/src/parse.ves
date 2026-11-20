@@ -1327,7 +1327,12 @@ fn declaration(inout p: P) -> bool {
             if bracket {
                 err(inout p, in "a value enum takes no type parameters");
             }
-            ty(inout p);
+            // `enum Name: _ { .. }`: untyped members.
+            if at_word(in p, 0, w_underscore()) {
+                bump(inout p);
+            } else {
+                ty(inout p);
+            }
             expect(inout p, k_l_brace());
             loop {
                 if at(in p, k_r_brace()) || at(in p, k_eof()) {

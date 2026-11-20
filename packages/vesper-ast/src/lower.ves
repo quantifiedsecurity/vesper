@@ -242,6 +242,9 @@ pub struct L {
     // or NONE (`const_literal`).
     consts: ChunkSeq[u32],
     const_lits: ChunkSeq[u32],
+    // 1 for an untyped value enum member (`enum E: _`), whose uses are its
+    // literal.
+    const_untyped: ChunkSeq[u8],
     // Further items of the latest declaration: the member constants of a
     // value enum after its first (`Parser::extra_items`).
     extra: ChunkSeq[u32],
@@ -1824,6 +1827,7 @@ fn const_item(inout l: L, start: u64) -> u32 {
     l.consts.push(name);
     let cl = const_lit(inout l, value);
     l.const_lits.push(cl);
+    l.const_untyped.push(0);
     let vs = espan_start(in l, value);
     let ve = espan_end(in l, value);
     let body = mk(inout l, 5, vs, ve, 0, value, none());
@@ -1990,7 +1994,14 @@ fn fold_member(
 // its `:`, as one constant `const$Name::A` per member. Returns the first
 // member's item (or NONE) and leaves the others in `l.extra`.
 fn value_enum(inout l: L, name: u32) -> u32 {
-    let repr = ty(inout l);
+    // `enum Name: _ { .. }`: untyped members (result type Infer).
+    let untyped = at_word(in l, 0, w_underscore());
+    let repr = if untyped {
+        bump(inout l);
+        infer(inout l)
+    } else {
+        ty(inout l)
+    };
     expect(inout l, k_l_brace());
     let mut ops = ChunkSeq::new[u32]();
     ops.push(l.ast.names.intern(in "+").id());
@@ -2074,6 +2085,12 @@ fn value_enum(inout l: L, name: u32) -> u32 {
         l.consts.push(full);
         let cl = const_lit(inout l, value);
         l.const_lits.push(cl);
+        let mark: u8 = if untyped {
+            1
+        } else {
+            0
+        };
+        l.const_untyped.push(mark);
         let vs = espan_start(in l, value);
         let ve = espan_end(in l, value);
         let body = mk(inout l, 5, vs, ve, 0, value, none());
@@ -4107,34 +4124,49 @@ fn lower_const_uses(inout l: L) {
     }
     let mut is_const = ChunkSeq::new[u8]();
     is_const.resize(l.ast.names.len(), 0);
+    // The literal (Lit index or NONE) of each constant name, and whether
+    // it is an untyped member (latest declaration last, as a map insert).
+    let mut lit_of = ChunkSeq::new[u32]();
+    lit_of.resize(l.ast.names.len(), none());
+    let mut untyped_of = ChunkSeq::new[u8]();
+    untyped_of.resize(l.ast.names.len(), 0);
     for i in 0..l.consts.len() {
-        is_const.try_set(widen_u64(u32_at(in l.consts, i)), 1);
+        let c = widen_u64(u32_at(in l.consts, i));
+        is_const.try_set(c, 1);
+        lit_of.try_set(c, u32_at(in l.const_lits, i));
+        untyped_of.try_set(c, u8_at(in l.const_untyped, i));
     }
     let n = l.ast.exprs.len();
     for i in 0..n {
         let e = ex(in l, n32(i));
         if e.kind == 2 && u8_at(in is_const, widen_u64(e.a)) == 1 {
-            l.buf.clear();
-            l.buf.push_str(in "const$");
-            push_name(inout l, e.a);
-            let cn = intern_buf(inout l);
-            let s = widen_u64(e.start);
-            let callee = mk(inout l, 2, s, s, cn, none(), none());
+            let c = match lit_of.try_get(widen_u64(e.a)) {
+                Option::Some(c) => c,
+                Option::None => none(),
+            };
             let mut v = e;
-            v.kind = 6;
-            v.a = callee;
-            v.b = 0;
-            v.c = 0;
+            if u8_at(in untyped_of, widen_u64(e.a)) == 1 && c != none() {
+                // An untyped value enum member is its literal.
+                v.kind = 1;
+                v.a = c;
+                v.b = none();
+                v.c = none();
+            } else {
+                l.buf.clear();
+                l.buf.push_str(in "const$");
+                push_name(inout l, e.a);
+                let cn = intern_buf(inout l);
+                let s = widen_u64(e.start);
+                let callee = mk(inout l, 2, s, s, cn, none(), none());
+                v.kind = 6;
+                v.a = callee;
+                v.b = 0;
+                v.c = 0;
+            }
             l.ast.exprs.set(idx_from_raw[ExprNode](n32(i)), v);
         }
     }
     // A field-less constructor pattern of a literal constant is the literal.
-    let mut lit_of = ChunkSeq::new[u32]();
-    lit_of.resize(l.ast.names.len(), none());
-    for i in 0..l.consts.len() {
-        let c = u32_at(in l.const_lits, i);
-        lit_of.try_set(widen_u64(u32_at(in l.consts, i)), c);
-    }
     let np = l.ast.pats.len();
     for i in 0..np {
         let p = pat_at(in l.ast, n32(i));
@@ -4209,6 +4241,7 @@ pub fn lower_source(in source: Str) -> L {
         pending: ChunkSeq::new[u32](),
         consts: ChunkSeq::new[u32](),
         const_lits: ChunkSeq::new[u32](),
+        const_untyped: ChunkSeq::new[u8](),
         extra: ChunkSeq::new[u32](),
         evpos: ChunkSeq::new[u32](),
         evc: 0,
