@@ -684,3 +684,44 @@ fn constant_shifts_agree() {
         }
     }
 }
+
+/// Corners from review: rotation amounts past `i128::MAX`, a negated
+/// `i128::MIN` fact, `Never` placeholders and region boxes.
+#[test]
+fn review_corners() {
+    let k = IntegerKind::U128;
+    let amounts = [1u128 << 127, (1 << 127) + 3, u128::MAX, 200];
+    for a in [1u128, 0x8000_0000_0000_0001] {
+        for n in amounts {
+            agree(
+                &format!(
+                    "{WORDS}fn r(a: u128, n: u128) -> u128 {{ rotate_left(a, n) }}
+fn q(a: u64, n: u128) -> u64 {{ rotate_right(a, n) }}
+fn main() -> (u128, u64) {{ (r({}, {}), q({}, {})) }}",
+                    value(k, a),
+                    value(k, n),
+                    a as u64,
+                    value(k, n)
+                ),
+                &format!(
+                    "({}, {})",
+                    a.rotate_left((n % 128) as u32),
+                    (a as u64).rotate_right((n % 64) as u32)
+                ),
+            );
+        }
+    }
+    agree(
+        "fn main() -> i128 { handle Fail[ArithOverflow] in { let a: i128 = 9223372036854775808; let b = wrapping_mul(a, a); let m = wrapping_add(b, b); -m } with { return v => v, raise(e, k) => 7, } }",
+        "7",
+    );
+    agree(
+        "fn f(b: bool) -> i128 { if b { return 1; } else { 2 } }
+fn main() -> i128 { wrapping_add(wrapping_mul(f(true), 10), f(false)) }",
+        "12",
+    );
+    agree(
+        "fn main() -> u128 { region r { let x: u128 = 18446744073709551615; let y = wrapping_add(x, x); let b = r.box(y); r.get(b) } }",
+        "36893488147419103230",
+    );
+}

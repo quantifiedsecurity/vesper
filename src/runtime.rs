@@ -3376,9 +3376,11 @@ fn wide_binary(op: &str, a: &Value, b: &Value) -> Result<Value, Fault> {
         _ => return Err("invalid 128-bit operands".into()),
     };
     if crate::numeric::is_shift(op) || crate::numeric::rotate_intrinsic(op).is_some() {
-        // An amount past the i128 domain is out of range either way.
-        let amount = be.to_i128().unwrap_or(i128::MAX);
+        // A rotation reads its amount modulo the width, which divides 128,
+        // so the pattern's remainder mod 128 is exact for every kind (and
+        // for every sign, two's complement being modulo 2^128).
         if let Some(left) = crate::numeric::rotate_intrinsic(op) {
+            let amount = (be.pattern % 128) as i128;
             return Ok(match wide_kind(a) {
                 Some((k, p)) => wide_value(k, wide::rotate(left, p, amount)),
                 None => {
@@ -3387,6 +3389,8 @@ fn wide_binary(op: &str, a: &Value, b: &Value) -> Result<Value, Fault> {
                 }
             });
         }
+        // A shift amount past the i128 domain is out of range either way.
+        let amount = be.to_i128().unwrap_or(i128::MAX);
         return Ok(match wide_kind(a) {
             Some((k, p)) => {
                 if !(0..128).contains(&amount) {

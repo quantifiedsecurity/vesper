@@ -347,7 +347,8 @@ impl IntegerKind {
     }
     /// Checked value-level negation.
     pub fn checked_neg(self, a: i128) -> Option<i128> {
-        Some(-a).filter(|n| self.fits(*n))
+        // `-i128::MIN` is past the domain itself (a wrapped i128 fact).
+        a.checked_neg().filter(|n| self.fits(*n))
     }
     /// Total `wrapping_add`, `wrapping_sub` and `wrapping_mul`.
     pub fn wrapping(self, op: &str, a: i128, b: i128) -> i128 {

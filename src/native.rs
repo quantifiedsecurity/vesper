@@ -4213,6 +4213,8 @@ impl<M: Module> Codegen<'_, '_, M> {
             self.b.ins().f64const(0.0)
         } else if ty.name() == "f32" {
             self.b.ins().f32const(0.0)
+        } else if wide_native::is_wide(ty) {
+            self.wide_const(0)
         } else {
             self.zero()
         })
