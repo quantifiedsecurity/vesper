@@ -196,8 +196,22 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # Self-hosting SH2 lane 6 (#1178): the package assembler over every
+        # Loom package the root package declares. Anchored globs.
+        "test/self_host_check_names_packages": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # Self-hosting SH2 lane 7 (#1179): core typing on the same corpus.
         "test/self_host_check_core_typing": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
+        # Self-hosting SH2 lane 12 (#1184): @vesper/check-fip against
+        # fip::check_world on the same corpus, its checker cases and mutants.
+        "test/self_host_check_fip": glob([
             "examples/**",
             "packages/**",
             "tests/fixtures/**",
@@ -214,6 +228,8 @@ vesper_crate(
         "test/std_graph": [":files"],
         "test/std_hash": [":files"],
         "test/std_intern": [":files"],
+        # SH2 lane 1 (#1173): collections and arenas of values that are not copy.
+        "test/owning_collections": [":files"],
         # Milestone 7: the verified backend over the self-hosted front end.
         "test/verified_codegen_fail_front_end": glob(["packages/**/*.ves"]),
         "test/self_host_front_end": glob([
@@ -522,8 +538,11 @@ vesper_crate(
         "test/hybrid_ir_check": "long",
         "test/self_host_place_ir": "long",
         "test/self_host_check_harness": "long",
+        # The package assembler differential (#1178) compiles the AST package.
+        "test/self_host_check_names_packages": "long",
         # The core typing differential (#1179) checks every corpus world.
         "test/self_host_check_core_typing": "long",
+        "test/self_host_check_fip": "long",
     },
 )
 
