@@ -405,6 +405,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     // SH1 lane 11 (#1154): the fmt and highlight ports use `use` (#880).
                     || path.ends_with("crates/vesper-fmt/vesper")
                     || path.ends_with("crates/vesper-highlight/vesper")
+                    // SH1 lane 13 (#1156): the lint port uses `use` (#880).
+                    || path.ends_with("crates/vesper-lint/vesper")
                     // SH1 lane 5 (#1148): or-patterns, which the Stage 1
                     // parser lacks.
                     || path.ends_with("tests/fixtures/ergonomics")
