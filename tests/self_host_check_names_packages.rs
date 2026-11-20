@@ -1088,7 +1088,10 @@ fn every_assembler_diagnostic_matches_rust() {
         (
             "shared",
             &[
-                ("lib.ves", "pub fn top() -> u64 { 1 }\npub trait Show[T] { fn show(self) -> u64; }\n"),
+                (
+                    "lib.ves",
+                    "pub fn top() -> u64 { 1 }\npub trait Show[T] { fn show(self) -> u64; }\n",
+                ),
                 (
                     "s.ves",
                     "struct W[K] { k: K }\nimpl [K: Show[self::Missing]] W[K] { fn a(self) -> u64 { 1 }\nfn b(self) -> u64 { 2 } }\nfn rep(x: u64) -> u64 { let a = [top(); 2]; match x { 1 | 2 => top(), _ => 0 } }\n",
