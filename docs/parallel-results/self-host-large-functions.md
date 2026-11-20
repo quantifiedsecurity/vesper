@@ -66,6 +66,16 @@ All in the native lowering, outside the Stage 1 guard:
   still change nothing in the slice. Passing the value as a branch argument
   instead does not work: Cranelift removes the single-predecessor parameter
   again.
+- **`src/seq/native.rs`, `seq_hoist_header`: a private receiver.** Header
+  words hoisted before a loop are cached by receiver value. Unsealed blocks
+  used to hand every block a fresh parameter for the receiver, so the cache
+  only ever matched inside the loop; with early sealing a frontend variable
+  can return the same value in a sibling block, where the cached words do
+  not dominate (two sibling loops over one `in` slice in
+  `vesper-grammar`'s `der::primitive` failed the Cranelift verifier). The
+  hoist now caches under a copy (`iadd_imm 0`, folded away by the
+  optimizer) that only the loop's reads use. All 70 `vesper_port_object`
+  libraries build.
 
 Owned paths: `src/native.rs` (`ir_graph_at`, `define_instances_observed_with_trace`,
 the `Codegen` struct), `src/native_session.rs` (the new field only),

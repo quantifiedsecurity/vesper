@@ -391,12 +391,14 @@ impl<M: Module> Codegen<'_, '_, M> {
         let mut words = vec![];
         let (receiver, handle) = if seq::is_slice_type(ty) {
             let view = self.address(&e)?;
+            let view = self.hoisted_receiver(view);
             for offset in [0, 8, 16] {
                 words.push(((view, offset), self.seq_word(view, offset)));
             }
             (view, words[0].1)
         } else {
             let handle = self.expr(&e)?;
+            let handle = self.hoisted_receiver(handle);
             (handle, handle)
         };
         for offset in [LEN, DATA] {
@@ -406,6 +408,20 @@ impl<M: Module> Codegen<'_, '_, M> {
             t.header_words.extend(words);
         }
         Ok(receiver)
+    }
+
+    /// A copy of `value` only the loop's hoisted reads use, so the header
+    /// words cached under it are found only where the preheader dominates
+    /// (#1151). Frontend variables can return the same value in blocks the
+    /// preheader does not dominate once their blocks are sealed early.
+    fn hoisted_receiver(&mut self, value: ir::Value) -> ir::Value {
+        let copy = self.b.ins().iadd_imm(value, 0);
+        let info = self.info(value);
+        self.write_info(copy, info);
+        if self.invariant_headers.contains(&value) {
+            self.invariant_headers.insert(copy);
+        }
+        copy
     }
 
     fn seq_set_word(&mut self, ptr: ir::Value, offset: i32, value: ir::Value) {
