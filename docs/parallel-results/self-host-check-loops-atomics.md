@@ -42,8 +42,8 @@ Every line compares code, span, message, help and related labels.
 
 | Task | Inputs | Lines | Differences |
 |---|---|--:|--:|
-| control (E0213, E0200) | 282 corpus worlds and two mutants of each (jumps where every rule fires, each in `if true { .. }` so a jump does not end its block; every `for` over a non-range), the 9 loop reject fixtures and 10 `?` and jump sources with their mutants: 884 checked modules | 45,190 | 0 |
-| atomics (E0820-E0824, preludes) | corpus, a program per cell type (10 integer kinds, `bool`, `f64`, a tuple, `Option`) with every operation in every order and both call forms, 8 worker sources, 8 world mutants (orders rotated, made non-literal, `Atomic::new` as a struct literal, `inout` data, a non-function body) and an IR mutant that touches the private cell: 522 worlds | 11,700 | 0 |
+| control (E0213, E0200) | 282 corpus worlds and two mutants of each (jumps where every rule fires, each in `if true { .. }` so a jump does not end its block; every `for` over a non-range), the 9 loop reject fixtures and 15 `?`, jump and handler sources with their mutants (closures whose result comes from a `let` annotation or a call argument, a clause for an undeclared operation, an unknown effect): 894 checked modules | 45,235 | 0 |
+| atomics (E0820-E0824, preludes) | corpus, a program per cell type (10 integer kinds, `bool`, `f64`, a tuple, `Option`) with every operation in every order and both call forms, 8 worker sources, 8 world mutants (orders rotated, made non-literal, `Atomic::new` as a struct literal, `inout` data, a non-function body) and an IR mutant that touches the private cell, an order named only in a `let` annotation: 532 worlds | 11,710 | 0 |
 | stack bound | 4,000 generated call graphs of both origins and policies (every Silicon rule, the eBPF kernel rule, the analyzer disagreement, invalid graphs) | about 30,000 | 0 |
 
 Cargo runs the whole corpus (Linux, macOS, Windows CI); Bazel's corpus is
@@ -53,6 +53,16 @@ Two bugs the differential found while porting, both in the port: the
 checker skips the rest of a block after a `Never` statement (so jumps there
 are never reported), and a `let` value's own type field was overwritten by
 the `let` type (a closure's result type was lost).
+
+Review found three more, now fixed and covered by new sources: the prelude
+scan read a closure's result field instead of the `let` annotation; a
+closure with no written result expects the result of the function type it
+is checked against (the encoder now writes that expected result for an
+annotated `let` and for an argument of a non-generic function; other
+contexts, such as struct fields or generic parameters, are not encoded yet);
+and `Checker::handle` skips a clause for an undeclared operation (E0405) and
+the whole handler for an unknown or capability effect, which the encoder now
+marks.
 
 ## Numbers
 

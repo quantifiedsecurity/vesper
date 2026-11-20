@@ -222,7 +222,7 @@ Vesper time includes decoding the harness input), and its hybrid swap.
 
 | Port | Lane | Differences | Module alone | Hybrid swap | Report |
 |---|---|--:|---|---|---|
-| loops (control rules, `?` on `Option`), atomics, stack bound | SH2-10 (#1182) | 0 (884 control worlds, 522 atomics worlds, 4,000 call graphs) | atomics 2.31x, stack bound 2.54x; control pass 80 ms over the corpus | not yet (follow-up) | [self-host-check-loops-atomics.md](../parallel-results/self-host-check-loops-atomics.md) |
+| loops (control rules, `?` on `Option`), atomics, stack bound | SH2-10 (#1182) | 0 (894 control worlds, 532 atomics worlds, 4,000 call graphs) | atomics 2.31x, stack bound 2.54x; control pass 80 ms over the corpus | not yet (follow-up) | [self-host-check-loops-atomics.md](../parallel-results/self-host-check-loops-atomics.md) |
 
 ## Estimates
 

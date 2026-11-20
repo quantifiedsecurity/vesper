@@ -270,8 +270,11 @@ pub fn visit(
             option: c.option,
             never: c.never
         };
-        inner.push(F_FN, r.ty);
+        inner.push(F_FN, r.expected);
         visit_kids(inout o, inout inner, in x, in types, in world, e);
+    } else if k == E_HANDLE && r.unchecked {
+        // `Checker::handle` returned before the handler (E0400, E0797 or a
+        // capability effect): nothing inside it is checked.
     } else if k == E_HANDLE {
         let mut i: u64 = 0;
         if (r.flag & 1) != 0 {
@@ -286,9 +289,13 @@ pub fn visit(
         visit(inout o, inout c, in x, in types, in world, x.kid(e, i));
         c.pop();
         for j in wrapping_add(i, 1)..x.kid_count(e) {
-            c.push(F_CLAUSE, NONE32);
-            visit(inout o, inout c, in x, in types, in world, x.kid(e, j));
-            c.pop();
+            let clause = x.kid(e, j);
+            // A clause for an undeclared operation is skipped (E0405).
+            if !x.row(clause).unchecked {
+                c.push(F_CLAUSE, NONE32);
+                visit(inout o, inout c, in x, in types, in world, clause);
+                c.pop();
+            }
         }
     } else if k == E_BLOCK {
         // The checker stops a block at a statement of type `Never`: what

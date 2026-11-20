@@ -59,8 +59,14 @@ pub copy struct ExprRow {
     end: u64,
     // Name, Struct, Field, Call (none): the name symbol.
     name: u32,
-    // Closure: its result type.
+    // Closure: its result type as written.
     ty: u32,
+    // Closure: the result its function frame expects (the written one, or
+    // the expected function type's result when it is `Infer`).
+    expected: u32,
+    // Handle: the checker returns before checking it. Operation clause
+    // body: the checker skips the clause (an undeclared operation).
+    unchecked: bool,
     // Let value: the `let` type.
     let_ty: u32,
     // Let value: the `let` pattern. Match arm body: the arm pattern.
@@ -138,6 +144,8 @@ fn empty_row() -> ExprRow {
         end: 0,
         name: NONE32,
         ty: NONE32,
+        expected: NONE32,
+        unchecked: false,
         let_ty: NONE32,
         pat: NONE32,
         a: 0,
@@ -411,9 +419,12 @@ pub fn read_expr(
         row.ta = read_types_into(inout r, in b, inout x, in tmap, n);
         row.tn = wrapping_u32(n);
         row.ty = at32(in tmap, r.word(in b));
+        row.expected = at32(in tmap, r.word(in b));
         kids.push(read_expr(inout r, in b, inout x, in nmap, in tmap));
     } else if kind == E_HANDLE {
-        row.flag = wrapping_u8(r.word(in b));
+        let flags = r.word(in b);
+        row.flag = wrapping_u8(flags & 3);
+        row.unchecked = (flags & 4) != 0;
         if (row.flag & 1) != 0 {
             kids.push(read_expr(inout r, in b, inout x, in nmap, in tmap));
         }
@@ -421,7 +432,14 @@ pub fn read_expr(
         kids.push(read_expr(inout r, in b, inout x, in nmap, in tmap));
         let n = r.word(in b);
         for i in 0..n {
-            kids.push(read_expr(inout r, in b, inout x, in nmap, in tmap));
+            let checked = r.word(in b);
+            let v = read_expr(inout r, in b, inout x, in nmap, in tmap);
+            if checked == 0 {
+                let mut vr = x.row(v);
+                vr.unchecked = true;
+                x.set(v, vr);
+            }
+            kids.push(v);
         }
     } else if kind == E_FOR {
         row.pat = read_pat(inout r, in b, inout x, in nmap, in tmap);
@@ -442,6 +460,8 @@ pub fn read_expr(
     done.flag = row.flag;
     done.name = row.name;
     done.ty = row.ty;
+    done.expected = row.expected;
+    done.unchecked = row.unchecked;
     done.pat = row.pat;
     done.ta = row.ta;
     done.tn = row.tn;

@@ -43,6 +43,9 @@ fn package() -> &'static Package {
 struct AstEnc<'a> {
     enc: &'a mut Enc,
     out: &'a mut Vec<u64>,
+    /// The checked world, for what the checker decides from declarations:
+    /// region blocks, handlers it skips and closures' expected results.
+    world: Option<&'a World>,
 }
 
 impl AstEnc<'_> {
@@ -89,9 +92,64 @@ impl AstEnc<'_> {
         }
     }
 
-    /// `region`: whether a `Handle` is a region block, as the checker's
+    /// Whether a `Handle` is a region block, as the checker's
     /// `region_block` decides.
-    fn expr_with(&mut self, e: &Expr, region: &dyn Fn(&Effect, &Clause) -> bool) {
+    fn region(&self, effect: &Effect, ret: &Clause) -> bool {
+        self.world.is_some_and(|w| {
+            effect.name == vesper::regions::REGION_EFFECT
+                && vesper::regions::active(w)
+                && vesper::regions::block_capacity(effect, ret).is_some()
+        })
+    }
+
+    /// Whether `Checker::handle` returns before checking the handler: a
+    /// capability effect, a hand-written `Region` handler (E0797) or an
+    /// unknown effect (E0400).
+    fn handle_skipped(&self, effect: &Effect, ret: &Clause) -> bool {
+        self.world.is_some_and(|w| {
+            vesper::capability_effects::is_capability_effect(&effect.name)
+                || (effect.name == vesper::regions::REGION_EFFECT
+                    && vesper::regions::active(w)
+                    && vesper::regions::block_capacity(effect, ret).is_none())
+                || !w.effects.contains_key(&effect.name)
+        })
+    }
+
+    /// Whether `Checker::handle` checks an operation clause's body: it
+    /// skips a clause for an operation the effect does not declare (E0405).
+    fn clause_checked(&self, effect: &Effect, op: &str) -> bool {
+        self.world.is_none_or(|w| {
+            w.effects
+                .get(&effect.name)
+                .is_none_or(|d| d.ops.iter().any(|f| f.name == op))
+        })
+    }
+
+    /// The function type a call argument is checked against, where it is
+    /// known without inference: a parameter of a non-generic world function
+    /// called by name, not `inout` and without projections.
+    fn arg_expected(&self, callee: &Expr, types: &[Type], i: usize) -> Option<Type> {
+        let ExprKind::Name(n) = &callee.kind else {
+            return None;
+        };
+        let f = self.world?.functions.get(n)?;
+        let p = f.params.get(i)?;
+        (f.generics.is_empty()
+            && types.is_empty()
+            && p.pass != Pass::Inout
+            && p.projections.is_empty()
+            && matches!(p.ty, Type::Function { .. }))
+        .then(|| p.ty.clone())
+    }
+
+    fn expr_with(&mut self, e: &Expr) {
+        self.expr_hinted(e, None);
+    }
+
+    /// `hint`: the type the checker passes as the expected type of `e`,
+    /// where the encoder knows it (an annotated `let`, a call argument);
+    /// only a closure reads it, for the result its function frame expects.
+    fn expr_hinted(&mut self, e: &Expr, hint: Option<&Type>) {
         let kind = match &e.kind {
             ExprKind::Literal(_) => 0,
             ExprKind::Name(_) => 1,
@@ -119,7 +177,7 @@ impl AstEnc<'_> {
         self.w(kind);
         self.w(e.span.start as u64);
         self.w(e.span.end as u64);
-        let sub = |s: &mut Self, x: &Expr| s.expr_with(x, region);
+        let sub = |s: &mut Self, x: &Expr| s.expr_with(x);
         match &e.kind {
             ExprKind::Literal(_) | ExprKind::Continue => {}
             ExprKind::Name(n) => self.name(n),
@@ -144,7 +202,7 @@ impl AstEnc<'_> {
                             self.w(0);
                             self.pat(pat);
                             self.ty(ty);
-                            sub(self, value);
+                            self.expr_hinted(value, Some(ty));
                         }
                         Statement::Expr(x) => {
                             self.w(1);
@@ -171,9 +229,10 @@ impl AstEnc<'_> {
                     self.ty(t);
                 }
                 self.w(args.len() as u64);
-                for a in args {
+                for (i, a) in args.iter().enumerate() {
                     self.w(pass_word(a.pass));
-                    sub(self, &a.expr);
+                    let hint = self.arg_expected(callee, types, i);
+                    self.expr_hinted(&a.expr, hint.as_ref());
                 }
             }
             ExprKind::Field(x, n) => {
@@ -219,6 +278,13 @@ impl AstEnc<'_> {
                     self.ty(&p.ty);
                 }
                 self.ty(result);
+                // The checker's closure rule: an `Infer` result takes the
+                // expected function type's result.
+                let expected = match hint {
+                    Some(Type::Function { result: r, .. }) if *result == Type::Infer => r,
+                    _ => result,
+                };
+                self.ty(expected);
                 sub(self, body);
             }
             ExprKind::Handle {
@@ -228,7 +294,9 @@ impl AstEnc<'_> {
                 ret,
                 ops,
             } => {
-                let flags = u64::from(state.is_some()) | (u64::from(region(effect, ret)) << 1);
+                let flags = u64::from(state.is_some())
+                    | (u64::from(self.region(effect, ret)) << 1)
+                    | (u64::from(self.handle_skipped(effect, ret)) << 2);
                 self.w(flags);
                 if let Some((_, s)) = state {
                     sub(self, s);
@@ -237,6 +305,8 @@ impl AstEnc<'_> {
                 sub(self, &ret.body);
                 self.w(ops.len() as u64);
                 for c in ops {
+                    let checked = self.clause_checked(effect, &c.name);
+                    self.w(u64::from(checked));
                     sub(self, &c.body);
                 }
             }
@@ -264,7 +334,7 @@ impl AstEnc<'_> {
         }
     }
 
-    fn function_with(&mut self, f: &Function, region: &dyn Fn(&Effect, &Clause) -> bool) {
+    fn function(&mut self, f: &Function) {
         self.name(&f.name);
         self.w(f.generics.len() as u64);
         self.w(u64::from(
@@ -279,35 +349,34 @@ impl AstEnc<'_> {
         match &f.body {
             Some(b) => {
                 self.w(1);
-                self.expr_with(b, region);
+                self.expr_with(b);
             }
             None => self.w(0),
         }
-    }
-
-    fn function(&mut self, f: &Function) {
-        self.function_with(f, &|_, _| false);
     }
 }
 
 /// The world's functions, in `world.functions` order (`read_fns`), with
 /// `Handle`s marked as region blocks the way the checker marks them.
 fn world_functions(enc: &mut Enc, out: &mut Vec<u64>, w: &World) {
-    let region = |effect: &Effect, ret: &Clause| {
-        effect.name == vesper::regions::REGION_EFFECT
-            && vesper::regions::active(w)
-            && vesper::regions::block_capacity(effect, ret).is_some()
+    let mut a = AstEnc {
+        enc,
+        out,
+        world: Some(w),
     };
-    let mut a = AstEnc { enc, out };
     a.w(w.functions.len() as u64);
     for f in w.functions.values() {
-        a.function_with(f, &region);
+        a.function(f);
     }
 }
 
 /// The module items (`read_items` in atomics.ves).
 fn module_items(enc: &mut Enc, out: &mut Vec<u64>, m: &Module) {
-    let mut a = AstEnc { enc, out };
+    let mut a = AstEnc {
+        enc,
+        out,
+        world: None,
+    };
     a.w(m.items.len() as u64);
     for item in &m.items {
         let fns = |a: &mut AstEnc, fs: &[Function]| {
@@ -810,6 +879,26 @@ fn control_sources() -> Vec<(String, String)> {
             "non-range for",
             "fn main() -> i64 { let n: i64 = 3; for i in n { break; } 0 }".to_string(),
         ),
+        (
+            "try in an annotated closure",
+            "fn f() -> u64 { let c: fn(u64) -> u64 = |x| { let v: Option[u64] = Option::Some(x); v? }; c(1) }\nfn main() -> u64 { 0 }".to_string(),
+        ),
+        (
+            "try in an Option closure",
+            "fn f() -> u64 { let c: fn(u64) -> Option[u64] = |x| { let v: Option[u64] = Option::Some(x); let y = v?; Option::Some(y) }; 0 }\nfn main() -> u64 { 0 }".to_string(),
+        ),
+        (
+            "try in a closure argument",
+            "fn apply(sink c: fn(u64) -> u64) -> u64 { c(1) }\nfn f() -> u64 { apply(|x| { let v: Option[u64] = Option::Some(x); v? }) }\nfn main() -> u64 { 0 }".to_string(),
+        ),
+        (
+            "undeclared operation clause",
+            "effect Ask {\n    fn ask() -> i64;\n}\nfn main() -> i64 {\n    handle Ask in {\n        Ask::ask()\n    } with {\n        return value => value,\n        ask(resume) => resume(1),\n        missing(resume) => {\n            return 0;\n        },\n    }\n}".to_string(),
+        ),
+        (
+            "unknown handled effect",
+            "fn main() -> i64 {\n    handle Missing in {\n        break;\n        0\n    } with {\n        return value => {\n            continue;\n            value\n        },\n    }\n}".to_string(),
+        ),
     ] {
         out.push((name.to_string(), src));
     }
@@ -951,6 +1040,10 @@ fn atomic_sources() -> Vec<(String, String)> {
     out.push((
         "struct literal".into(),
         "fn main() -> u64 { let c = Atomic { cell: ChunkSeq::new[u64]() }; c.load(MemoryOrder::SeqCst) }".into(),
+    ));
+    out.push((
+        "order in a let annotation only".into(),
+        "fn f(o: u64) -> u64 { let order: MemoryOrder = o; 0 }\nfn main() -> u64 { 0 }".into(),
     ));
     out.push((
         "private cell".into(),

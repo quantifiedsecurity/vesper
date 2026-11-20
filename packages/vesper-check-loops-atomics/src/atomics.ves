@@ -594,7 +594,8 @@ fn expr_mentions(in names: Names, in t: Types, in x: Exprs, in sy: Syms, e: u32)
             if s
                 .is_let
                 && (
-                type_mentions(in t, in sy, s.ty) || pattern_mentions(in names, in x, in sy, s.pat)
+                type_mentions(in t, in sy, s.let_ty)
+                    || pattern_mentions(in names, in x, in sy, s.pat)
             ) {
                 return true;
             }
