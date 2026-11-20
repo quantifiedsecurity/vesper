@@ -1,7 +1,8 @@
 # Self-hosting SH1 lane 11: formatter and lexical highlighter in Vesper
 
 Claim: #1154. Plan: `docs/agent-prompts/self-host-sh1/11-fmt-highlight.md`.
-Base: origin/main `e29e63d`.
+Base: origin/main `e29e63d`, merged up to `a73dfe2` (lane 5's #1163 and lane
+10's #1166).
 
 This lane ports `vesper-fmt` (the whole formatter: lexer gate, layout,
 document algebra and renderer, limits and the idempotence check) and the
@@ -72,10 +73,14 @@ What the port hands back to the Rust code:
   so the port returns code 10 and the Rust code formats them. 64 of the
   repository's 900 `.ves` files are macro sources. The differential test
   checks that every source handed back is one.
-- **Past the front end's fixed limits:** these are 1 MiB, 65,536 tokens and
-  128 diagnostics. Above them the port returns code 13, so the Rust code
-  keeps the 131,072-token cap behaviour. Lane 10's PR #1166 adds
-  `lex_with_limits`, and the port will switch to it once that merges.
+- **Large sources stay in the port:** the gate lexes with lane 10's
+  `lex_with_limits` at the hard ceilings and one diagnostic, as
+  `guarded_lex` does, so sources past the front end's defaults (65,536
+  tokens, 1 MiB) format through the port and the 131,072-token cap refuses
+  at the same point (`large_sources_format_like_rust`).
+- **Lane 5's else-if rule:** the gate keeps lane 5's per-level `if` bases
+  (#1163), so an else-if chain of any length counts like one `if`, and the
+  crate's `else_if_chains` test passes on all three builds.
 - **Recovery and the proof model:** `format_recovering` and the proof model
   stay in Rust. They call the same `format_source`, so the proof model runs
   over the port's output under the port build.
@@ -110,8 +115,10 @@ Divergent builds:
   `TYPE` nodes are types.
 - **Results:** spans come back as one word each (end, class and flags).
   `verify_lossless_spans` still runs in Rust on the result.
-- **Refused sources:** sources past the front end's ceilings give `Refused`,
-  and the Rust code classifies them. Rasterizing (`shot`, chroma and HTML)
+- **Limits:** the port lexes with the Rust code's ceilings: the hard token
+  ceiling, plus the hard diagnostic ceiling in token mode and the parser's
+  default 128 in CST mode. Only when the lexer stops early does it give
+  `Refused`, and the Rust code classifies the flat stream. Rasterizing (`shot`, chroma and HTML)
   stays in Rust.
 
 Differential coverage, all passing:
@@ -146,12 +153,16 @@ Linux, in the cloud container.
 
 | Workload | Vesper/Rust time | Rust Ir | Vesper Ir | Ir ratio |
 | --- | --- | --- | --- | --- |
-| fmt largest | 0.49x (27.8 ms vs 56.3 ms) | 364.4M | 313.8M | 0.86x |
-| fmt corpus | 0.63x (866 ms vs 1,371 ms) | 10,473M | 9,338M | 0.89x |
-| highlight largest, tokens | 1.51x | 10.7M | 43.5M | 4.08x |
-| highlight largest, CST | 0.39x | 116.6M | 66.4M | 0.57x |
-| highlight corpus, tokens | 2.58x | 334.7M | 1,338.7M | 4.00x |
-| highlight corpus, CST | 0.45x | 3,195M | 2,003M | 0.63x |
+| fmt largest | 0.49x (31.9 ms vs 64.5 ms) | 373.4M | 276.3M | 0.74x |
+| fmt corpus | 0.53x (746 ms vs 1,423 ms) | 10,759M | 8,385M | 0.78x |
+| highlight largest, tokens | 1.12x (3.19 ms vs 2.88 ms) | 10.7M | 32.8M | 3.07x |
+| highlight largest, CST | 0.32x (5.19 ms vs 16.3 ms) | 119.5M | 55.6M | 0.46x |
+| highlight corpus, tokens | 1.83x (93.4 ms vs 51.6 ms) | 339.6M | 1,028.6M | 3.03x |
+| highlight corpus, CST | 0.37x (168 ms vs 463 ms) | 3,264M | 1,703M | 0.52x |
+
+These are after lane 10's lexer speedups (#1166). Before them, on base
+`e29e63d`, the same workloads were 0.49x, 0.63x, 1.51x, 0.39x, 2.58x and
+0.45x of Rust's time.
 
 What the numbers say:
 
@@ -159,8 +170,8 @@ What the numbers say:
   the port works on flat tables, and that gap outweighs the front end's
   slower lexer.
 - **highlight CST mode:** also faster, for the same reason.
-- **highlight token mode:** slower. It is nearly all lexing, and the front
-  end's lexer is 2.9x Rust's time. Lane 10's PR #1166 speeds that lexer up.
+- **highlight token mode:** slower (1.1x to 1.8x). It is nearly all
+  lexing, and the front end's lexer is still slower than Rust's.
 
 Callgrind reports the port's functions as anonymous `vesper_function_N`, so
 the profile does not show where the port's time goes (gap 7).
@@ -204,19 +215,11 @@ in the PR.
    15-operand `||` chain inside an else-if arm (the control-keyword test in
    highlight's `classify`) is over the nesting limit of 24. This is the
    formatter itself, Rust and port alike. Workaround: the
-   `control_keyword` and `declaration_keyword` helpers. Lane 5 (#1148)
-   relaxes the else-if case.
-10. **The front end has fixed limits.** These are 1 MiB, 65,536 tokens and
-   128 diagnostics. Lane 10's PR #1166 adds the `*_with_limits` entry
-   points.
+   `control_keyword` and `declaration_keyword` helpers. Lane 5 (#1163)
+   relaxed only the else-if case.
 
 ## Not in this PR
 
-- The fmt port moves to lane 10's `lex_with_limits` and new token layout
-  (`token_end`, `token_sym` and `token_word`) once PR #1166 merges. That
-  removes code 13 and `Refused` for large sources.
-- Lane 5's (#1148) else-if DepthLimit fix in the formatter will be mirrored
-  into the port when it lands on main.
 - Macro-profile formatting, `format_recovering` and the proof model stay
   Rust.
 - Rasterizing in vesper-highlight stays Rust.
