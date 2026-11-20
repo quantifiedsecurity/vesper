@@ -113,3 +113,20 @@ fn the_differential_fixture_runs() {
         native::jit(&world, "main").unwrap().to_string()
     );
 }
+
+/// Review follow-ups: `for eff in ..` and calls through `Upper::eff`.
+#[test]
+fn eff_in_for_patterns_and_upper_paths() {
+    assert_eq!(
+        both(
+            "copy struct Row { n: u64 }
+impl Row { fn eff(n: u64) -> Row { Row { n } } }
+fn main() -> u64 {
+    let mut total: u64 = 0;
+    for eff in 0..4 { total = wrapping_add(total, eff); }
+    wrapping_add(total, Row::eff(36).n)
+}"
+        ),
+        "42"
+    );
+}

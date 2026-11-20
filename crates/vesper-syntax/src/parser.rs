@@ -2240,7 +2240,7 @@ impl Parser<'_> {
         !self.bound_values.contains("for")
             && matches!(
                 self.nth(1),
-                K::Lower | K::Upper | K::LParen | K::Int | K::True | K::False
+                K::Lower | K::Upper | K::LParen | K::Int | K::True | K::False | K::Eff
             )
     }
     /// `for pat in start..end { body }` (manuscript `ForExpr`). The iterable
@@ -2879,7 +2879,13 @@ impl Parser<'_> {
                     let mut name = self.bump();
                     while self.eat(K::ColonColon) {
                         name.push_str("::");
-                        name.push_str(&self.ident());
+                        // `E::eff()`: contextual names are path segments too.
+                        let segment = if self.at_contextual_name() {
+                            self.bump()
+                        } else {
+                            self.ident()
+                        };
+                        name.push_str(&segment);
                     }
                     if self.at(K::LBrace) && !self.no_struct {
                         self.struct_literal(name)

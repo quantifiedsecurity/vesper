@@ -41,3 +41,23 @@ fn main() -> u64 {
     };
     total
 }
+
+fn loops() -> u64 {
+    let mut total: u64 = 0;
+    for eff in 0..4 {
+        total = wrapping_add(total, eff);
+    }
+    wrapping_add(total, Make::eff(2).n)
+}
+
+copy struct Make {
+    n: u64,
+}
+
+impl Make {
+    fn eff(n: u64) -> Make {
+        Make {
+            n
+        }
+    }
+}

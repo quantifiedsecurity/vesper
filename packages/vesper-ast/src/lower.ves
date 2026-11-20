@@ -2883,6 +2883,8 @@ fn for_header(in l: L) -> bool {
             == k_true()
             || k
             == k_false()
+            || k
+            == k_eff()
     )
 }
 
@@ -3447,7 +3449,8 @@ fn primary(inout l: L) -> u32 {
             if !eat(inout l, k_colon_colon()) {
                 break;
             }
-            let seg = ident(inout l);
+            // `E::eff()`: contextual names are path segments too.
+            let seg = lower(inout l);
             name = join_names(inout l, name, in "::", seg);
         }
         if at(in l, k_l_brace()) && !l.no_struct {
