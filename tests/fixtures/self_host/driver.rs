@@ -397,6 +397,9 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     // modules export with `pub fn`, which the Stage 1
                     // parser lacks (node counts differ).
                     || path.ends_with("crates/vesper-hybrid/modules")
+                    // SH1 lane 11 (#1154): the fmt and highlight ports use `use` (#880).
+                    || path.ends_with("crates/vesper-fmt/vesper")
+                    || path.ends_with("crates/vesper-highlight/vesper")
                 {
                     continue;
                 }
