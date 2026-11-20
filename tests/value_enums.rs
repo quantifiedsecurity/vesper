@@ -3,7 +3,10 @@
 //! of the representation type, literal constants are match patterns, and
 //! `pub const` / `pub enum` items are imported by `use`, re-exported by
 //! `pub use` and named by qualified paths, across modules and packages.
-use std::{path::PathBuf, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 use vesper::{check, packages, parser, runtime::Runtime};
 
 fn cli() -> Command {
@@ -38,7 +41,7 @@ fn manifest(name: &str, deps: &str) -> String {
     )
 }
 
-fn assembled_run(dir: &PathBuf) -> String {
+fn assembled_run(dir: &Path) -> String {
     let assembled = packages::load(dir).unwrap();
     assert!(assembled.ok(), "{:?}", assembled.diagnostics);
     let checked = check::check(&assembled.module);
@@ -49,7 +52,7 @@ fn assembled_run(dir: &PathBuf) -> String {
         .to_string()
 }
 
-fn package_codes(dir: &PathBuf) -> Vec<String> {
+fn package_codes(dir: &Path) -> Vec<String> {
     let assembled = packages::load(dir).unwrap();
     let mut codes: Vec<String> = assembled
         .diagnostics

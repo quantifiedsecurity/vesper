@@ -1271,8 +1271,10 @@ impl<'a> Resolver<'a> {
                                 let r = self.reexported.entry(key).or_default();
                                 for (m, target) in members {
                                     let local = format!("{}::{m}", n.local());
-                                    if !r.contains_key(&local) {
-                                        r.insert(local, (target, Kind::Value));
+                                    if let std::collections::btree_map::Entry::Vacant(slot) =
+                                        r.entry(local)
+                                    {
+                                        slot.insert((target, Kind::Value));
                                         changed = true;
                                     }
                                 }
