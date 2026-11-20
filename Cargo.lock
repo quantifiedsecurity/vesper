@@ -6088,6 +6088,7 @@ dependencies = [
  "libc",
  "object 0.37.3",
  "petgraph",
+ "rowan",
  "salsa",
  "serde",
  "serde_json",
