@@ -41,8 +41,8 @@ const EDITS: &[(&str, &str, &str)] = &[
     // The projection rule: reads under a written path are kept.
     (
         "projections",
-        "if starts_with(in p, act_path(in p, f, r), act_path(in p, f, u32_at(in writes, j))) {",
-        "if path_eq(in p, act_path(in p, f, r), act_path(in p, f, u32_at(in writes, j))) {",
+        "if starts_with(\n                    in p,\n                    act_path(in p, f, r),",
+        "if path_eq(\n                    in p,\n                    act_path(in p, f, r),",
     ),
     // The TOML reader: a header may name an existing implicit dotted table.
     (

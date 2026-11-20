@@ -6,8 +6,9 @@ Base: origin/main `62b4e34` (after lane 9's AST port, #1168).
 This lane ports `vesper-lint`'s engine to Vesper: both lint rules, the
 `Loom.lint.toml` policy reader (with its own TOML reader) and the
 validation and application of fix edits. The port is
-`crates/vesper-lint/vesper` (package `@vesper/lint`, one 3,754-line file),
-built on `@vesper/ast`'s type, effect and generic nodes,
+`crates/vesper-lint/vesper` (package `@vesper/lint`: `lib.ves` with the
+rules, the edits and the exports, `policy.ves` with the policy reader, and
+`util.ves` with the shared helpers; 3,800 lines), built on `@vesper/ast`'s type, effect and generic nodes,
 `@vesper-std/intern` and `@vesper-std/sort`.
 
 Rust stays the default for every build and every dependent. Nothing Rust is
@@ -189,13 +190,17 @@ Rust stays the default: the corpus number does not meet parity.
    (`wrapping_neg_i64`), and `x.wrapping_neg()` is E0202. The same holds for
    casts: `wrapping_i64` instead of a cast.
 
-5. **No arrays of `Str`.** A name table becomes an `if` chain over
+5. **`quote` as an identifier switches `vesper fmt` to the macro profile**,
+   whose token cap is 8,192, so a large file that names a variable `quote`
+   cannot be formatted (TokenLimit). The policy reader calls it `delim`.
+
+6. **No arrays of `Str`.** A name table becomes an `if` chain over
    `text_is`.
 
-6. **Shift amounts must be `u32`**, so every `wrapping_shl_u64` needs
+7. **Shift amounts must be `u32`**, so every `wrapping_shl_u64` needs
    `wrapping_u32` around a `u64` count.
 
-7. **Facts cross the boundary as words.** The export ABI has no way to lend
+8. **Facts cross the boundary as words.** The export ABI has no way to lend
    a Rust tree (`CheckedProgram` with its `BTreeMap`s) to Vesper, so
    `src/port.rs` flattens it on every call. That costs 10% of the Vesper
    arm's instructions on the corpus.
@@ -203,7 +208,7 @@ Rust stays the default: the corpus number does not meet parity.
 ## What is left
 
 - Parity on `analyze`: the boundary encoding and the effect-instance
-  matching loops are the cost; a lent-tree ABI (gap 7) would remove the
+  matching loops are the cost; a lent-tree ABI (gap 8) would remove the
   first.
 - The semver report through the semver port, once `src/tooling/lint.rs`
   moves.

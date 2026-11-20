@@ -40,31 +40,35 @@ filegroup(
 [
     vesper_port_object(
         name = "lint_vesper_divergent_" + area,
-        edit_src = "vesper/src/lib.ves",
+        edit_src = "vesper/src/" + src,
         edits = {old: new},
         library = "lint",
         package = ":port_package",
         rust_types = "crate::port",
         target = VESPER_TARGET,
     )
-    for area, old, new in [
+    for area, src, old, new in [
         (
             "effects",
+            "lib.ves",
             "(q.label == NONE || e.label == q.label)",
             "(q.label == NONE || e.label != NONE)",
         ),
         (
             "projections",
-            "if starts_with(in p, act_path(in p, f, r), act_path(in p, f, u32_at(in writes, j))) {",
-            "if path_eq(in p, act_path(in p, f, r), act_path(in p, f, u32_at(in writes, j))) {",
+            "lib.ves",
+            "if starts_with(\n                    in p,\n                    act_path(in p, f, r),",
+            "if path_eq(\n                    in p,\n                    act_path(in p, f, r),",
         ),
         (
             "toml",
+            "policy.ves",
             "if x.kind != N_TABLE || !x.implicit || x.dotted {",
             "if x.kind != N_TABLE || !x.implicit {",
         ),
         (
             "edits",
+            "lib.ves",
             "fail(E_CANDIDATE);",
             "fail(E_STALE);",
         ),
