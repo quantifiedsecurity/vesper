@@ -122,6 +122,8 @@ use self::words::{
 };
 use self::util::{
     inc,
+    saturating_add_u64,
+    saturating_mul_u64,
     add,
     max64,
     narrow,
@@ -1628,6 +1630,56 @@ fn array_length(inout p: P) -> u64 {
     0
 }
 
+// Whether token `i` is `Fn`, `FnMut` or `FnOnce`.
+fn is_fn_trait(in p: P, i: u64) -> bool {
+    let s = tstart(in p, i);
+    let n = wrapping_sub(tend(in p, i), s);
+    let b = p.src.as_slice();
+    token_text_is(in b, s, n, in "Fn".as_bytes())
+        || token_text_is(in b, s, n, in "FnMut".as_bytes())
+        || token_text_is(in b, s, n, in "FnOnce".as_bytes())
+}
+
+fn token_text_is(in b: Slice[u8], s: u64, n: u64, in w: Slice[u8]) -> bool {
+    if n != w.len() {
+        return false;
+    }
+    for i in 0..n {
+        if u8_at_slice(in b, add(s, i)) != u8_at_slice(in w, i) {
+            return false;
+        }
+    }
+    true
+}
+
+fn u8_at_slice(in b: Slice[u8], i: u64) -> u8 {
+    match b.try_get(i) {
+        Option::Some(c) => c,
+        Option::None => 0,
+    }
+}
+
+// `Parser::function_signature`: `(pass T, ..) -> R eff [E]` of a function
+// type or a `dyn Fn` object.
+fn signature(inout p: P) {
+    expect(inout p, k_l_paren());
+    loop {
+        if at(in p, k_r_paren()) || at(in p, k_eof()) {
+            break;
+        }
+        pass(inout p);
+        ty(inout p);
+        if !eat(inout p, k_comma()) {
+            break;
+        }
+    }
+    expect(inout p, k_r_paren());
+    if eat(inout p, k_arrow()) {
+        ty(inout p);
+    }
+    effects(inout p);
+}
+
 fn ty_inner(inout p: P) -> u8 {
     start_node(inout p, n_type());
     let mut leaves: u64 = 1;
@@ -1635,22 +1687,7 @@ fn ty_inner(inout p: P) -> u8 {
         if eat(inout p, k_at()) {
             mode(inout p);
         }
-        expect(inout p, k_l_paren());
-        loop {
-            if at(in p, k_r_paren()) || at(in p, k_eof()) {
-                break;
-            }
-            pass(inout p);
-            ty(inout p);
-            if !eat(inout p, k_comma()) {
-                break;
-            }
-        }
-        expect(inout p, k_r_paren());
-        if eat(inout p, k_arrow()) {
-            ty(inout p);
-        }
-        effects(inout p);
+        signature(inout p);
         t_function()
     } else if eat(inout p, k_l_paren()) {
         let mut sum: u64 = 0;
@@ -1709,8 +1746,13 @@ fn ty_inner(inout p: P) -> u8 {
         t_named()
     } else if at_word(in p, 0, w_dyn()) && nth(in p, 1) == k_upper() {
         bump(inout p);
-        upper(inout p);
-        type_args(inout p);
+        let name = upper(inout p);
+        if is_fn_trait(in p, name) && at(in p, k_l_paren()) {
+            // A function object `dyn FnMut(A) -> R eff [E]` (§7.3).
+            signature(inout p);
+        } else {
+            type_args(inout p);
+        }
         t_named()
     } else if at_path_root(in p) {
         // `self::m::T[args]`, `super::m::T`, `@scope/name::m::T`.
@@ -2388,6 +2430,12 @@ fn if_expr(inout p: P) -> Ex {
     record(inout p, e)
 }
 
+// `OR_PATTERN_EXPANSION`: the total token weight of the match-arm bodies
+// that or-pattern alternatives may copy in one parse.
+fn or_pattern_expansion() -> u64 {
+    262144
+}
+
 fn match_expr(inout p: P) -> Ex {
     let start = cur_start(in p);
     expect(inout p, k_match());
@@ -2401,18 +2449,36 @@ fn match_expr(inout p: P) -> Ex {
         let before = p.pos;
         let mark = p.binds.len();
         pattern(inout p);
+        let mut alternatives: u64 = 1;
         loop {
             if !eat(inout p, k_pipe()) {
                 break;
             }
             pattern(inout p);
+            alternatives = inc(alternatives);
         }
         expect(inout p, k_fat_arrow());
         let outer = p.vals_trail.len();
         bind_values(inout p, mark);
+        let body_start = p.pos;
+        let expanded = p.expansion;
         let body = expr(inout p);
         vals_restore(inout p, outer);
         h = hmax(h, body.h);
+        // A body's weight is its tokens plus the copies nested in it; each
+        // extra alternative copies it (the AST's or-pattern arms).
+        let weight = saturating_add_u64(
+            wrapping_sub(p.pos, body_start),
+            wrapping_sub(p.expansion, expanded)
+        );
+        p
+            .expansion = saturating_add_u64(
+            p.expansion,
+            saturating_mul_u64(weight, wrapping_sub(alternatives, 1))
+        );
+        if p.expansion > or_pattern_expansion() {
+            err(inout p, in "or-pattern alternatives copy too much code; split the match");
+        }
         let block_body = body.k == x_block();
         if !eat(inout p, k_comma()) && !at(in p, k_r_brace()) && !(block_body && p.pos > before) {
             err(inout p, in "expected ',' between match arms");
@@ -3310,7 +3376,8 @@ fn parse_tokens_new(
         sites: ChunkSeq::new[u32](),
         hdr: ChunkSeq::new[u64](),
         hdr_syms: ChunkSeq::new[u32](),
-        item_start: 0
+        item_start: 0,
+        expansion: 0
     };
     p.src.extend(in source);
     p.rows.resize(nsyms, 0);

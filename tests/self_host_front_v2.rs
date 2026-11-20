@@ -628,6 +628,8 @@ fn edge_cases_and_limits_match_the_rust_parser() {
         "fn f[e: eff](xs: (i64, i64), e: i64) -> i64 { xs[e] } fn g[e: eff](xs: (i64, i64)) -> i64 { xs[e] }",
         "fn f() { TiledSeq::load_tile_vec[c](x); t.col_get[c](x); t.col_set[c](); t.other[c](x) }",
         "fn f() { Box::new[dyn Show](x); f[fn() -> i64](g); f[u8](1); f[Unit](1); x[y]; x[a..b]; x[A](); x[[M]](y) }",
+        // Function objects `dyn Fn(..)` (#1084) and their recovery (#1155).
+        "fn f(w: dyn FnMut(in u8) -> u8 eff [e], v: dyn Fn(), u: dyn FnOnce(sink S, inout T), t: dyn Fnx(u8), s: dyn Fn[u8], r: dyn FnMut(u8 -> ) {}",
         "trait T[A: Tr, B: Other] {} effect E[T: Ord] {} trait U {}",
         "effect E[T: Ord] { fn op(); } trait U {}",
         "use @scope/name::{a, b as c}; use self::x::y; use self::{}; use a::b; pub use @x/y::z; use @a/b-c::d::{E as F, g}; use model M;",
@@ -698,6 +700,15 @@ fn edge_cases_and_limits_match_the_rust_parser() {
             "fn f() -> A{}{} {{}}",
             "[A".repeat(n),
             "]".repeat(n)
+        ));
+    }
+    // The or-pattern expansion budget (`OR_PATTERN_EXPANSION`): copying a
+    // body too often is E0002 at the end of the arm (#1155).
+    for alts in [2, 300, 500, 900] {
+        let pats = vec!["1"; alts].join(" | ");
+        let body = format!("{{ {} 0 }}", "x; ".repeat(300));
+        cases.push(format!(
+            "fn f(x: u8) -> u8 {{ match x {{ {pats} => {body}, _ => match x {{ 2 | 3 => {body} }} }} }}"
         ));
     }
     // Heights: a parenthesized chain resets the depth but not the AST

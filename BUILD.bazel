@@ -494,6 +494,34 @@ vesper_package(
     visibility = ["//visibility:public"],
 )
 
+# @vesper/ast and its std dependencies, for the hybrid compiler's parse
+# module (self-hosting SH1 lane 12, #1155).
+vesper_package(
+    name = "ast_package",
+    srcs = glob(["packages/vesper-ast/src/**/*.ves"]),
+    manifest = "packages/vesper-ast/Loom.toml",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":front_package",
+        ":std_arena_package",
+        ":std_intern_package",
+    ],
+)
+
+vesper_package(
+    name = "std_arena_package",
+    srcs = glob(["packages/vesper-std/arena/src/**/*.ves"]),
+    manifest = "packages/vesper-std/arena/Loom.toml",
+    visibility = ["//visibility:public"],
+)
+
+vesper_package(
+    name = "std_intern_package",
+    srcs = glob(["packages/vesper-std/intern/src/**/*.ves"]),
+    manifest = "packages/vesper-std/intern/Loom.toml",
+    visibility = ["//visibility:public"],
+)
+
 vesper_package(
     name = "std_hash_package",
     srcs = glob(["packages/vesper-std/hash/src/**/*.ves"]),

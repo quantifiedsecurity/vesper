@@ -109,6 +109,38 @@ impl Default for ParseLimits {
 /// bounded UTF-8 prefix CST. Within the byte budget all failure CSTs retain the
 /// complete source. Explicit callers should use parse_with_limits for preflight.
 pub fn parse(source: &str) -> Parse {
+    (parse_table().parse)(source)
+}
+
+/// The swap-in point of `parse` (self-hosting SH1 lane 12, #1155): the
+/// hybrid Stage 2 build (crates/vesper-hybrid) installs a table whose
+/// `parse` is served by the Vesper front end and AST, from its static
+/// constructor. Nothing in the default compiler installs one, so [`parse`]
+/// is [`RUST_PARSE`]. An installed `parse` must return exactly what
+/// [`rust_parse`] returns (the hybrid's tests check it).
+#[derive(Clone, Copy)]
+pub struct ParseTable {
+    /// [`parse`].
+    pub parse: fn(&str) -> Parse,
+}
+
+/// The Rust parser, the default [`ParseTable`].
+pub const RUST_PARSE: ParseTable = ParseTable { parse: rust_parse };
+
+static PARSE_TABLE: std::sync::OnceLock<ParseTable> = std::sync::OnceLock::new();
+
+/// Replace [`RUST_PARSE`] for the rest of the process. Only the first call
+/// takes effect; a later one returns its table back.
+pub fn install_parse(table: ParseTable) -> Result<(), ParseTable> {
+    PARSE_TABLE.set(table)
+}
+
+fn parse_table() -> &'static ParseTable {
+    PARSE_TABLE.get().unwrap_or(&RUST_PARSE)
+}
+
+/// [`parse`] by the Rust parser, whatever table is installed.
+pub fn rust_parse(source: &str) -> Parse {
     parse_module(source, false)
 }
 

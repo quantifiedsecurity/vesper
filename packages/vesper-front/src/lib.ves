@@ -152,7 +152,10 @@ pub struct P {
     hdr: ChunkSeq[u64],
     hdr_syms: ChunkSeq[u32],
     // Start of the span of the last declaration (`item_span`).
-    item_start: u64
+    item_start: u64,
+    // Token weight of the or-pattern bodies copied so far
+    // (`Parser::expansion`, `OR_PATTERN_EXPANSION`).
+    expansion: u64
 }
 
 // What the parser keeps of a parsed expression: its kind (parse.ves
