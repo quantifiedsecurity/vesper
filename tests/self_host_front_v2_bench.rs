@@ -83,9 +83,9 @@ struct Front {
 
 fn front() -> Front {
     let assembled = packages::load(&root().join("packages/vesper-front")).unwrap();
-    assert!(assembled.ok());
+    assert!(assembled.ok(), "{:#?}", assembled.diagnostics);
     let checked = check::check(&assembled.module);
-    assert!(checked.diagnostics.is_empty());
+    assert!(checked.diagnostics.is_empty(), "{:#?}", checked.diagnostics);
     let compile = |entry| native::WordFunction::compile(&checked.world, entry, true).unwrap();
     Front {
         counts: compile("parse_counts"),
@@ -303,4 +303,51 @@ fn memory_per_node() {
         per(tree as f64),
         per(working as f64)
     );
+}
+
+#[test]
+#[ignore = "benchmark"]
+fn lex_abba_against_logos() {
+    let corpus = corpus();
+    let f = front();
+    let tokens = run_vesper_lex(&f, &corpus);
+    if std::env::var_os("VESPER_FRONT_BENCH_EXPERIMENT").is_none() {
+        assert_eq!(tokens as usize, run_rust_lex(&corpus), "token counts");
+    }
+    let rounds = 15;
+    let (mut rl, mut vl, mut vr) = (vec![], vec![], vec![]);
+    for _ in 0..rounds {
+        rl.push(time(|| {
+            std::hint::black_box(run_rust_lex(&corpus));
+        }));
+        vl.push(time(|| {
+            std::hint::black_box(run_vesper_lex(&f, &corpus));
+        }));
+        vr.push(time(|| {
+            std::hint::black_box(run_vesper_lex_raw(&f, &corpus));
+        }));
+        vl.push(time(|| {
+            std::hint::black_box(run_vesper_lex(&f, &corpus));
+        }));
+        rl.push(time(|| {
+            std::hint::black_box(run_rust_lex(&corpus));
+        }));
+    }
+    let (rl, vl, vr) = (median(rl), median(vl), median(vr));
+    println!(
+        "lex rust {rl:?}; vesper {vl:?} ({:.2}x); raw {vr:?} ({:.2}x); {tokens} tokens",
+        vl.as_secs_f64() / rl.as_secs_f64(),
+        vr.as_secs_f64() / rl.as_secs_f64()
+    );
+}
+
+#[test]
+#[ignore = "benchmark"]
+fn lex_once_for_callgrind() {
+    let corpus = corpus();
+    let f = front();
+    let c = run_rust_lex(&corpus);
+    let d = run_vesper_lex(&f, &corpus);
+    let e = run_vesper_lex_raw(&f, &corpus);
+    println!("{c} {d} {e}");
 }

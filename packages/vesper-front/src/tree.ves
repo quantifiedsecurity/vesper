@@ -14,6 +14,9 @@ use self::util::{
     u8_at,
     u32_at
 };
+use self::lex::{
+    token_end
+};
 
 pub fn tree_new() -> Tree {
     Tree {
@@ -53,7 +56,7 @@ pub fn build_tree(inout tree: Tree, in p: P) {
             open.push(node);
         } else {
             let t = widen_u64(e);
-            offset = add(offset, wrapping_sub(w32(in p.t.end, t), w32(in p.t.start, t)));
+            offset = token_end(in p.t, t);
             tree.leaf_token.push(e);
             tree.leaf_parent.push(u32_at(in open, wrapping_sub(open.len(), 1)));
         }
@@ -72,7 +75,7 @@ pub fn report(in tree: Tree, in p: P) -> ChunkSeq[u64] {
         let t = w32(in tree.leaf_token, i);
         out.push(widen_u64(u8_at(in p.t.kind, t)));
         out.push(w32(in p.t.start, t));
-        out.push(w32(in p.t.end, t));
+        out.push(token_end(in p.t, t));
         out.push(w32(in tree.leaf_parent, i));
     }
     for i in 0..nodes {

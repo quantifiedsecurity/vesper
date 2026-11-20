@@ -22,7 +22,9 @@
 use self::lex::{
     lex,
     lex_raw,
-    max_source_bytes
+    lex_with_limits,
+    max_source_bytes,
+    max_diagnostics
 };
 use self::diag::{
     diags_new,
@@ -30,7 +32,8 @@ use self::diag::{
     limit_message_observed
 };
 use self::parse::{
-    parse_tokens
+    parse_tokens,
+    hard_depth
 };
 use self::tree::{
     tree_new,
@@ -39,29 +42,35 @@ use self::tree::{
 };
 use self::util::{
     byte,
-    shl
+    inc,
+    shl,
+    u8_at,
+    w32
 };
 
 // The token table of one source: parallel rows.
 pub struct Tokens {
     // Kind of each token (discriminant of `TokenKind`).
     kind: ChunkSeq[u8],
-    // Byte range of each token.
+    // Start of each token; a token ends where the next starts (lex.ves
+    // `token_end`).
     start: ChunkSeq[u32],
-    end: ChunkSeq[u32],
-    // Contextual word of an identifier (words.ves), else 0.
-    word: ChunkSeq[u8],
-    // Interned symbol of an identifier (from 1), else 0.
+    // Interned symbol of an identifier (from 1, bits 0-23) and its
+    // contextual word (words.ves, bits 24-31), else 0 (`token_sym`,
+    // `token_word`). Filled by `lex`, empty after `lex_raw`.
     sym: ChunkSeq[u32],
-    // The interner: open addressing over symbol numbers, and each symbol's
-    // first spelling.
-    slots: ChunkSeq[u32],
+    // The interner: open addressing over two-word slots (lex.ves
+    // `tag_key`), 64 minus the log2 of the slot count, and each symbol's
+    // first spelling and hash.
+    slots: ChunkSeq[u64],
+    slot_shift: u64,
     sym_start: ChunkSeq[u32],
     sym_end: ChunkSeq[u32],
-    // The contextual word of each symbol.
-    sym_word: ChunkSeq[u8],
+    sym_hash: ChunkSeq[u64],
     // The lexer stopped at a token or diagnostic limit.
-    limited: bool
+    limited: bool,
+    // `lex_with_limits` refused the limits or the source size (no rows).
+    rejected: bool
 }
 
 // Diagnostics, in order.
@@ -116,7 +125,10 @@ pub struct P {
     depth: u64,
     // Scalar elements of the type `ty` read last (`type_leaves`).
     leaves: u64,
-    halted: bool
+    halted: bool,
+    // `ParseLimits::max_diagnostics` and `max_depth`.
+    max_diag: u64,
+    max_depth: u64
 }
 
 // What the parser keeps of a parsed expression: its kind (parse.ves
@@ -162,9 +174,64 @@ pub fn parse_tables(in source: Str) -> ChunkSeq[u64] {
     }
     let mut d = diags_new();
     let t = lex(in b, inout d);
-    let p = parse_tokens(in b, t, d);
+    let p = parse_tokens(in b, t, d, max_diagnostics(), hard_depth());
     build_tree(inout tree, in p);
     report(in tree, in p)
+}
+
+// `parse_with_limits(source, ParseLimits { max_source_bytes, max_tokens,
+// max_diagnostics, max_depth: HARD_PARSE_DEPTH })` as the tables of
+// `parse_tables`. When Rust returns `Err(LexLimit)` (limits out of range or
+// an oversized source) the tables have no tokens or nodes and one E0003
+// at 0..0 whose message is that `LexLimit`.
+pub fn parse_tables_with_limits(
+    in source: Str,
+    max_source_bytes: u64,
+    max_tokens: u64,
+    max_diagnostics: u64
+) -> ChunkSeq[u64] {
+    let b = source.as_bytes();
+    let mut d = diags_new();
+    let t = lex_with_limits(in b, inout d, max_source_bytes, max_tokens, max_diagnostics);
+    if t.rejected {
+        return report_rejected(in d);
+    }
+    let p = parse_tokens(in b, t, d, max_diagnostics, hard_depth());
+    let mut tree = tree_new();
+    build_tree(inout tree, in p);
+    report(in tree, in p)
+}
+
+// `parse_tables_with_limits` with the token limit in the low 32 bits of
+// `counts` and the diagnostic limit in the high 32 bits: the host entry of
+// tests/self_host_front_v2.rs, whose native calls take at most three words.
+pub fn parse_tables_with_packed_limits(in source: Str, max_source_bytes: u64, counts: u64)
+    -> ChunkSeq[u64] {
+    parse_tables_with_limits(in source, max_source_bytes, counts & 4294967295, counts >> 32)
+}
+
+// The tables of a refused parse: no tokens or nodes, the diagnostics of `d`.
+fn report_rejected(in d: Diags) -> ChunkSeq[u64] {
+    let mut out = ChunkSeq::new[u64]();
+    out.push(0);
+    out.push(0);
+    out.push(d.code.len());
+    for i in 0..d.code.len() {
+        let at = w32(in d.at, i);
+        let end = if inc(i) < d.code.len() {
+            w32(in d.at, inc(i))
+        } else {
+            d.text.len()
+        };
+        out.push(widen_u64(u8_at(in d.code, i)));
+        out.push(w32(in d.start, i));
+        out.push(w32(in d.end, i));
+        out.push(wrapping_sub(end, at));
+        for j in at..end {
+            out.push(widen_u64(u8_at(in d.text, j)));
+        }
+    }
+    out
 }
 
 fn report_oversized(retained: u64, in d: Diags) -> ChunkSeq[u64] {
@@ -212,7 +279,7 @@ pub fn parse_counts(in source: Str) -> u64 {
     }
     let mut d = diags_new();
     let t = lex(in b, inout d);
-    let p = parse_tokens(in b, t, d);
+    let p = parse_tokens(in b, t, d, max_diagnostics(), hard_depth());
     let mut tree = tree_new();
     build_tree(inout tree, in p);
     wrapping_add(shl(p.t.kind.len(), 32), tree.node_kind.len())

@@ -11,7 +11,8 @@
 //! the parser test suites (`crates/vesper-syntax/tests`,
 //! `tests/self_host_parse.rs`), hand-written limit cases (depth, diagnostic,
 //! token and source-size limits) and a fuzzed corpus of edited repository
-//! sources and token soup from a fixed seed.
+//! sources and token soup from a fixed seed. `parse_tables_with_limits` is
+//! compared with `parse_with_limits` under explicit limits.
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use vesper::{check, native, packages};
@@ -35,7 +36,22 @@ struct Tables {
 
 /// The Rust parser's CST and diagnostics as rows.
 fn rust_tables(source: &str) -> Tables {
-    let parse = parser::parse(source);
+    parse_rows(&parser::parse(source))
+}
+
+/// `parse_with_limits` as rows: an `Err(LexLimit)` is no tokens or nodes
+/// and one E0003 at 0..0 with the limit's text (`parse_tables_with_limits`).
+fn rust_tables_with_limits(source: &str, limits: parser::ParseLimits) -> Tables {
+    match parser::parse_with_limits(source, limits) {
+        Ok(parse) => parse_rows(&parse),
+        Err(limit) => Tables {
+            diagnostics: vec![(3, 0, 0, limit.to_string())],
+            ..Tables::default()
+        },
+    }
+}
+
+fn parse_rows(parse: &parser::Parse) -> Tables {
     let mut t = Tables::default();
     fn walk(node: &parser::SyntaxNode, parent: u64, t: &mut Tables) {
         let id = t.nodes.len() as u64;
@@ -83,6 +99,7 @@ fn rust_tables(source: &str) -> Tables {
 /// The compiled front end. `WordFunction` holds the JIT module.
 struct Front {
     tables: native::WordFunction,
+    with_limits: native::WordFunction,
     counts: native::WordFunction,
     lex: native::WordFunction,
 }
@@ -110,6 +127,7 @@ fn front() -> &'static Front {
         };
         Front {
             tables: compile("parse_tables"),
+            with_limits: compile("parse_tables_with_packed_limits"),
             counts: compile("parse_counts"),
             lex: compile("lex_count"),
         }
@@ -148,7 +166,29 @@ fn take_words(handle: u64) -> Vec<u64> {
 }
 
 fn vesper_tables(source: &str) -> Tables {
-    let words = take_words(call(&front().tables, source));
+    tables_from_words(&take_words(call(&front().tables, source)))
+}
+
+/// `parse_tables_with_limits` with the source, token and diagnostic limits.
+fn vesper_tables_with_limits(source: &str, limits: parser::ParseLimits) -> Tables {
+    let words = str_words(source);
+    // Native word functions take at most three words, so the token and
+    // diagnostic limits share one (`parse_tables_with_packed_limits`).
+    let counts = limits.max_tokens as u64 | (limits.max_diagnostics as u64) << 32;
+    // SAFETY: the entry takes an `in Str` (the address of its three words,
+    // which outlive the call) and two `u64` words.
+    let handle = unsafe {
+        front().with_limits.call(&[
+            words.as_ptr() as u64,
+            limits.max_source_bytes as u64,
+            counts,
+        ])
+    }
+    .unwrap();
+    tables_from_words(&take_words(handle))
+}
+
+fn tables_from_words(words: &[u64]) -> Tables {
     let (leaves, nodes, diags) = (words[0] as usize, words[1] as usize, words[2] as usize);
     let mut at = 3;
     let mut row = || {
@@ -301,6 +341,60 @@ fn repository_sources_match_the_rust_parser() {
         files.len(),
         failures.join("\n")
     );
+}
+
+/// `parse_tables_with_limits` against `parse_with_limits` over a grid of
+/// limits: out of range (`Err` from the preflight), an oversized source,
+/// token and diagnostic caps below and above the corpus, and the hard
+/// ceilings the formatter uses. Sources: a sample of repository files and
+/// the limit cases.
+#[test]
+fn explicit_limits_match_parse_with_limits() {
+    let files = repository_sources();
+    let mut sources: Vec<String> = files
+        .iter()
+        .step_by(17)
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .collect();
+    sources.push("`".repeat(300));
+    sources.push(format!("fn f() {{ {} }}", "let = ;".repeat(200)));
+    sources.push("a ".repeat(70000));
+    sources.push(format!("fn f() {{ {} }}", "x;".repeat(70000)));
+    sources.push("a".repeat((1 << 20) + 1));
+    sources.push(String::new());
+    let mut failures = vec![];
+    for (bytes, tokens, diagnostics) in [
+        (1 << 20, 65_536, 128),
+        (8 << 20, 262_144, 1),
+        (8 << 20, 262_144, 1024),
+        (8 << 20, 1, 1024),
+        (8 << 20, 7, 3),
+        (100, 65_536, 128),
+        (0, 65_536, 128),
+        ((8 << 20) + 1, 65_536, 128),
+        (1 << 20, 0, 128),
+        (1 << 20, 262_145, 128),
+        (1 << 20, 65_536, 0),
+        (1 << 20, 65_536, 1025),
+    ] {
+        let limits = parser::ParseLimits {
+            max_source_bytes: bytes,
+            max_tokens: tokens,
+            max_diagnostics: diagnostics,
+            ..parser::ParseLimits::default()
+        };
+        for (i, source) in sources.iter().enumerate() {
+            let rust = rust_tables_with_limits(source, limits);
+            let vesper = vesper_tables_with_limits(source, limits);
+            if rust != vesper {
+                failures.push(format!(
+                    "{limits:?} source {i}: {}",
+                    first_difference(source, &rust, &vesper)
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// The string literals of a Rust test file that look like Vesper sources.

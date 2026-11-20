@@ -135,7 +135,10 @@ use self::diag::{
 };
 use self::lex::{
     trivia_kind,
-    max_diagnostics
+    max_diagnostics,
+    token_end,
+    token_word,
+    token_sym
 };
 
 // ---------------------------------------------------------------- kinds
@@ -160,7 +163,8 @@ fn n_type() -> u32 {
     204
 }
 
-fn max_depth() -> u64 {
+// `HARD_PARSE_DEPTH`, the default `max_depth`.
+pub fn hard_depth() -> u64 {
     128
 }
 
@@ -301,11 +305,11 @@ fn tk(in p: P, i: u64) -> u8 {
 }
 
 fn tword(in p: P, i: u64) -> u8 {
-    u8_at(in p.t.word, i)
+    token_word(in p.t, i)
 }
 
 fn tsym(in p: P, i: u64) -> u32 {
-    u32_at(in p.t.sym, i)
+    token_sym(in p.t, i)
 }
 
 fn tstart(in p: P, i: u64) -> u64 {
@@ -313,7 +317,7 @@ fn tstart(in p: P, i: u64) -> u64 {
 }
 
 fn tend(in p: P, i: u64) -> u64 {
-    w32(in p.t.end, i)
+    token_end(in p.t, i)
 }
 
 // `Parser::index`: the token index of the `n`th upcoming non-trivia token.
@@ -407,7 +411,7 @@ fn exhaust(inout p: P, kind: u64, limit: u64) {
     p.halted = true;
     let mut m = ChunkSeq::new[u8]();
     limit_message(inout m, kind, limit, p.src.len());
-    diag_push_limit(inout p.d, 3, at, at, in m.as_slice(), max_diagnostics());
+    diag_push_limit(inout p.d, 3, at, at, in m.as_slice(), p.max_diag);
     loop {
         if p.pos >= p.ntok || tk(in p, p.pos) == k_eof() {
             return;
@@ -423,8 +427,8 @@ fn diag_open(inout p: P, start: u64, end: u64) -> bool {
     if p.halted {
         return false;
     }
-    if p.d.code.len() >= max_diagnostics() {
-        exhaust(inout p, 2, max_diagnostics());
+    if p.d.code.len() >= p.max_diag {
+        exhaust(inout p, 2, p.max_diag);
         return false;
     }
     p.d.code.push(2);
@@ -464,8 +468,8 @@ fn enter(inout p: P) -> bool {
     if p.halted {
         return false;
     }
-    if p.depth >= max_depth() {
-        exhaust(inout p, 3, max_depth());
+    if p.depth >= p.max_depth {
+        exhaust(inout p, 3, p.max_depth);
         return false;
     }
     p.depth = inc(p.depth);
@@ -492,8 +496,8 @@ fn record(inout p: P, e: Ex) -> Ex {
     if p.halted {
         return placeholder(in p);
     }
-    if widen_u64(e.h) > max_depth() {
-        exhaust(inout p, 3, max_depth());
+    if widen_u64(e.h) > p.max_depth {
+        exhaust(inout p, 3, p.max_depth);
         return placeholder(in p);
     }
     e
@@ -2236,35 +2240,141 @@ fn binary(inout p: P, min: u64) -> Ex {
     record(inout p, e)
 }
 
-// Precedence of a binary operator kind (0 for none); assignments are 1.
+// Precedence of a binary operator kind (0 for none), by token kind;
+// assignments are 1.
+const PRECEDENCE: [u64; 128] = [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    10,
+    10,
+    11,
+    11,
+    11,
+    4,
+    4,
+    5,
+    5,
+    5,
+    5,
+    3,
+    2,
+    0,
+    6,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    8,
+    7,
+    9,
+    9,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+];
+
 fn precedence(k: u8) -> u64 {
-    match k {
-        48 => 1,
-        49 => 1,
-        50 => 1,
-        51 => 1,
-        52 => 1,
-        53 => 1,
-        66 => 2,
-        65 => 3,
-        59 => 4,
-        60 => 4,
-        61 => 5,
-        62 => 5,
-        63 => 5,
-        64 => 5,
-        68 => 6,
-        78 => 7,
-        77 => 8,
-        79 => 9,
-        80 => 9,
-        54 => 10,
-        55 => 10,
-        56 => 11,
-        57 => 11,
-        58 => 11,
-        _ => 0,
-    }
+    PRECEDENCE[k & 127]
 }
 
 fn binary_inner(inout p: P, min: u64) -> Ex {
@@ -2288,8 +2398,8 @@ fn binary_inner(inout p: P, min: u64) -> Ex {
         if prec == 0 || prec < min {
             break;
         }
-        if widen_u64(lhs.h) >= max_depth() {
-            exhaust(inout p, 3, max_depth());
+        if widen_u64(lhs.h) >= p.max_depth {
+            exhaust(inout p, 3, p.max_depth);
             break;
         }
         if !enter(inout p) {
@@ -2363,8 +2473,8 @@ fn postfix_inner(inout p: P) -> Ex {
         if !(k == k_l_paren() || k == k_l_bracket() || k == k_dot() || k == k_question()) {
             break;
         }
-        if widen_u64(e.h) >= max_depth() {
-            exhaust(inout p, 3, max_depth());
+        if widen_u64(e.h) >= p.max_depth {
+            exhaust(inout p, 3, p.max_depth);
             break;
         }
         if !enter(inout p) {
@@ -2786,7 +2896,13 @@ fn constructor_pattern(inout p: P) {
 
 // `parse_with_limits` after lexing: the module, or for a limited token
 // stream the flat module of every token.
-pub fn parse_tokens(in source: Slice[u8], sink t: Tokens, sink d: Diags) -> P {
+pub fn parse_tokens(
+    in source: Slice[u8],
+    sink t: Tokens,
+    sink d: Diags,
+    max_diag: u64,
+    max_depth: u64
+) -> P {
     let ntok = t.kind.len();
     let nsyms = inc(t.sym_start.len());
     let mut p = P {
@@ -2807,7 +2923,9 @@ pub fn parse_tokens(in source: Slice[u8], sink t: Tokens, sink d: Diags) -> P {
         pending: ChunkSeq::new[u32](),
         depth: 0,
         leaves: 1,
-        halted: false
+        halted: false,
+        max_diag: max_diag,
+        max_depth: max_depth
     };
     p.src.extend(in source);
     p.rows.resize(nsyms, 0);
