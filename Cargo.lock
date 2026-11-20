@@ -5573,9 +5573,9 @@ dependencies = [
  "vesper-ebpf-seed",
  "vesper-ffi",
  "vesper-fiber-abi",
- "vesper-fmt",
+ "vesper-fmt-seed",
  "vesper-forge",
- "vesper-highlight",
+ "vesper-highlight-seed",
  "vesper-kinetic-seed",
  "vesper-lean-syntax-seed",
  "vesper-lint",
@@ -5956,6 +5956,19 @@ name = "vesper-fmt"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "vesper-bench",
+ "vesper-fmt-seed",
+ "vesper-lean-syntax-seed",
+ "vesper-port-abi",
+ "vesper-port-harness",
+ "vesper-syntax",
+]
+
+[[package]]
+name = "vesper-fmt-seed"
+version = "0.1.0"
+dependencies = [
+ "blake3",
  "vesper-lean-syntax-seed",
  "vesper-syntax",
 ]
@@ -6034,6 +6047,25 @@ dependencies = [
  "smol_str",
  "tiny-skia",
  "ttf-parser",
+ "vesper-bench",
+ "vesper-highlight-seed",
+ "vesper-port-abi",
+ "vesper-port-harness",
+ "vesper-syntax",
+]
+
+[[package]]
+name = "vesper-highlight-seed"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "png",
+ "rowan",
+ "rustybuzz",
+ "smol_str",
+ "tiny-skia",
+ "ttf-parser",
  "vesper-syntax",
 ]
 
@@ -6074,10 +6106,10 @@ dependencies = [
  "vesper-ebpf-seed",
  "vesper-ffi",
  "vesper-fiber-abi",
- "vesper-fmt",
+ "vesper-fmt-seed",
  "vesper-forge",
  "vesper-grammar-seed",
- "vesper-highlight",
+ "vesper-highlight-seed",
  "vesper-kinetic-seed",
  "vesper-lean-syntax-seed",
  "vesper-lint",
@@ -6385,7 +6417,7 @@ name = "vesper-nexus"
 version = "0.1.0"
 dependencies = [
  "vesper-ffi",
- "vesper-fmt",
+ "vesper-fmt-seed",
  "vesper-simpulse-seed",
  "vesper-syntax",
  "wasmtime",

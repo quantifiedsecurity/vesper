@@ -14,6 +14,7 @@ members = [
     "crates/vesper-grammar",
     "crates/vesper-grammar/seed",
     "crates/vesper-fmt",
+    "crates/vesper-fmt/seed",
     "crates/vesper-lint",
     "crates/vesper-bench",
     "crates/vesper-bench/seed",
@@ -95,6 +96,7 @@ members = [
     "crates/vesper-ignis-vulkan",
     "crates/vesper-codegen-verified",
     "crates/vesper-highlight",
+    "crates/vesper-highlight/seed",
     "crates/vesper-fusion",
     "crates/vesper-port-abi",
     "crates/vesper-port-harness",
@@ -121,6 +123,7 @@ default-members = [
     "crates/vesper-grammar",
     "crates/vesper-grammar/seed",
     "crates/vesper-fmt",
+    "crates/vesper-fmt/seed",
     "crates/vesper-lint",
     "crates/vesper-bench",
     "crates/vesper-bench/seed",
@@ -202,6 +205,7 @@ default-members = [
     "crates/vesper-ignis-vulkan",
     "crates/vesper-codegen-verified",
     "crates/vesper-highlight",
+    "crates/vesper-highlight/seed",
     "crates/vesper-fusion",
     "crates/vesper-port-abi",
     "crates/vesper-port-harness",
@@ -267,13 +271,15 @@ vesper-simd = { path = "crates/vesper-simd" }
 # The compiler links the frozen Rust seed copy of vesper-lean-syntax (#1128).
 vesper-lean-syntax = { path = "crates/vesper-lean-syntax/seed", package = "vesper-lean-syntax-seed" }
 vesper-syntax = { path = "crates/vesper-syntax" }
-vesper-highlight = { path = "crates/vesper-highlight", features = ["shot"] }
+# The compiler links the frozen Rust seed copies of vesper-highlight and
+# vesper-fmt (seed-copy rule, #1154).
+vesper-highlight = { path = "crates/vesper-highlight/seed", package = "vesper-highlight-seed", features = ["shot"] }
 # The compiler links the frozen Rust seed copy of vesper-span (#1128).
 vesper-span = { path = "crates/vesper-span/seed", package = "vesper-span-seed" }
 vesper-lsp = { path = "crates/vesper-lsp" }
 # The compiler links the frozen Rust seed copy of vesper-diagnostics (#1128).
 vesper-diagnostics = { path = "crates/vesper-diagnostics/seed", package = "vesper-diagnostics-seed" }
-vesper-fmt = { path = "crates/vesper-fmt" }
+vesper-fmt = { path = "crates/vesper-fmt/seed", package = "vesper-fmt-seed" }
 vesper-lint = { path = "crates/vesper-lint" }
 vesper-doc = { path = "crates/vesper-doc" }
 vesper-test = { path = "crates/vesper-test" }
