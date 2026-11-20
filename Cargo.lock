@@ -5578,7 +5578,7 @@ dependencies = [
  "vesper-highlight-seed",
  "vesper-kinetic-seed",
  "vesper-lean-syntax-seed",
- "vesper-lint",
+ "vesper-lint-seed",
  "vesper-loom-admission",
  "vesper-loom-calculus-seed",
  "vesper-loom-cas",
@@ -6129,7 +6129,7 @@ dependencies = [
  "vesper-highlight-seed",
  "vesper-kinetic-seed",
  "vesper-lean-syntax-seed",
- "vesper-lint",
+ "vesper-lint-seed",
  "vesper-loom-admission",
  "vesper-loom-audit-seed",
  "vesper-loom-calculus-seed",
@@ -6239,6 +6239,21 @@ version = "0.1.0"
 
 [[package]]
 name = "vesper-lint"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml 0.8.23",
+ "vesper",
+ "vesper-bench",
+ "vesper-core",
+ "vesper-lint-seed",
+ "vesper-port-abi",
+ "vesper-port-harness",
+]
+
+[[package]]
+name = "vesper-lint-seed"
 version = "0.1.0"
 dependencies = [
  "serde",
