@@ -161,6 +161,12 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # Loops, atomics and the stack bound (SH2 lane 10, #1182).
+        "test/self_host_check_loops_atomics": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # @vesper-std/fs, process and env (#1125): drivers over the packages
         # and their .vsys imports.
         "test/std_env": [":files"],
@@ -476,6 +482,7 @@ vesper_crate(
         # The checker data differential (#1176) checks every corpus world.
         "test/self_host_check_data": "long",
         "test/self_host_check_harness": "long",
+        "test/self_host_check_loops_atomics": "long",
     },
 )
 
