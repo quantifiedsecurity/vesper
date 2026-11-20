@@ -418,12 +418,14 @@ impl<M: Module> Codegen<'_, '_, M> {
         let mut words = vec![];
         let (receiver, handle) = if seq::is_slice_type(ty) {
             let view = self.address(&e)?;
+            let view = self.hoisted_receiver(view);
             for offset in [0, 8, 16] {
                 words.push(((view, offset), self.seq_word(view, offset)));
             }
             (view, words[0].1)
         } else {
             let handle = self.expr(&e)?;
+            let handle = self.hoisted_receiver(handle);
             (handle, handle)
         };
         for offset in [LEN, DATA] {
@@ -433,6 +435,20 @@ impl<M: Module> Codegen<'_, '_, M> {
             t.header_words.extend(words);
         }
         Ok(receiver)
+    }
+
+    /// A copy of `value` only the loop's hoisted reads use, so the header
+    /// words cached under it are found only where the preheader dominates
+    /// (#1151). Frontend variables can return the same value in blocks the
+    /// preheader does not dominate once their blocks are sealed early.
+    fn hoisted_receiver(&mut self, value: ir::Value) -> ir::Value {
+        let copy = self.b.ins().iadd_imm(value, 0);
+        let info = self.info(value);
+        self.write_info(copy, info);
+        if self.invariant_headers.contains(&value) {
+            self.invariant_headers.insert(copy);
+        }
+        copy
     }
 
     fn seq_set_word(&mut self, ptr: ir::Value, offset: i32, value: ir::Value) {
@@ -806,7 +822,37 @@ impl<M: Module> Codegen<'_, '_, M> {
                 let (h, start, len) = self.seq_view(arg(0)?, &arg_types[0]);
                 let i = arg(1)?;
                 let valid = self.b.ins().icmp(IntCC::UnsignedLessThan, i, len);
-                if op == SeqOp::TrySet {
+                let plain_word = op == SeqOp::TrySet
+                    && self.operands_only
+                    && !Layout::of(self.world, &elem)?.aggregate()
+                    && !(self.drops_enabled() && crate::fip::elem_needs_drop(self.world, &elem));
+                if plain_word {
+                    // Optimized code stores a plain word without a branch
+                    // (#1151): an index past the end writes a private slot
+                    // instead. Cranelift places a pure value at its first
+                    // use, so behind a branch each stored value was built
+                    // inside its store block, where the next store could not
+                    // reuse it, and straight-line code that stores values
+                    // sharing work recomputed all of it for every store.
+                    let slot = match self.discard_slot {
+                        Some(slot) => slot,
+                        None => {
+                            let slot = self.b.create_sized_stack_slot(ir::StackSlotData::new(
+                                ir::StackSlotKind::ExplicitSlot,
+                                16,
+                                3,
+                            ));
+                            self.discard_slot = Some(slot);
+                            slot
+                        }
+                    };
+                    let ptr = self.m.target_config().pointer_type();
+                    let discard = self.b.ins().stack_addr(ptr, slot, 0);
+                    let addr = self.seq_elem_addr(h, start, i, stride);
+                    let target = self.b.ins().select(valid, addr, discard);
+                    self.seq_store_elem(target, arg(2)?, &elem)?;
+                    self.b.ins().uextend(types::I64, valid)
+                } else if op == SeqOp::TrySet {
                     let yes = self.b.create_block();
                     let no = self.b.create_block();
                     let done = self.b.create_block();

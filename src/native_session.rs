@@ -948,6 +948,7 @@ fn compile_session_with_linkage<M: Module>(
             own_abi: super::FnAbi::default(),
             result_buffer: None,
             forced_call_vars: None,
+            discard_slot: None,
             session: Some(SessionCodegen {
                 ctx: context,
                 park,
