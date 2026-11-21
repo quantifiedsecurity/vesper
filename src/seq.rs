@@ -52,6 +52,8 @@
 //! `TiledSeq` requests one today, and no runnable entry can discharge it.
 use crate::{ast::*, check::World};
 
+#[path = "seq/element_paths.rs"]
+pub mod element_paths;
 #[path = "seq/native_runtime.rs"]
 pub mod native_runtime;
 
@@ -731,7 +733,9 @@ pub fn resolve(callee_name: &str, receiver_ty: Option<&Type>) -> Option<SeqOp> {
 
 /// Where `Slice[T]` may appear: only as the whole type of an `in` or `inout`
 /// parameter. Element types of a sequence must be storable values.
-pub(crate) fn check_world(world: &World) -> Vec<Diagnostic> {
+/// Public for the self-hosting differential (SH2 lane 9, #1181).
+#[doc(hidden)]
+pub fn check_world(world: &World) -> Vec<Diagnostic> {
     let mut diagnostics = vec![];
     let second_class = |what: &str, span: &Span| {
         Diagnostic::new(
