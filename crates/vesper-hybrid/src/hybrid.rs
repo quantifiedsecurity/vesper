@@ -105,6 +105,8 @@ static EXPORT_CALLS: AtomicU64 = AtomicU64::new(0);
 static EXPORT_DECLINED: AtomicU64 = AtomicU64::new(0);
 /// Library interfaces the Vesper planner planned.
 static PLAN_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Interface files the Vesper writer wrote.
+static JSON_CALLS: AtomicU64 = AtomicU64::new(0);
 /// Sources whose tests the Vesper test-runner module discovered.
 static TEST_RUNNER_CALLS: AtomicU64 = AtomicU64::new(0);
 /// Programs inlined by the Vesper inliner module.
@@ -230,6 +232,16 @@ fn vesper_plan(
     let input = plan_words::plan_input(world, public, library, directives);
     PLAN_CALLS.fetch_add(1, Relaxed);
     Some(plan_words::decode_plan(&codegen_export_binding::plan(&input)))
+}
+
+/// The `interface_json` hook of `vesper::codegen_swap` from
+/// `modules/codegen_export` (#1286): the interface file in Vesper, from the
+/// interface in the binding generator's words.
+fn vesper_interface_json(interface: &vesper::native::export::LibraryInterface) -> Option<String> {
+    let input = export_words::binding_input(interface, &Default::default());
+    let text = String::from_utf8(codegen_export_binding::interface_file(&input)).ok()?;
+    JSON_CALLS.fetch_add(1, Relaxed);
+    Some(text)
 }
 
 /// The `export` hook of `vesper::codegen_swap` from `modules/codegen_export`
@@ -364,6 +376,7 @@ extern "C" fn install() {
         aggregate: Some(vesper_aggregate),
         export: Some(vesper_export),
         plan: Some(vesper_plan),
+        interface_json: Some(vesper_interface_json),
         ..Default::default()
     };
     if vesper::codegen_swap::install(hooks).is_err() {
@@ -415,6 +428,10 @@ extern "C" fn report() {
     eprintln!(
         "vesper-hybrid: codegen planned {} library interfaces from Vesper",
         PLAN_CALLS.load(Relaxed)
+    );
+    eprintln!(
+        "vesper-hybrid: codegen wrote {} interface files from Vesper",
+        JSON_CALLS.load(Relaxed)
     );
     eprintln!(
         "vesper-hybrid: test-runner answered {} calls from Vesper",

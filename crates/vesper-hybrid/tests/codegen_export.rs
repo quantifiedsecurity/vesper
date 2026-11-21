@@ -1,11 +1,12 @@
-//! The export glue swap (self-hosting SH4 lane 12, #1286): the default
+//! The export ABI swap (self-hosting SH4 lane 12, #1286): the default
 //! `vesper` and `vesper-hybrid`, whose `export` hook emits the export ABI
 //! v2 glue in Vesper (modules/codegen_export), build every library a port
 //! crate links (`PORTS`, the `Port::new` calls of crates/*/build.rs) with
 //! `build --lib`, and the objects and interface files must be
-//! byte-identical. The hybrid's `plan` hook plans every interface in
-//! Vesper (modules/codegen_export `plan`), and its stats show the hooks
-//! planned each library and emitted each v2 library's glue.
+//! byte-identical. The hybrid's `plan` and `interface_json` hooks plan and
+//! write every interface in Vesper (modules/codegen_export), and its stats
+//! show the hooks planned and wrote each library and emitted each v2
+//! library's glue.
 //!
 //! `CODEGEN_EXPORT_PORTS=aura,warp` limits the corpus. The default
 //! compiler is found as tests/differential.rs finds it.
@@ -135,6 +136,7 @@ struct Outcome {
     builds: u64,
     swapped: u64,
     planned: u64,
+    written: u64,
     differ: Vec<String>,
 }
 
@@ -153,6 +155,7 @@ fn compare(port: &Port, repo: &Path, scratch: &Path, default: &Path, hybrid: &Pa
         out.builds += 1;
         out.swapped += stat(&stderr, "vesper-hybrid: codegen emitted the export glue of ");
         out.planned += stat(&stderr, "vesper-hybrid: codegen planned ");
+        out.written += stat(&stderr, "vesper-hybrid: codegen wrote ");
         if rust != vesper {
             out.differ.push(format!("{library} (optimize {optimize})"));
         }
@@ -184,6 +187,7 @@ fn export_objects_and_interfaces_match_rust() {
                     t.builds += o.builds;
                     t.swapped += o.swapped;
                     t.planned += o.planned;
+                    t.written += o.written;
                     t.differ.extend(o.differ);
                 }
             });
@@ -193,14 +197,16 @@ fn export_objects_and_interfaces_match_rust() {
     let mut t = total.into_inner().unwrap();
     t.differ.sort();
     eprintln!(
-        "export: {} of {} objects and interfaces differ over {} libraries; the hooks planned {} interfaces and emitted {} glues",
+        "export: {} of {} objects and interfaces differ over {} libraries; the hooks planned {} interfaces, wrote {} interface files and emitted {} glues",
         t.differ.len(),
         t.builds,
         ports.len(),
         t.planned,
+        t.written,
         t.swapped
     );
     assert!(t.differ.is_empty(), "objects differ: {:?}", t.differ);
     assert!(t.swapped > 0, "the export hook never ran");
     assert_eq!(t.planned, t.builds, "the plan hook missed a build");
+    assert_eq!(t.written, t.builds, "the interface_json hook missed a build");
 }

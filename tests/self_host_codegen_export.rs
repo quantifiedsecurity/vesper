@@ -569,3 +569,42 @@ fn vesper_plans_match_rust() {
     );
     assert_eq!(bad, 0);
 }
+
+// ------------------------------------------------------------ interface file
+
+/// `interface_json` in Vesper (json.ves) against serde_json, for every
+/// library of the corpus and every interface the planner cases plan.
+#[test]
+fn vesper_interface_json_matches_rust() {
+    let entry = package().entry("interface_text", true);
+    let mut interfaces: Vec<(String, LibraryInterface)> = corpus()
+        .iter()
+        .map(|b| (b.library.to_string(), b.interface.clone()))
+        .collect();
+    for (library, source) in PLAN_CASES {
+        for (_, plan) in planned(source, library) {
+            if let Ok(i) = plan {
+                interfaces.push((library.to_string(), i));
+            }
+        }
+    }
+    let (mut bad, mut bytes) = (0, 0);
+    for (library, i) in &interfaces {
+        let rust = vesper::native::export::interface_json(i).unwrap();
+        bytes += rust.len();
+        let vesper = entry.text(&words::binding_input(i, &BindingOptions::default()));
+        if rust != vesper {
+            bad += 1;
+            if bad <= 5 {
+                let d = first_difference(&rust, &vesper)
+                    .unwrap_or_else(|| "in the line endings".into());
+                eprintln!("interface: {library} differs {d}");
+            }
+        }
+    }
+    eprintln!(
+        "interface files: {bad} of {} differ ({bytes} bytes)",
+        interfaces.len()
+    );
+    assert_eq!(bad, 0);
+}

@@ -1773,6 +1773,12 @@ pub fn compile_world_with(
 
 /// The interface file text: pretty JSON with a trailing newline.
 pub fn interface_json(interface: &LibraryInterface) -> Result<String, String> {
+    // SH4 swap point (#1286): the `interface_json` hook may write the file.
+    if let Some(hook) = crate::codegen_swap::installed().interface_json
+        && let Some(json) = hook(interface)
+    {
+        return Ok(json);
+    }
     let mut json = serde_json::to_string_pretty(interface).map_err(|e| e.to_string())?;
     json.push('\n');
     Ok(json)
