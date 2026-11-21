@@ -827,6 +827,9 @@ vesper_crate(
     # while allowing the complete target 900 seconds on slower macOS runners.
     test_timeouts = {
         "test/format_proof_cli": "long",
+        # SH6 lane 2 (#1397): builds bootstrap/seed/runner/vwasm.c with the
+        # host C compiler and runs ~270 corpus programs in Wasmtime and vwasm.
+        "test/stage2_seed_runner": "long",
         "test/forge_provenance_cli": "long",
         "test/verify_extract_cli": "long",
         # Front-end and AST tests check and lower their full package closures.
