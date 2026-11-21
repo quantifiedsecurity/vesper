@@ -661,7 +661,8 @@ impl Parser<'_> {
     /// argument list it is a mode only before a token that starts an operand
     /// and cannot continue a value named `sink`: `f(sink x)` sinks `x`, while
     /// `f(sink)`, `f(sink.a)`, `f(sink(x))`, `f(sink[i])` and `f(sink - 1)`
-    /// use a value named `sink`. In a parameter list it is a mode before the
+    /// use a value named `sink`; before a closure (`|` or `||`) it is a mode.
+    /// In a parameter list it is a mode before the
     /// parameter's name (`sink x: T`), and a name before `:` (`sink: T`).
     fn pass_word_is_mode(&self, params: bool) -> bool {
         let next = self.nth(1);
@@ -681,6 +682,10 @@ impl Parser<'_> {
             | K::LBrace
             | K::Bang
             | K::Tilde
+            // A closure (`sink |x| e`, `sink || e`): a value named `sink`
+            // is not or-ed (`(sink) | x` writes that).
+            | K::Pipe
+            | K::Or
             | K::Match
             | K::If
             | K::State

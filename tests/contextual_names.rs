@@ -105,6 +105,25 @@ fn main() -> u64 { let sink: u64 = 5; id(sink - 1) }"
     );
 }
 
+/// Before a closure's `|` or `||` the word is a mode: closures are passed by
+/// `sink` far more often than a value named `sink` is or-ed.
+#[test]
+fn pass_words_before_closures_are_modes() {
+    assert_eq!(
+        both(
+            "fn call(sink f: fn() -> u64) -> u64 { f() }
+fn apply(sink f: fn(u64) -> u64) -> u64 { f(2) }
+fn main() -> u64 { wrapping_add(call(sink || 40), apply(sink |x: u64| x)) }"
+        ),
+        "42"
+    );
+    // A value named `sink` is or-ed in parentheses.
+    assert_eq!(
+        both("fn id(x: u64) -> u64 { x }\nfn main() -> u64 { let sink: u64 = 40; id((sink) | 2) }"),
+        "42"
+    );
+}
+
 #[test]
 fn handle_as_a_name_and_handle_expressions() {
     assert_eq!(

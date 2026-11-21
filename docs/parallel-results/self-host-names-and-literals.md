@@ -18,14 +18,15 @@ tokens of lookahead:
 | `effect` | at the start of an item (`effect E {`, `linear effect E`) | `fn effect()`, `let effect`, fields, methods, patterns |
 | `handle` | `handle` followed by an upper-case name, `self::`, `@`, or a name and `:` (`handle E in`, `handle l: E in`, `handle self::m::E in`) | `fn handle(x: u64)`, `handle(1)`, `let handle = ..`, `s.handle` |
 | `sink`, `inout` (parameters) | before the parameter's name (`sink x: T`, `inout sink: u64`) | `fn f(sink: u64, inout: u8)` |
-| `sink`, `inout` (arguments) | before a token that starts an operand and cannot continue a value: a name other than `as`, a literal, `{`, `!`, `~`, `match`, `if`, `@`, `self`, or another contextual keyword | before `,` `)` `.` `(` `[` `?`, an operator or `as`: `g(sink)`, `g(sink.a)`, `g(sink(x))`, `g(sink[i])`, `g(sink - 1)` |
+| `sink`, `inout` (arguments) | before a token that starts an operand and cannot continue a value: a name other than `as`, a literal, `{`, `!`, `~`, a closure's `|` or `||`, `match`, `if`, `@`, `self`, or another contextual keyword | before `,` `)` `.` `(` `[` `?`, an operator other than `|`/`||`, or `as`: `g(sink)`, `g(sink.a)`, `g(sink(x))`, `g(sink[i])`, `g(sink - 1)` |
 | `sink`, `inout` (function types) | always (`fn(sink T)`) | - |
 
 The one change of meaning: an argument passed by `sink` or `inout` whose
-expression starts with `(`, `[`, `-` or `|` now reads as a value named
+expression starts with `(`, `[` or `-` now reads as a value named
 `sink`/`inout`. No repository source writes one (checked with `grep` over
 every `.ves`, `.vsys` and `.typ` file); the manuscript says to write it in a
-block, `sink { (a, b) }`.
+block, `sink { (a, b) }`. Before a closure (`sink |x| e`, `sink || e`) the
+word stays a mode, so a value named `sink` is or-ed as `(sink) | x`.
 
 `in`, `copy` and `affine` stay reserved: `in` ends every `for` header and
 `handle` head, and `copy`/`affine` start modal items and types, so none of

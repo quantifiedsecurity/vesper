@@ -1041,6 +1041,10 @@ fn pass_word_is_mode(in l: L, params: bool) -> bool {
         || n
         == k_tilde()
         || n
+        == k_pipe()
+        || n
+        == k_or()
+        || n
         == k_match()
         || n
         == k_if()
