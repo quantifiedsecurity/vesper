@@ -4973,6 +4973,37 @@ impl<M: Module> Codegen<'_, '_, M> {
             args,
         )
     }
+    /// A `scalar` family request outside the graph walk (SH4 lane 6,
+    /// #1280), answering one value; `None` emits the Rust code.
+    fn swap_scalar(&mut self, op: u32, args: &[u64]) -> Option<ir::Value> {
+        let results = crate::codegen_swap::request_or_record(
+            crate::codegen_swap::Family::Scalar,
+            &mut self.b,
+            &mut *self.m,
+            self.world,
+            self.program,
+            op,
+            args,
+        )?;
+        crate::codegen_swap::value_or_record(&results)
+    }
+    /// `checked_arithmetic`'s overflow test from the `scalar` hook.
+    fn swap_overflow(
+        &mut self,
+        op: &str,
+        kind: crate::numeric::IntegerKind,
+        a: ir::Value,
+        b: ir::Value,
+    ) -> Option<ir::Value> {
+        use crate::codegen_swap::{scalar, word};
+        let args = [
+            scalar::op_word(op)?,
+            scalar::kind_word(kind)?,
+            word(a),
+            word(b),
+        ];
+        self.swap_scalar(scalar::OVERFLOW, &args)
+    }
     /// [`Codegen::swap_aggregate`] for a request answering one value.
     fn swap_value(&mut self, op: u32, args: &[u64]) -> Option<ir::Value> {
         let results = self.swap_aggregate(op, args)?;
@@ -6448,7 +6479,10 @@ impl<M: Module> Codegen<'_, '_, M> {
         if kind.wide() {
             return self.wide_checked(op, kind, a, b);
         }
+        // SH4 swap point (#1280): the `scalar` hook may emit the test.
+        let swapped = self.swap_overflow(op, kind, a, b);
         let overflow = match (op, kind) {
+            _ if swapped.is_some() => swapped,
             ("+" | "-" | "*", K::I8 | K::I16 | K::I32) => {
                 // Exact in 64 bits; overflow iff the result leaves the kind.
                 let r = match op {
@@ -6572,7 +6606,12 @@ impl<M: Module> Codegen<'_, '_, M> {
         Ok(())
     }
     fn check_divisor(&mut self, divisor: ir::Value) -> Result<(), String> {
-        let nonzero = self.b.ins().icmp_imm(IntCC::NotEqual, divisor, 0);
+        // SH4 swap point (#1280): the `scalar` hook may emit the test.
+        let args = [crate::codegen_swap::word(divisor)];
+        let nonzero = match self.swap_scalar(crate::codegen_swap::scalar::DIVISOR, &args) {
+            Some(v) => v,
+            None => self.b.ins().icmp_imm(IntCC::NotEqual, divisor, 0),
+        };
         let good = self.b.create_block();
         let bad = self.b.create_block();
         self.branch(nonzero, good, &[], bad, &[]);

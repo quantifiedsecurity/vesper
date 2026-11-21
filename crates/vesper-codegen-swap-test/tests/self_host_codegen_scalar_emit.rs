@@ -37,6 +37,9 @@ use vesper_codegen_swap_test::*;
 /// The plan's words per record: `[function, block, instruction, request,
 /// a, b]`.
 const RECORD: usize = 6;
+/// `scalar_hook`'s numbers for the raising arms' tests.
+const TEST_OVERFLOW: u32 = 11;
+const TEST_DIVISOR: u32 = 12;
 
 /// The plan entry and the hook, compiled once with no hook in effect (a
 /// hook compiled under its own `with_hooks` would wait on itself).
@@ -108,8 +111,8 @@ fn op_name(lent: &Lent<'_, '_>) -> String {
 static EMITTED: AtomicU64 = AtomicU64::new(0);
 static REFUSED: AtomicU64 = AtomicU64::new(0);
 static UNPLANNED: AtomicU64 = AtomicU64::new(0);
-/// Instructions emitted from Vesper per plan request (1-10).
-static BY_REQUEST: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+/// Requests emitted from Vesper per hook request (plan 1-10, tests 11-12).
+static BY_REQUEST: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 
 /// Identifies a lent program for the cache: its address, function count
 /// and instruction count (a later compile may reuse the address).
@@ -142,8 +145,17 @@ fn plan_of(world: &vesper::check::World, program: &Program) -> Plan {
 /// The `scalar` hook: the planned request of this instruction, emitted by
 /// `scalar_hook` over the lent builder.
 fn scalar(lent: &mut Lent<'_, '_>) -> Result<bool, String> {
-    if lent.op != codegen_swap::INSTRUCTION {
-        return Ok(false);
+    // The raising arms' tests (`codegen_swap::scalar`) go to the hook as
+    // they come, renumbered past the plan's requests.
+    let test = match lent.op {
+        codegen_swap::INSTRUCTION => None,
+        codegen_swap::scalar::OVERFLOW => Some(TEST_OVERFLOW),
+        codegen_swap::scalar::DIVISOR => Some(TEST_DIVISOR),
+        _ => return Ok(false),
+    };
+    if let Some(request) = test {
+        let args = lent.args.to_vec();
+        return emit(lent, request, &args);
     }
     let planned = PLAN.with(|cell| {
         let mut cell = cell.borrow_mut();
@@ -174,13 +186,18 @@ fn scalar(lent: &mut Lent<'_, '_>) -> Result<bool, String> {
     }
     let mut args = vec![a, b, u64::from(lent.optimize)];
     args.extend_from_slice(lent.args);
+    emit(lent, request, &args)
+}
+
+/// `scalar_hook` on `request` with `args`, over the lent handles.
+fn emit(lent: &mut Lent<'_, '_>, request: u32, args: &[u64]) -> Result<bool, String> {
     let hook = &vesper().hook;
     let (answer, crossing) = vesper_cranelift_sys::lend_as(
         kind(lent),
         lent.builder,
         &mut *lent.module,
         request,
-        &args,
+        args,
         |call| {
             // SAFETY: the hook takes one word, the lent call's address,
             // which is live for the whole call.
@@ -284,7 +301,7 @@ fn emission() {
         unplanned - before[2],
     );
     eprintln!(
-        "codegen scalar emission: {}; {emitted} instructions emitted from Vesper, \
+        "codegen scalar emission: {}; {emitted} requests emitted from Vesper, \
          {refused} planned but declined, {unplanned} left to Rust",
         total.summary()
     );
@@ -294,8 +311,19 @@ fn emission() {
         dump(&dir, &worlds, &total);
     }
     let names = [
-        "", "zero", "iconst", "f64const", "icmp", "binop", "bnot", "not", "ineg", "shift",
+        "",
+        "zero",
+        "iconst",
+        "f64const",
+        "icmp",
+        "binop",
+        "bnot",
+        "not",
+        "ineg",
+        "shift",
         "convert",
+        "overflow test",
+        "divisor test",
     ];
     let by: Vec<String> = BY_REQUEST
         .iter()

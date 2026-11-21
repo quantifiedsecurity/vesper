@@ -583,3 +583,42 @@ pub mod drops {
     /// Args `[value]`, with the value's type; no result.
     pub const DROP_BOX: u32 = 1;
 }
+
+/// The `scalar` family's requests besides [`INSTRUCTION`] (SH4 lane 6,
+/// #1280): the run-time tests of `expr_at`'s raising arms. The hook
+/// answers the test's flag; the Rust code raises and emits the rest as it
+/// always has, so the hook never needs `Codegen`'s raise machinery.
+pub mod scalar {
+    use crate::numeric::IntegerKind;
+    /// `Codegen::checked_arithmetic`'s overflow test of a one-word kind.
+    /// Args `[op, kind, a, b]` (op [`ADD`], [`SUB`], [`MUL`] or [`DIV`];
+    /// kind [`kind_word`]); result `[overflow]`, an `i8` flag. A decline
+    /// leaves the test to the Rust code.
+    pub const OVERFLOW: u32 = 1;
+    /// `Codegen::check_divisor`'s test. Args `[divisor]`; result
+    /// `[nonzero]`, an `i8` flag.
+    pub const DIVISOR: u32 = 2;
+    /// [`OVERFLOW`]'s operators.
+    pub const ADD: u64 = 1;
+    pub const SUB: u64 = 2;
+    pub const MUL: u64 = 3;
+    pub const DIV: u64 = 4;
+    /// The word of operator `op`, when [`OVERFLOW`] takes it.
+    pub fn op_word(op: &str) -> Option<u64> {
+        match op {
+            "+" => Some(ADD),
+            "-" => Some(SUB),
+            "*" => Some(MUL),
+            "/" => Some(DIV),
+            _ => None,
+        }
+    }
+    /// The word of a one-word integer kind: its position in
+    /// [`crate::numeric::INTEGER_KINDS`] from 1 (`u8` 1 ... `isize` 10).
+    pub fn kind_word(kind: IntegerKind) -> Option<u64> {
+        crate::numeric::INTEGER_KINDS
+            .iter()
+            .position(|k| *k == kind)
+            .map(|i| i as u64 + 1)
+    }
+}

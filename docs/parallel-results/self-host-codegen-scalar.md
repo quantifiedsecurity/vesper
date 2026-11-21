@@ -165,11 +165,35 @@ one-word integers); comparisons 123 (aggregates, functions, floats, text);
 the bitwise intrinsics 84; string constants 51; unary `-` 42 (checked or
 float); `f32` constants 34; `Exit` 10, `Try` 6.
 
+## Part 2b (first step): the raising arms' tests
+
+Lane 1's shape for arms that raise: the hook computes the test and Rust
+raises. Two family dispatch hunks do that (flagged for lane 1's review):
+
+- `codegen_swap::scalar` (end of src/codegen_swap.rs): request
+  `OVERFLOW` (args `[op, kind, a, b]`, answer the `i8` overflow flag) and
+  `DIVISOR` (args `[divisor]`, answer the nonzero flag), with `op_word`
+  and `kind_word`.
+- src/native.rs: `checked_arithmetic` asks `OVERFLOW` before its own
+  test and `check_divisor` asks `DIVISOR` before its `icmp_imm`
+  (`Codegen::swap_scalar`, `swap_overflow`). A decline, or no hook,
+  emits the Rust test unchanged, so the default compiler's objects are
+  byte-identical; `check_overflow`/`primitive_failure` and the operation
+  after the test stay in Rust.
+
+`scalar_hook` emits every overflow test of `checked_arithmetic` (narrow
+signed and unsigned, carry and borrow, `umulhi`/`smulhi`, the signed
+`MIN / -1`). Over the same corpus run: 1,145 overflow tests and 92
+divisor tests from Vesper, 13,850 requests in all, still 0 CLIF, object
+and run differences.
+
 ## Stage 1 guard
 
 Parts 1 and 2a add two Vesper packages, two tests, a report and BUILD.bazel
-entries. They do not touch src/** at all (so not `src/verified_codegen/**`, `src/ir.rs`,
-`ir_opt::optimize` or src/native.rs), nor lean/**, bootstrap/** or
+entries. Part 2b adds the two dispatch hunks above (src/codegen_swap.rs,
+src/native.rs), which only ask an installed hook. None of it touches
+`src/verified_codegen/**`, `src/ir.rs` or `ir_opt::optimize`, nor lean/**,
+bootstrap/** or
 packages/vesper-compiler/**. Nothing installs a hook, so the default
 compiler's objects are byte-identical to the base branch's. The Bootstrap
 Stage 1 run on the branch is linked from the PR.
@@ -191,9 +215,9 @@ Stage 1 run on the branch is linked from the PR.
    `primitive_failure`, which build a `RuntimeError` value and perform
    `Fail::raise` through the control family, and `sdiv`'s guard jumps
    through `Codegen::jump`, which records edge value infos. Part 2b
-   follows lane 1's shape: the hook answers `[value, failed]` with the
-   overflow or zero-divisor flag it computed, and a family dispatch hunk
-   raises through the existing Rust path.
+   follows lane 1's shape: the hook answers the overflow or zero-divisor
+   flag and the Rust path raises (above). The narrowing and shift-range
+   checks and `sdiv`'s guard are next in the same shape.
 
 ## Findings
 

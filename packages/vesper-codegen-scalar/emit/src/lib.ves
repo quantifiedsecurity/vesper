@@ -58,10 +58,12 @@ use @vesper/cranelift::{
     ins_sextend,
     ins_sshr,
     ins_srem,
+    ins_smulhi,
     ins_sshr_imm,
     ins_udiv,
     ins_uextend,
     ins_urem,
+    ins_umulhi,
     ins_ushr,
     ty_i16,
     ty_i32,
@@ -87,6 +89,18 @@ pub const PLAN_NOT: u32 = 7;
 pub const PLAN_INEG: u32 = 8;
 pub const PLAN_SHIFT: u32 = 9;
 pub const PLAN_CONVERT: u32 = 10;
+
+// The tests of the raising arms (`codegen_swap::scalar::OVERFLOW` and
+// `DIVISOR`, renumbered past the plan's requests by the caller): the
+// hook answers the flag and the Rust code raises.
+pub const TEST_OVERFLOW: u32 = 11;
+pub const TEST_DIVISOR: u32 = 12;
+
+// `TEST_OVERFLOW`'s operators.
+const T_ADD: u64 = 1;
+const T_SUB: u64 = 2;
+const T_MUL: u64 = 3;
+const T_DIV: u64 = 4;
 
 // `PLAN_SHIFT`'s operations (the low byte of `a`; the kind is the next).
 const SHIFT_ISHL: u64 = 1;
@@ -294,9 +308,104 @@ fn add(a: u64, c: u64) -> u64 {
     wrapping_add(a, c)
 }
 
+// `IntegerKind::min` of a narrow signed kind (6 i8, 7 i16, 8 i32).
+fn narrow_min(k: u64) -> i64 {
+    if k == 6 {
+        -128
+    } else if k == 7 {
+        -32768
+    } else {
+        -2147483648
+    }
+}
+
+// `a / b`'s overflow: `a` is the kind's minimum and `b` is -1.
+fn div_min(inout b: Builder, x: Value, y: Value, min: i64) -> Value eff [Ffi[Cranelift]] {
+    let is_min = ins_icmp_imm(inout b, cc_eq(), x, min);
+    let minus_one = ins_icmp_imm(inout b, cc_eq(), y, -1);
+    ins_band(inout b, is_min, minus_one)
+}
+
+fn arith(inout b: Builder, op: u64, x: Value, y: Value) -> Value eff [Ffi[Cranelift]] {
+    if op == T_ADD {
+        ins_iadd(inout b, x, y)
+    } else if op == T_SUB {
+        ins_isub(inout b, x, y)
+    } else {
+        ins_imul(inout b, x, y)
+    }
+}
+
+// `Codegen::checked_arithmetic`'s overflow test of `op` on one-word kind
+// `k` (1 u8 ... 10 isize), or DECLINED's invalid value when it has none.
+fn overflow_test(call: u64, inout b: Builder) -> u64 eff [Ffi[Cranelift]] {
+    let op = call_arg(call, 0);
+    let k = call_arg(call, 1);
+    let x = value_of_word(call_arg(call, 2));
+    let y = value_of_word(call_arg(call, 3));
+    let narrow_signed = k >= 6 && k <= 8;
+    let narrow_unsigned = k >= 1 && k <= 3;
+    let word_unsigned = k == 4 || k == 5;
+    let word_signed = k == 9 || k == 10;
+    let r = if op != T_DIV && narrow_signed {
+        // Exact in 64 bits; overflow iff the result leaves the kind.
+        let v = arith(inout b, op, x, y);
+        let up = wrapping_i64(wrapping_sub(64, kind_bits(k)));
+        let high = ins_ishl_imm(inout b, v, up);
+        let canonical = ins_sshr_imm(inout b, high, up);
+        ins_icmp(inout b, cc_ne(), canonical, v)
+    } else if op == T_DIV && narrow_signed {
+        div_min(inout b, x, y, narrow_min(k))
+    } else if (op == T_ADD || op == T_MUL) && narrow_unsigned {
+        let v = arith(inout b, op, x, y);
+        ins_icmp_imm(inout b, cc_ugt(), v, kind_mask(k))
+    } else if op == T_SUB && (narrow_unsigned || word_unsigned) {
+        ins_icmp(inout b, cc_ult(), x, y)
+    } else if op == T_ADD && word_unsigned {
+        let v = ins_iadd(inout b, x, y);
+        ins_icmp(inout b, cc_ult(), v, x)
+    } else if op == T_MUL && word_unsigned {
+        let high = ins_umulhi(inout b, x, y);
+        ins_icmp_imm(inout b, cc_ne(), high, 0)
+    } else if (op == T_ADD || op == T_SUB) && word_signed {
+        // Signed overflow iff the result's sign differs from both addends
+        // (addition) or from the minuend while the operand signs differ
+        // (subtraction).
+        let v = arith(inout b, op, x, y);
+        let p = ins_bxor(inout b, x, v);
+        let q = if op == T_ADD {
+            ins_bxor(inout b, y, v)
+        } else {
+            ins_bxor(inout b, x, y)
+        };
+        let both = ins_band(inout b, p, q);
+        ins_icmp_imm(inout b, cc_slt(), both, 0)
+    } else if op == T_MUL && word_signed {
+        let v = ins_imul(inout b, x, y);
+        let high = ins_smulhi(inout b, x, y);
+        let sign = ins_sshr_imm(inout b, v, 63);
+        ins_icmp(inout b, cc_ne(), high, sign)
+    } else if op == T_DIV && word_signed {
+        div_min(inout b, x, y, -9223372036854775807 - 1)
+    } else {
+        return DECLINED;
+    };
+    call_result_value(call, r);
+    HANDLED
+}
+
 // One planned request on the lent builder; DECLINED emits nothing.
 fn scalar(call: u64, inout b: Builder) -> u64 eff [Ffi[Cranelift]] {
     let op = call_op(call);
+    if op == TEST_OVERFLOW {
+        return overflow_test(call, inout b);
+    }
+    if op == TEST_DIVISOR {
+        let d = value_of_word(call_arg(call, 0));
+        let nonzero = ins_icmp_imm(inout b, cc_ne(), d, 0);
+        call_result_value(call, nonzero);
+        return HANDLED;
+    }
     let a = call_arg(call, ARG_A);
     let k = call_arg(call, ARG_B);
     let optimize = call_arg(call, ARG_OPTIMIZE) != 0;
