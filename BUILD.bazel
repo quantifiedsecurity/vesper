@@ -196,6 +196,13 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # SH4 lane 15 (#1289): @vesper/wasm-backend against src/wasm_backend
+        # over the tests/wasm_backend.rs programs and the corpus.
+        "test/self_host_wasm_backend": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]) + ["tests/wasm_backend.rs"],
         # Self-hosting SH2 lane 11 (#1183): the dyn passes in Vesper against
         # src/dyn_fn.rs and src/dyn_trait.rs over the dyn suites, mutants and
         # the repository's .ves sources. Anchored globs.
@@ -550,6 +557,8 @@ vesper_crate(
         "test/hybrid_layout": "long",
         "test/hybrid_ir_check": "long",
         "test/self_host_place_ir": "long",
+        # The wasm backend differential: about 10 min in a debug build.
+        "test/self_host_wasm_backend": "long",
         "test/self_host_check_harness": "long",
         # The dyn differential runs both passes over every .ves source twice.
         "test/self_host_check_dyn": "long",
