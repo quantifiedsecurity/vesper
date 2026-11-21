@@ -195,5 +195,5 @@ fn the_differential_fixture_runs() {
         .unwrap()
         .to_string();
     assert_eq!(evaluated, native::jit(&world, "main").unwrap().to_string());
-    assert_eq!(evaluated, "14");
+    assert_eq!(evaluated, "17");
 }

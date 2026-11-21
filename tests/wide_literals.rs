@@ -139,5 +139,19 @@ fn native_objects_build() {
 /// runs.
 #[test]
 fn the_differential_fixture_runs() {
-    assert_eq!(both(include_str!("fixtures/wide_literals.ves")), "133");
+    assert_eq!(both(include_str!("fixtures/wide_literals.ves")), "141");
+}
+
+/// A constant table of 128-bit integers is not encoded as one-word read-only
+/// data (it would drop the high word). The evaluator reads it; native code
+/// reads 128-bit tuple and array elements wrong whatever their values, a
+/// separate gap.
+#[test]
+fn wide_tables_keep_both_words() {
+    let world = accepted(
+        "const TABLE: [i128; 3] = [18446744073709551616, -1, -170141183460469231731687303715884105728];
+fn main() -> bool { TABLE[0] == 18446744073709551616 && TABLE[1] == -1 && TABLE[2] == -170141183460469231731687303715884105728 }",
+    );
+    let evaluated = Runtime::new(&world).run("main", vec![]).unwrap();
+    assert_eq!(evaluated.to_string(), "true");
 }

@@ -173,6 +173,12 @@ kind test to existing name checks and at most two tokens of lookahead at a
    names are still keywords to the highlighter (SH2 lane 3 gap 4).
 7. **128-bit literals on the anvil JIT, wasm and Lean.** They refuse
    `WideInt` (and other 128-bit values) as before.
+8. **Native code reads 128-bit tuple and array elements wrong.** A local
+   `[i128; 3] = [1, 2, 5]` reads back wrong on the native JIT, whatever the
+   values, so this does not come from the new literals. A constant table of
+   `i128`/`u128` is no longer encoded as read-only data, because that
+   encoding wrote one word per element and dropped the high word. The
+   evaluator reads such tables right (`wide_tables_keep_both_words`).
 
 ## What is left
 

@@ -2026,7 +2026,7 @@ fn int_of(in l: L, e: u32) -> (bool, bool, u64, u64) {
 }
 
 // `const_literal` of a constant whose initializer is `value`: a new Lit for
-// an integer, the Bool literal itself, else NONE.
+// an integer, the Bool or WideInt literal itself, else NONE.
 fn const_lit(inout l: L, value: u32) -> u32 {
     let (ok, neg, bits, hi) = int_of(in l, value);
     if ok {
@@ -2036,8 +2036,12 @@ fn const_lit(inout l: L, value: u32) -> u32 {
     if x.kind == 5 && x.a == 0 && x.b != none() {
         return const_lit(inout l, x.b);
     }
-    if x.kind == 1 && lit_at(in l.ast, x.a).kind == 3 {
-        return x.a;
+    // A Bool, or a literal past `i128::MAX` (WideInt), as it is.
+    if x.kind == 1 {
+        let k = lit_at(in l.ast, x.a).kind;
+        if k == 3 || k == 5 {
+            return x.a;
+        }
     }
     none()
 }
@@ -3588,7 +3592,7 @@ fn clause(inout l: L, name: u32, pats: u32, body: u32) -> u32 {
 fn handle_expr(inout l: L) -> u32 {
     let start = cur_start(in l);
     expect(inout l, k_handle());
-    let label = if at(in l, k_lower()) {
+    let label = if at(in l, k_lower()) || at_contextual_name(in l) {
         let lb = lower(inout l);
         expect(inout l, k_colon());
         lb

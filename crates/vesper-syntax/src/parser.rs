@@ -2618,7 +2618,7 @@ impl Parser<'_> {
     fn handle(&mut self) -> Expr {
         let start = self.start();
         self.expect(K::Handle);
-        let label = if self.at(K::Lower) {
+        let label = if self.at(K::Lower) || self.at_contextual_name() {
             let l = self.lower();
             self.expect(K::Colon);
             Some(l)
@@ -3472,8 +3472,8 @@ fn int_value(e: &Expr) -> Option<i128> {
 }
 
 /// The literal value of a module constant's function, when its initializer
-/// is an integer or `bool` literal (possibly negated): such a constant may
-/// be a match pattern.
+/// is an integer (possibly negated) or `bool` literal: such a constant may
+/// be a match pattern. A literal past `i128::MAX` is kept as `WideInt`.
 pub fn const_literal(f: &Function) -> Option<Literal> {
     let body = f.body.as_ref()?;
     if let Some(n) = int_value(body) {
@@ -3484,7 +3484,7 @@ pub fn const_literal(f: &Function) -> Option<Literal> {
             statements,
             tail: Some(t),
         } if statements.is_empty() => match &t.kind {
-            ExprKind::Literal(l @ Literal::Bool(_)) => Some(l.clone()),
+            ExprKind::Literal(l @ (Literal::Bool(_) | Literal::WideInt(_))) => Some(l.clone()),
             _ => None,
         },
         _ => None,

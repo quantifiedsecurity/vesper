@@ -82,9 +82,16 @@ fn run() -> u64 {
         return v => v,
         log(x, resume) => resume(x),
     };
+    // A contextual word as a handler label.
+    let k = handle sink: Log in {
+        logs()
+    } with {
+        return v => v,
+        log(x, resume) => resume(wrapping_add(x, 2)),
+    };
     let both = pair(effect, handle);
     let picked = pick(port);
-    let total = wrapping_add(wrapping_add(n, m), wrapping_add(both, picked));
+    let total = wrapping_add(wrapping_add(wrapping_add(n, m), k), wrapping_add(both, picked));
     let sink = Port {
         effect: 0,
         handle: 5,

@@ -2695,7 +2695,7 @@ fn closure(inout p: P) -> Ex {
 fn handle_expr(inout p: P) -> Ex {
     let start = cur_start(in p);
     expect(inout p, k_handle());
-    if at(in p, k_lower()) {
+    if at(in p, k_lower()) || at_contextual_name(in p) {
         lower(inout p);
         expect(inout p, k_colon());
     }
