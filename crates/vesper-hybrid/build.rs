@@ -24,6 +24,8 @@ const MODULES: &[(&str, &str, &str)] = &[
     // SH4 lane 1 (#1275): the census lowering family, emitted through
     // lent Cranelift handles.
     ("hybrid_codegen", "modules/codegen", "port/codegen.rs"),
+    // SH3 lane 1 (#1240): the IR swap point's identity round trip.
+    ("hybrid_place_ir", "modules/place_ir", "port/place_ir.rs"),
 ];
 
 /// The divergence check of the differential harness: the enum tag word

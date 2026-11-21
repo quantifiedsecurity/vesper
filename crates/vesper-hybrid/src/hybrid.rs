@@ -34,6 +34,8 @@ mod ir_check_binding;
 #[allow(clippy::all)]
 #[path = "../port/codegen.rs"]
 mod codegen_binding;
+#[path = "../port/place_ir.rs"]
+mod place_ir_binding;
 
 #[path = "parse_words.rs"]
 mod parse_words;
@@ -42,6 +44,10 @@ mod parse_words;
 // the root package's tests/hybrid_layout.rs and tests/hybrid_ir_check.rs.
 #[path = "../../../tests/common/check_words.rs"]
 mod check_words;
+
+// Place IR words both ways (#1240), shared with tests/self_host_place_ir*.rs.
+#[path = "../../../tests/common/ir_words.rs"]
+mod ir_words;
 
 /// Calls answered by the Vesper word-layout module.
 static LAYOUT_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -54,6 +60,8 @@ static IR_CHECK_CALLS: AtomicU64 = AtomicU64::new(0);
 /// `aggregate` requests the Vesper codegen module emitted, and declined.
 static CODEGEN_CALLS: AtomicU64 = AtomicU64::new(0);
 static CODEGEN_DECLINED: AtomicU64 = AtomicU64::new(0);
+/// Programs the IR swap point's identity hooks sent through Vesper.
+static PLACE_IR_CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn count() {
     LAYOUT_CALLS.fetch_add(1, Relaxed);
@@ -159,6 +167,43 @@ fn vesper_aggregate(lent: &mut vesper::codegen_swap::Lent<'_, '_>) -> Result<boo
     }
 }
 
+/// `program` read into `@vesper/place-ir` tables and written back, in
+/// place: the identity Vesper pass. A program the format cannot encode
+/// stays as Rust made it.
+fn place_ir_round_trip(world: Option<&vesper::check::World>, program: &mut vesper::ir::Program) {
+    if let Some(p) = ir_words::through_vesper(world, program, place_ir_binding::round_trip_words) {
+        PLACE_IR_CALLS.fetch_add(1, Relaxed);
+        *program = p;
+    }
+}
+
+/// `vesper::ir_swap::IrPasses` for the hybrid: each native IR pass in Rust,
+/// then the program through `modules/place_ir` and back, proving the round
+/// trip inside `vesper check`/`build`. SH3 lanes 9-13 replace a hook with
+/// their Vesper pass.
+const VESPER_IR_PASSES: vesper::ir_swap::IrPasses = vesper::ir_swap::IrPasses {
+    lower: Some(|world| {
+        let mut program = vesper::ir::lower_world(world);
+        place_ir_round_trip(Some(world), &mut program);
+        program
+    }),
+    opt: Some(|world, program| {
+        let n = vesper::ir_opt::optimize(world, program)?;
+        place_ir_round_trip(Some(world), program);
+        Ok(n)
+    }),
+    inline: Some(|world, program, budget| {
+        let report = vesper::ir_inline::inline(world, program, budget);
+        place_ir_round_trip(Some(world), program);
+        report
+    }),
+    hoist: Some(|program| {
+        let n = vesper::bounds_hoist::run(program);
+        place_ir_round_trip(None, program);
+        n
+    }),
+};
+
 extern "C" fn install() {
     // Nothing runs before this constructor, so the slots are empty.
     if vesper::layout::install_word_layout(VESPER_WORD_LAYOUT).is_err() {
@@ -178,6 +223,9 @@ extern "C" fn install() {
         ..Default::default()
     };
     if vesper::codegen_swap::install(hooks).is_err() {
+        std::process::abort();
+    }
+    if vesper::ir_swap::install(VESPER_IR_PASSES).is_err() {
         std::process::abort();
     }
     if std::env::var_os("VESPER_HYBRID_STATS").is_some_and(|v| v == "1") {
@@ -211,6 +259,10 @@ extern "C" fn report() {
         "vesper-hybrid: codegen emitted {} aggregate requests from Vesper ({} declined)",
         CODEGEN_CALLS.load(Relaxed),
         CODEGEN_DECLINED.load(Relaxed)
+    );
+    eprintln!(
+        "vesper-hybrid: place-ir round-tripped {} programs through Vesper",
+        PLACE_IR_CALLS.load(Relaxed)
     );
 }
 
