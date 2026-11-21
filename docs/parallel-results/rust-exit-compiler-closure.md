@@ -1,6 +1,6 @@
 # SH6 lane 3: shrink the compiler's closure (#1398)
 
-Base: `main` at `ab965f2a`. Part 1.
+Base: `main` at `ab965f2a` (part 1, #1417); part 2 on top.
 
 ## What changed (part 1)
 
@@ -35,6 +35,13 @@ its `ALLOWED` table enters the closure, or when an allowed crate has left it
 (so the table only shrinks). Under Bazel only the root manifest is test data,
 so it skips there; macOS and Windows (Cargo) run it.
 
+## Part 2
+
+`vesper highlight` and `vesper shot` moved to `vesper-highlight` and
+`vesper-shot`, so `vesper-highlight-seed` (with its `shot` rasterizer)
+left the closure. The JetBrains Mono font `shot` embeds is the root
+`//:fonts` filegroup, declared as the tools' compile data for Bazel.
+
 ## Freed libraries (flippable before Stage 2)
 
 | Crate | Was linked for | Now linked by |
@@ -43,6 +50,7 @@ so it skips there; macOS and Windows (Cargo) run it.
 | `vesper-migrate` | `vesper migrate`, the `fuzz --differential` limitation text | `vesper-migrate`, `vesper-fuzz` |
 | `vesper-loom-trust` | `vesper attest` | `vesper-attest` |
 | `vesper-loom-admission` | `vesper attest` | `vesper-attest` |
+| `vesper-highlight` (seed) | `vesper highlight`, `vesper shot` | `vesper-highlight`, `vesper-shot` (part 2) |
 
 These crates no longer need the seed pattern: their lanes (13, 18, 17, 16)
 can delete their Rust outright at the flip bar.
@@ -66,18 +74,20 @@ the guard carries the same reasons):
   checks are ported (SH4 lane 17, `vesper-backend-checks`) or the lanes flip
   them with the seed pattern.
 - Commands still in the compiler binary: `vesper test` (test_runner,
-  anvil_sim, anvil_hash: crucible, chrono, simpulse, loom-cas), `doc`, `shot`,
-  `verify`, `fmt`, `lint`, `highlight`, `lsp`, `ebpf`, `forge`, `graph`,
-  `proof-audit`.
+  anvil_sim, anvil_hash: crucible, chrono, simpulse, loom-cas), `doc`,
+  `verify`, `fmt`, `lint`, `lsp`, `ebpf`, `forge`, `graph`, `proof-audit`.
 
 ## What is left (next parts)
 
-1. `vesper test` and its simulation (`anvil_sim`, `anvil_hash`,
-   `native_coverage`): moving them frees crucible, chrono and simpulse, and
-   most of loom-cas. SH5 lane 14 (#1337) owns `src/test_runner.rs` and is
-   porting it; this needs their agreement on who moves the Rust dispatch.
-2. `doc`, `shot`, `verify`: the remaining loom-cas uses and highlight.
-3. `lint --semver` and `interface.rs`: semver.
+1. `vesper test` stays in the compiler (agreed with SH5 lane 14, #1337):
+   the hybrid compiler includes `src/main.rs` and installs its Vesper test
+   discovery table there, so `vesper-hybrid test` must run in-process.
+   crucible, chrono, simpulse and loom-cas (anvil_hash's verdict cache)
+   therefore stay and flip with the seed pattern, unless lane 14 or lane 16
+   replaces the cache store.
+2. `doc` and `verify` commands (part 3).
+3. semver stays: `vesper build` exports the package interface in its types
+   (`src/interface.rs`).
 4. The census rows (`scripts/rust-census.py`): updated once plan PR #1415,
    which adds the script, is on main.
 
