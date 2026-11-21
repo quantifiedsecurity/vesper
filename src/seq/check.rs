@@ -288,15 +288,26 @@ impl Checker<'_> {
         let mut base_ty = self.peek_type(base, env);
         // A slice view receiver (`b[a..c].find_byte(x)`, `s.as_slice().len()`)
         // is borrowed `in` for the call, like a view argument.
+        // `p.as_bytes().len()` on text `p` is the same kind of view
+        // receiver (SH5 lane 6, #1329).
         let view = interval(base)
             .map(|(b, _, _)| b)
-            .or_else(|| whole_view(base).map(|(b, _)| b));
+            .or_else(|| whole_view(base).map(|(b, _)| b))
+            .or_else(|| {
+                crate::strings::whole_view(base).filter(|inner| {
+                    matches!(&base.kind, ExprKind::Call { callee, .. }
+                        if matches!(&callee.kind, ExprKind::Field(_, m) if m == "as_bytes"))
+                        && crate::strings::is_text(&self.peek_type(inner, env))
+                })
+            });
         if let Some(inner) = view
             && base_ty == Type::Infer
         {
             let inner_ty = self.peek_type(inner, env);
             if is_seq_or_slice(&inner_ty) {
                 base_ty = slice_of(elem(&inner_ty).cloned().unwrap_or(Type::Infer));
+            } else if crate::strings::is_text(&inner_ty) {
+                base_ty = slice_of(Type::named("u8"));
             }
         }
         if !is_seq_or_slice(&base_ty) {
