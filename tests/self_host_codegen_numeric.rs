@@ -98,8 +98,20 @@ fn family_symbols(families: u32) -> Vec<String> {
     if families & (RT_REGIONS | RT_TILED) != 0 {
         out.extend((0..6).map(|i| format!("vesper_region_message{i}")));
         for name in [
-            "fault", "reclaim", "resolve", "find_mark", "open", "close", "alloc", "load",
-            "store", "release", "checkpoint", "rewind", "commit", "used",
+            "fault",
+            "reclaim",
+            "resolve",
+            "find_mark",
+            "open",
+            "close",
+            "alloc",
+            "load",
+            "store",
+            "release",
+            "checkpoint",
+            "rewind",
+            "commit",
+            "used",
         ] {
             out.push(format!("vesper_region_{name}"));
         }
@@ -233,7 +245,12 @@ fn vesper_object(i: usize) -> Vec<u8> {
         vesper::runtime::Value::UInt(n, _) => n,
         other => panic!("not a word: {other:?}"),
     };
-    assert_ne!(id, 0, "{}: the Vesper runtime emission failed", entry_name(i));
+    assert_ne!(
+        id,
+        0,
+        "{}: the Vesper runtime emission failed",
+        entry_name(i)
+    );
     vesper_cranelift_sys::take_published(id).unwrap()
 }
 
@@ -283,15 +300,14 @@ fn symbols(bytes: &[u8]) -> BTreeMap<String, Symbol> {
                     .unwrap_or_default(),
                 other => format!("{other:?}"),
             };
-            relocations.push((offset - start, target, format!("{:?}", r.flags()), r.addend()));
+            relocations.push((
+                offset - start,
+                target,
+                format!("{:?}", r.flags()),
+                r.addend(),
+            ));
         }
-        out.insert(
-            name.to_string(),
-            Symbol {
-                bytes,
-                relocations,
-            },
-        );
+        out.insert(name.to_string(), Symbol { bytes, relocations });
     }
     out
 }
@@ -329,7 +345,10 @@ fn runtime_symbols_match_the_rust_lowering() {
                 }
                 None => {
                     bad += 1;
-                    eprintln!("{} {t} optimize={o}: the Vesper object lacks {name}", program.name);
+                    eprintln!(
+                        "{} {t} optimize={o}: the Vesper object lacks {name}",
+                        program.name
+                    );
                 }
             }
         }
@@ -404,7 +423,10 @@ fn rust_decisions() -> String {
                 vector::layout_words(&s.vec_type()).unwrap(),
                 s.required_profile().name()
             );
-            assert_eq!(vector::shape_of(&s.mask_type()), Some((vector::Kind::Mask, s)));
+            assert_eq!(
+                vector::shape_of(&s.mask_type()),
+                Some((vector::Kind::Mask, s))
+            );
             for c in [Conv::ToBits, Conv::FromBits, Conv::Widen, Conv::Narrow] {
                 let target = c.result(s).map_or("-", |t| t.elem.name());
                 let accepts = if c.accepts(e) { "+" } else { "" };
