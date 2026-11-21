@@ -78,9 +78,7 @@ that does (struct fields, enum and generic payloads, tuples, signatures,
 | `self_host_check_data` types and world lookups, corpus | unchanged | 0 |
 | `self_host_check_data::wide_integers_match_rust` (types and world tasks) | the wide world | 0 |
 
-`Known::is_integer` stays one-word only: core typing's `int_bits` and
-`fits` read it as a 64-bit kind, so adding wide kinds there belongs with a
-core-typing 128-bit port.
+Main's `Known::is_integer` gained `i128`/`u128` in #1300 while this lane was open; `is_wide` names the two-word kinds for check-layout.
 
 ## Workarounds these fixes make removable
 
@@ -116,9 +114,9 @@ is in the PR.
 2. **Integer literals above 64 bits in the check-data format.** The
    encoders still carry a sign and a 64-bit magnitude, so worlds holding a
    literal past `u64::MAX` stay on Rust.
-3. **`Known::is_integer` and the other Vesper checkers** (core typing,
-   fip, IR check) do not handle two-word integers; their encodings keep
-   sending `i128`/`u128` worlds to Rust.
+3. **The other Vesper checkers** (core typing, fip, IR check) do not
+   handle two-word integers; their encodings keep sending `i128`/`u128`
+   worlds to Rust.
 
 ## What is left
 

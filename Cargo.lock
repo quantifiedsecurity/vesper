@@ -6141,6 +6141,7 @@ dependencies = [
  "salsa",
  "serde",
  "serde_json",
+ "stacker",
  "target-lexicon",
  "vesper",
  "vesper-aegis-seed",
