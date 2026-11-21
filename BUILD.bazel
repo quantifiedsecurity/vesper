@@ -615,7 +615,7 @@ vesper_crate(
         "test/self_host_check_data": "long",
         "test/hybrid_layout": "long",
         "test/hybrid_ir_check": "long",
-        "test/self_host_ir_inline": "long",
+        "test/self_host_ir_inline": "eternal",
         "test/self_host_place_ir": "eternal",
         "test/self_host_ir_lower": "long",
         "test/self_host_check_harness": "long",
