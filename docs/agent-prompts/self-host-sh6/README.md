@@ -10,8 +10,8 @@
 
 **The owner's goal (2026-11-21): "Drive this until absolutely no rust code is
 left except the bare minimum that is impossible to get rid of."** The census
-counts 510k non-test lines of Rust (205k in the compiler and its own crates,
-197k in libraries that already have a Vesper port, 85k in crates the port
+counts 519k non-test lines of Rust (199k in the compiler and its own crates,
+198k in libraries that already have a Vesper port, 85k in crates the port
 survey had left in Rust) and 355k lines of Rust tests.
 
 **The flip bar changed (owner, 2026-11-21):** a module's Rust is deleted once

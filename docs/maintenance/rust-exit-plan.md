@@ -14,14 +14,15 @@ is left except the bare minimum that is impossible to get rid of."
 
 | What | Non-test Rust lines | How it leaves |
 |---|--:|---|
-| The compiler (`src/`) and its own crates (syntax, core, fmt, lint, LSP, doc, ...) | 205k | ported module by module by SH1-SH5 into the hybrid build; deleted in one retirement PR after Stage 2 (SH6 lane 2) |
-| Libraries with a Vesper port that is unfinished or above 1.5x | 197k | SH6 lanes 4-12: finish, reach 1.5x, flip |
+| The compiler (`src/`) and its own crates (syntax, core, fmt, lint, LSP, doc, ...) | 199k | ported module by module by SH1-SH5 into the hybrid build; deleted in one retirement PR after Stage 2 (SH6 lane 2) |
+| Libraries with a Vesper port that is unfinished or above 1.5x | 198k | SH6 lanes 4-12: finish, reach 1.5x, flip |
 | Libraries already Vesper-only (Aura, Pact, Simpulse, Loom solver) | 13k | done; their frozen seeds go at the retirement |
 | Crates that wrap a C or OS API | 61k | SH6 lanes 13-16: Vesper calls the C API or syscalls directly |
-| Crates that wrap a Rust-only library Vesper can replace | 16k | SH6 lane 18 |
+| Crates that wrap a Rust-only library Vesper can replace | 17k | SH6 lane 18 |
 | Shims over vetted Rust-only libraries | 8k today | SH6 lane 17 shrinks them to one crypto shim; Cranelift's shim stays |
 | Port infrastructure (hybrid, port harness crates) | 5k | deleted at the retirement |
-| **Total** | **510k** | |
+| Kept Rust on purpose (DDC auditor, `*42` oracles) | 14k | stay, owner call (see below) |
+| **Total** | **519k** | |
 | Rust tests (`tests/`, `crates/*/tests`) | 355k | SH6 lane 19's recipe, then each flip converts its own |
 
 ## The flip bar
@@ -58,7 +59,8 @@ gate merges, lanes run this recipe by hand and paste the numbers.
   retirement.
 - **The compiler** stays Rust until Stage 2. Each module is swapped into the
   hybrid build by its SH2-SH5 lane. When every compiler row of the census
-  passes the gate, the hybrid with every swap becomes the default compiler,
+  passes the gate (the diverse `*42` oracles are exempt; they move to their
+  own crate first, with the tests that import them), the hybrid with every swap becomes the default compiler,
   the Vesper compiler rebuilds itself bit for bit (Stage 2), and one
   retirement PR deletes `src/`, the compiler's crates, the seeds, the hybrid
   and the port harness crates.

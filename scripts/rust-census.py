@@ -7,7 +7,7 @@ prints docs/maintenance/rust-census.md to stdout.
 
     python3 scripts/rust-census.py > docs/maintenance/rust-census.md
 
-Non-test lines: non-blank, non-comment lines above the first `#[cfg(test)]`,
+Non-test lines: non-blank, non-comment lines outside `#[cfg(test)]` items,
 skipping `tests.rs`, `tests/`, `benches/` and `examples/`. Update STATUS when a
 lane reports (the scoreboard lane, SH6 lane 1, owns this file).
 """
@@ -124,7 +124,7 @@ CRATES = {
 
 # Root compiler module -> (owner lane(s), Vesper package, status note)
 MODULES = {
-    "bin": ("owner", "", "test oracles (*42), diverse on purpose"),
+    "bin": ("owner (`diverse`)", "", "test oracles (*42), diverse on purpose: exempt from the flip gate; moved out of `src/` before the retirement"),
     "verified_codegen": ("SH6b", "", "Stage 1 guard; port with the verified-backend breadth track"),
     "lean": ("SH5-18", "vesper-lean-extract", "part 3a 2.37x"),
     "lean_ir": ("SH5-18", "vesper-lean-extract", ""),
@@ -198,14 +198,32 @@ MODULES = {
 
 
 def nontest_lines(path):
+    """Counts production lines, skipping every item marked `#[cfg(test)]`.
+
+    A `#[cfg(test)]` item is skipped up to the end of its braces (or its `;`),
+    so a test-only helper in the middle of a file does not hide the production
+    code after it.
+    """
     if path.endswith("tests.rs"):
         return 0
     n = 0
+    skipping = False
+    depth = 0
+    opened = False
     with open(path, errors="replace") as f:
         for line in f:
-            if re.match(r"\s*#\[cfg\(test\)\]", line):
-                break
             s = line.strip()
+            if not skipping and re.match(r"#\[cfg\(test\)\]", s):
+                skipping, depth, opened = True, 0, False
+                continue
+            if skipping:
+                if s.startswith("#[") and not opened:
+                    continue
+                depth += line.count("{") - line.count("}")
+                opened = opened or "{" in line
+                if (opened and depth <= 0) or (not opened and s.endswith(";")):
+                    skipping = False
+                continue
             if s and not s.startswith("//"):
                 n += 1
     return n
@@ -256,7 +274,11 @@ def main():
     for c, n in crates.items():
         cls = CRATES.get(c, ("unknown",))[0]
         by_class[cls] = by_class.get(cls, 0) + n
-    by_class["compiler"] = by_class.get("compiler", 0) + sum(modules.values())
+    # The `*42` oracles in src/bin are diverse on purpose: they stay Rust and
+    # move out of `src/` before the retirement (SH6 lane 2).
+    oracles = modules.get("bin", 0)
+    by_class["compiler"] = by_class.get("compiler", 0) + sum(modules.values()) - oracles
+    by_class["diverse"] = by_class.get("diverse", 0) + oracles
     w("## Totals\n\n| Class | Meaning | Non-test lines |\n|---|---|--:|\n")
     for cls, meaning in CLASSES.items():
         w(f"| `{cls}` | {meaning} | {by_class.get(cls, 0):,} |\n")
