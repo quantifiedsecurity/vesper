@@ -413,7 +413,7 @@ fn constructor_pattern(inout s: St, inout a: Ast, node: PatNode) -> PatNode {
     if x != g {
         n.a = back(inout s, inout a, x);
     }
-    if list_len(in a, n.b) == 0 && n.c == 0 {
+    if list_len(in a, n.b) == 0 && n.c == 0 && (const_flags(inout s, x) & 2) != 0 {
         let l = literal_of(in s, inout a, x);
         if l != ast_none() {
             n.kind = 3;
@@ -569,7 +569,10 @@ fn name_expr(inout s: St, inout a: Ast, node: ExprNode) -> ExprNode {
     // An imported constant or a path to one is a call of its function,
     // as the lowering makes a module's own (empty callee span); an
     // untyped value enum member is its literal.
-    let l = if !written && s.untyped.contains_key(x) {
+    if written || (const_flags(inout s, x) & 2) == 0 {
+        return n;
+    }
+    let l = if s.untyped.contains_key(x) {
         literal_of(in s, inout a, x)
     } else {
         ast_none()
@@ -579,7 +582,7 @@ fn name_expr(inout s: St, inout a: Ast, node: ExprNode) -> ExprNode {
         n.a = l;
         n.b = ast_none();
         n.c = ast_none();
-    } else if !written && (const_flags(inout s, x) & 2) != 0 {
+    } else {
         let at = sh(in s, n.start);
         let callee = a
             .exprs
@@ -596,7 +599,6 @@ fn name_expr(inout s: St, inout a: Ast, node: ExprNode) -> ExprNode {
             }
         )
             .raw();
-        s.made.insert(callee, 1);
         n.kind = 6;
         n.a = callee;
         n.b = 0;
@@ -609,7 +611,7 @@ fn expr(inout s: St, inout a: Ast, e: u32) {
     if e == ast_none() {
         return;
     }
-    if s.made.contains_key(e) {
+    if w(e) >= s.made_from {
         return;
     }
     let mut n = expr_at(in a, e);

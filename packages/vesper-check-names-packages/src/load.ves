@@ -189,7 +189,6 @@ pub fn back(inout s: St, inout a: Ast, g: u32) -> u32 {
 pub fn begin_module(inout s: St) {
     s.symmap.clear();
     s.back.clear();
-    s.made.clear();
     s.seen_expr.clear();
     s.seen_pat.clear();
     s.seen_param.clear();

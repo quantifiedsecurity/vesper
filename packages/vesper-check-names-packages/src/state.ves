@@ -223,10 +223,12 @@ pub struct St {
     seen_pat: FlatTable[u32, u8],
     seen_param: FlatTable[u32, u8],
     seen_tref: FlatTable[u32, u8],
-    // `const_flags` of each symbol asked about (with bit 2 set).
-    const_flag: FlatTable[u32, u8],
-    // Expression nodes the renamer made (a constant's call callee): final.
-    made: FlatTable[u32, u8],
+    // `const_flags` of each global symbol asked about, by symbol id (with
+    // bit 2 set; 0 when not computed yet).
+    const_flag: ChunkSeq[u8],
+    // The module's expression count before renaming: the nodes the renamer
+    // makes (a constant's call callee) come after it and are final.
+    made_from: u64,
     // `assemble`'s per-module `groups`: local enum name -> range of
     // `group_pool` (its member constants, sorted).
     groups: FlatTable[u32, u64],
@@ -346,8 +348,8 @@ pub fn st_new() -> St {
         seen_pat: flat_table_new[u32, u8](),
         seen_param: flat_table_new[u32, u8](),
         seen_tref: flat_table_new[u32, u8](),
-        const_flag: flat_table_new[u32, u8](),
-        made: flat_table_new[u32, u8](),
+        const_flag: ChunkSeq::new[u8](),
+        made_from: 0,
         groups: flat_table_new[u32, u64](),
         group_pool: ChunkSeq::new[u32](),
         scopes: flat_table_new[u32, u64](),
@@ -549,11 +551,10 @@ pub fn is_const_function(in s: St, sym: u32) -> bool {
 // (`is_const_function`). Cached per symbol: the renamer asks for every
 // name expression.
 pub fn const_flags(inout s: St, sym: u32) -> u8 {
-    match s.const_flag.get(sym) {
-        Option::Some(f) => {
-            return f & 3;
-        },
-        Option::None => {},
+    let i = w(sym);
+    let cached = at8(in s.const_flag, i);
+    if cached != 0 {
+        return cached & 3;
     }
     let mut f: u8 = 0;
     if sym_contains(in s, sym, in const_prefix()) {
@@ -562,7 +563,10 @@ pub fn const_flags(inout s: St, sym: u32) -> u8 {
             f = 3;
         }
     }
-    s.const_flag.insert(sym, f | 4);
+    if i >= s.const_flag.len() {
+        s.const_flag.resize(inc(i), 0);
+    }
+    s.const_flag.try_set(i, f | 4);
     f
 }
 

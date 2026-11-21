@@ -576,6 +576,7 @@ fn assemble_module(inout s: St, in input: Str, m: u32, dump: bool) {
     let (x, y) = text_range(in s, w(m));
     let mut l = lower_source(in input[x..y]);
     begin_module(inout s);
+    s.made_from = l.ast.exprs.len();
     generic_scopes(inout s, inout l.ast);
     let mut found: ChunkSeq[u32] = ChunkSeq::new[u32]();
     for i in 0..l.ast.m_items.len() {
