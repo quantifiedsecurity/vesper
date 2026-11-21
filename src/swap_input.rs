@@ -47,22 +47,26 @@ pub fn enabled() -> bool {
     ENABLED.load(Relaxed)
 }
 
-/// One open world: its address, how many [`Scope`]s hold it, and the slots.
+/// One open world: its address, its own id, how many [`Scope`]s hold it,
+/// and the slots.
 struct Frame {
     world: *const World,
+    id: u64,
     depth: usize,
     slots: Vec<(TypeId, Option<Box<dyn Any>>)>,
 }
 
 thread_local! {
     static FRAMES: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
+    static NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// One compilation's borrow of its world. While it lives, [`with`] finds
 /// the world's slots; the outermost scope of a world drops them.
 #[must_use = "the scope closes when it is dropped"]
 pub struct Scope<'w> {
-    open: bool,
+    /// The id of the frame this scope holds, `None` when scopes are off.
+    frame: Option<u64>,
     _world: PhantomData<&'w World>,
 }
 
@@ -71,36 +75,53 @@ pub struct Scope<'w> {
 pub fn open(world: &World) -> Scope<'_> {
     if !enabled() {
         return Scope {
-            open: false,
+            frame: None,
             _world: PhantomData,
         };
     }
     let key = world as *const World;
-    FRAMES.with_borrow_mut(|frames| match frames.last_mut() {
-        Some(top) if top.world == key => top.depth += 1,
-        _ => frames.push(Frame {
-            world: key,
-            depth: 1,
-            slots: vec![],
-        }),
+    let id = FRAMES.with_borrow_mut(|frames| match frames.last_mut() {
+        Some(top) if top.world == key => {
+            top.depth += 1;
+            top.id
+        }
+        _ => {
+            let id = NEXT_ID.get();
+            NEXT_ID.set(id + 1);
+            frames.push(Frame {
+                world: key,
+                id,
+                depth: 1,
+                slots: vec![],
+            });
+            id
+        }
     });
     Scope {
-        open: true,
+        frame: Some(id),
         _world: PhantomData,
     }
 }
 
 impl Drop for Scope<'_> {
     fn drop(&mut self) {
-        if !self.open {
+        let Some(id) = self.frame else {
             return;
-        }
-        // Take the closed frame out before dropping its slots: a slot's drop
-        // (freeing a Vesper value) must not find the frame list borrowed.
+        };
+        // Close this scope's own frame, wherever it is: scopes of different
+        // worlds may be dropped out of order, and closing the top frame
+        // instead would leave this world's slots findable after its borrow
+        // ended. Take the closed frame out before dropping its slots: a
+        // slot's drop (freeing a Vesper value) must not find the frame list
+        // borrowed.
         let closed = FRAMES.with_borrow_mut(|frames| {
-            let top = frames.last_mut()?;
-            top.depth -= 1;
-            if top.depth == 0 { frames.pop() } else { None }
+            let at = frames.iter().rposition(|f| f.id == id)?;
+            frames[at].depth -= 1;
+            if frames[at].depth == 0 {
+                Some(frames.remove(at))
+            } else {
+                None
+            }
         });
         if let Some(frame) = closed {
             for (_, slot) in frame.slots {

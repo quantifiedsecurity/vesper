@@ -147,6 +147,27 @@ fn closing_a_scope_drops_its_slots() {
     assert_eq!(Rc::strong_count(&alive), 1);
 }
 
+/// Scopes of two worlds dropped out of order each close their own world:
+/// the world whose scope closed first has no slots left, and the other
+/// world keeps its slots until its own scope closes.
+#[test]
+fn scopes_dropped_out_of_order_close_their_own_world() {
+    swap_input::enable();
+    let a = World::default();
+    let b = World::default();
+    let sa = swap_input::open(&a);
+    assert_eq!(swap_input::with(&a, || 1u32, |x| *x), Some(1));
+    let sb = swap_input::open(&b);
+    assert_eq!(swap_input::with(&b, || 2u32, |x| *x), Some(2));
+    drop(sa);
+    assert!(!swap_input::is_open(&a), "a's own frame closed");
+    assert!(swap_input::with(&a, || 9u32, |x| *x).is_none());
+    assert!(swap_input::is_open(&b));
+    assert_eq!(swap_input::with(&b, || 0u32, |x| *x), Some(2));
+    drop(sb);
+    assert!(!swap_input::is_open(&b));
+}
+
 // ------------------------------------------------------------------ layout
 
 /// One world's layout parts: every type of the world, then each again
