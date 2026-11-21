@@ -177,6 +177,13 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # SH4 lane 1 (#1275): the codegen swap differential over the same
+        # corpus, with the Vesper hooks in packages/vesper-codegen-base.
+        "test/self_host_codegen_swap": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # SH2 lane 5 (#1177): @vesper/check-layout and @vesper/ir-check over
         # the same corpus.
         "test/hybrid_layout": glob([
@@ -558,6 +565,7 @@ vesper_crate(
         # The core typing differential (#1179) checks every corpus world.
         "test/self_host_check_core_typing": "long",
         "test/self_host_check_fip": "long",
+        "test/self_host_codegen_swap": "long",
     },
 )
 

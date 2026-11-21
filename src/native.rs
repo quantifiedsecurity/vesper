@@ -4369,7 +4369,10 @@ impl<M: Module> Codegen<'_, '_, M> {
     }
     /// Stack storage that is written before it is read, so it is not zeroed.
     fn alloc_uninit(&mut self, size: u32) -> ir::Value {
-        if let Some(v) = self.swap_value(crate::codegen_swap::aggregate::ALLOC_UNINIT, &[u64::from(size)]) {
+        if let Some(v) = self.swap_value(
+            crate::codegen_swap::aggregate::ALLOC_UNINIT,
+            &[u64::from(size)],
+        ) {
             return v;
         }
         let slot = self.b.create_sized_stack_slot(ir::StackSlotData::new(
@@ -4382,7 +4385,8 @@ impl<M: Module> Codegen<'_, '_, M> {
             .stack_addr(self.m.target_config().pointer_type(), slot, 0)
     }
     fn alloc(&mut self, size: u32) -> ir::Value {
-        if let Some(v) = self.swap_value(crate::codegen_swap::aggregate::ALLOC, &[u64::from(size)]) {
+        if let Some(v) = self.swap_value(crate::codegen_swap::aggregate::ALLOC, &[u64::from(size)])
+        {
             return v;
         }
         let slot = self.b.create_sized_stack_slot(ir::StackSlotData::new(
@@ -4405,7 +4409,14 @@ impl<M: Module> Codegen<'_, '_, M> {
     fn copy_bytes(&mut self, from: ir::Value, to: ir::Value, size: u32) {
         self.write_info(to, self.info(from));
         if self
-            .swap_aggregate(crate::codegen_swap::aggregate::COPY_BYTES, &[crate::codegen_swap::word(from), crate::codegen_swap::word(to), u64::from(size)])
+            .swap_aggregate(
+                crate::codegen_swap::aggregate::COPY_BYTES,
+                &[
+                    crate::codegen_swap::word(from),
+                    crate::codegen_swap::word(to),
+                    u64::from(size),
+                ],
+            )
             .is_some()
         {
             return;
@@ -4425,7 +4436,10 @@ impl<M: Module> Codegen<'_, '_, M> {
             let lane = scalar(ty, &[])?;
             let value = match self.swap_value(
                 crate::codegen_swap::aggregate::LOAD,
-                &[crate::codegen_swap::word(ptr), crate::codegen_swap::ty_code(lane)],
+                &[
+                    crate::codegen_swap::word(ptr),
+                    crate::codegen_swap::ty_code(lane),
+                ],
             ) {
                 Some(v) => v,
                 None => self.b.ins().load(lane, ir::MemFlags::new(), ptr, 0),
@@ -4442,7 +4456,13 @@ impl<M: Module> Codegen<'_, '_, M> {
         } else {
             let value = self.coerce(value, Some(ty));
             if self
-                .swap_aggregate(crate::codegen_swap::aggregate::STORE, &[crate::codegen_swap::word(ptr), crate::codegen_swap::word(value)])
+                .swap_aggregate(
+                    crate::codegen_swap::aggregate::STORE,
+                    &[
+                        crate::codegen_swap::word(ptr),
+                        crate::codegen_swap::word(value),
+                    ],
+                )
                 .is_none()
             {
                 self.b.ins().store(ir::MemFlags::new(), value, ptr, 0);
@@ -4451,7 +4471,10 @@ impl<M: Module> Codegen<'_, '_, M> {
         Ok(())
     }
     fn offset(&mut self, ptr: ir::Value, offset: i32) -> ir::Value {
-        let field = match self.swap_value(crate::codegen_swap::aggregate::OFFSET, &[crate::codegen_swap::word(ptr), offset as i64 as u64]) {
+        let field = match self.swap_value(
+            crate::codegen_swap::aggregate::OFFSET,
+            &[crate::codegen_swap::word(ptr), offset as i64 as u64],
+        ) {
             Some(v) => v,
             None => self.b.ins().iadd_imm(ptr, i64::from(offset)),
         };
@@ -4915,7 +4938,10 @@ impl<M: Module> Codegen<'_, '_, M> {
                 .collect();
             let mut args = vec![crate::codegen_swap::word(ptr)];
             args.extend(zeroed.iter().map(|&off| u64::from(off)));
-            if self.swap_aggregate(crate::codegen_swap::aggregate::ZERO_WORDS, &args).is_none() {
+            if self
+                .swap_aggregate(crate::codegen_swap::aggregate::ZERO_WORDS, &args)
+                .is_none()
+            {
                 for off in zeroed {
                     let zero = self.zero();
                     self.b
@@ -4929,7 +4955,10 @@ impl<M: Module> Codegen<'_, '_, M> {
         };
         if let Some(tag) = tag
             && self
-                .swap_aggregate(crate::codegen_swap::aggregate::TAG, &[crate::codegen_swap::word(ptr), tag as u64])
+                .swap_aggregate(
+                    crate::codegen_swap::aggregate::TAG,
+                    &[crate::codegen_swap::word(ptr), tag as u64],
+                )
                 .is_none()
         {
             let tag = self.b.ins().iconst(types::I64, tag as i64);

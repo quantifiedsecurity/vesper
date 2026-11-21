@@ -134,7 +134,10 @@ fn vesper_aggregate(lent: &mut vesper::codegen_swap::Lent<'_, '_>) -> Result<boo
         return Err(format!("codegen (aggregate op {}): {e}", lent.op));
     }
     if crossing.unreturned {
-        return Err(format!("codegen (aggregate op {}) kept a lent handle", lent.op));
+        return Err(format!(
+            "codegen (aggregate op {}) kept a lent handle",
+            lent.op
+        ));
     }
     if answer == 1 {
         CODEGEN_CALLS.fetch_add(1, Relaxed);

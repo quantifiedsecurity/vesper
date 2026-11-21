@@ -139,17 +139,19 @@ pub type FreestandingHook = fn(
     >,
 >;
 /// The wasm backend hook: `wasm_backend::compile`'s signature.
-pub type WasmHook = fn(
-    &World,
-    &str,
-    &crate::wasm_backend::WasmOptions,
-) -> Option<Result<crate::wasm_backend::WasmArtifact, crate::wasm_backend::WasmError>>;
+pub type WasmHook =
+    fn(
+        &World,
+        &str,
+        &crate::wasm_backend::WasmOptions,
+    ) -> Option<Result<crate::wasm_backend::WasmArtifact, crate::wasm_backend::WasmError>>;
 /// The eBPF backend hook: `ebpf_backend::compile_world`'s signature.
-pub type EbpfHook = fn(
-    &World,
-    Option<&str>,
-    &crate::ebpf_backend::Options,
-) -> Option<Result<crate::ebpf_backend::Compiled, crate::ebpf_backend::EbpfBackendError>>;
+pub type EbpfHook =
+    fn(
+        &World,
+        Option<&str>,
+        &crate::ebpf_backend::Options,
+    ) -> Option<Result<crate::ebpf_backend::Compiled, crate::ebpf_backend::EbpfBackendError>>;
 /// The native verifiers hook: `native_verifiers::verify_emitted`'s
 /// signature.
 pub type VerifierHook = fn(
@@ -158,7 +160,8 @@ pub type VerifierHook = fn(
     Option<&str>,
     &std::collections::BTreeSet<crate::native_verifiers::NativeVerifier>,
     &crate::native_verifiers::NativeVerifierPolicy,
-) -> Option<Result<crate::native_verifiers::NativeVerifierReport, String>>;
+)
+    -> Option<Result<crate::native_verifiers::NativeVerifierReport, String>>;
 
 /// The SH4 families. Each port lane installs the hooks of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

@@ -31,9 +31,9 @@ fn exports_header_and_vsys_name_the_same_functions() {
         repo().join("crates/vesper-cranelift-sys/include/vesper_cranelift.h"),
     )
     .unwrap();
-    let vsys = vsys(&package_source(), ("x86_64-unknown-linux-gnu", "sysv64"));
+    let library = vsys(&package_source(), ("x86_64-unknown-linux-gnu", "sysv64"));
     assert_eq!(names_in(&header), exported, "header vs exports");
-    assert_eq!(names_in(&vsys), exported, "vsys vs exports");
+    assert_eq!(names_in(&library), exported, "vsys vs exports");
     // The package carries the same library as a file (its Loom `vsys`
     // field), so packages that depend on it import it (#1275).
     let file =
@@ -45,7 +45,7 @@ fn exports_header_and_vsys_name_the_same_functions() {
         "packages/vesper-cranelift/cranelift.vsys differs from the directive"
     );
     // The .vsys library parses as a library with four linear handles.
-    let lib = vesper_ffi::sys::parse(&vsys, Default::default()).unwrap();
+    let lib = vesper_ffi::sys::parse(&library, Default::default()).unwrap();
     assert_eq!(lib.extern_types().len(), 4);
 }
 

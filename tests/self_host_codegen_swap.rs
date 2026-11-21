@@ -10,7 +10,6 @@
 //! optimizer on and off. `CODEGEN_SWAP_STEP=n` compares every n-th world
 //! (default 1 under Cargo).
 #[path = "common/check_harness.rs"]
-#[allow(dead_code)]
 mod check_harness;
 #[path = "common/clif_diff.rs"]
 mod clif_diff;
@@ -33,12 +32,17 @@ struct Hooks {
 
 fn hooks() -> &'static Hooks {
     static HOOKS: OnceLock<Hooks> = OnceLock::new();
+    // The hooks are compiled with no hook in effect: a test that first
+    // calls one under `with_hooks` would otherwise call itself while its
+    // own `OnceLock` is initializing, and wait forever.
     HOOKS.get_or_init(|| {
-        let checked = foreign_package(&repo(), "packages/vesper-codegen-base");
-        Hooks {
-            aggregate: hook_function(&checked, "aggregate_hook"),
-            empty: hook_function(&checked, "empty_hook"),
-        }
+        codegen_swap::with_hooks(CodegenHooks::default(), || {
+            let checked = foreign_package(&repo(), "packages/vesper-codegen-base");
+            Hooks {
+                aggregate: hook_function(&checked, "aggregate_hook"),
+                empty: hook_function(&checked, "empty_hook"),
+            }
+        })
     })
 }
 
@@ -61,6 +65,19 @@ fn step() -> usize {
         .max(1)
 }
 
+/// Runs `f` on a thread with the CLI's deep stack: native compiles of the
+/// deepest corpus worlds overflow a test thread's 2 MiB in debug builds.
+fn big_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(256 << 20)
+            .spawn_scoped(s, f)
+            .expect("spawn a compile thread")
+            .join()
+            .unwrap_or_else(|e| std::panic::resume_unwind(e))
+    })
+}
+
 /// The corpus worlds with a `main`, every `step()`-th.
 fn worlds() -> Vec<&'static check_harness::Case> {
     check_harness::corpus()
@@ -74,7 +91,7 @@ fn worlds() -> Vec<&'static check_harness::Case> {
 /// effects and no parameters, as the checker harness samples).
 fn runs(index: usize, case: &check_harness::Case) -> bool {
     let f = &case.world.functions["main"];
-    index % 4 == 0
+    index.is_multiple_of(4)
         && f.params.is_empty()
         && f.effects.instances.is_empty()
         && f.effects.tail.is_none()
@@ -122,6 +139,10 @@ fn type_codes_match_the_shim() {
 /// runs, optimize on and off.
 #[test]
 fn the_pilot_swap_matches_the_rust_lowering() {
+    big_stack(pilot_swap);
+}
+
+fn pilot_swap() {
     let before = HANDLED.load(Ordering::Relaxed);
     let worlds = worlds();
     let mut total = Diff::default();
@@ -151,12 +172,20 @@ fn the_pilot_swap_matches_the_rust_lowering() {
 /// is caught: the harness can fail.
 #[test]
 fn a_divergent_hook_is_caught() {
+    big_stack(divergent_hook);
+}
+
+fn divergent_hook() {
     fn wrong(lent: &mut Lent<'_, '_>) -> Result<bool, String> {
         if lent.op != codegen_swap::aggregate::TRUE {
             return Ok(false);
         }
-        let (_, crossing) =
-            vesper_cranelift_sys::lend(lent.builder, &mut *lent.module, lent.op, lent.args, |call| {
+        let (_, crossing) = vesper_cranelift_sys::lend(
+            lent.builder,
+            &mut *lent.module,
+            lent.op,
+            lent.args,
+            |call| {
                 // SAFETY: the lent call's address, live for this closure.
                 unsafe {
                     let b = vesper_cranelift_sys::vcl_call_builder(call);
@@ -164,7 +193,8 @@ fn a_divergent_hook_is_caught() {
                     vesper_cranelift_sys::vcl_call_result(call, u64::from(v));
                     vesper_cranelift_sys::vcl_call_return_builder(call, b);
                 }
-            });
+            },
+        );
         assert!(crossing.error.is_none() && !crossing.unreturned);
         lent.results.extend(crossing.results);
         Ok(true)
@@ -180,14 +210,20 @@ fn a_divergent_hook_is_caught() {
             break;
         }
     }
+    // Only the CLIF text catches it: Cranelift folds a branch on either
+    // nonzero constant to the same machine code, so the objects agree.
+    // That is why the harness compares CLIF and not only bytes.
     assert!(!total.clif.is_empty(), "{}", total.summary());
-    assert!(!total.objects.is_empty(), "{}", total.summary());
 }
 
 /// A hook that declines everything leaves every build unchanged, and a
 /// hook error fails the compile with its message.
 #[test]
 fn declined_requests_and_hook_errors() {
+    big_stack(declined_and_errors);
+}
+
+fn declined_and_errors() {
     fn declines(lent: &mut Lent<'_, '_>) -> Result<bool, String> {
         vesper_hook(lent, &hooks().empty)
     }

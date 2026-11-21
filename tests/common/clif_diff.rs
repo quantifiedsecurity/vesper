@@ -131,11 +131,7 @@ pub fn first_difference(a: &str, b: &str) -> String {
             return format!("line {}: `{x}` vs `{y}`", i + 1);
         }
     }
-    format!(
-        "{} vs {} lines",
-        a.lines().count(),
-        b.lines().count()
-    )
+    format!("{} vs {} lines", a.lines().count(), b.lines().count())
 }
 
 /// Compares `world` built with no hook against the same build with
@@ -159,7 +155,9 @@ pub fn compare(
             for (key, text) in &r.clif {
                 match h.clif.get(key) {
                     Some(t) if t == text => {}
-                    Some(t) => d.clif.push((name.into(), key.clone(), first_difference(text, t))),
+                    Some(t) => d
+                        .clif
+                        .push((name.into(), key.clone(), first_difference(text, t))),
                     None => d.clif.push((name.into(), key.clone(), "missing".into())),
                 }
             }
@@ -188,7 +186,8 @@ pub fn compare(
         d.ran = 1;
         if rust != hooked {
             let show = |x: Result<String, String>| x.unwrap_or_else(|e| format!("error: {e}"));
-            d.runs.push((name.into(), optimize, show(rust), show(hooked)));
+            d.runs
+                .push((name.into(), optimize, show(rust), show(hooked)));
         }
     }
     d
@@ -203,7 +202,10 @@ pub static DECLINED: AtomicU64 = AtomicU64::new(0);
 
 /// Runs one request through the Vesper hook `f` (a `fn(call: u64) -> u64`
 /// word function) over the shim's lent handles.
-pub fn vesper_hook(lent: &mut Lent<'_, '_>, f: &vesper::native::WordFunction) -> Result<bool, String> {
+pub fn vesper_hook(
+    lent: &mut Lent<'_, '_>,
+    f: &vesper::native::WordFunction,
+) -> Result<bool, String> {
     let (answer, crossing) = vesper_cranelift_sys::lend(
         lent.builder,
         &mut *lent.module,
@@ -253,8 +255,7 @@ pub fn foreign_package(repo: &std::path::Path, dir: &str) -> vesper::ffi_lowerin
     let imports = p
         .imports(host_target())
         .unwrap_or_else(|e| panic!("{dir}: {e:?}"));
-    vesper::ffi_lowering::check_module(&p.module, &imports)
-        .unwrap_or_else(|e| panic!("{dir}: {e}"))
+    vesper::ffi_lowering::check_module(&p.module, &imports).unwrap_or_else(|e| panic!("{dir}: {e}"))
 }
 
 /// JIT-compiles hook `entry` of `checked` with the shim's symbols bound.

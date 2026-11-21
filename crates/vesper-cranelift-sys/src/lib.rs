@@ -46,8 +46,8 @@ pub use {
 
 pub mod lend;
 pub use lend::{
-    Crossing, lend, lend_module, vcl_call_arg, vcl_call_arg_count, vcl_call_args, vcl_call_builder, vcl_call_module,
-    vcl_call_op, vcl_call_result, vcl_call_return_builder, vcl_call_return_module,
+    Crossing, lend, lend_module, vcl_call_arg, vcl_call_arg_count, vcl_call_args, vcl_call_builder,
+    vcl_call_module, vcl_call_op, vcl_call_result, vcl_call_return_builder, vcl_call_return_module,
 };
 
 use cranelift_codegen::ir::{
@@ -131,6 +131,9 @@ pub struct Module {
 }
 
 /// The Cranelift module behind a [`Module`] handle.
+// One per handle, and the object backend is the common one: boxing it
+// would add an indirection to every call for no saving.
+#[allow(clippy::large_enum_variant)]
 enum Backend {
     Object(ObjectModule),
     Jit(Box<JITModule>),
@@ -449,7 +452,9 @@ fn new_jit_module(flags: &str, symbols: &str, addrs: &[u64]) -> Result<Module, S
         builder.symbol(name, addr as usize as *const u8);
     }
     born(MODULE);
-    Ok(Module::empty(Backend::Jit(Box::new(JITModule::new(builder)))))
+    Ok(Module::empty(Backend::Jit(Box::new(JITModule::new(
+        builder,
+    )))))
 }
 
 /// The error of the last module constructor that returned null.
@@ -628,9 +633,10 @@ pub unsafe extern "C" fn vcl_declare_function(
             .get(sig as usize)
             .ok_or_else(|| format!("unknown signature {sig}"))?
             .clone();
-        let id =
-            m.get_mut().declare_function(name, l, &s)
-                .map_err(|e| e.to_string())?;
+        let id = m
+            .get_mut()
+            .declare_function(name, l, &s)
+            .map_err(|e| e.to_string())?;
         Ok(func_index(m, id))
     })
 }
@@ -648,9 +654,10 @@ pub unsafe extern "C" fn vcl_declare_data(
         // SAFETY: the `.vsys` CSlice contract.
         let name = text(unsafe { slice(name, name_len) })?;
         let l = codes::linkage(linkage).ok_or_else(|| format!("unknown linkage {linkage}"))?;
-        let id =
-            m.get_mut().declare_data(name, l, writable, tls)
-                .map_err(|e| e.to_string())?;
+        let id = m
+            .get_mut()
+            .declare_data(name, l, writable, tls)
+            .map_err(|e| e.to_string())?;
         Ok(data_index(m, id))
     })
 }
@@ -701,7 +708,9 @@ fn data_id(m: &Module, d: u32) -> Result<DataId, String> {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vcl_define_function(m: *mut Module, func: u32, b: *mut Builder) -> u32 {
     let Some(b) = (unsafe { take_builder(b) }) else {
-        return with_module(m, 1, |_| Err("a lent or null builder cannot be defined".into()));
+        return with_module(m, 1, |_| {
+            Err("a lent or null builder cannot be defined".into())
+        });
     };
     with_module(m, 1, |m| {
         let id = func_id(m, func)?;
@@ -778,7 +787,9 @@ pub unsafe extern "C" fn vcl_define_data(m: *mut Module, data: u32, d: *mut Data
         if let Some(e) = d.error.take() {
             return Err(e);
         }
-        m.get_mut().define_data(id, &d.d).map_err(|e| e.to_string())?;
+        m.get_mut()
+            .define_data(id, &d.d)
+            .map_err(|e| e.to_string())?;
         Ok(0)
     })
 }
@@ -1786,7 +1797,6 @@ pub unsafe extern "C" fn vcl_trap_if(b: *mut Builder, c: u32, if_nonzero: bool, 
     })
 }
 
-
 // ---------------------------------------------------------------------------
 // JIT modules (SH4 lane 1, #1275).
 
@@ -1897,7 +1907,10 @@ pub unsafe extern "C" fn vcl_compile(m: *mut Module, b: *mut Builder) -> u64 {
         ctx.func = f;
         let isa = module.isa();
         let r = ctx
-            .compile(isa, &mut cranelift_codegen::control::ControlPlane::default())
+            .compile(
+                isa,
+                &mut cranelift_codegen::control::ControlPlane::default(),
+            )
             .map(|_| ())
             .map_err(|e| cranelift_module::ModuleError::Compilation(e.inner));
         let r = finished(isa, ctx, r);
