@@ -1101,8 +1101,9 @@ impl WorldLog {
         }
     }
 
-    /// Whether every field type of ADT `name` can be encoded (memoized with
-    /// its record).
+    /// Whether every field type of ADT `name` can be encoded, `i128` and
+    /// `u128` included (memoized with its record). An IR part also passes
+    /// `program_encodable`, which refuses wide fields.
     fn adt_record(&mut self, w: &World, name: &str) -> bool {
         if let Some(r) = self.adts.get(name) {
             return r.is_some();
@@ -1111,7 +1112,7 @@ impl WorldLog {
         let ok = a
             .variants
             .iter()
-            .all(|v| v.fields.iter().all(|f| encodable(&f.ty)));
+            .all(|v| v.fields.iter().all(|f| encodable_with(&f.ty, true)));
         let record = ok.then(|| {
             let mut out = vec![];
             self.enc.adt(a, &mut out);
@@ -1233,7 +1234,9 @@ impl WorldLog {
             // swap interned since go first.
             return self.part(w, cur, Adts::Only(&BTreeSet::new()), false, |_| vec![i]);
         }
-        if !encodable(ty) {
+        // Layout answers for `i128`/`u128` too (#1329); the IR check's
+        // parts stay narrow through `program_encodable`.
+        if !encodable_with(ty, true) {
             return None;
         }
         let adts = reachable_adts(w, ty);
