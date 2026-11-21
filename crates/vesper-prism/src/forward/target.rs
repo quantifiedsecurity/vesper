@@ -33,12 +33,12 @@ pub(crate) fn parse(raw: &str, limits: TargetLimits) -> Result<Target, TargetErr
     }
     let query = view.has_query().then(|| {
         let mut entries = Vec::with_capacity(entry_ends.len() / 2);
-        for pair in entry_ends.chunks_exact(2) {
-            let key_end = pair[0] as usize;
+        for &[key_end, value_end] in entry_ends.as_chunks::<2>().0 {
+            let key_end = key_end as usize;
             let key = bytes[at..key_end].to_vec();
             at = key_end;
-            let value = (pair[1] != ABSENT).then(|| {
-                let value_end = pair[1] as usize;
+            let value = (value_end != ABSENT).then(|| {
+                let value_end = value_end as usize;
                 let value = bytes[at..value_end].to_vec();
                 at = value_end;
                 value

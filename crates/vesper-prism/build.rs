@@ -1,9 +1,9 @@
-//! Under `vesper-port`, compile the five Vesper libraries of the port
-//! (the Loom packages under vesper/) into static libraries and check their committed bindings
-//! (see docs/maintenance/porting-a-crate.md).
+//! Compile the five Vesper libraries of the port (the Loom packages under
+//! vesper/) into static libraries and check their committed bindings (see
+//! docs/maintenance/porting-a-crate.md). Under Bazel each object is prebuilt
+//! (`VESPER_PORT_OBJECT_<LIBRARY>`).
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    #[cfg(feature = "vesper-port")]
     for (library, types) in LIBRARIES {
         let port = vesper_port_harness::Port::new(library, format!("vesper/{library}"))
             .binding(format!("port/{library}.rs"))
@@ -20,7 +20,6 @@ fn main() {
 }
 
 /// Each library and the Rust module that holds its boundary types.
-#[cfg(feature = "vesper-port")]
 const LIBRARIES: [(&str, &str); 5] = [
     ("decoder", "crate::forward::decoder::abi"),
     ("response", "crate::forward::response::abi"),

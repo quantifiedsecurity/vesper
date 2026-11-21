@@ -2,12 +2,10 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("//tools/bazel:defs.bzl", "vesper_crate")
 load("//tools/bazel:vesper_port.bzl", "VESPER_TARGET", "vesper_package", "vesper_port_object")
 
-# The Rust build (default features), with its tests.
-vesper_crate()
-
-# The Vesper build (port wave P1 lane 14, #911): one `vesper build --lib`
-# object per Loom package in vesper/, the same API forwarding to them through
-# the committed bindings in port/, and every test file run unchanged against it.
+# The Vesper port is the only build (SH6 lane 5, #1400): one `vesper build
+# --lib` object per Loom package in vesper/ (port wave P1 lane 14, #911),
+# which build.rs links (`VESPER_PORT_OBJECT_<LIBRARY>`) and whose generated
+# bindings it checks against the committed ones in port/.
 LIBRARIES = [
     "connection",
     "decoder",
@@ -49,6 +47,30 @@ USES_BYTES = ["decoder", "response", "target"]
     for library in LIBRARIES
 ]
 
+[
+    filegroup(
+        name = "%s_vesper_binding" % library,
+        srcs = [":%s_vesper" % library],
+        output_group = "rust_binding",
+    )
+    for library in LIBRARIES
+]
+
+vesper_crate(
+    build_script_data = [":%s_vesper" % library for library in LIBRARIES] +
+                        [":%s_vesper_binding" % library for library in LIBRARIES],
+    build_script_env = dict(
+        [
+            # rules_rust already makes these execpaths absolute.
+            ("VESPER_PORT_OBJECT_%s" % library.upper(), "$(execpath :%s_vesper)" % library)
+            for library in LIBRARIES
+        ] + [
+            ("VESPER_PORT_GENERATED_BINDING_%s" % library.upper(), "$(execpath :%s_vesper_binding)" % library)
+            for library in LIBRARIES
+        ],
+    ),
+)
+
 # The divergence check: the edits build.rs applies under the
 # `vesper-port-divergent` feature, one per library, in the module named by
 # DIVERGENT_SRC.
@@ -80,10 +102,11 @@ DIVERGENT_SRC = {
     for library in LIBRARIES
 ]
 
+# The crate without its build script, for the divergent test binaries below,
+# which link their objects themselves.
 rust_library(
     name = "port",
     srcs = glob(["src/**/*.rs"]) + ["port/%s.rs" % library for library in LIBRARIES],
-    crate_features = ["vesper-port"],
     crate_name = "vesper_prism",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -91,28 +114,6 @@ rust_library(
 )
 
 OBJECTS = [":%s_vesper" % library for library in LIBRARIES]
-
-TESTS = [
-    "byte_classes",
-    "connection",
-    "framing",
-    "responses",
-    "routing",
-]
-
-[
-    rust_test(
-        name = "port_%s_test" % test,
-        srcs = ["tests/%s.rs" % test],
-        compile_data = OBJECTS,
-        crate_features = ["vesper-port"],
-        crate_name = test,
-        edition = "2024",
-        rustc_flags = ["-Clink-arg=$(location %s)" % o for o in OBJECTS],
-        deps = [":port"],
-    )
-    for test in TESTS
-]
 
 # One divergent test binary per library: the module's tests linked against
 # that library's divergent object and every other library's real one.
@@ -129,7 +130,6 @@ DIVERGENT_TESTS = {
         name = "_port_%s_divergent.bin" % library,
         srcs = ["tests/%s.rs" % DIVERGENT_TESTS[library]],
         compile_data = [o.replace(":%s_vesper" % library, ":%s_vesper_divergent" % library) for o in OBJECTS],
-        crate_features = ["vesper-port"],
         crate_name = "%s_divergent" % library,
         edition = "2024",
         rustc_flags = [
