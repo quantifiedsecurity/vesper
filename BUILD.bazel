@@ -215,6 +215,12 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # Self-hosting SH3 lane 12 (#1251): bounds hoisting on the same corpus.
+        "test/self_host_bounds_hoist": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # Self-hosting SH2 lane 11 (#1183): the dyn passes in Vesper against
         # src/dyn_fn.rs and src/dyn_trait.rs over the dyn suites, mutants and
         # the repository's .ves sources. Anchored globs.
@@ -596,6 +602,7 @@ vesper_crate(
         "test/self_host_check_tensor_types": "eternal",
         # The region and sequence rules differential (#1181): ~7 min debug.
         "test/self_host_check_regions_seqs": "long",
+        "test/self_host_bounds_hoist": "long",
         # The dyn differential runs both passes over every .ves source twice.
         "test/self_host_check_dyn": "long",
         # The package assembler differential (#1178) compiles the AST package.
