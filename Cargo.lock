@@ -6081,6 +6081,8 @@ dependencies = [
  "bytemuck",
  "naga",
  "vesper-kinetic-seed",
+ "vesper-port-abi",
+ "vesper-port-harness",
  "vesper-tensor-seed",
 ]
 
