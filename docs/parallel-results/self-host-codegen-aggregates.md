@@ -1,0 +1,103 @@
+# SH4 lane 8: native aggregates, patterns, equality, drops and fip
+
+Claim #1282. Prompt:
+[docs/agent-prompts/self-host-sh4/08-codegen-aggregates.md](../agent-prompts/self-host-sh4/08-codegen-aggregates.md).
+Rust stays the default build: nothing here installs a hook or changes
+lowering.
+
+## Part 1: the aggregate decisions
+
+The lane starts with what it can do before lane 1 (#1275) lends Cranelift
+handles to Vesper: the parts of native lowering that read the IR and decide,
+with no emission. Part 1 ports the decisions of src/native_aggregates.rs to
+`packages/vesper-codegen-aggregates` (`@vesper/codegen-aggregates`):
+
+| Rust (src/native_aggregates.rs) | What it decides | Vesper |
+|---|---|---|
+| `plain_data`, `drop_free` | whether a type's storage needs no zero / a write into it drops nothing | `plain_data`, `drop_free` (layout walks over @vesper/check-layout) |
+| `split_words` | the scalar words of a copy struct or tuple (≤ 16) | `split_words` |
+| `split_locals` | which locals live in word variables (#1090), with the paths their uses read | `split_locals` |
+| `plan` with `Graph` and `drop_unsafe_places` | where each constructed aggregate is built: the result buffer, a field of a later constructor, or a write's destination (#990, #1022) | `plan`, `consumer_home`, `param_home`, `sources`, `pass_through`, `window_ok`, `drop_unsafe_once` |
+| `split_sources` | the reads that lend their storage to a split `let` | in `function_decisions` |
+
+The package reads a program through @vesper/place-ir (#1259) and the world
+through @vesper/check-data, and keeps every Rust map as a dense table by
+value id, block, local or symbol. The Rust side,
+`vesper::native::aggregate_decisions` (src/native_aggregate_decisions.rs, a
+read-only module inside `native` so it can call the private decision
+functions), prints the same decisions as text. It is the only change to
+src/: a `#[doc(hidden)] pub mod` line in src/native.rs and the new file,
+which calls the decision functions as `Codegen` does for a top-level graph
+and prints what they return.
+
+The decisions also read three facts the checker's `World` has that
+check-data does not carry. The test appends them after the program section
+(tests/self_host_codegen_aggregates.rs `facts`): every world function with
+whether its effect row is empty and whether it is `fip`, the element-view
+spans, and the free names of each function's closure and handler bodies
+(their expressions stay Rust payloads in place-ir).
+
+### Differential
+
+tests/self_host_codegen_aggregates.rs lowers every corpus world the way the
+native optimize path does (FFI drops, `ir_opt`, the inliner, drop
+elaboration, bounds hoisting) and compares, for every graph the path plans
+(every function but `fip` ones), Rust's decisions with the package's
+`aggregate_decisions` entry, line for line. The default run takes every 4th
+world; `CODEGEN_AGGREGATES_STEP=1` takes all of them.
+
+Full corpus, release build:
+
+| | Count |
+|---|--:|
+| Worlds | 292 (0 not encodable) |
+| Functions | 17,409 |
+| Decision lines | 350,617 |
+| Locals (`plain_data`, `split_words`) | 321,679 |
+| Split locals | 3,748 |
+| Homes in the result buffer | 5,238 |
+| Homes in a constructor's field | 2,491 |
+| Homes in a write's destination | 46 |
+| Split sources | 6 |
+| **Worlds that differ** | **0** |
+
+Cost over the same 292 worlds (`decisions_cost`, `CHECK_HARNESS_SPEED=1`,
+best of 5, release build): Rust's decision functions with their text 3.52 s;
+the package's entry, decoding the input included, 1.88 s (0.53x of Rust);
+encoding the input 2.10 s (mostly check-data's world section, which lane 2's
+encode-once input removes for the swap).
+
+The decisions run with no generic arguments (top-level graphs), as `Codegen`
+plans a non-generic function. Specialized instances and nested graphs
+(handled bodies) are left for the swap, where the hook receives the
+instance's generic map and `nested` flag.
+
+## Stage 1 guard
+
+No file of the Stage 1 guard is touched: src/verified_codegen/**, src/ir.rs,
+`ir_opt::optimize`, lean/**, bootstrap/** and packages/vesper-compiler/**
+are unchanged. src/native_aggregates.rs and every lowering path are
+unchanged; the new module only calls the decision functions and is not on
+any compile path. The default compiler's objects are byte-identical.
+
+## Compiler gaps
+
+None found in this part: the package compiled and matched on the first full
+run. One check-data gap is worked around locally: `Known::is_integer` and
+`is_scalar` predate `i128`/`u128` (#1219), so the package interns those two
+names itself where `numeric::is_integer_name` and `is_scalar_name` need
+them.
+
+## What is left
+
+1. Drop and equality decisions: `fip::needs_drop`, `may_need_drop`,
+   `elem_needs_drop`, `replace_drops`, `temporary_drops`, and which types
+   get structural equality helpers.
+2. After lane 1's first PR: emission (addressing, allocation, loads and
+   stores, `data_into`, pattern tests and bindings, equality helpers, drop
+   glue, fip box operations), taking over lane 1's pilot, with CLIF and
+   object differentials; the `ffi_lowering::drops` pass through SH3 lane 1's
+   IR harness.
+3. 128-bit elements after lane 3 (#1277) merges.
+4. The `aggregate` and `drops` hook installs, the full suite and the SH4
+   scoreboard row.
