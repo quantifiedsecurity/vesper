@@ -248,7 +248,10 @@ fn is_const(s: Scalar) -> bool {
 pub fn scalar_normalize(input: Scalar) -> Option[Scalar] {
     let mut s = input;
     let sign: u64 = 9223372036854775808;
+    // Each round is a function of `s` alone, so a round that changes
+    // nothing has reached the fixpoint the remaining rounds would keep.
     for round in 0..3 {
+        let before = s;
         // tnum -> intervals
         s.umin = max_u64(s.umin, s.var.value);
         s.umax = min_u64(s.umax, s.var.value | s.var.mask);
@@ -282,14 +285,20 @@ pub fn scalar_normalize(input: Scalar) -> Option[Scalar] {
         if s.umin > s.umax || s.smin > s.smax {
             return Option::None;
         }
-        // intervals -> tnum
-        match tnum_intersect(s.var, tnum_range(s.umin, s.umax)) {
-            Option::Some(t) => {
-                s.var = t;
-            },
-            Option::None => {
-                return Option::None;
-            },
+        // intervals -> tnum: `tnum_intersect(s.var, tnum_range(..))`
+        let r = tnum_range(s.umin, s.umax);
+        if (s.var.value ^ r.value) & (~s.var.mask & ~r.mask) != 0 {
+            return Option::None;
+        }
+        let mu = s.var.mask & r.mask;
+        s.var = tn((s.var.value | r.value) & ~mu, mu);
+        if s.umin == before.umin
+            && s.umax == before.umax
+            && s.smin == before.smin
+            && s.smax == before.smax
+            && s.var.value == before.var.value
+            && s.var.mask == before.var.mask {
+            break;
         }
     }
     if s.umin > s.umax || s.smin > s.smax {
