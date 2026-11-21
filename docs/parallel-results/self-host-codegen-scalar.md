@@ -143,8 +143,8 @@ wrapping and unchecked narrow conversions. Two details decide the bytes:
   variable numbers decide where the SSA builder puts later zero defaults)
   and coerces each operand.
 - `coerce` takes the narrow-move form when the function is emitted with
-  the optimizer, which the lent request does not carry, so the glue passes
-  the flag (gap 2 below).
+  the optimizer; the hook reads that from `Lent::optimize` (#1309 added
+  it for this lane).
 
 | Check (`CODEGEN_SCALAR_STEP=1`) | Count |
 |---|--:|
@@ -177,11 +177,10 @@ Stage 1 run on the branch is linked from the PR.
 ## Compiler gaps
 
 1. **`@vesper/check-layout` has no `i128`/`u128` layout** (finding 1).
-2. **The lent request does not say whether the optimizer is on.**
-   `Codegen::coerce` emits `ireduce` + `uextend`/`sextend` under
-   `operands_only` and a mask or shift pair otherwise; `Lent` carries
-   neither, so the test passes the flag. The hybrid swap needs it on
-   `Lent` (or a `Site` flag) from lane 1.
+2. **The lent request did not say whether the optimizer is on**
+   (`Codegen::coerce` emits `ireduce` + `uextend`/`sextend` under
+   `operands_only`, a mask or shift pair otherwise). Lane 1 added
+   `Lent::optimize` (#1309, 14c6729), which the hook now reads.
 3. **The Rust walk's own maps are not lent.** `ir_temp` also enters each
    temporary in `Codegen::vars` and `local_types`; no later code reads
    them for a scalar temporary (the differential is clean), but a family
@@ -191,9 +190,10 @@ Stage 1 run on the branch is linked from the PR.
    negation, narrowing and shift ranges) call `check_overflow` /
    `primitive_failure`, which build a `RuntimeError` value and perform
    `Fail::raise` through the control family, and `sdiv`'s guard jumps
-   through `Codegen::jump`, which records edge value infos. They wait for
-   requests that lend those (lane 10's raise path and an edge-info
-   request).
+   through `Codegen::jump`, which records edge value infos. Part 2b
+   follows lane 1's shape: the hook answers `[value, failed]` with the
+   overflow or zero-divisor flag it computed, and a family dispatch hunk
+   raises through the existing Rust path.
 
 ## Findings
 

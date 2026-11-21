@@ -16,7 +16,7 @@
 //!
 //! The glue here ([`scalar`]) only joins them: it encodes the lent program
 //! once, looks the request's site up in the plan and passes the plan's
-//! words, the optimizer flag and the operand values to the hook.
+//! words, the optimizer flag (`Lent::optimize`) and the operand values to the hook.
 //! `CODEGEN_SCALAR_STEP=n` compares every n-th corpus world (default 4).
 #[path = "../../../tests/common/check_harness.rs"]
 mod check_harness;
@@ -25,7 +25,7 @@ mod check_words;
 #[path = "../../../tests/common/ir_words.rs"]
 mod ir_words;
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -71,7 +71,6 @@ struct Plan {
 
 thread_local! {
     static PLAN: RefCell<Option<Plan>> = const { RefCell::new(None) };
-    static OPTIMIZE: Cell<bool> = const { Cell::new(false) };
     /// Unplanned requests by IR operation (the report's coverage table).
     static LEFT: RefCell<std::collections::BTreeMap<String, u64>> =
         const { RefCell::new(std::collections::BTreeMap::new()) };
@@ -173,7 +172,7 @@ fn scalar(lent: &mut Lent<'_, '_>) -> Result<bool, String> {
         REFUSED.fetch_add(1, Ordering::Relaxed);
         return Ok(false);
     }
-    let mut args = vec![a, b, u64::from(OPTIMIZE.with(Cell::get))];
+    let mut args = vec![a, b, u64::from(lent.optimize)];
     args.extend_from_slice(lent.args);
     let hook = &vesper().hook;
     let (answer, crossing) = vesper_cranelift_sys::lend_as(
@@ -266,7 +265,6 @@ fn emission() {
     let mut total = Diff::default();
     for (i, case) in worlds.iter().enumerate() {
         for optimize in [true, false] {
-            OPTIMIZE.with(|o| o.set(optimize));
             PLAN.with(|p| *p.borrow_mut() = None);
             total.add(compare(
                 &case.name,
@@ -325,7 +323,6 @@ fn dump(dir: &str, worlds: &[&check_harness::Case], total: &Diff) {
             .find(|c| &c.name == w)
             .expect("a compared world");
         for optimize in [true, false] {
-            OPTIMIZE.with(|o| o.set(optimize));
             PLAN.with(|p| *p.borrow_mut() = None);
             let rust = build(&case.world, "main", optimize);
             let hooked = codegen_swap::with_hooks(hooks(), || build(&case.world, "main", optimize));
