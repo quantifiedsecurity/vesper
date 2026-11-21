@@ -434,3 +434,154 @@ impl<M: Module> Codegen<'_, '_, M> {
         })
     }
 }
+
+/// Give every tuple that holds a 128-bit element its 128-bit element type
+/// (#1270).
+///
+/// The checker types an integer literal from the binding it flows into, so
+/// in `let t: [i128; 3] = [1, 2, 5]` each element is an `i128` constant,
+/// but the tuple expression itself keeps its literal type, which defaults to
+/// `(i64, i64, i64)`. The evaluator never reads that type; native code lays
+/// the tuple out by it, so it stored three one-word elements that the
+/// binding's `[i128; 3]` layout then read as two-word ones. This pass
+/// widens the type of each `Op::Tuple` (and of the block parameters that
+/// receive one) from its operands, to a fixed point, before lowering. It
+/// only changes an element whose operand is 128-bit and whose recorded type
+/// is a narrower integer, so every other program is unchanged.
+pub(super) fn refine_wide_tuples(program: &mut crate::ir::Program) {
+    for f in program.functions.values_mut() {
+        refine_function(f);
+    }
+}
+
+fn refine_function(f: &mut crate::ir::FunctionIr) {
+    use crate::ir::{Op, Terminator};
+    // Cheap exit: nothing to refine without a 128-bit value.
+    if !f.values.values().chain(f.locals.values()).any(holds_wide) {
+        return;
+    }
+    loop {
+        let mut changed = false;
+        for b in 0..f.blocks.len() {
+            for i in 0..f.blocks[b].instructions.len() {
+                let inst = &f.blocks[b].instructions[i];
+                // A local takes its type from its initializer, so a
+                // refined tuple widens the local it binds; a whole read of
+                // the local carries the binding's checked type.
+                match &inst.op {
+                    Op::Bind { pattern, value } => {
+                        if let Some(actual) = f.values.get(value).cloned() {
+                            changed |= widen_pattern(&mut f.locals, pattern, &actual);
+                        }
+                        continue;
+                    }
+                    Op::Read {
+                        root,
+                        path,
+                        projections,
+                        ..
+                    } if path.is_empty() && projections.is_empty() => {
+                        if let Some(t) = f.locals.get(root).and_then(|d| widen(d, &inst.ty)) {
+                            f.locals.insert(root.clone(), t);
+                            changed = true;
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+                let Op::Tuple(ids) = &inst.op else {
+                    continue;
+                };
+                let actual = Type::Tuple(
+                    ids.iter()
+                        .map(|id| f.values.get(id).cloned().unwrap_or(Type::Infer))
+                        .collect(),
+                );
+                if let Some(t) = widen(&inst.ty, &actual) {
+                    let dest = inst.dest;
+                    f.blocks[b].instructions[i].ty = t.clone();
+                    f.values.insert(dest, t);
+                    changed = true;
+                }
+            }
+            if let Terminator::Jump { block, args } = &f.blocks[b].terminator {
+                let (block, args) = (*block, args.clone());
+                for (param, arg) in f.blocks[block].params.clone().into_iter().zip(args) {
+                    let (Some(declared), Some(actual)) = (f.values.get(&param), f.values.get(&arg))
+                    else {
+                        continue;
+                    };
+                    if let Some(t) = widen(declared, actual) {
+                        f.values.insert(param, t);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
+/// Widen the locals that `pattern` binds from the bound value's `actual`
+/// type; whether any changed.
+fn widen_pattern(
+    locals: &mut std::collections::BTreeMap<String, Type>,
+    pattern: &Pattern,
+    actual: &Type,
+) -> bool {
+    match (&pattern.kind, actual) {
+        (PatternKind::Bind(name), actual) => {
+            match locals.get(name).and_then(|d| widen(d, actual)) {
+                Some(t) => {
+                    locals.insert(name.clone(), t);
+                    true
+                }
+                None => false,
+            }
+        }
+        (PatternKind::Tuple(ps), Type::Tuple(ts)) if ps.len() == ts.len() => ps
+            .iter()
+            .zip(ts)
+            .fold(false, |any, (p, t)| widen_pattern(locals, p, t) | any),
+        _ => false,
+    }
+}
+
+/// Whether `t` is, or is a tuple that holds, a 128-bit integer.
+fn holds_wide(t: &Type) -> bool {
+    match t {
+        Type::Tuple(ts) => ts.iter().any(holds_wide),
+        t => is_wide(t),
+    }
+}
+
+/// `declared` with each narrower integer element that `actual` holds as a
+/// 128-bit integer replaced by it, or `None` when nothing changes.
+fn widen(declared: &Type, actual: &Type) -> Option<Type> {
+    match (declared, actual) {
+        (Type::Tuple(ds), Type::Tuple(acts)) if ds.len() == acts.len() => {
+            let mut any = false;
+            let ts = ds
+                .iter()
+                .zip(acts)
+                .map(|(d, a)| match widen(d, a) {
+                    Some(t) => {
+                        any = true;
+                        t
+                    }
+                    None => d.clone(),
+                })
+                .collect();
+            any.then_some(Type::Tuple(ts))
+        }
+        (d, a) if is_wide(a)
+            && !is_wide(d)
+            && (matches!(d, Type::IntLiteral(_)) || IntegerKind::from_type(d).is_some()) =>
+        {
+            Some(a.clone())
+        }
+        _ => None,
+    }
+}
