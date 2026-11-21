@@ -578,12 +578,15 @@ pub fn net_state_clone(in n: NetState) -> NetState {
 }
 
 pub fn net_state_same(in a: NetState, in b: NetState) -> bool {
-    a.max_in_flight == b.max_in_flight
-        && a.max_inbox == b.max_inbox
-        && a.max_message_bytes == b.max_message_bytes
-        && a.default_delay_ns == b.default_delay_ns
-        && a.next_message == b.next_message
-        && same_words(in a.delays, in b.delays)
+    let limits_a = (a.max_in_flight, a.max_inbox, a.max_message_bytes);
+    let limits_b = (b.max_in_flight, b.max_inbox, b.max_message_bytes);
+    if limits_a != limits_b {
+        return false;
+    }
+    if a.default_delay_ns != b.default_delay_ns || a.next_message != b.next_message {
+        return false;
+    }
+    same_words(in a.delays, in b.delays)
         && same_words(in a.endpoints, in b.endpoints)
         && same_words(in a.reserved, in b.reserved)
         && same_words(in a.queued, in b.queued)
