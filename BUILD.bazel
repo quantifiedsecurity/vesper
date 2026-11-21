@@ -363,6 +363,14 @@ vesper_crate(
             "//crates/vesper-serde:files",
             "//crates/vesper-span:files",
         ],
+        # Self-hosting SH4 lane 17 (#1291): @vesper/backend-checks against
+        # native_verifiers on the verifier fixtures and the corpus. Anchored
+        # globs; @vesper/resonance comes from its crate's package.
+        "test/self_host_backend_checks": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]) + ["//crates/vesper-resonance:files"],
         # SH4 lane 5 (#1279): the native optimizer policy against
         # ir_opt::optimize on the same corpus. Anchored globs.
         "test/optimizer_budget": glob([
@@ -752,6 +760,8 @@ vesper_crate(
         # The LSP core differential (#1339) records live `vesper lsp` sessions
         # and JIT-compiles three packages: about 2.5 min unoptimized.
         "test/self_host_lsp_core": "long",
+        # The backend-checks differential emits every corpus program 4 times.
+        "test/self_host_backend_checks": "long",
         # The optimizer policy (#1279) optimizes every corpus world three times.
         "test/optimizer_budget": "long",
         # World::mode (#1331) answers every corpus query three times.
@@ -859,6 +869,14 @@ vesper_package(
     name = "place_ir_package",
     srcs = glob(["packages/vesper-place-ir/src/**/*.ves"]),
     manifest = "packages/vesper-place-ir/Loom.toml",
+    visibility = ["//visibility:public"],
+    deps = [":check_data_package"],
+)
+
+vesper_package(
+    name = "ir_inline_package",
+    srcs = glob(["packages/vesper-ir-inline/src/**/*.ves"]),
+    manifest = "packages/vesper-ir-inline/Loom.toml",
     visibility = ["//visibility:public"],
     deps = [":check_data_package"],
 )
