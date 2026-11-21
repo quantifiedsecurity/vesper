@@ -39,14 +39,16 @@ fn package() -> &'static Package {
     P.get_or_init(|| Package::load("packages/vesper-codegen-aggregates"))
 }
 
-/// Every `n`-th corpus world (`CODEGEN_AGGREGATES_STEP`, default 4); set it
-/// to 1 for the whole corpus (the report's numbers).
+/// Every `n`-th corpus world (`CODEGEN_AGGREGATES_STEP`); set it to 1 for
+/// the whole corpus (the report's numbers). The default is every 4th world
+/// in an optimized build and every 24th in a debug one (Bazel's test build,
+/// where every 4th world passes its 900 s limit).
 fn step() -> usize {
     std::env::var("CODEGEN_AGGREGATES_STEP")
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(4)
+        .unwrap_or(if cfg!(debug_assertions) { 24 } else { 4 })
 }
 
 /// One corpus world's program as native lowering receives it.
@@ -320,7 +322,12 @@ fn decisions_match_rust() {
         prepared().len()
     );
     eprintln!("decisions by kind: {kinds:?}; {wide} wide-integer graphs left to Rust");
-    assert!(prepared().len() > 20, "only {} worlds", prepared().len());
+    let expected = corpus().len() / step() / 2;
+    assert!(
+        prepared().len() >= expected,
+        "only {} worlds of {expected} expected",
+        prepared().len()
+    );
     assert_eq!(bad, 0);
 }
 

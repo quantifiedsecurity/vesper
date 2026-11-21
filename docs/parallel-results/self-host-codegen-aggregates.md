@@ -57,7 +57,9 @@ native optimize path does (FFI drops, `ir_opt`, the inliner, drop
 elaboration, bounds hoisting) and compares, for every graph the path plans
 (every function but `fip` ones), Rust's decisions with the package's
 `aggregate_decisions` entry, line for line. The default run takes every 4th
-world; `CODEGEN_AGGREGATES_STEP=1` takes all of them.
+world in an optimized build and every 24th in a debug one (Bazel's, which
+passed its 900 s limit at every 4th); `CODEGEN_AGGREGATES_STEP=1` takes all
+of them.
 
 Full corpus, release build:
 
