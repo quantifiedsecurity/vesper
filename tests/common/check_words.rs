@@ -567,12 +567,9 @@ fn effectful_row(w: &World, row: &Effects) -> bool {
 
 /// Whether every type the IR check reads can be encoded.
 fn program_encodable(w: &World, p: &vesper::ir::Program) -> bool {
-    // Element view matches (#1173) and lent closures and function
-    // parameters (#1242) are not in `@vesper/ir-check` yet: Rust checks the
-    // programs that have them.
+    // Element view matches (#1173) are not in `@vesper/ir-check` yet: Rust
+    // checks the worlds that have them.
     w.element_views.is_empty()
-        && w.lent_closures.is_empty()
-        && !p.functions.values().any(calls_lent_function)
         && w.adts.values().all(|a| {
             a.variants
                 .iter()
@@ -585,21 +582,6 @@ fn program_encodable(w: &World, p: &vesper::ir::Program) -> bool {
                 && f.blocks
                     .iter()
                     .all(|b| b.instructions.iter().all(|i| encodable(&i.ty)))
-        })
-}
-
-/// Whether `f` calls a function value that is not `copy` (a lent function
-/// parameter is read by its call, #1242).
-fn calls_lent_function(f: &vesper::ir::FunctionIr) -> bool {
-    f.blocks
-        .iter()
-        .flat_map(|b| &b.instructions)
-        .any(|i| match &i.op {
-            vesper::ir::Op::Indirect { callee, .. } => !matches!(
-                f.values.get(callee),
-                Some(Type::Function { mode, .. }) if *mode == vesper::ast::Mode::Copy
-            ),
-            _ => false,
         })
 }
 
@@ -631,9 +613,13 @@ pub fn ir_input(w: &World, program: &vesper::ir::Program) -> Option<Vec<u8>> {
     body.push(program.functions.len() as u64);
     for f in program.functions.values() {
         body.push(f.params.len() as u64);
+        // A lent closure's body (§4.2, #1242) borrows its captures `in`.
+        let lent = w.lent_closures.get(&f.name);
         for p in &f.params {
             body.push(e.name(&p.name));
-            body.push(pass_word(p.pass));
+            let borrowed =
+                p.pass == Pass::Sink && lent.is_some_and(|names| names.contains(&p.name));
+            body.push(pass_word(if borrowed { Pass::In } else { p.pass }));
             body.push(e.ty(&p.ty));
             body.push(p.span.start as u64);
             body.push(p.span.end as u64);
