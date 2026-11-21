@@ -466,35 +466,52 @@ pub fn sym_less(in s: St, a: u32, b: u32) -> bool {
     }
 }
 
-// Whether `p` occurs in `sym`.
+// Whether `p` occurs in `sym` (one pass over the interner's text; the
+// renamer asks for every new name).
 pub fn sym_contains(in s: St, sym: u32, in p: Str) -> bool {
-    let n = sym_len(in s, sym);
+    let (a, z) = sym_range(in s, sym);
     let k = p.len();
-    if k > n {
+    if k == 0 || wrapping_sub(z, a) < k {
         return false;
     }
+    let t = s.g.text.as_bytes();
     let b = p.as_bytes();
-    let mut i: u64 = 0;
+    let c0 = match b.try_get(0) {
+        Option::Some(c) => c,
+        Option::None => 0,
+    };
+    let last = wrapping_sub(z, k);
+    let mut i = a;
     loop {
-        if wrapping_add(i, k) > n {
+        if i > last {
             break false;
         }
-        let mut j: u64 = 0;
-        let found = loop {
-            if j >= k {
+        let c = match t.try_get(i) {
+            Option::Some(c) => c,
+            Option::None => 0,
+        };
+        if c == c0 {
+            let mut j: u64 = 1;
+            let found = loop {
+                if j >= k {
+                    break true;
+                }
+                let x = match t.try_get(wrapping_add(i, j)) {
+                    Option::Some(x) => x,
+                    Option::None => 0,
+                };
+                let y = match b.try_get(j) {
+                    Option::Some(y) => y,
+                    Option::None => 0,
+                };
+                if x != y {
+                    break false;
+                }
+                j = inc(j);
+            };
+            if found {
                 break true;
             }
-            let c = match b.try_get(j) {
-                Option::Some(c) => c,
-                Option::None => 0,
-            };
-            if sym_byte(in s, sym, wrapping_add(i, j)) != c {
-                break false;
-            }
-            j = inc(j);
-        };
-        if found {
-            break true;
         }
         i = inc(i);
     }
