@@ -154,6 +154,10 @@ because its free names are not all in the input.
 | --: | --: | --: | --: | --: | --: |
 | 290 | 11,180 | 4,873 | 181,508 | 0 | 0 |
 
+After merging `main` (`a64f537`) and lane 1's latest head (`8ac0f94`) the
+corpus has 292 worlds: 12,150 functions lowered, 5,466 skipped, 203,790
+instructions, 0 differing, and the IR check agrees.
+
 Rust's lowering has 600 closure and handler functions on the corpus; the
 port lowers 587 of them, and the other 13 hold a payload operation. Of the
 world functions, 10,439 are plain, 154 have closures or handlers (no
