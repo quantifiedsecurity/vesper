@@ -45,6 +45,10 @@ emits, and the report they print.
   `//crates/vesper-resonance:files` for `@vesper/resonance`) and the `long`
   tag.
 
+- `tests/fixtures/self_host/driver.rs`: one line keeps the package out of
+  the Stage 1 parser's corpus, like the other packages that use `use`
+  (#880); its small files have no loops, so the loop filter kept them in.
+
 The package is not a port of a crate with a seed, so it does not join the
 port harness; its check is the differential test.
 
