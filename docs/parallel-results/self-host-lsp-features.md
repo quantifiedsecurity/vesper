@@ -1,7 +1,7 @@
 # Self-hosting SH5 lane 17: LSP features, part 1 (navigation)
 
-Claim #1340. Stacked on lane 16's PR #1361 (head `6b5cc69`, which merges
-`origin/main` `52ee700`); `origin/main` was `75268b3` when this part started.
+Claim #1340. Built on lane 16's PR #1361, which merged into `main` at
+`81cdb52`; that `main` is merged into this branch.
 Prompt: `docs/agent-prompts/self-host-sh5/17-lsp-features.md`.
 Rust stays the default: the language server still runs `src/lsp`. This part
 adds no Rust code to the compiler and deletes none.
@@ -36,6 +36,8 @@ adds no Rust code to the compiler and deletes none.
     positions and ranges use `@vesper/span`. The package does not depend on
     `@vesper/serde`, so it can use the builtin `String` (lane 16, gap 1).
 - **`tests/self_host_lsp_features.rs`** (new): the differential below.
+- `tests/fixtures/self_host/driver.rs`: `self_host_front_end` skips the new
+  package, like the other `pub fn`/`use` packages (#880).
 - `BUILD.bazel`: the test's data (anchored globs plus
   `//crates/vesper-span:files`) and the `long` tag.
 
@@ -108,8 +110,8 @@ Rust side starts from the checked snapshot, whose AST is already parsed.
 This part edits no file under `src/`, `bootstrap/`, `lean/`,
 `packages/vesper-compiler/` or any crate: only the new package, the new test,
 `BUILD.bazel` and this report. The verified backend and its inputs are
-untouched. The bootstrap-stage1 workflow runs on the branch once #1361 has
-merged and `main` is merged in (the project's CI rule).
+untouched. The bootstrap-stage1 workflow runs on the branch now that #1361
+has merged and `main` is merged in (the project's CI rule).
 
 ## Compiler gaps
 
