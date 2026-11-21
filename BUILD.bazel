@@ -221,6 +221,11 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        "test/self_host_bounds_hoist_pass": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # Self-hosting SH2 lane 11 (#1183): the dyn passes in Vesper against
         # src/dyn_fn.rs and src/dyn_trait.rs over the dyn suites, mutants and
         # the repository's .ves sources. Anchored globs.
@@ -603,6 +608,7 @@ vesper_crate(
         # The region and sequence rules differential (#1181): ~7 min debug.
         "test/self_host_check_regions_seqs": "long",
         "test/self_host_bounds_hoist": "long",
+        "test/self_host_bounds_hoist_pass": "long",
         # The dyn differential runs both passes over every .ves source twice.
         "test/self_host_check_dyn": "long",
         # The package assembler differential (#1178) compiles the AST package.
@@ -720,6 +726,19 @@ vesper_package(
     manifest = "packages/vesper-place-ir/Loom.toml",
     visibility = ["//visibility:public"],
     deps = [":check_data_package"],
+)
+
+# Bounds hoisting for the hybrid compiler's bounds_hoist module (SH3 lane
+# 12, #1251).
+vesper_package(
+    name = "bounds_hoist_package",
+    srcs = glob(["packages/vesper-bounds-hoist/src/**/*.ves"]),
+    manifest = "packages/vesper-bounds-hoist/Loom.toml",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":check_data_package",
+        ":place_ir_package",
+    ],
 )
 
 vesper_package(
