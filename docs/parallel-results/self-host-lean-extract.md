@@ -156,7 +156,7 @@ structured extractor), the refusal, or the rendered definitions:
 | Test | Cases | Differences |
 |---|--:|--:|
 | `cfg_functions_match_rust_on_the_corpus` | 303 worlds, 22,058 functions; 13,547 on the CFG path, 2,899 of them refused; 111,846 lines | 0 |
-| `cfg_functions_match_rust_on_test_sources` | 149 programs from `tests/lean*.rs` and `tests/tiled.rs` plus mutants: 249 functions, 153 on the CFG path, 8 lifted closures, tiled operations, 6 name refusals | 0 |
+| `cfg_functions_match_rust_on_test_sources` | 155 programs from `tests/lean*.rs` and `tests/tiled.rs` plus mutants: 258 functions, 153 on the CFG path, 8 lifted closures, tiled operations, 6 name refusals | 0 |
 | `unoptimized_jit_agrees` | every 7th world | 0 |
 
 The corpus's refusals are mostly loops (1,758), bit operators (`&`, `>>`,
@@ -228,7 +228,7 @@ polymorphic), `skip`, the refusal, or the rendered definition:
 | Test | Cases | Differences |
 |---|--:|--:|
 | `structured_functions_match_rust_on_the_corpus` | 303 worlds, 22,319 functions: 2,274 definitions and 5,174 refusals from the structured extractor, 119 skipped; 46,912 lines | 0 |
-| `structured_functions_match_rust_on_test_sources` | 149 programs from `tests/lean*.rs` and `tests/tiled.rs` plus mutants: 61 definitions, 6 refusals, 63 skipped | 0 |
+| `structured_functions_match_rust_on_test_sources` | 155 programs from `tests/lean*.rs` and `tests/tiled.rs` plus mutants (including tiled column operations and record patterns off the CFG path): 66 definitions, 10 refusals, 63 skipped | 0 |
 
 ### Speed
 

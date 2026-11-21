@@ -806,6 +806,12 @@ fn cfg_mutants() -> Vec<(String, World)> {
          fn st(inout s: TiledSeq[P], p: P) { s.set(0, p); }
          fn cg(in s: TiledSeq[P]) -> u64 { s.col_get[m](0) }
          fn g(in s: TiledSeq[P]) -> P { s.get(0) }",
+        // The structured extractor: sequence operations keep these off the CFG path.
+        "tiled(8) copy struct P { hot m: u64, cold c: u8, }
+         fn cs(inout s: TiledSeq[P], in v: ChunkSeq[u64]) { s.col_set[m](0, v.len()); }
+         fn cg(in s: TiledSeq[P], in v: ChunkSeq[u64]) -> bool { s.col_get[m](0) == v.len() }",
+        "copy struct Q { a: u64, b: u64, }
+         fn rp(q: Q, in v: ChunkSeq[u64]) -> bool { let Q { a, b } = q; a == v.len() }",
     ];
     let mut out = vec![];
     for src in sources {

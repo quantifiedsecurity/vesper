@@ -1270,8 +1270,12 @@ fn pat(inout b: B, in t: Types, in y: Y, inout g: G, p: u64, inout rs: ChunkSeq[
         let mut fs = empty();
         for i in 0..n {
             let fname = y.a.sym(y.a.px(p, add(3, wrapping_mul(i, 2))));
+            // The field name is checked before the sub-pattern, as in Rust;
+            // the sub-pattern may leave intermediate words, so both parts
+            // are copied into one range.
             let m = b.at();
             b.ident(fname);
+            let id = b.since(m);
             let s = pat(
                 inout b,
                 in t,
@@ -1280,8 +1284,10 @@ fn pat(inout b: B, in t: Types, in y: Y, inout g: G, p: u64, inout rs: ChunkSeq[
                 y.a.px(p, add(4, wrapping_mul(i, 2))),
                 inout rs
             );
+            let m2 = b.at();
+            b.put(id);
             b.put(s);
-            fs.push(b.since(m));
+            fs.push(b.since(m2));
         }
         let m = b.at();
         b.w(P_RECORD);
@@ -2443,7 +2449,13 @@ fn call(
         let top = y.a.x(e, add(ra, 2));
         let tiled_applies = top != 0 && (ck != X_NAME || !g.has(n));
         if tiled_applies {
-            let extra = y.a.x(e, add(ra, 3));
+            // Column operations carry a name-table index; tile widths a number.
+            let raw = y.a.x(e, add(ra, 3));
+            let extra = if top == TO_COL_GET || top == TO_COL_SET {
+                widen_u64(y.a.sym(raw))
+            } else {
+                raw
+            };
             let skip_first = y.a.x(e, add(ra, 4)) != 0;
             let place = y.a.x(e, add(ra, 5));
             let mut es: ChunkSeq[u64] = ChunkSeq::new[u64]();
