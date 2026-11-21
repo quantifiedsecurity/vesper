@@ -12,6 +12,9 @@ ops=${2:-200}
 # The last commit with the Rust implementation as the default build.
 base=${3:-ab965f2ab475a4b8d3bf31034808c306cdf16975}
 target="${CARGO_TARGET_DIR:-$PWD/target}"
+# The baseline builds from inside the worktree, so a relative directory
+# must be made absolute first.
+case "$target" in /*) ;; *) target="$PWD/$target" ;; esac
 dir=$(mktemp -d)
 tree="$dir/rust-tree"
 trap 'git worktree remove --force "$tree" >/dev/null 2>&1 || true; rm -rf "$dir"' EXIT
