@@ -12,6 +12,7 @@ unsafe extern "C" {
     fn vesper_hybrid_codegen_export_seq_free(seq: i64) -> i64;
     fn vesper_hybrid_codegen_export_live_allocations() -> i64;
     fn vesper_hybrid_codegen_export_export(call: i64) -> i64;
+    fn vesper_hybrid_codegen_export_plan(input: *mut u64) -> i64;
 }
 
 /// The sequence runtime of the Vesper library `hybrid_codegen_export`.
@@ -35,4 +36,13 @@ pub fn export(call: u64) -> u64 {
     // every handle passed is owned or borrowed as its mode requires.
     let raw = unsafe { vesper_hybrid_codegen_export_export(call as i64) };
     raw as u64
+}
+
+/// Calls `plan` of the Vesper library `hybrid_codegen_export` (`vesper_hybrid_codegen_export_plan`).
+pub fn plan(input: &[u8]) -> Vec<u64> {
+    // SAFETY: `vesper_hybrid_codegen_export_plan` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(input, |view_input| unsafe { vesper_hybrid_codegen_export_plan(view_input) });
+    unsafe { vesper_port_abi::seq_take::<u64>(RUNTIME, raw as u64) }
 }

@@ -481,6 +481,22 @@ pub fn plan_with(
     library: &str,
     directives: &Directives,
 ) -> Result<LibraryInterface, Vec<ExportError>> {
+    // SH4 swap point (#1286): the `plan` hook may plan the interface.
+    if let Some(hook) = crate::codegen_swap::installed().plan
+        && let Some(r) = hook(world, public, library, directives)
+    {
+        return r;
+    }
+    plan_native(world, public, library, directives)
+}
+
+/// [`plan_with`] in Rust, whatever hook is installed.
+pub fn plan_native(
+    world: &World,
+    public: &BTreeSet<String>,
+    library: &str,
+    directives: &Directives,
+) -> Result<LibraryInterface, Vec<ExportError>> {
     if !valid_library_name(library) {
         return Err(vec![ExportError::LibraryName(library.into())]);
     }
