@@ -271,6 +271,13 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # SH4 lane 6 (#1280): @vesper/codegen-scalar's decisions against the
+        # native Codegen core over the same corpus.
+        "test/self_host_codegen_scalar": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         "test/self_host_place_ir_jit": glob([
             "examples/**",
             "packages/**",
@@ -841,6 +848,7 @@ vesper_crate(
         "test/self_host_ir_lower": "long",
         # The eBPF backend differential (#1290) loads every corpus world.
         "test/self_host_ebpf_backend": "long",
+        "test/self_host_codegen_scalar": "long",
         "test/self_host_check_harness": "long",
         # The loops and atomics differential (#1182) passed 900 s on loaded CI.
         "test/self_host_check_loops_atomics": "eternal",
