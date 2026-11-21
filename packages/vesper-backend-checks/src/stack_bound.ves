@@ -34,14 +34,14 @@ const NONE: u64 = 18446744073709551615;
 
 pub struct StackGraph {
     // per function: name, frame bytes (ids are positions)
-    names: ChunkSeq[u64],
-    frames: ChunkSeq[u64],
+    pub names: ChunkSeq[u64],
+    pub frames: ChunkSeq[u64],
     // (caller, callee)
-    calls: ChunkSeq[u64],
+    pub calls: ChunkSeq[u64],
     // (caller, instruction)
-    indirect: ChunkSeq[u64],
+    pub indirect: ChunkSeq[u64],
     // (caller, symbol, has inst, inst)
-    external: ChunkSeq[u64],
+    pub external: ChunkSeq[u64],
 }
 
 pub fn graph_new() -> StackGraph {
@@ -56,12 +56,12 @@ pub fn graph_new() -> StackGraph {
 
 pub struct StackPol {
     // (function, budget) in policy order
-    roots: ChunkSeq[u64],
+    pub roots: ChunkSeq[u64],
     // (symbol, bytes) in symbol order
-    external_bounds: ChunkSeq[u64],
+    pub external_bounds: ChunkSeq[u64],
     // (caller, at, n) over `targets`, caller order
-    indirect_targets: ChunkSeq[u64],
-    targets: ChunkSeq[u64],
+    pub indirect_targets: ChunkSeq[u64],
+    pub targets: ChunkSeq[u64],
 }
 
 pub fn pol_new() -> StackPol {

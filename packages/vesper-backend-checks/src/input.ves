@@ -200,20 +200,20 @@ pub struct Policy {
 
 // `NativeVerifierReport`, its text in `tx`.
 pub struct Report {
-    tx: ChunkSeq[u8],
-    verifiers: u64,
-    functions: u64,
+    pub tx: ChunkSeq[u8],
+    pub verifiers: u64,
+    pub functions: u64,
     // (at, len) in tx
-    notes: ChunkSeq[u64],
+    pub notes: ChunkSeq[u64],
     // FDW: verifier bit, function, has inst, inst, rule (at, len), message
     // (at, len), has span, start, end, has location, location
-    fd: ChunkSeq[u64],
-    has_stack: bool,
+    pub fd: ChunkSeq[u64],
+    pub has_stack: bool,
     // root, budget, has worst, worst, within, path (at, n in spool)
-    sr: ChunkSeq[u64],
-    spool: ChunkSeq[u64],
+    pub sr: ChunkSeq[u64],
+    pub spool: ChunkSeq[u64],
     // function, has inst, inst, rule (at, len), message (at, len)
-    sf: ChunkSeq[u64],
+    pub sf: ChunkSeq[u64],
 }
 
 pub fn report_new() -> Report {
