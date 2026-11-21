@@ -42,7 +42,6 @@ const P_INOUT: u8 = 2;
 const P_SINK: u8 = 3;
 const M_REPR_C: u8 = 1;
 
-
 const NONE32: u32 = 4294967295;
 
 // The interface and the binding options.
@@ -69,19 +68,45 @@ pub fn gen_new(sink i: Iface) -> Gen {
 
 // Rust's strict and reserved keywords the generator escapes (`r#`).
 pub fn is_keyword(in b: ChunkSeq[u8]) -> bool {
-    same_str(in b, "as") || same_str(in b, "async") || same_str(in b, "await")
-        || same_str(in b, "break") || same_str(in b, "const") || same_str(in b, "continue")
-        || same_str(in b, "crate") || same_str(in b, "dyn") || same_str(in b, "else")
-        || same_str(in b, "enum") || same_str(in b, "extern") || same_str(in b, "false")
-        || same_str(in b, "fn") || same_str(in b, "for") || same_str(in b, "gen")
-        || same_str(in b, "if") || same_str(in b, "impl") || same_str(in b, "in")
-        || same_str(in b, "let") || same_str(in b, "loop") || same_str(in b, "match")
-        || same_str(in b, "mod") || same_str(in b, "move") || same_str(in b, "mut")
-        || same_str(in b, "pub") || same_str(in b, "ref") || same_str(in b, "return")
-        || same_str(in b, "self") || same_str(in b, "Self") || same_str(in b, "static")
-        || same_str(in b, "struct") || same_str(in b, "super") || same_str(in b, "trait")
-        || same_str(in b, "true") || same_str(in b, "type") || same_str(in b, "unsafe")
-        || same_str(in b, "use") || same_str(in b, "where") || same_str(in b, "while")
+    same_str(in b, "as")
+        || same_str(in b, "async")
+        || same_str(in b, "await")
+        || same_str(in b, "break")
+        || same_str(in b, "const")
+        || same_str(in b, "continue")
+        || same_str(in b, "crate")
+        || same_str(in b, "dyn")
+        || same_str(in b, "else")
+        || same_str(in b, "enum")
+        || same_str(in b, "extern")
+        || same_str(in b, "false")
+        || same_str(in b, "fn")
+        || same_str(in b, "for")
+        || same_str(in b, "gen")
+        || same_str(in b, "if")
+        || same_str(in b, "impl")
+        || same_str(in b, "in")
+        || same_str(in b, "let")
+        || same_str(in b, "loop")
+        || same_str(in b, "match")
+        || same_str(in b, "mod")
+        || same_str(in b, "move")
+        || same_str(in b, "mut")
+        || same_str(in b, "pub")
+        || same_str(in b, "ref")
+        || same_str(in b, "return")
+        || same_str(in b, "self")
+        || same_str(in b, "Self")
+        || same_str(in b, "static")
+        || same_str(in b, "struct")
+        || same_str(in b, "super")
+        || same_str(in b, "trait")
+        || same_str(in b, "true")
+        || same_str(in b, "type")
+        || same_str(in b, "unsafe")
+        || same_str(in b, "use")
+        || same_str(in b, "where")
+        || same_str(in b, "while")
 }
 
 // `ident`: the name, `r#`-escaped when it is a keyword.
@@ -611,7 +636,10 @@ impl Gen {
         put(inout e, "Error");
         put(inout out, "/// The errors `");
         self.put_name(inout out, f.name);
-        put(inout out, "` can raise, in status order.\n#[derive(Debug, Clone, Copy, PartialEq)]\npub enum ");
+        put(
+            inout out,
+            "` can raise, in status order.\n#[derive(Debug, Clone, Copy, PartialEq)]\npub enum "
+        );
         put_seq(inout out, in e);
         put(inout out, " {\n");
         for j in 0..f.en {
@@ -678,7 +706,10 @@ impl Gen {
 // `rust_binding` for a v1 library.
 pub fn binding_v1(in g: Gen, inout out: ChunkSeq[u8]) {
     g.header(inout out);
-    put(inout out, "#![allow(clippy::all, unused_imports, unused_mut, non_snake_case, dead_code)]\n\nuse vesper_port_abi::Abi;\n\n");
+    put(
+        inout out,
+        "#![allow(clippy::all, unused_imports, unused_mut, non_snake_case, dead_code)]\n\nuse vesper_port_abi::Abi;\n\n"
+    );
     g.write_copy_types(inout out, true);
     let mut checked = str_set();
     for fi in 0..g.i.fns.len() {
@@ -777,7 +808,10 @@ pub fn binding_v1(in g: Gen, inout out: ChunkSeq[u8]) {
         }
         put(inout out, "    // SAFETY: `");
         g.put_name(inout out, f.symbol);
-        put(inout out, "` has exactly this signature in the export ABI; every\n    // pointer is a live, writable buffer of the size the ABI requires.\n    ");
+        put(
+            inout out,
+            "` has exactly this signature in the export ABI; every\n    // pointer is a live, writable buffer of the size the ABI requires.\n    "
+        );
         if !f.result_pointer {
             put(inout out, "let raw = ");
         }

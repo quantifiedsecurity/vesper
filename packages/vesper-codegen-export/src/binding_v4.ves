@@ -40,7 +40,6 @@ const P_INOUT: u8 = 2;
 const P_SINK: u8 = 3;
 const M_REPR_C: u8 = 1;
 
-
 impl Gen {
     // `tree_types`: the greatest fixed point of handle types whose fields
     // all have tree forms. `ok[d]` is 1 when declaration `d` has a tree.
@@ -274,7 +273,15 @@ impl Gen {
             put(inout out, "[");
             put_u64(inout out, at);
             put(inout out, "] = 1;\n");
-            self.encode(self.i.kid(t, 0), in text("x"), in wv, inc(at), inout out, wrapping_add(depth, 2));
+            self
+                .encode(
+                self.i.kid(t, 0),
+                in text("x"),
+                in wv,
+                inc(at),
+                inout out,
+                wrapping_add(depth, 2)
+            );
             put_seq(inout out, in pad);
             put(inout out, "    }\n");
             put_seq(inout out, in pad);
@@ -401,7 +408,10 @@ impl Gen {
         }
         put(inout out, "impl ");
         put_seq(inout out, in name);
-        put(inout out, "Ref<'_> {\n    /// Copies the value into an owned Rust tree (export ABI v4).\n    pub fn decode(&self) -> ");
+        put(
+            inout out,
+            "Ref<'_> {\n    /// Copies the value into an owned Rust tree (export ABI v4).\n    pub fn decode(&self) -> "
+        );
         put_seq(inout out, in tree);
         put(inout out, " {\n");
         if d.is_enum {
@@ -471,18 +481,30 @@ impl Gen {
         put(inout out, "    }\n}\n\n");
         put(inout out, "impl ");
         put_seq(inout out, in name);
-        put(inout out, " {\n    /// Builds the Vesper value of `tree` once, in this library's allocations\n    /// (export ABI v4). Dropping the handle frees them.\n    pub fn encode(tree: &");
+        put(
+            inout out,
+            " {\n    /// Builds the Vesper value of `tree` once, in this library's allocations\n    /// (export ABI v4). Dropping the handle frees them.\n    pub fn encode(tree: &"
+        );
         put_seq(inout out, in tree);
         put(inout out, ") -> Self {\n        let mut words = [0u64; ");
         put_u64(inout out, d.words);
-        put(inout out, "];\n        // SAFETY: `words` is the value's size, and every allocation the\n        // encoder makes belongs to this library and passes to the value.\n        unsafe { encode_");
+        put(
+            inout out,
+            "];\n        // SAFETY: `words` is the value's size, and every allocation the\n        // encoder makes belongs to this library and passes to the value.\n        unsafe { encode_"
+        );
         put_seq(inout out, in sn);
-        put(inout out, "(tree, &mut words) };\n        Self { words }\n    }\n\n    /// Copies the value into an owned Rust tree (export ABI v4).\n    pub fn decode(&self) -> ");
+        put(
+            inout out,
+            "(tree, &mut words) };\n        Self { words }\n    }\n\n    /// Copies the value into an owned Rust tree (export ABI v4).\n    pub fn decode(&self) -> "
+        );
         put_seq(inout out, in tree);
         put(inout out, " {\n        self.as_ref().decode()\n    }\n}\n\n");
         put(inout out, "/// # Safety\n/// `w` holds ");
         put_u64(inout out, d.words);
-        put(inout out, " zeroed words; the value written there owns what it allocates.\nunsafe fn encode_");
+        put(
+            inout out,
+            " zeroed words; the value written there owns what it allocates.\nunsafe fn encode_"
+        );
         put_seq(inout out, in sn);
         put(inout out, "(tree: &");
         put_seq(inout out, in tree);
@@ -531,11 +553,20 @@ fn seq_view(in g: Gen, inout out: ChunkSeq[u8], d: DeclRow) {
     put_seq(inout out, in name);
     put(inout out, "Ref` views.\n#[derive(Clone, Copy)]\npub struct ");
     put_seq(inout out, in name);
-    put(inout out, "Seq<'a> {\n    data: *const u64,\n    len: usize,\n    _owner: core::marker::PhantomData<&'a [u64]>,\n}\n\nimpl<'a> ");
+    put(
+        inout out,
+        "Seq<'a> {\n    data: *const u64,\n    len: usize,\n    _owner: core::marker::PhantomData<&'a [u64]>,\n}\n\nimpl<'a> "
+    );
     put_seq(inout out, in name);
-    put(inout out, "Seq<'a> {\n    /// # Safety\n    /// `handle` is 0 (an empty slot) or a live sequence of `");
+    put(
+        inout out,
+        "Seq<'a> {\n    /// # Safety\n    /// `handle` is 0 (an empty slot) or a live sequence of `"
+    );
     put_seq(inout out, in name);
-    put(inout out, "` values that\n    /// stays alive and unchanged for `'a`.\n    unsafe fn from_handle(handle: u64) -> Self {\n        if handle == 0 {\n            return Self { data: core::ptr::null(), len: 0, _owner: core::marker::PhantomData };\n        }\n        // SAFETY: a sequence header is `{len, cap, data}`.\n        let h = handle as usize as *const u64;\n        unsafe { Self { data: *h.add(2) as usize as *const u64, len: *h as usize, _owner: core::marker::PhantomData } }\n    }\n\n    pub fn len(&self) -> usize {\n        self.len\n    }\n\n    pub fn is_empty(&self) -> bool {\n        self.len == 0\n    }\n\n    /// The element at `i`, read in place.\n    pub fn get(&self, i: usize) -> Option<");
+    put(
+        inout out,
+        "` values that\n    /// stays alive and unchanged for `'a`.\n    unsafe fn from_handle(handle: u64) -> Self {\n        if handle == 0 {\n            return Self { data: core::ptr::null(), len: 0, _owner: core::marker::PhantomData };\n        }\n        // SAFETY: a sequence header is `{len, cap, data}`.\n        let h = handle as usize as *const u64;\n        unsafe { Self { data: *h.add(2) as usize as *const u64, len: *h as usize, _owner: core::marker::PhantomData } }\n    }\n\n    pub fn len(&self) -> usize {\n        self.len\n    }\n\n    pub fn is_empty(&self) -> bool {\n        self.len == 0\n    }\n\n    /// The element at `i`, read in place.\n    pub fn get(&self, i: usize) -> Option<"
+    );
     put_seq(inout out, in name);
     put(inout out, "Ref<'a>> {\n        // SAFETY: element `i < len` is the ");
     put_u64(inout out, words);
@@ -549,9 +580,15 @@ fn seq_view(in g: Gen, inout out: ChunkSeq[u8], d: DeclRow) {
     put_u64(inout out, words);
     put(inout out, ") } })\n    }\n\n    pub fn iter(&self) -> impl Iterator<Item = ");
     put_seq(inout out, in name);
-    put(inout out, "Ref<'a>> + 'a {\n        let s = *self;\n        (0..s.len).map(move |i| s.get(i).expect(\"in bounds\"))\n    }\n}\n\nimpl core::fmt::Debug for ");
+    put(
+        inout out,
+        "Ref<'a>> + 'a {\n        let s = *self;\n        (0..s.len).map(move |i| s.get(i).expect(\"in bounds\"))\n    }\n}\n\nimpl core::fmt::Debug for "
+    );
     put_seq(inout out, in name);
-    put(inout out, "Seq<'_> {\n    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {\n        write!(f, \"");
+    put(
+        inout out,
+        "Seq<'_> {\n    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {\n        write!(f, \""
+    );
     put_seq(inout out, in name);
     put(inout out, "Seq(len {})\", self.len)\n    }\n}\n\n");
 }
@@ -560,13 +597,25 @@ fn seq_view(in g: Gen, inout out: ChunkSeq[u8], d: DeclRow) {
 fn extern_handle(inout out: ChunkSeq[u8], in name: ChunkSeq[u8]) {
     put(inout out, "/// A Rust value lent to Vesper as the `.vsys` extern-type handle `");
     put_seq(inout out, in name);
-    put(inout out, "` (export\n/// ABI v4). The handle word is the value's address: Vesper passes it to the\n/// library's accessor imports, which the linking crate implements over the\n/// same Rust type, and never reads or frees it.\n#[derive(Clone, Copy, Debug)]\npub struct ");
+    put(
+        inout out,
+        "` (export\n/// ABI v4). The handle word is the value's address: Vesper passes it to the\n/// library's accessor imports, which the linking crate implements over the\n/// same Rust type, and never reads or frees it.\n#[derive(Clone, Copy, Debug)]\npub struct "
+    );
     put_seq(inout out, in name);
-    put(inout out, "<'a> {\n    word: u64,\n    _lent: core::marker::PhantomData<&'a ()>,\n}\n\nimpl<'a> ");
+    put(
+        inout out,
+        "<'a> {\n    word: u64,\n    _lent: core::marker::PhantomData<&'a ()>,\n}\n\nimpl<'a> "
+    );
     put_seq(inout out, in name);
-    put(inout out, "<'a> {\n    /// Lends `value` for the calls this handle is passed to.\n    ///\n    /// # Safety\n    /// The library's accessor imports for `");
+    put(
+        inout out,
+        "<'a> {\n    /// Lends `value` for the calls this handle is passed to.\n    ///\n    /// # Safety\n    /// The library's accessor imports for `"
+    );
     put_seq(inout out, in name);
-    put(inout out, "` (implemented by the linking\n    /// crate) must read the handle word as a `&T`: Vesper checks nothing\n    /// about `T`, so lending a value of another type is undefined behavior.\n    pub unsafe fn lend<T>(value: &'a T) -> Self {\n        Self { word: value as *const T as usize as u64, _lent: core::marker::PhantomData }\n    }\n\n    /// The handle word.\n    pub fn word(&self) -> u64 {\n        self.word\n    }\n}\n\n");
+    put(
+        inout out,
+        "` (implemented by the linking\n    /// crate) must read the handle word as a `&T`: Vesper checks nothing\n    /// about `T`, so lending a value of another type is undefined behavior.\n    pub unsafe fn lend<T>(value: &'a T) -> Self {\n        Self { word: value as *const T as usize as u64, _lent: core::marker::PhantomData }\n    }\n\n    /// The handle word.\n    pub fn word(&self) -> u64 {\n        self.word\n    }\n}\n\n"
+    );
 }
 
 // `items`: every v4 item of the binding.
@@ -617,9 +666,15 @@ pub fn v4_items(in g: Gen, inout out: ChunkSeq[u8]) {
         if g.i.box_new != 0 {
             g.put_name(inout box_new, wrapping_sub(g.i.box_new, 1));
         }
-        put(inout out, "/// # Safety\n/// The block is a zeroed box of this library, owned by the value it is stored in.\nunsafe fn box_block(words: usize) -> &'static mut [u64] {\n    // SAFETY: `box_new` returns a zeroed block of the requested size.\n    unsafe {\n        let p = ");
+        put(
+            inout out,
+            "/// # Safety\n/// The block is a zeroed box of this library, owned by the value it is stored in.\nunsafe fn box_block(words: usize) -> &'static mut [u64] {\n    // SAFETY: `box_new` returns a zeroed block of the requested size.\n    unsafe {\n        let p = "
+        );
         put_seq(inout out, in box_new);
-        put(inout out, "((words.max(1) * 8) as i64) as usize as *mut u64;\n        core::slice::from_raw_parts_mut(p, words.max(1))\n    }\n}\n\n/// # Safety\n/// The returned words are a `String` that owns a buffer of this library.\nunsafe fn string_words(s: &str) -> [u64; 3] {\n    // SAFETY: as `vesper_port_abi::with_string_owned`: the header's buffer\n    // passes to the string and only the header is freed.\n    unsafe {\n        let handle = (RUNTIME.new)(s.len() as i64, 1) as u64;\n        let h = handle as usize as *mut u64;\n        let data = *h.add(2) as usize as *mut u8;\n        if !s.is_empty() {\n            core::ptr::copy_nonoverlapping(s.as_ptr(), data, s.len());\n        }\n        let words = [s.len() as u64, *h.add(1), *h.add(2)];\n        *h.add(1) = 0;\n        (RUNTIME.free)(handle as i64);\n        words\n    }\n}\n\n/// # Safety\n/// `fill(i, slot)` writes element `i` into its zeroed `words`-word slot; the\n/// sequence owns what the elements allocate.\nunsafe fn handle_seq(len: usize, words: usize, mut fill: impl FnMut(usize, &mut [u64])) -> u64 {\n    // SAFETY: `seq_new(len, stride)` returns a header `{len, cap, data}`\n    // whose buffer holds `len` elements of `words * 8` bytes.\n    unsafe {\n        let handle = (RUNTIME.new)(len as i64, (words * 8) as i64) as u64;\n        let h = handle as usize as *mut u64;\n        let data = *h.add(2) as usize as *mut u64;\n        for i in 0..len {\n            let slot = core::slice::from_raw_parts_mut(data.add(i * words), words);\n            slot.fill(0);\n            fill(i, slot);\n        }\n        *h = len as u64;\n        handle\n    }\n}\n\n");
+        put(
+            inout out,
+            "((words.max(1) * 8) as i64) as usize as *mut u64;\n        core::slice::from_raw_parts_mut(p, words.max(1))\n    }\n}\n\n/// # Safety\n/// The returned words are a `String` that owns a buffer of this library.\nunsafe fn string_words(s: &str) -> [u64; 3] {\n    // SAFETY: as `vesper_port_abi::with_string_owned`: the header's buffer\n    // passes to the string and only the header is freed.\n    unsafe {\n        let handle = (RUNTIME.new)(s.len() as i64, 1) as u64;\n        let h = handle as usize as *mut u64;\n        let data = *h.add(2) as usize as *mut u8;\n        if !s.is_empty() {\n            core::ptr::copy_nonoverlapping(s.as_ptr(), data, s.len());\n        }\n        let words = [s.len() as u64, *h.add(1), *h.add(2)];\n        *h.add(1) = 0;\n        (RUNTIME.free)(handle as i64);\n        words\n    }\n}\n\n/// # Safety\n/// `fill(i, slot)` writes element `i` into its zeroed `words`-word slot; the\n/// sequence owns what the elements allocate.\nunsafe fn handle_seq(len: usize, words: usize, mut fill: impl FnMut(usize, &mut [u64])) -> u64 {\n    // SAFETY: `seq_new(len, stride)` returns a header `{len, cap, data}`\n    // whose buffer holds `len` elements of `words * 8` bytes.\n    unsafe {\n        let handle = (RUNTIME.new)(len as i64, (words * 8) as i64) as u64;\n        let h = handle as usize as *mut u64;\n        let data = *h.add(2) as usize as *mut u64;\n        for i in 0..len {\n            let slot = core::slice::from_raw_parts_mut(data.add(i * words), words);\n            slot.fill(0);\n            fill(i, slot);\n        }\n        *h = len as u64;\n        handle\n    }\n}\n\n"
+        );
     }
     let mut externs = str_set();
     for fi in 0..g.i.fns.len() {

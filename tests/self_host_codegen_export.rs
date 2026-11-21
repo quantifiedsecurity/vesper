@@ -213,7 +213,13 @@ const PORTS: &[Port] = &[
     ("vesper-quarry", "quarry", VESPER, None, B),
     ("vesper-resonance", "resonance", VESPER, None, B),
     ("vesper-semver", "semver", VESPER, None, B),
-    ("vesper-serde", "serde", VESPER, Some("crate::port_types"), B),
+    (
+        "vesper-serde",
+        "serde",
+        VESPER,
+        Some("crate::port_types"),
+        B,
+    ),
     ("vesper-silicon", "silicon", VESPER, None, B),
     ("vesper-simpulse", "simpulse", VESPER, None, B),
     ("vesper-span", "span", VESPER, CRATE_PORT, B),
@@ -299,7 +305,8 @@ fn build(port: &Port, scratch: &Path) -> Result<Built, String> {
             suffix,
             sep,
         } => {
-            let script = std::fs::read_to_string(dir.join("build.rs")).map_err(|e| e.to_string())?;
+            let script =
+                std::fs::read_to_string(dir.join("build.rs")).map_err(|e| e.to_string())?;
             let mut text = String::new();
             for part in listed(&script, list) {
                 let path = dir.join(sub).join(format!("{part}{suffix}"));
@@ -345,10 +352,8 @@ fn build(port: &Port, scratch: &Path) -> Result<Built, String> {
 fn corpus() -> &'static [Built] {
     static C: OnceLock<Vec<Built>> = OnceLock::new();
     C.get_or_init(|| {
-        let scratch = std::env::temp_dir().join(format!(
-            "vesper-codegen-export-{}",
-            std::process::id()
-        ));
+        let scratch =
+            std::env::temp_dir().join(format!("vesper-codegen-export-{}", std::process::id()));
         std::fs::create_dir_all(&scratch).expect("scratch directory");
         let ports: Vec<&Port> = PORTS.iter().filter(|p| selected(p.1)).collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
@@ -653,8 +658,10 @@ fn binding_cost() {
         return;
     }
     let entry = package().entry("binding_text", true);
-    let cases: Vec<(&LibraryInterface, BindingOptions)> =
-        corpus().iter().map(|b| (&b.interface, options(b))).collect();
+    let cases: Vec<(&LibraryInterface, BindingOptions)> = corpus()
+        .iter()
+        .map(|b| (&b.interface, options(b)))
+        .collect();
     let inputs: Vec<Vec<u8>> = cases
         .iter()
         .map(|(i, o)| words::binding_input(i, o))

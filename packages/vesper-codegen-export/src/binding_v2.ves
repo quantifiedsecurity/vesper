@@ -49,7 +49,6 @@ const P_INOUT: u8 = 2;
 const P_SINK: u8 = 3;
 const M_REPR_C: u8 = 1;
 
-
 const NONE32: u32 = 4294967295;
 
 // `Names`: fresh local names that never shadow a parameter or each other.
@@ -120,9 +119,31 @@ impl Gen {
     pub fn cell(in self, t: u32, in path: ChunkSeq[u8], inout o: ChunkSeq[u8]) {
         let n = self.i.node(t);
         let k = self.i.known;
-        if n.kind == K_SCALAR
-            && (n.name == k.i64 || n.name == k.u64 || n.name == k.isize || n.name == k.usize
-                || n.name == k.f64) {
+        if n
+            .kind
+            == K_SCALAR
+            && (
+            n
+                .name
+                == k
+                .i64
+                || n
+                .name
+                == k
+                .u64
+                || n
+                .name
+                == k
+                .isize
+                || n
+                .name
+                == k
+                .usize
+                || n
+                .name
+                == k
+                .f64
+        ) {
             self.put_name(inout o, n.name);
         } else if n.kind == K_SCALAR {
             put(inout o, "vesper_port_abi::Word<");
@@ -471,11 +492,17 @@ impl Gen {
             self.put_name(inout out, wrapping_sub(d.drop, 1));
             put(inout out, "`.");
         } else {
-            put(inout out, " It is linear: it has no `Drop`, and only a consuming call releases it.");
+            put(
+                inout out,
+                " It is linear: it has no `Drop`, and only a consuming call releases it."
+            );
         }
         nl(inout out);
         if d.linear {
-            put(inout out, "#[must_use = \"a linear Vesper value must be released by a consuming call\"]\n");
+            put(
+                inout out,
+                "#[must_use = \"a linear Vesper value must be released by a consuming call\"]\n"
+            );
         }
         put(inout out, "pub struct ");
         put_seq(inout out, in name);
@@ -486,11 +513,17 @@ impl Gen {
         put_seq(inout out, in name);
         put(inout out, " {\n    /// # Safety\n    /// `words` must hold a `");
         put_seq(inout out, in name);
-        put(inout out, "` value of this library that the caller owns.\n    unsafe fn from_words(words: &[u64]) -> Self {\n        let mut owned = [0u64; ");
+        put(
+            inout out,
+            "` value of this library that the caller owns.\n    unsafe fn from_words(words: &[u64]) -> Self {\n        let mut owned = [0u64; "
+        );
         put_u64(inout out, d.words);
         put(inout out, "];\n        owned.copy_from_slice(&words[..");
         put_u64(inout out, d.words);
-        put(inout out, "]);\n        Self { words: owned }\n    }\n\n    /// A borrowed view of the value.\n    pub fn as_ref(&self) -> ");
+        put(
+            inout out,
+            "]);\n        Self { words: owned }\n    }\n\n    /// A borrowed view of the value.\n    pub fn as_ref(&self) -> "
+        );
         put_seq(inout out, in name);
         put(inout out, "Ref<'_> {\n        ");
         put_seq(inout out, in name);
@@ -498,18 +531,30 @@ impl Gen {
         if d.drop != 0 {
             put(inout out, "impl Drop for ");
             put_seq(inout out, in name);
-            put(inout out, " {\n    fn drop(&mut self) {\n        // SAFETY: the handle owns its words and is dropped once.\n        unsafe { ");
+            put(
+                inout out,
+                " {\n    fn drop(&mut self) {\n        // SAFETY: the handle owns its words and is dropped once.\n        unsafe { "
+            );
             self.put_name(inout out, wrapping_sub(d.drop, 1));
             put(inout out, "(self.words.as_mut_ptr()) };\n    }\n}\n\n");
         }
         put(inout out, "impl core::fmt::Debug for ");
         put_seq(inout out, in name);
-        put(inout out, " {\n    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {\n        f.write_str(\"");
+        put(
+            inout out,
+            " {\n    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {\n        f.write_str(\""
+        );
         put_seq(inout out, in name);
         put(inout out, " { .. }\")\n    }\n}\n\n");
-        put(inout out, "// SAFETY: the handle owns its Vesper allocations exclusively (no Vesper\n// code keeps a reference to them), and they are plain heap memory.\nunsafe impl Send for ");
+        put(
+            inout out,
+            "// SAFETY: the handle owns its Vesper allocations exclusively (no Vesper\n// code keeps a reference to them), and they are plain heap memory.\nunsafe impl Send for "
+        );
         put_seq(inout out, in name);
-        put(inout out, " {}\n// SAFETY: shared access only reads the words and the memory they own.\nunsafe impl Sync for ");
+        put(
+            inout out,
+            " {}\n// SAFETY: shared access only reads the words and the memory they own.\nunsafe impl Sync for "
+        );
         put_seq(inout out, in name);
         put(inout out, " {}\n\n");
         put(inout out, "/// A borrowed view of a Vesper `");
@@ -523,7 +568,10 @@ impl Gen {
         if d.is_enum {
             put(inout out, "    /// The variant and its fields.\n    pub fn view(&self) -> ");
             put_seq(inout out, in name);
-            put(inout out, "View<'a> {\n        let w: &'a [u64] = self.words;\n        match w[0] {\n");
+            put(
+                inout out,
+                "View<'a> {\n        let w: &'a [u64] = self.words;\n        match w[0] {\n"
+            );
             for vi in 0..d.vn {
                 let v = self.i.var(wrapping_add(d.v0, vi));
                 put(inout out, "            ");
@@ -596,7 +644,10 @@ impl Gen {
                 }
                 put(inout out, ",\n");
             }
-            put(inout out, "    #[doc(hidden)]\n    _Borrow(core::marker::PhantomData<&'a ()>),\n}\n\n");
+            put(
+                inout out,
+                "    #[doc(hidden)]\n    _Borrow(core::marker::PhantomData<&'a ()>),\n}\n\n"
+            );
         } else {
             let v = self.i.var(d.v0);
             for j in 0..v.fc {
@@ -663,7 +714,10 @@ impl Gen {
                 if l.name == lib && l.rust_path != 0 {
                     put(inout out, "    // Keep the crate's `");
                     self.put_name(inout out, l.name);
-                    put(inout out, "` symbols linked: the Vesper object calls them.\n    let _ = core::hint::black_box([");
+                    put(
+                        inout out,
+                        "` symbols linked: the Vesper object calls them.\n    let _ = core::hint::black_box(["
+                    );
                     for s in 0..l.sn {
                         if s > 0 {
                             put(inout out, ", ");
@@ -906,7 +960,10 @@ impl Gen {
         }
         put(inout out, "    // SAFETY: `");
         self.put_name(inout out, f.symbol);
-        put(inout out, "` has exactly this signature in the export ABI; every\n    // pointer is a live, writable buffer of the size the ABI requires, and\n    // every handle passed is owned or borrowed as its mode requires.\n    let ");
+        put(
+            inout out,
+            "` has exactly this signature in the export ABI; every\n    // pointer is a live, writable buffer of the size the ABI requires, and\n    // every handle passed is owned or borrowed as its mode requires.\n    let "
+        );
         put_seq(inout out, in raw);
         put(inout out, " = ");
         put_seq(inout out, in opens);
@@ -944,7 +1001,10 @@ impl Gen {
         } else {
             put(inout inner, "super::");
         }
-        put(inout out, "/// `#[repr(C)]` mirrors of the library's copy structs in the Vesper word\n/// layout (export ABI v3): `in`/`inout` parameters and slices of them are\n/// lent to Vesper in place.\npub mod repr {\n");
+        put(
+            inout out,
+            "/// `#[repr(C)]` mirrors of the library's copy structs in the Vesper word\n/// layout (export ABI v3): `in`/`inout` parameters and slices of them are\n/// lent to Vesper in place.\npub mod repr {\n"
+        );
         for di in 0..self.i.decls.len() {
             let d = self.i.decl(di);
             if d.mirror != M_REPR_C {
@@ -955,7 +1015,10 @@ impl Gen {
             self.put_name(inout out, d.name);
             put(inout out, "` (");
             put_u64(inout out, d.words);
-            put(inout out, " words).\n    #[repr(C)]\n    #[derive(Clone, Copy, Debug, PartialEq)]\n");
+            put(
+                inout out,
+                " words).\n    #[repr(C)]\n    #[derive(Clone, Copy, Debug, PartialEq)]\n"
+            );
             // Fields in offset order (a stable sort).
             let mut order = ChunkSeq::new[u64]();
             for j in 0..v.fc {
@@ -1019,7 +1082,10 @@ impl Gen {
             put_seq(inout value, in name);
             put(inout out, "// The mirror of `");
             put_seq(inout out, in name);
-            put(inout out, "` has exactly the Vesper layout.\nconst _: () = {\n    assert!(core::mem::size_of::<repr::");
+            put(
+                inout out,
+                "` has exactly the Vesper layout.\nconst _: () = {\n    assert!(core::mem::size_of::<repr::"
+            );
             put_seq(inout out, in name);
             put(inout out, ">() == ");
             put_u64(inout out, d.words);
@@ -1042,18 +1108,27 @@ impl Gen {
             put_seq(inout out, in name);
             put(inout out, "` is `#[repr(C)]`, ");
             put_u64(inout out, d.words);
-            put(inout out, " words, eight-byte aligned\n// (asserted above), and every field is a word cell or a mirror.\nunsafe impl vesper_port_abi::Mirror for repr::");
+            put(
+                inout out,
+                " words, eight-byte aligned\n// (asserted above), and every field is a word cell or a mirror.\nunsafe impl vesper_port_abi::Mirror for repr::"
+            );
             put_seq(inout out, in name);
             put(inout out, " {\n    const WORDS: usize = ");
             put_u64(inout out, d.words);
             put(inout out, ";\n}\n\n");
             put(inout out, "impl repr::");
             put_seq(inout out, in name);
-            put(inout out, " {\n    /// The mirror of a Rust value.\n    pub fn from_value(value: &");
+            put(
+                inout out,
+                " {\n    /// The mirror of a Rust value.\n    pub fn from_value(value: &"
+            );
             put_seq(inout out, in value);
             put(inout out, ") -> Self {\n        let mut words = [0u64; ");
             put_u64(inout out, d.words);
-            put(inout out, "];\n        Abi::put(value, &mut words);\n        vesper_port_abi::mirror_from_words(&words)\n    }\n\n    /// The Rust value of the mirror.\n    pub fn to_value(&self) -> ");
+            put(
+                inout out,
+                "];\n        Abi::put(value, &mut words);\n        vesper_port_abi::mirror_from_words(&words)\n    }\n\n    /// The Rust value of the mirror.\n    pub fn to_value(&self) -> "
+            );
             put_seq(inout out, in value);
             put(inout out, " {\n        <");
             put_seq(inout out, in value);
@@ -1198,7 +1273,10 @@ impl Gen {
 // `generate`: the binding text of a v2 (or later) library.
 pub fn binding_v2(in g: Gen, inout out: ChunkSeq[u8]) {
     g.header(inout out);
-    put(inout out, "#![allow(clippy::all, unused_imports, unused_mut, unused_unsafe, unused_variables, non_snake_case, non_camel_case_types, dead_code)]\n\nuse vesper_port_abi::Abi;\n\n");
+    put(
+        inout out,
+        "#![allow(clippy::all, unused_imports, unused_mut, unused_unsafe, unused_variables, non_snake_case, non_camel_case_types, dead_code)]\n\nuse vesper_port_abi::Abi;\n\n"
+    );
     g.write_copy_types(inout out, false);
     for di in 0..g.i.decls.len() {
         let d = g.i.decl(di);
@@ -1217,7 +1295,10 @@ pub fn binding_v2(in g: Gen, inout out: ChunkSeq[u8]) {
             let words = ms.val(k);
             put(inout out, "// `");
             put_seq(inout out, in m);
-            put(inout out, "` has the Vesper layout of its value.\nconst _: () = assert!(core::mem::size_of::<");
+            put(
+                inout out,
+                "` has the Vesper layout of its value.\nconst _: () = assert!(core::mem::size_of::<"
+            );
             put_seq(inout out, in m);
             put(inout out, ">() == ");
             put_u64(inout out, words);
@@ -1274,13 +1355,19 @@ pub fn binding_v2(in g: Gen, inout out: ChunkSeq[u8]) {
     put(inout out, "}\n\n");
     put(inout out, "/// The sequence runtime of the Vesper library `");
     g.put_name(inout out, g.i.library);
-    put(inout out, "`.\npub const RUNTIME: vesper_port_abi::SeqRuntime = vesper_port_abi::SeqRuntime {\n    new: ");
+    put(
+        inout out,
+        "`.\npub const RUNTIME: vesper_port_abi::SeqRuntime = vesper_port_abi::SeqRuntime {\n    new: "
+    );
     g.put_name(inout out, g.i.seq_new);
     put(inout out, ",\n    free: ");
     g.put_name(inout out, g.i.seq_free);
     put(inout out, ",\n};\n\n/// Live sequence and box allocations of the Vesper library `");
     g.put_name(inout out, g.i.library);
-    put(inout out, "` (for leak tests).\npub fn live_allocations() -> i64 {\n    // SAFETY: the function only reads two counters.\n    unsafe { ");
+    put(
+        inout out,
+        "` (for leak tests).\npub fn live_allocations() -> i64 {\n    // SAFETY: the function only reads two counters.\n    unsafe { "
+    );
     g.put_name(inout out, g.i.live);
     put(inout out, "() }\n}\n");
     for fi in 0..g.i.fns.len() {

@@ -159,11 +159,21 @@ fn word(in s: ChunkSeq[u8], in ws: ChunkSeq[u64], k: u64) -> ChunkSeq[u8] {
 
 // `Parser::primitive`: a scalar name other than `Unit` and `Never`.
 fn primitive(in n: ChunkSeq[u8]) -> bool {
-    same_str(in n, "u8") || same_str(in n, "u16") || same_str(in n, "u32")
-        || same_str(in n, "u64") || same_str(in n, "usize") || same_str(in n, "u128")
-        || same_str(in n, "i8") || same_str(in n, "i16") || same_str(in n, "i32")
-        || same_str(in n, "i64") || same_str(in n, "isize") || same_str(in n, "i128")
-        || same_str(in n, "f32") || same_str(in n, "f64") || same_str(in n, "bool")
+    same_str(in n, "u8")
+        || same_str(in n, "u16")
+        || same_str(in n, "u32")
+        || same_str(in n, "u64")
+        || same_str(in n, "usize")
+        || same_str(in n, "u128")
+        || same_str(in n, "i8")
+        || same_str(in n, "i16")
+        || same_str(in n, "i32")
+        || same_str(in n, "i64")
+        || same_str(in n, "isize")
+        || same_str(in n, "i128")
+        || same_str(in n, "f32")
+        || same_str(in n, "f64")
+        || same_str(in n, "bool")
 }
 
 struct TyParser {
@@ -277,7 +287,9 @@ impl TyParser {
             let id = self.ident();
             if !primitive(in id) {
                 self.skip();
-                if !self.at_end() && (self.peek() == 58 || self.peek() == 124 || self.peek() == 91) {
+                if !self
+                    .at_end()
+                    && (self.peek() == 58 || self.peek() == 124 || self.peek() == 91) {
                     // Labeled rows, `E | r` rows and paths are not ported.
                     self.bad = true;
                     return 0;
@@ -673,7 +685,13 @@ pub fn parse_directives(in input: Str) -> ChunkSeq[u64] {
                 put(inout err, "' (v1 and v2 follow from the forms a library uses)");
             }
         } else if starts_with(in rest, "instance ") {
-            parse_instance(in trim(in after(in rest, "instance ")), inout names, inout t, inout instances, inout err);
+            parse_instance(
+                in trim(in after(in rest, "instance ")),
+                inout names,
+                inout t,
+                inout instances,
+                inout err
+            );
         } else if starts_with(in rest, "vsys") && is_link(in after(in rest, "vsys")) {
             let spec = after(in rest, "vsys");
             let ws = words(in spec);
