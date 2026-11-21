@@ -330,7 +330,12 @@ impl Checker<'_> {
             return Some(self.slice_view(base, None, env, span, method == "as_slice_mut"));
         }
         let arity = match op {
-            SeqOp::Len | SeqOp::SliceLen | SeqOp::Pop | SeqOp::Clear | SeqOp::SumBe16 => 0,
+            SeqOp::Len
+            | SeqOp::SliceLen
+            | SeqOp::Pop
+            | SeqOp::Last
+            | SeqOp::Clear
+            | SeqOp::SumBe16 => 0,
             SeqOp::Push
             | SeqOp::Get
             | SeqOp::SliceGet
@@ -400,7 +405,7 @@ impl Checker<'_> {
         let mode = self.mode(&elem_ty);
         let known = elem_ty != Type::Infer;
         match op {
-            SeqOp::Get | SeqOp::SliceGet | SeqOp::TryGet
+            SeqOp::Get | SeqOp::SliceGet | SeqOp::TryGet | SeqOp::Last
                 if known && mode != Mode::Copy && element_view.is_none() =>
             {
                 self
@@ -543,7 +548,7 @@ impl Checker<'_> {
         }
         Some(match op {
             SeqOp::Len | SeqOp::SliceLen => u64_ty,
-            SeqOp::Pop | SeqOp::TryGet => Type::Named("Option".into(), vec![elem_ty]),
+            SeqOp::Pop | SeqOp::TryGet | SeqOp::Last => Type::Named("Option".into(), vec![elem_ty]),
             SeqOp::TrySet
             | SeqOp::CopyFrom { total: true }
             | SeqOp::CopyWithin { total: true }
