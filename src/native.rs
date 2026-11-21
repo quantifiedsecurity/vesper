@@ -20,13 +20,13 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{BTreeMap, BTreeSet};
 use std::{cell::RefCell, rc::Rc};
 
-/// `vesper build --lib`: C-ABI library objects (port P0 lane 6, #878).
-#[path = "native_aggregates.rs"]
-mod aggregates;
 /// The aggregate decisions as text, for the SH4 lane 8 differential.
 #[doc(hidden)]
 #[path = "native_aggregate_decisions.rs"]
 pub mod aggregate_decisions;
+/// `vesper build --lib`: C-ABI library objects (port P0 lane 6, #878).
+#[path = "native_aggregates.rs"]
+mod aggregates;
 /// Fixed-size array writes and constant tables (§5, #1091).
 #[path = "native_arrays.rs"]
 mod native_arrays;
