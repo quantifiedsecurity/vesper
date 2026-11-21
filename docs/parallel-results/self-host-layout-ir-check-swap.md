@@ -209,11 +209,11 @@ and the tests.
 
 ## Compiler gaps
 
-1. **A `const` cannot be imported, from another module or another
-   package.** `use @vesper/check-data::{K_FN}` is `E0111`, the same gap
-   lane 4 reported. So both packages repeat the kind, mode and pass
-   constants they use. Repro: a package with `pub const A: u8 = 1;` in
-   `src/a.ves` and `use self::a::{A};` in `src/lib.ves`.
+1. **A `const` could not be imported, from another module or another
+   package** (`E0111`, as lane 4 reported). So both packages repeat the
+   kind, mode and pass constants they use. #1239 (importable constants)
+   merged on main while this PR was open, so a follow-up can replace the
+   copies with imports from `@vesper/check-data`.
 2. **No state survives between calls into a Vesper module.** Every layout
    call re-encodes and re-reads the world, which is why the layout swap is
    5.4x slower per call than Rust while the census's whole-world layout
@@ -247,5 +247,12 @@ result.
 - **The IR check is faster than Rust per call** (0.53x). Its remaining
   cost in the hybrid is the encoder, which could go once a Vesper `World`
   exists (gaps 2 and 3).
+- **Element view matches** (#1173, merged while this PR was open) changed
+  `ir_check::validate`: a matched `try_get` binds the element as a borrow
+  its sequence keeps owning. `@vesper/ir-check` does not have this rule
+  yet, so worlds with element views (`World::element_views` not empty) go
+  to Rust. Porting the rule means encoding `element_views` and following
+  the new `Read`/`Bind`/`Seq` cases.
+- The constant copies can become imports (gap 1).
 - Deleting `rust_of` or `rust_validate` is an owner call at parity, and
   not part of this lane.
