@@ -224,13 +224,15 @@ fn ir_check_parts_match_rust() {
         }
         let mut log = WorldLog::new(w);
         let mut cur = Cursor::default();
-        let parts: Vec<Vec<u8>> = group
+        // Programs the encoder refuses (element-view worlds, as on #1232's
+        // head) fall back to Rust in the hybrid; skip them here.
+        let (group, parts): (Vec<_>, Vec<Vec<u8>>) = group
             .iter()
-            .map(|c| {
-                log.ir_part(w, &mut cur, &c.program)
-                    .expect("encodable corpus program")
-            })
-            .collect();
+            .filter_map(|c| log.ir_part(w, &mut cur, &c.program).map(|p| (c, p)))
+            .unzip();
+        if group.is_empty() {
+            continue;
+        }
         let words = f.words(&pack(&parts));
         let answers = unpack(&words);
         assert_eq!(answers.len(), group.len());
@@ -370,6 +372,7 @@ fn swap_input_costs() {
     let programs: Vec<(&World, vesper::ir::Program)> = corpus()
         .iter()
         .map(|c| (&c.world, vesper::ir::lower_world(&c.world)))
+        .filter(|(w, p)| check_words::ir_input(w, p).is_some())
         .collect();
     let rust = best(&mut || {
         time(|| {
