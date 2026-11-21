@@ -18,12 +18,12 @@ mod check_harness;
 use vesper::{ir_opt, ir_opt_policy};
 
 /// Every n-th corpus world (`OPTIMIZER_BUDGET_STEP`, default 1 in release
-/// builds and 6 in debug ones, where egglog is slow).
+/// builds and 12 in debug ones, where egglog is slow).
 fn worlds() -> impl Iterator<Item = &'static check_harness::Case> {
     let step = std::env::var("OPTIMIZER_BUDGET_STEP")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(if cfg!(debug_assertions) { 6 } else { 1 })
+        .unwrap_or(if cfg!(debug_assertions) { 12 } else { 1 })
         .max(1);
     check_harness::corpus().iter().step_by(step)
 }

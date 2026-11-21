@@ -81,7 +81,7 @@ optimizer: with the optimizer at zero the build would take about 59.5 s
   - `profile_package` (ignored): the per-function profile and the policy's
     phase timings for one package (`OPTIMIZER_BUDGET_PACKAGE`).
 
-  Release builds check every world; debug builds every 6th
+  Release builds check every world; debug builds every 12th
   (`OPTIMIZER_BUDGET_STEP=n` overrides it).
 
 ## Numbers
