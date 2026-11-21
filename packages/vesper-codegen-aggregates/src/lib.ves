@@ -206,6 +206,8 @@ pub struct Env {
     s_hoisted_try_get: u32,
     // decimal tuple field names "0", "1", ...
     digits: ChunkSeq[u32],
+    // by ADT index: 0 not computed, 1 no wide integer, 2 wide
+    wide: ChunkSeq[u8],
 }
 
 fn read_text(inout r: Reader, in b: Slice[u8], inout names: Names) -> u32 {
@@ -235,6 +237,7 @@ fn read_env(inout r: Reader, in b: Slice[u8], inout names: Names, functions: u64
         s_try_get: names.intern(in "TryGet".as_bytes()),
         s_hoisted_try_get: names.intern(in "Hoisted(TryGet)".as_bytes()),
         digits: ChunkSeq::new[u32](),
+        wide: ChunkSeq::new[u8](),
     };
     let nf = r.word(in b);
     for i in 0..nf {
@@ -446,6 +449,85 @@ fn row_mentions_box(in c: Ctx, r: u32, depth: u64) -> bool {
             if mentions_box(in c, u32_at(in c.types.items, add(w(ef.a), j)), inc(depth)) {
                 return true;
             }
+        }
+    }
+    false
+}
+
+// Whether `ty` mentions `i128` or `u128`, through type arguments, tuple
+// and function components and ADT fields. @vesper/check-layout has no
+// 16-byte scalars yet (gap 1 of the report), so a graph that mentions one
+// is reported `wide` and left to Rust; the scan over-approximates (it
+// walks every field of every ADT named, whatever its arguments).
+fn mentions_wide(inout e: Env, in c: Ctx, ty: u32, depth: u64) -> bool {
+    if depth > 256 || ty == NONE32 {
+        return false;
+    }
+    let n = c.types.node(ty);
+    if n.kind == K_NAMED {
+        if n.name == e.s_i128 || n.name == e.s_u128 {
+            return true;
+        }
+        for i in 0..w(n.n) {
+            if mentions_wide(inout e, in c, u32_at(in c.types.items, add(w(n.a), i)), inc(depth)) {
+                return true;
+            }
+        }
+        let adt = c.world.lookup(n.name);
+        if adt == NO_ADT {
+            return false;
+        }
+        let memo = u8_at(in e.wide, w(adt));
+        if memo != 0 {
+            return memo == 2;
+        }
+        // Mark it first, so a recursive ADT ends the walk.
+        loop {
+            if e.wide.len() > w(adt) {
+                break;
+            }
+            e.wide.push(0);
+        }
+        set8(inout e.wide, w(adt), 1);
+        let a = c.world.adt(adt);
+        let mut found = false;
+        for v in 0..w(a.vn) {
+            let var = c.world.variant(add(w(a.va), v));
+            for i in 0..w(var.fc) {
+                let f = c.world.field(add(w(var.fa), i));
+                if !found && mentions_wide(inout e, in c, f.ty, inc(depth)) {
+                    found = true;
+                }
+            }
+        }
+        if found {
+            set8(inout e.wide, w(adt), 2);
+        }
+        return found;
+    }
+    if n.kind == K_TUPLE || n.kind == K_FN {
+        for i in 0..w(n.n) {
+            if mentions_wide(inout e, in c, u32_at(in c.types.items, add(w(n.a), i)), inc(depth)) {
+                return true;
+            }
+        }
+        if n.kind == K_FN {
+            return mentions_wide(inout e, in c, n.r, inc(depth));
+        }
+    }
+    false
+}
+
+// Whether graph `g` mentions a wide integer in a value or local type.
+fn graph_wide(inout e: Env, in c: Ctx, in g: G) -> bool {
+    for v in 0..g.nv {
+        if mentions_wide(inout e, in c, u32_at(in g.vty, v), 0) {
+            return true;
+        }
+    }
+    for i in 0..g.lty.len() {
+        if mentions_wide(inout e, in c, u32_at(in g.lty, i), 0) {
+            return true;
         }
     }
     false
@@ -2648,6 +2730,11 @@ fn function_decisions(
     put(inout o, "fn ");
     c.names.write(g.name, inout o);
     o.push(10);
+    if graph_wide(inout e, in c, in g) {
+        put(inout o, "wide\n");
+        s.reset();
+        return;
+    }
     for li in 0..g.lsym.len() {
         let t = default_type(inout c.types, u32_at(in g.lty, li));
         let pd = plain_data(inout e, inout c, t);

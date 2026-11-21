@@ -173,11 +173,81 @@ pub fn normalize(text: &str) -> String {
     out
 }
 
+/// Replaces each Rust `fn` section whose Vesper section is `wide` (a graph
+/// that mentions `i128`/`u128`, which @vesper/check-layout cannot lay out
+/// yet) with that same line; returns the text and how many it replaced.
+pub fn skip_wide(rust: &str, vesper: &str) -> (String, usize) {
+    fn sections(t: &str) -> Vec<(String, Vec<String>)> {
+        let mut out: Vec<(String, Vec<String>)> = vec![];
+        for l in t.lines() {
+            if l.starts_with("fn ") {
+                out.push((l.to_owned(), vec![]));
+            } else if let Some(last) = out.last_mut() {
+                last.1.push(l.to_owned());
+            }
+        }
+        out
+    }
+    let wide: BTreeSet<String> = sections(vesper)
+        .into_iter()
+        .filter(|(_, body)| body.len() == 1 && body[0] == "wide")
+        .map(|(head, _)| head)
+        .collect();
+    let mut out = String::new();
+    let mut n = 0;
+    for (head, body) in sections(rust) {
+        out.push_str(&head);
+        out.push('\n');
+        if wide.contains(&head) {
+            n += 1;
+            out.push_str("wide\n");
+            continue;
+        }
+        for l in body {
+            out.push_str(&l);
+            out.push('\n');
+        }
+    }
+    (out, n)
+}
+
+/// Graphs that mention a wide integer are left to Rust (not in the
+/// corpus, so checked here): the others of the same program still match.
+#[test]
+fn wide_integer_graphs_are_left_to_rust() {
+    let src = "struct P { a: i128, b: u64 }\n\
+               struct Q { x: u64, y: u64 }\n\
+               fn wide(x: i128) -> i128 { x }\n\
+               fn holds(n: u64) -> P { P { a: 1, b: n } }\n\
+               fn pair(n: u64) -> Q { let q = Q { x: n, y: n }; Q { x: q.x, y: q.y } }\n\
+               fn main() -> u64 { wrapping_add(pair(3).x, holds(2).b) }\n";
+    let parsed = vesper::parser::parse(src);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let checked = vesper::check::check(&parsed.module);
+    assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    let world: &'static World = Box::leak(Box::new(checked.world));
+    let c = Prepared {
+        name: "wide".into(),
+        world,
+        program: native_program(world).expect("lowers"),
+    };
+    let entry = package().entry("aggregate_decisions", true);
+    let ves = normalize(&entry.text(&input(&c).expect("encodes")));
+    let rust = normalize(&vesper::native::aggregate_decisions::program_decisions(
+        c.world, &c.program,
+    ));
+    let (rust, wide) = skip_wide(&rust, &ves);
+    assert!(wide >= 2, "{ves}");
+    assert!(ves.contains("fn pair\n"), "{ves}");
+    assert_eq!(first_difference(&rust, &ves), None);
+}
+
 #[test]
 fn decisions_match_rust() {
     let entry = package().entry("aggregate_decisions", true);
     let (mut bad, mut skipped, mut functions, mut lines) = (0, 0, 0, 0);
     let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut wide = 0;
     for c in prepared() {
         let Some(bytes) = input(c) else {
             skipped += 1;
@@ -200,6 +270,8 @@ fn decisions_match_rust() {
             *kinds.entry(kind.to_owned()).or_default() += 1;
         }
         let ves = normalize(&entry.text(&bytes));
+        let (rust, n) = skip_wide(&rust, &ves);
+        wide += n;
         if let Some(d) = first_difference(&rust, &ves) {
             bad += 1;
             if bad <= 8 {
@@ -211,7 +283,7 @@ fn decisions_match_rust() {
         "decisions: {bad} of {} worlds differ, {skipped} not encodable, {functions} functions, {lines} lines",
         prepared().len()
     );
-    eprintln!("decisions by kind: {kinds:?}");
+    eprintln!("decisions by kind: {kinds:?}; {wide} wide-integer graphs left to Rust");
     assert!(prepared().len() > 20, "only {} worlds", prepared().len());
     assert_eq!(bad, 0);
 }

@@ -82,11 +82,27 @@ any compile path. The default compiler's objects are byte-identical.
 
 ## Compiler gaps
 
-None found in this part: the package compiled and matched on the first full
-run. One check-data gap is worked around locally: `Known::is_integer` and
-`is_scalar` predate `i128`/`u128` (#1219), so the package interns those two
-names itself where `numeric::is_integer_name` and `is_scalar_name` need
-them.
+1. **@vesper/check-layout has no 16-byte scalars.** Its scalar test
+   (check-data's `Known::is_scalar`) predates `i128`/`u128` (#1219), so it
+   refuses the layout of a wide integer and of any aggregate holding one,
+   where Rust's `Layout::of` gives a 16-byte scalar. The corpus has no such
+   program, so the corpus differential could not show it (found in review).
+   Until check-layout learns wide scalars (with lane 3, #1277, which owns
+   the 128-bit aggregate work), the package reports a graph whose value or
+   local types mention `i128`/`u128` (through type arguments, tuples,
+   functions and ADT fields) as `wide` and leaves it to Rust; the test
+   compares the program's other graphs.
+   `wide_integer_graphs_are_left_to_rust` covers it with a minimal repro:
+
+   ```vesper
+   struct P { a: i128, b: u64 }
+   fn wide(x: i128) -> i128 { x }
+   fn holds(n: u64) -> P { P { a: 1, b: n } }
+   ```
+
+   The swap must fall back to the Rust decisions for those graphs too.
+   Where the decisions need `numeric::is_integer_name` and
+   `is_scalar_name`, the package already interns the two names itself.
 
 ## What is left
 
