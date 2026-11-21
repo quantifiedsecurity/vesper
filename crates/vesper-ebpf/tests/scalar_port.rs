@@ -129,7 +129,10 @@ fn port_matches_rust_on_transfer_functions() {
         let (op, rop) = ALU[rng.below(ALU.len() as u64) as usize];
         let p = scalar_alu(op, wide, a, b);
         let r = rust::verifier::scalar_alu(rop, wide, ra, rb);
-        assert!(same(p, r), "case {case}: {op:?} wide={wide} {a:?} {b:?}: port {p:?}, rust {r:?}");
+        assert!(
+            same(p, r),
+            "case {case}: {op:?} wide={wide} {a:?} {b:?}: port {p:?}, rust {r:?}"
+        );
         let (op, rop) = JMP[rng.below(JMP.len() as u64) as usize];
         let holds = rng.below(2) == 0;
         let p = refine_jmp(op, wide, a, b, holds);

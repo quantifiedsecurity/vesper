@@ -1149,7 +1149,13 @@ fn port_matches_rust_when_programs_share_an_environment() {
     };
     let mut progs: Vec<(String, Program)> = Vec::new();
     // insert two keys and keep a pointer to the second one's value in am[0]
-    for keys in [[1, 2], [2, 5], [7, 1], [3, 4]] {
+    // (stored twice by some: the slot is translated once at save)
+    for (keys, twice) in [
+        ([1, 2], false),
+        ([2, 5], true),
+        ([7, 1], false),
+        ([3, 4], true),
+    ] {
         let mut a = Asm::new();
         chaos_maps(&mut a);
         let skip = a.label();
@@ -1160,10 +1166,13 @@ fn port_matches_rust_when_programs_share_an_environment() {
         lookup(&mut a, 1, 0);
         a.jmp(JmpOp::Eq, Reg::R0, 0, skip);
         a.stx(Size::DW, Reg::R0, 0, Reg::R7);
+        if twice {
+            a.stx(Size::DW, Reg::R0, 0, Reg::R7);
+        }
         a.bind(skip).unwrap();
         a.mov64(Reg::R0, keys[0]);
         a.exit();
-        let name = format!("insert {keys:?}");
+        let name = format!("insert {keys:?} twice={twice}");
         progs.push((name.clone(), a.finish(&name, ProgramType::Xdp).unwrap()));
     }
     // read through the pointer in am[0]
@@ -1204,7 +1213,14 @@ fn port_matches_rust_when_programs_share_an_environment() {
             let reps = 1 + rng.below(3);
             for r in 0..reps {
                 let what = format!("session {session} run {k}.{r} {}", progs[i].0);
-                assert!(agree(&mut rng, &progs[i].1, &rprogs[i], &mut e, &mut st, &what));
+                assert!(agree(
+                    &mut rng,
+                    &progs[i].1,
+                    &rprogs[i],
+                    &mut e,
+                    &mut st,
+                    &what
+                ));
             }
         }
     }

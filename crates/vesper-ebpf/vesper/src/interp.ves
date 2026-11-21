@@ -2225,22 +2225,28 @@ fn save_appended(inout i: I) {
     i.mem.truncate(i.pbytes);
     i.mem.extend(in vb.as_slice());
     i.spill.truncate(shr(i.pbytes, 3));
+    // `ptrans` lists a slot once per store, so every new word is computed
+    // from the slots as they were before any is rewritten: a slot stored to
+    // twice is translated once.
+    let mut moved: ChunkSeq[u64] = ChunkSeq::with_capacity[u64](i.ptrans.len());
     for k in 0..i.ptrans.len() {
-        let idx = gw(in i.ptrans, k);
-        let w = gw(in i.spill, idx);
+        let w = gw(in i.spill, gw(in i.ptrans, k));
         if w > np {
             let t = gw(in ids, sub(sub(w, 1), np));
-            i
-                .spill
-                .try_set(
-                idx,
+            moved
+                .push(
                 if t == none() {
                     1
                 } else {
                     add(t, 1)
                 }
             );
+        } else {
+            moved.push(w);
         }
+    }
+    for k in 0..i.ptrans.len() {
+        i.spill.try_set(gw(in i.ptrans, k), gw(in moved, k));
     }
     i.spill.extend(in vs.as_slice());
     i.np = nid;
