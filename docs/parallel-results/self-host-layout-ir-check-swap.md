@@ -251,7 +251,8 @@ result.
   `ir_check::validate`: a matched `try_get` binds the element as a borrow
   its sequence keeps owning. `@vesper/ir-check` does not have this rule
   yet, so worlds with element views (`World::element_views` not empty) go
-  to Rust. Porting the rule means encoding `element_views` and following
+  to Rust: one corpus world after the merge (7 of 348 cases at the default
+  step, which the differential skips and counts). Porting the rule means encoding `element_views` and following
   the new `Read`/`Bind`/`Seq` cases.
 - The constant copies can become imports (gap 1).
 - Deleting `rust_of` or `rust_validate` is an owner call at parity, and
