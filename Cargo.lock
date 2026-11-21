@@ -6516,6 +6516,7 @@ dependencies = [
  "serde",
  "serde_json",
  "vesper-bench",
+ "vesper-pact-seed",
  "vesper-port-abi",
  "vesper-port-harness",
 ]
