@@ -196,6 +196,13 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # SH3 lane 13 (#1252): @vesper/place-ir-lower against
+        # `ir::lower_world` over the same corpus.
+        "test/self_host_ir_lower": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # Self-hosting SH2 lane 6 (#1178): the package assembler over every
         # Loom package the root package declares. Anchored globs.
         "test/self_host_check_names_packages": glob([
@@ -533,6 +540,7 @@ vesper_crate(
         "test/hybrid_layout": "long",
         "test/hybrid_ir_check": "long",
         "test/self_host_place_ir": "long",
+        "test/self_host_ir_lower": "long",
         "test/self_host_check_harness": "long",
         # The package assembler differential (#1178) compiles the AST package.
         "test/self_host_check_names_packages": "long",
