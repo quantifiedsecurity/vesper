@@ -45,7 +45,7 @@ const K_LIMIT: u8 = 2;
 
 // `wasm_backend::compile` up to the core module: the core bytes and the
 // WIT text, or the error. Component encoding stays in Rust.
-fn compile(in b: Slice[u8]) -> (ChunkSeq[u8], ChunkSeq[u8]) eff [Fail[WErr]] {
+fn compile(in b: Slice[u8]) -> (ChunkSeq[u8], ChunkSeq[u8], u64) eff [Fail[WErr]] {
     let mut r = Reader {
         pos: 0
     };
@@ -68,17 +68,24 @@ fn compile(in b: Slice[u8]) -> (ChunkSeq[u8], ChunkSeq[u8]) eff [Fail[WErr]] {
     l.declare_all();
     let wit = exports(inout l);
     l.define_all();
+    let functions = l.b.function_count();
     let core = l.b.finish(max_pages);
-    (core, wit)
+    (core, wit, functions)
 }
 
-// The harness entry: `[0, packed core, packed WIT]` on success, else
-// `[1, kind, construct, site]`.
+// The harness entry: `[0, function count, packed core, packed WIT]` on
+// success, else `[1, kind, construct, site]`.
 pub fn wasm_backend_compile(in input: Str) -> ChunkSeq[u64] {
+    wasm_backend_compile_bytes(in input.as_bytes())
+}
+
+// The same over a byte slice (the hybrid module's entry, export ABI 4).
+pub fn wasm_backend_compile_bytes(in input: Slice[u8]) -> ChunkSeq[u64] {
     handle Fail[WErr] in {
-        let (core, wit) = compile(in input.as_bytes());
+        let (core, wit, functions) = compile(in input);
         let mut out = ChunkSeq::new[u64]();
         out.push(0);
+        out.push(functions);
         let a = pack_text(in core);
         for i in 0..a.len() {
             match a.try_get(i) {

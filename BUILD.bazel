@@ -708,6 +708,27 @@ vesper_package(
     deps = [":check_data_package"],
 )
 
+# The Place IR data and the wasm backend port as dependencies of the hybrid
+# compiler's wasm_backend module (self-hosting SH4 lane 15, #1289).
+vesper_package(
+    name = "place_ir_package",
+    srcs = glob(["packages/vesper-place-ir/src/**/*.ves"]),
+    manifest = "packages/vesper-place-ir/Loom.toml",
+    visibility = ["//visibility:public"],
+    deps = [":check_data_package"],
+)
+
+vesper_package(
+    name = "wasm_backend_package",
+    srcs = glob(["packages/vesper-wasm-backend/src/**/*.ves"]),
+    manifest = "packages/vesper-wasm-backend/Loom.toml",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":check_data_package",
+        ":place_ir_package",
+    ],
+)
+
 vesper_package(
     name = "std_hash_sys_package",
     srcs = glob(["packages/vesper-std/hash/sys/src/**/*.ves"]),
