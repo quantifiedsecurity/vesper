@@ -418,6 +418,8 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     || path.ends_with("packages/vesper-check-loops-atomics")
                     // SH5 lane 14 (#1337): `use` (#880) and `pub fn`.
                     || path.ends_with("packages/vesper-test-runner")
+                    // SH4 lane 17 (#1291): `use` (#880) and const items.
+                    || path.ends_with("packages/vesper-backend-checks")
                 {
                     continue;
                 }
