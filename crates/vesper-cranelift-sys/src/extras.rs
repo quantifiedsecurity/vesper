@@ -215,6 +215,15 @@ pub unsafe extern "C" fn vcl_define_function_bytes(
             .define_function_bytes(id, align.max(1), bytes, &relocs)
             .map_err(|e| e.to_string())?;
         m.code_bytes += bytes.len() as u64;
+        // Read-back now describes this function: its code and relocations
+        // are the caller's, and nothing else is known about it.
+        m.last_code = bytes.to_vec();
+        m.last_relocs = words.to_vec();
+        m.last_unwind.clear();
+        m.last_traps.clear();
+        m.last_call_sites.clear();
+        m.last_frame_size = 0;
+        m.last_clif.clear();
         Ok(0)
     })
 }

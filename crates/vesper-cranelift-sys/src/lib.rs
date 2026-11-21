@@ -921,6 +921,12 @@ pub unsafe extern "C" fn vcl_module_finish(m: *mut Module) -> *mut Object {
         };
         lent.error.get_or_insert(e.into());
         *NEW_ERROR.lock().unwrap() = e.into();
+        if !lent.lent() {
+            // The `sink` import gave up the handle: free the JIT module and
+            // its code rather than leak them.
+            // SAFETY: an owned handle, consumed exactly once here.
+            unsafe { vcl_module_free(m) };
+        }
         return std::ptr::null_mut();
     }
     // SAFETY: the sink import consumes the module exactly once.

@@ -689,3 +689,58 @@ fn vesper_reaches_every_new_call() {
     let (_, rust) = rust_readback(TRIPLES[0], true);
     assert_eq!(shim, rust, "the Vesper-built object differs from Rust's");
 }
+
+#[test]
+fn defining_bytes_replaces_the_read_back() {
+    let _serial = serial();
+    let m = shim_module(TRIPLES[0]);
+    // SAFETY: live handles from this module.
+    unsafe {
+        let sig = vcl_sig_new(m, 0);
+        let f = decl(m, "compiled", Linkage::Local, sig);
+        let g = decl(m, "placed", Linkage::Local, sig);
+        let _ = f;
+        let b = vcl_builder_new(m, sig);
+        let e = vcl_create_block(b);
+        vcl_switch_to_block(b, e);
+        vcl_trap(b, 1);
+        vcl_seal_all_blocks(b);
+        assert_ne!(vcl_compile(m, b), u64::MAX, "{}", module_error(m));
+        assert_eq!(words(|o, n| vcl_module_last_traps(m, o, n)).len(), 2);
+        let code = [0xc3u8, 0x90, 0x90, 0x90, 0, 0, 0, 0, 0, 0, 0, 0];
+        let relocs = [4, codes::reloc_code(Reloc::Abs8) as u64, 4, 0, 0];
+        let r = vcl_define_function_bytes(m, g, 1, code.as_ptr(), 12, relocs.as_ptr(), 5);
+        assert_eq!(r, 0, "{}", module_error(m));
+        assert_eq!(bytes_of(|o, n| vcl_module_last_code(m, 0, o, n)), code);
+        assert_eq!(words(|o, n| vcl_module_last_relocs(m, o, n)), relocs);
+        assert!(words(|o, n| vcl_module_last_traps(m, o, n)).is_empty());
+        assert!(words(|o, n| vcl_module_last_call_sites(m, o, n)).is_empty());
+        assert_eq!(vcl_module_last_frame_size(m), 0);
+        vcl_module_free(m);
+    }
+}
+
+#[test]
+fn finishing_a_jit_module_frees_it() {
+    let _serial = serial();
+    let before = live_handles();
+    // SAFETY: an owned JIT module, consumed by the refused finish.
+    unsafe {
+        let m = vcl_jit_module_new(
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            0,
+        );
+        assert!(!m.is_null(), "{}", new_error());
+        assert!(vcl_module_finish(m).is_null());
+    }
+    assert!(new_error().contains("finalized"), "{}", new_error());
+    assert_eq!(
+        live_handles(),
+        before,
+        "the refused finish leaked the module"
+    );
+}
