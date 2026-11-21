@@ -5,7 +5,8 @@
 //!   input, optimized by `ir_opt::optimize` and by the policy (twice: the
 //!   second call is served by the content-hash cache). The programs must be
 //!   `Debug`-equal and the counts equal. Each world's second call is served
-//!   by the cache, which is also shared across worlds.
+//!   by the cache (turned on here; it is off by default), which is also
+//!   shared across worlds.
 //! - `screen_never_drops_an_improvement`: no function the screen rules out
 //!   loses an instruction under `ir_opt::optimize`.
 //! - `profile_package` (ignored): the per-function profile and the policy's
@@ -30,6 +31,7 @@ fn worlds() -> impl Iterator<Item = &'static check_harness::Case> {
 
 #[test]
 fn policy_matches_optimize_on_the_corpus() {
+    ir_opt_policy::set_cache(true);
     let corpus: Vec<_> = worlds().collect();
     assert!(!corpus.is_empty());
     let (mut functions, mut screened, mut cached, mut improved) = (0, 0, 0, 0);
@@ -109,6 +111,7 @@ fn profile_package() {
     let Ok(dir) = std::env::var("OPTIMIZER_BUDGET_PACKAGE") else {
         return;
     };
+    ir_opt_policy::set_cache(true);
     let assembled = vesper::packages::load(std::path::Path::new(&dir)).unwrap();
     assert!(assembled.ok(), "{:?}", assembled.diagnostics);
     let c = vesper::check::check(&assembled.module);

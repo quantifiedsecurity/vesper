@@ -20,8 +20,9 @@
 //!   `ir_opt::optimize` as a [`surrogate`] that holds only its candidate
 //!   blocks; the replacements the pass makes there are read back and
 //!   [`apply`]'d to the real function. All surrogates go through one call.
-//! - **Cache.** A function whose content hash was saturated earlier in this
-//!   process takes the saturated body from the cache.
+//! - **Cache (opt-in).** With `VESPER_OPT_POLICY_CACHE=on` (or
+//!   [`set_cache`]), a function whose content hash was saturated earlier in
+//!   this process takes the saturated body from the cache.
 //! - **The rest of the pass.** Every function then gets the passes
 //!   `ir_opt::optimize` runs after saturation, unchanged: `fip_reuse_pass`,
 //!   `ir::thread_tokens` and `ir_check::validate`.
@@ -105,6 +106,33 @@ enum Cached {
 /// cleared and refills.
 const CACHE_LIMIT: usize = 16_384;
 
+/// Whether the cache is used. Off by default: a cache that lives for the
+/// process makes the work (and the allocations) of one compilation depend on
+/// what the process compiled before, which tests that count a compilation's
+/// allocations (tests/dyn_trait.rs `objects_allocate_nothing`) can see.
+/// `VESPER_OPT_POLICY_CACHE=on` or [`set_cache`] turns it on, for
+/// long-lived processes that compile the same code again (an editor, a test
+/// harness).
+static CACHE_ON: OnceLock<std::sync::atomic::AtomicBool> = OnceLock::new();
+
+fn cache_flag() -> &'static std::sync::atomic::AtomicBool {
+    CACHE_ON.get_or_init(|| {
+        std::sync::atomic::AtomicBool::new(matches!(
+            std::env::var("VESPER_OPT_POLICY_CACHE").as_deref(),
+            Ok("on" | "1" | "true")
+        ))
+    })
+}
+
+fn cache_enabled() -> bool {
+    cache_flag().load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Turns the in-process saturation cache on or off for this process.
+pub fn set_cache(enabled: bool) {
+    cache_flag().store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn cache() -> &'static Mutex<HashMap<u128, Cached>> {
     static CACHE: OnceLock<Mutex<HashMap<u128, Cached>>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
@@ -129,8 +157,13 @@ pub fn optimize_with_stats(world: &World, program: &mut ir::Program) -> Result<S
             rest.functions.insert(name, f);
             continue;
         }
-        let key = content_hash(&f);
-        let hit = cache().lock().unwrap().get(&key).cloned();
+        let caching = cache_enabled();
+        let key = if caching { content_hash(&f) } else { 0 };
+        let hit = if caching {
+            cache().lock().unwrap().get(&key).cloned()
+        } else {
+            None
+        };
         match hit {
             Some(Cached::Unchanged) => {
                 stats.cached += 1;
@@ -193,6 +226,9 @@ pub fn optimize_with_stats(world: &World, program: &mut ir::Program) -> Result<S
     }
     {
         let mut c = cache().lock().unwrap();
+        if !cache_enabled() {
+            learned.clear();
+        }
         if c.len() + learned.len() > CACHE_LIMIT {
             c.clear();
         }

@@ -44,9 +44,15 @@ optimizer: with the optimizer at zero the build would take about 59.5 s
      saturation. (The pass's own `operands` helper is private, so the policy
      mirrors it; the corpus test checks the result.) The renamed surrogate is
      skipped by `fip_reuse_pass`, and its validation errors are ignored.
-  3. **Cache.** Saturation does not depend on the world, so its result is
-     cached in-process by a 128-bit content hash of the function. A cache hit
-     skips the surrogate.
+  3. **Cache (opt-in).** Saturation does not depend on the world, so its
+     result can be cached in-process by a 128-bit content hash of the
+     function, and a hit skips the surrogate. The cache is off by default
+     (`VESPER_OPT_POLICY_CACHE=on` or `ir_opt_policy::set_cache` turns it
+     on): with it on, a compilation's work and allocations depend on what
+     the process compiled before, and tests/dyn_trait.rs
+     `objects_allocate_nothing`, which compares the allocations of two
+     compilations, failed (21,257 vs 15,194). The numbers below are with the
+     cache off, except the "second call" row.
   4. **The rest of the pass, unchanged.** Every function then gets
      `fip_reuse_pass`, `ir::thread_tokens` and `ir_check::validate`, exactly
      as `ir_opt::optimize` runs them after saturation.
@@ -107,7 +113,7 @@ The two library objects compare equal with `cmp`.
 | + surrogates of the candidate blocks | 19.7 s | validation is now 11 s of it |
 | + surrogates name only their blocks' values | 14.9 s | single-threaded: 3.7x |
 | + parts on 4 threads (final) | **5.2 s** | 10.5x |
-| final, second call (all saturation from the cache) | 3.7 s | |
+| final, second call with the cache on | 3.7 s | |
 
 Phases of the final cold call: screen and hash 0.11 s, surrogate saturation
 1.23 s, `fip_reuse_pass` 0 s (not a fip program), `thread_tokens` 3 ms,
@@ -187,7 +193,7 @@ is linked from the PR.
 - Re-measure with all twelve SH2 checker packages once the six open ones
   merge (effects #1238, tensor-types #1230, layout and ir-check #1232, pact,
   loops-atomics).
-- The cache lives for one process. A disk cache keyed by the same content
+- The cache is opt-in and lives for one process. A disk cache keyed by the same content
   hash would make repeat builds skip saturation (1.2 s here); validation
   would still run.
 - When #1259 merges, its `src/ir_swap.rs` default `opt` path calls
