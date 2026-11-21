@@ -674,17 +674,22 @@ fn effectful_row(w: &World, row: &Effects) -> bool {
 
 /// Whether every type the IR check reads can be encoded.
 fn program_encodable(w: &World, p: &vesper::ir::Program) -> bool {
-    w.adts.values().all(|a| {
-        a.variants
-            .iter()
-            .all(|v| v.fields.iter().all(|f| encodable(&f.ty)))
-    }) && p.functions.values().all(|f| {
-        f.params.iter().all(|p| encodable(&p.ty))
-            && f.values.values().all(encodable)
-            && f.blocks
+    // Element view matches (#1173) are not in `@vesper/ir-check` yet: Rust
+    // checks the worlds that have them (as on #1232's head; this guard also
+    // covers the encode-once `WorldLog::ir_part`).
+    w.element_views.is_empty()
+        && w.adts.values().all(|a| {
+            a.variants
                 .iter()
-                .all(|b| b.instructions.iter().all(|i| encodable(&i.ty)))
-    })
+                .all(|v| v.fields.iter().all(|f| encodable(&f.ty)))
+        })
+        && p.functions.values().all(|f| {
+            f.params.iter().all(|p| encodable(&p.ty))
+                && f.values.values().all(encodable)
+                && f.blocks
+                    .iter()
+                    .all(|b| b.instructions.iter().all(|i| encodable(&i.ty)))
+        })
 }
 
 /// The input of `ir_check_words`: the world, then the census's IR encoding
