@@ -196,6 +196,14 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # SH4 lane 16 (#1290): @vesper/ebpf-backend against src/ebpf_backend
+        # over the eBPF fixtures and the corpus; the package depends on the
+        # @vesper/ebpf port in crates/vesper-ebpf/vesper.
+        "test/self_host_ebpf_backend": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]) + ["//crates/vesper-ebpf:files"],
         # Self-hosting SH2 lane 11 (#1183): the dyn passes in Vesper against
         # src/dyn_fn.rs and src/dyn_trait.rs over the dyn suites, mutants and
         # the repository's .ves sources. Anchored globs.
@@ -550,6 +558,8 @@ vesper_crate(
         "test/hybrid_layout": "long",
         "test/hybrid_ir_check": "long",
         "test/self_host_place_ir": "long",
+        # The eBPF backend differential (#1290) loads every corpus world.
+        "test/self_host_ebpf_backend": "long",
         "test/self_host_check_harness": "long",
         # The dyn differential runs both passes over every .ves source twice.
         "test/self_host_check_dyn": "long",
