@@ -354,8 +354,12 @@ of a Warp session's time, since the evaluator dominates.
 
 - Hardware SHA-256 (gap 8), and building WAL frames at flush rather than
   at append.
-- `model/umem.rs` and `model/warp.rs` (3,100 lines, over the
-  `vesper-warp-umem` crate).
+- The rest of `model/umem.rs` and `model/warp.rs`: the frame adapter and
+  journal over the `vesper-warp-umem` driver (its linear owners, location
+  table and auditor), the EDT launch queue, the lease timers and the
+  flows' event plumbing. The randomness (SplitMix64), the links and the
+  wire codec are already in Vesper. The rest is orchestration around the
+  driver, so it waits for SH6 lane 14 (#1409) to port `vesper-warp-umem`.
 - `model/mod.rs` process epochs, scenario validation, the canonical-JSON
   identity digests and `value.rs`. These need a JSON value model on the
   Vesper side, or the Rust side has to pass canonical strings in.
