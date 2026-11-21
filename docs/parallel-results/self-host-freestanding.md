@@ -1,4 +1,4 @@
-# Self-hosting SH4 lane 14: freestanding images in Vesper (part 1)
+# Self-hosting SH4 lane 14: freestanding images in Vesper
 
 Claim #1288. Prompt: `docs/agent-prompts/self-host-sh4/14-freestanding.md`.
 Package: [`packages/vesper-codegen-freestanding`](../../packages/vesper-codegen-freestanding/README.md)
@@ -73,6 +73,54 @@ the run passed 28 minutes. Part 2 caches the objects to measure Ir.
 
 The link is a small part of a freestanding build: the parity bar for this
 lane is the whole build with the family swapped, which needs part 2.
+
+## Part 2: the runtime object, emitted through the shim
+
+On lane 1's #1309 (lent handles, `vesper_cranelift_sys`), the runtime
+object of `src/freestanding/runtime.rs` is emitted in Vesper:
+[`packages/vesper-codegen-freestanding/runtime`](../../packages/vesper-codegen-freestanding/runtime/src/lib.ves)
+(`@vesper/codegen-freestanding-runtime`). It makes its own object module of
+the shim for the target's ISA (Silicon's flags) and declares, emits and
+defines what `runtime::build` does in the same order: `putc` (NS16550 or
+PL011), `puts`, `put_udec`, `put_hex`, `main` (with the failure record and
+its abort traps), the string data, the trap table with its message
+relocations, and the trap handler.
+
+The differential is
+`crates/vesper-codegen-swap-test/tests/self_host_freestanding_runtime.rs`
+(the root package's tests cannot depend on the shim, see lane 1's report):
+
+| Check | Result |
+|---|--:|
+| Runtime specs: 2 targets x 2 UARTs x 6 result kinds x 3 failure shapes x 2 trap tables | 144/144 equal |
+| The runtime of every freestanding test image (22), its spec recovered by matching Rust's own build | 22/22 equal |
+| Per spec: `runtime.o` bytes, every function's CLIF text, the trap records, Silicon's names of main/trap/exit | equal |
+| A malformed request | a typed error |
+
+Rust's functions are renamed into Silicon's namespaces after definition;
+the test maps the module's `u0:<id>` names the same way before comparing
+the CLIF text. The test bites: changing one immediate of `put_hex` fails
+the CLIF comparison, and dropping the non-colocated data import makes
+Cranelift reject the RISC-V relocation.
+
+### Shim support
+
+Lane 1 added the two calls this needs to #1309 (`384e3c5`):
+`vcl_import_data_colocated` (the runtime's data is non-colocated: colocated
+RISC-V data needs `R_RISCV_PCREL_HI20`, which `cranelift-object` 0.125
+cannot write) and `vcl_module_last_traps` (the runtime's abort-trap offsets
+go into the trap table; `build_image` reads them from
+`compiled.buffer.traps()`).
+
+One behaviour-free hunk of this lane is left in
+`crates/vesper-cranelift-sys/src/lib.rs`, flagged for lane 1: **ISA flags
+in `vcl_module_new`.** A flag that the shared settings do not know is
+tried on the ISA builder (`has_zca=true` on RISC-V, which sets the
+object's `e_flags` and the compressed encodings). Before, it was an error,
+so existing callers are unchanged.
+
+`@vesper/cranelift` also gains `module_clif`, `module_error_text` and
+`new_error_text`.
 
 ## Decisions
 

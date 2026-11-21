@@ -22,8 +22,15 @@ strings) and returns one result buffer with a status word first; the Rust
 half is `Request`, `Words` and `decode_error` in
 `tests/self_host_freestanding.rs`.
 
-Not yet ported (they read Cranelift functions, so they come with lane 1's
-lent builders): the runtime object (`src/freestanding/runtime.rs`), the
-floating-point check and Silicon's stack and interrupt analysis
-(`checks.rs`), the entry's compilation in `build_image`, and the Windows
-object handling (`src/native_windows.rs`).
+Part 2 emits the runtime object (`src/freestanding/runtime.rs`) in Vesper
+through `@vesper/cranelift`, in the sub-package `runtime/`
+(`@vesper/codegen-freestanding-runtime`, entry `freestanding_runtime`). Its
+differential is
+`crates/vesper-codegen-swap-test/tests/self_host_freestanding_runtime.rs`
+(the shim's crate graph keeps it out of the root package's tests).
+
+Not yet ported: the floating-point check and Silicon's stack and interrupt
+analysis (`checks.rs`, which read Cranelift `ir::Function`s), the entry's
+compilation in `build_image` (the scalar and other family lanes), the
+`freestanding` hook swap and the Windows object handling
+(`src/native_windows.rs`).
