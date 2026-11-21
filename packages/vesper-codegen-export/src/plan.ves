@@ -737,7 +737,21 @@ impl Planner {
     // `owning`: whether a value of `a` owns memory.
     fn owning(in self, a: u32) -> bool {
         let n = self.anode(a);
-        if n.kind == K_SEQ || n.kind == K_SLICE || n.kind == K_BOX || n.kind == K_STR || n.kind == K_OBJECT {
+        if n
+            .kind
+            == K_SEQ
+            || n
+            .kind
+            == K_SLICE
+            || n
+            .kind
+            == K_BOX
+            || n
+            .kind
+            == K_STR
+            || n
+            .kind
+            == K_OBJECT {
             return true;
         }
         if n.kind == K_SCALAR || n.kind == K_EXTERN {
@@ -759,7 +773,21 @@ impl Planner {
         if n.kind == K_EXTERN {
             return true;
         }
-        if n.kind == K_BOX || n.kind == K_SEQ || n.kind == K_SLICE || n.kind == K_TUPLE || n.kind == K_NAMED {
+        if n
+            .kind
+            == K_BOX
+            || n
+            .kind
+            == K_SEQ
+            || n
+            .kind
+            == K_SLICE
+            || n
+            .kind
+            == K_TUPLE
+            || n
+            .kind
+            == K_NAMED {
             for i in 0..n.n {
                 if self.contains_extern(self.akid(n, i)) {
                     return true;
@@ -824,7 +852,12 @@ impl Planner {
         if n.kind != K_SCALAR {
             return false;
         }
-        self.names.spells(n.name, in "i128".as_bytes()) || self.names.spells(n.name, in "u128".as_bytes())
+        self
+            .names
+            .spells(n.name, in "i128".as_bytes())
+            || self
+            .names
+            .spells(n.name, in "u128".as_bytes())
     }
 
     // `result_shape`: 0 when `a` may be a result, else the reason.
@@ -857,7 +890,10 @@ impl Planner {
             return 0;
         }
         if n.kind == K_BOX {
-            return intern_text(inout self.names, "is a box; return a handle type that holds it instead");
+            return intern_text(
+                inout self.names,
+                "is a box; return a handle type that holds it instead"
+            );
         }
         intern_text(inout self.names, "owns memory in a form no result can carry")
     }
@@ -885,20 +921,33 @@ impl Planner {
             }
             return self.field_shape(k);
         }
-        intern_text(inout self.names, "is a field form handles do not carry yet (use a sequence, a String, a box, a handle type or an Option of one)")
+        intern_text(
+            inout self.names,
+            "is a field form handles do not carry yet (use a sequence, a String, a box, a handle type or an Option of one)"
+        )
     }
 
     // `position`: where each owning form may cross. 0, or FAIL.
     fn position(inout self, function: u32, source: u32, a: u32, pos: u8) -> u32 {
         let n = self.anode(a);
         if self.contains_extern(a) && n.kind != K_EXTERN {
-            return self.refuse(function, source, "holds an opaque .vsys extern-type handle; Rust lends one only directly as an `in` parameter (export ABI v4)");
+            return self
+                .refuse(
+                function,
+                source,
+                "holds an opaque .vsys extern-type handle; Rust lends one only directly as an `in` parameter (export ABI v4)"
+            );
         }
         if n.kind == K_EXTERN {
             if pos == PASS_IN {
                 return 0;
             }
-            return self.refuse(function, source, "is an opaque .vsys extern-type handle; Rust lends one only to an `in` parameter (export ABI v4)");
+            return self
+                .refuse(
+                function,
+                source,
+                "is an opaque .vsys extern-type handle; Rust lends one only to an `in` parameter (export ABI v4)"
+            );
         }
         if !self.owning(a) {
             return 0;
@@ -930,9 +979,19 @@ impl Planner {
             if pos == PASS_IN || n.owned {
                 return 0;
             }
-            return self.refuse(function, source, "is a `Str` view, which crosses only as an `in` parameter");
+            return self
+                .refuse(
+                function,
+                source,
+                "is a `Str` view, which crosses only as an `in` parameter"
+            );
         }
-        self.refuse(function, source, "owns memory; only sequences, slices, strings and handle types cross as parameters")
+        self
+            .refuse(
+            function,
+            source,
+            "owns memory; only sequences, slices, strings and handle types cross as parameters"
+        )
     }
 
     // `ExportError::Type` for a type without a layout.
@@ -990,7 +1049,12 @@ impl Planner {
             if self.v4 {
                 return self.leaf(K_EXTERN, nd.name);
             }
-            return self.refuse(function, t, "is an opaque .vsys extern-type handle; keep it inside the Vesper library (a handle crosses only to its own imports, or, with `// @export abi 4`, is lent `in` by Rust)");
+            return self
+                .refuse(
+                function,
+                t,
+                "is an opaque .vsys extern-type handle; keep it inside the Vesper library (a handle crosses only to its own imports, or, with `// @export abi 4`, is lent `in` by Rust)"
+            );
         }
         if c == C_WIDE || c == C_SCALAR {
             return self.leaf(K_SCALAR, nd.name);
@@ -1018,12 +1082,22 @@ impl Planner {
             }
             if self.node(elem).mode != M_COPY || self.owning(abi) {
                 let an = self.anode(abi);
-                let mut field = c == C_SEQ && an.kind != K_SLICE && !(an.kind == K_STR && !an.owned);
+                let mut field = c
+                    == C_SEQ
+                    && an
+                    .kind
+                    != K_SLICE
+                    && !(an.kind == K_STR && !an.owned);
                 if field {
                     field = self.field_shape(abi) == 0;
                 }
                 if !field {
-                    return self.refuse(function, t, "has non-copy elements; only sequences and slices of copy elements cross the boundary (a handle type may hold a ChunkSeq of handles, boxes or strings)");
+                    return self
+                        .refuse(
+                        function,
+                        t,
+                        "has non-copy elements; only sequences and slices of copy elements cross the boundary (a handle type may hold a ChunkSeq of handles, boxes or strings)"
+                    );
                 }
             }
             self.v2 = true;
@@ -1077,7 +1151,8 @@ impl Planner {
         let order = self.builtin(n);
         if order.len() > 0 {
             if !self.builtin_order(nd, in order) {
-                return self.refuse(function, t, "has a builtin variant order this ABI does not know");
+                return self
+                    .refuse(function, t, "has a builtin variant order this ABI does not know");
             }
             let mut kids = ChunkSeq::new[u32]();
             for i in 0..nd.n {
@@ -1090,7 +1165,8 @@ impl Planner {
             return self.push_anode(K_NAMED, n, false, in kids);
         }
         if nd.n != 0 {
-            return self.refuse(function, t, "is a generic user type; export a monomorphic type instead");
+            return self
+                .refuse(function, t, "is a generic user type; export a monomorphic type instead");
         }
         if self.decl_of(n) == 0 {
             if !nd.lok {
@@ -1169,7 +1245,10 @@ impl Planner {
                     if self.contains_extern(fty) || is_handle {
                         let mut reason: u32 = 0;
                         if self.contains_extern(fty) {
-                            reason = intern_text(inout self.names, "holds an opaque .vsys extern-type handle; Rust lends one only directly as an `in` parameter (export ABI v4)");
+                            reason = intern_text(
+                                inout self.names,
+                                "holds an opaque .vsys extern-type handle; Rust lends one only directly as an `in` parameter (export ABI v4)"
+                            );
                         } else {
                             reason = self.field_shape(fty);
                         }
@@ -1605,7 +1684,11 @@ impl Planner {
             }
             if d.is_enum {
                 d.mirror = MIRROR_CONVERTED;
-                d.reason = intern_text(inout self.names, "an enum's payload words have no fixed Rust layout (tag and payload validity), so it is converted as in v2");
+                d
+                    .reason = intern_text(
+                    inout self.names,
+                    "an enum's payload words have no fixed Rust layout (tag and payload validity), so it is converted as in v2"
+                );
             } else {
                 let first = match self.dvars.try_get(d.va) {
                     Option::Some(x) => x.fc,
@@ -1613,7 +1696,11 @@ impl Planner {
                 };
                 if first == 0 {
                     d.mirror = MIRROR_CONVERTED;
-                    d.reason = intern_text(inout self.names, "a struct without fields is one ignored word");
+                    d
+                        .reason = intern_text(
+                        inout self.names,
+                        "a struct without fields is one ignored word"
+                    );
                 } else {
                     d.mirror = MIRROR_REPR_C;
                 }
@@ -1770,7 +1857,10 @@ pub fn plan(inout p: Planner) {
                 if a.kind == K_NAMED {
                     let d = p.decl_of(a.name);
                     if d != 0 && p.decl(wrapping_sub(d, 1)).owns_sequence {
-                        let reason = intern_text(inout p.names, "is a handle that owns a sequence, taken by value; native code does not free the sequences inside a dropped handle yet, so take it `inout`");
+                        let reason = intern_text(
+                            inout p.names,
+                            "is a handle that owns a sequence, taken by value; native code does not free the sequences inside a dropped handle yet, so take it `inout`"
+                        );
                         let x = p.refuse3(E_TYPE, f.name, a.name, reason);
                         p.push_refusal();
                     }
@@ -1857,11 +1947,14 @@ fn put_opt(inout out: ChunkSeq[u64], in names: Names, s1: u32) {
 }
 
 fn put_flag(inout out: ChunkSeq[u64], b: bool) {
-    out.push(if b {
-        1
-    } else {
-        0
-    });
+    out
+        .push(
+        if b {
+            1
+        } else {
+            0
+        }
+    );
 }
 
 fn put_type(inout out: ChunkSeq[u64], in p: Planner, a: u32) {
