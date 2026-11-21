@@ -50,6 +50,8 @@ USES_BYTES = ["decoder", "response", "target"]
         name = "%s_vesper" % library,
         library = library,
         package = ":%s_package" % library,
+        # The boundary types, as build.rs passes them (`--rust-types`).
+        rust_types = "crate::forward::%s::abi" % library,
         target = VESPER_TARGET,
     )
     for library in LIBRARIES
@@ -105,6 +107,8 @@ DIVERGENT_SRC = {
         edits = DIVERGENT[library],
         library = library,
         package = ":%s_package" % library,
+        # The boundary types, as build.rs passes them (`--rust-types`).
+        rust_types = "crate::forward::%s::abi" % library,
         target = VESPER_TARGET,
     )
     for library in LIBRARIES
