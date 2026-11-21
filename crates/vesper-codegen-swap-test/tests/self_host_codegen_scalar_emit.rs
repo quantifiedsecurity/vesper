@@ -43,6 +43,10 @@ const TEST_DIVISOR: u32 = 12;
 const TEST_NEGATE: u32 = 13;
 const TEST_SHIFT_RANGE: u32 = 14;
 const TEST_NARROW: u32 = 15;
+/// `scalar_hook`'s numbers for a plain local's read, binding and write.
+const LOCAL_READ: u32 = 16;
+const LOCAL_BIND: u32 = 17;
+const LOCAL_WRITE: u32 = 18;
 
 /// The plan entry and the hook, compiled once with no hook in effect (a
 /// hook compiled under its own `with_hooks` would wait on itself).
@@ -115,7 +119,7 @@ static EMITTED: AtomicU64 = AtomicU64::new(0);
 static REFUSED: AtomicU64 = AtomicU64::new(0);
 static UNPLANNED: AtomicU64 = AtomicU64::new(0);
 /// Requests emitted from Vesper per hook request (plan 1-10, tests 11-15).
-static BY_REQUEST: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
+static BY_REQUEST: [AtomicU64; 19] = [const { AtomicU64::new(0) }; 19];
 
 /// Identifies a lent program for the cache: its address, function count
 /// and instruction count (a later compile may reuse the address).
@@ -157,10 +161,16 @@ fn scalar(lent: &mut Lent<'_, '_>) -> Result<bool, String> {
         codegen_swap::scalar::NEGATE => Some(TEST_NEGATE),
         codegen_swap::scalar::SHIFT_RANGE => Some(TEST_SHIFT_RANGE),
         codegen_swap::scalar::NARROW => Some(TEST_NARROW),
+        codegen_swap::scalar::READ_LOCAL => Some(LOCAL_READ),
+        codegen_swap::scalar::BIND_LOCAL => Some(LOCAL_BIND),
+        codegen_swap::scalar::WRITE_LOCAL => Some(LOCAL_WRITE),
         _ => return Ok(false),
     };
     if let Some(request) = test {
-        let args = lent.args.to_vec();
+        let mut args = lent.args.to_vec();
+        if request == LOCAL_READ {
+            args.push(u64::from(lent.optimize));
+        }
         return emit(lent, request, &args);
     }
     let planned = PLAN.with(|cell| {
@@ -333,6 +343,9 @@ fn emission() {
         "negate test",
         "shift-range test",
         "narrow test",
+        "local read",
+        "local bind",
+        "local write",
     ];
     let by: Vec<String> = BY_REQUEST
         .iter()
@@ -412,10 +425,21 @@ fn scalar_request_words_are_pinned() {
     }
     assert_eq!(op_word("%"), None);
     // The requests the glue renumbers for `scalar_hook`.
-    use codegen_swap::scalar::{DIVISOR, NARROW, NEGATE, OVERFLOW, SHIFT_RANGE};
+    use codegen_swap::scalar::{
+        BIND_LOCAL, DIVISOR, NARROW, NEGATE, OVERFLOW, READ_LOCAL, SHIFT_RANGE, WRITE_LOCAL,
+    };
     assert_eq!(
-        [OVERFLOW, DIVISOR, NEGATE, SHIFT_RANGE, NARROW],
-        [1, 2, 3, 4, 5]
+        [
+            OVERFLOW,
+            DIVISOR,
+            NEGATE,
+            SHIFT_RANGE,
+            NARROW,
+            READ_LOCAL,
+            BIND_LOCAL,
+            WRITE_LOCAL
+        ],
+        [1, 2, 3, 4, 5, 6, 7, 8]
     );
 }
 
@@ -480,6 +504,78 @@ fn vesper_raising_tests_match_the_rust_lowering() {
         assert_eq!((total.worlds, total.ran), (2, 2), "{}", total.summary());
         for (b, a) in before.iter().zip(after) {
             assert!(a > *b, "a raising test never came from Vesper");
+        }
+        assert!(total.is_clean(), "{}", total.summary());
+    });
+}
+
+/// Locals bound in one block and read in a successor (lane 1's ask for
+/// `READ_LOCAL`, `BIND_LOCAL` and `WRITE_LOCAL`): branch joins and a loop
+/// carry narrow and one-word locals, so the variables' SSA phis (block
+/// parameters) and their `coerce`s come from Vesper's variable
+/// operations.
+const LOCALS: &str = "
+fn pick(c: bool, x: u8) -> u8 {
+    let mut y: u8 = x;
+    if c {
+        y = x & 15;
+    }
+    y
+}
+fn count(n: i32) -> i32 eff [Fail[ArithOverflow]] {
+    let mut i: i32 = 0;
+    let mut s: i16 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        s = s ^ wrapping_i16(i);
+        i = i | (i + 1);
+    }
+    widen_i32(s) ^ i
+}
+fn main() -> i64 {
+    handle Fail[ArithOverflow] in {
+        widen_i64(pick(true, 200)) + widen_i64(pick(false, 7)) + widen_i64(count(40))
+    } with {
+        return v => v,
+        raise(_, _) => -1,
+    }
+}
+";
+
+#[test]
+fn vesper_locals_match_the_rust_lowering_across_blocks() {
+    big_stack(|| {
+        let parsed = vesper::parser::parse(LOCALS);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let checked = vesper::check::check(&parsed.module);
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let locals = [LOCAL_READ, LOCAL_WRITE];
+        let before = locals.map(|t| BY_REQUEST[t as usize].load(Ordering::Relaxed));
+        let mut total = Diff::default();
+        if let Err(e) = build(&checked.world, "main", true) {
+            panic!("the locals program does not build: {e}");
+        }
+        for optimize in [true, false] {
+            PLAN.with(|p| *p.borrow_mut() = None);
+            total.add(compare(
+                "locals",
+                &checked.world,
+                "main",
+                hooks(),
+                optimize,
+                true,
+            ));
+        }
+        let after = locals.map(|t| BY_REQUEST[t as usize].load(Ordering::Relaxed));
+        eprintln!(
+            "locals: {}; read/write {before:?} -> {after:?}",
+            total.summary()
+        );
+        assert_eq!((total.worlds, total.ran), (2, 2), "{}", total.summary());
+        for (b, a) in before.iter().zip(after) {
+            assert!(a > *b, "a local operation never came from Vesper");
         }
         assert!(total.is_clean(), "{}", total.summary());
     });

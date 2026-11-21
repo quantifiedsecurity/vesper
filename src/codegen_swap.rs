@@ -609,6 +609,21 @@ pub mod scalar {
     /// `[from kind, to kind, v]`; result `[overflow]`. The hook declines
     /// when the target holds every value of the source (no test).
     pub const NARROW: u32 = 5;
+    /// The read of a plain scalar local (no home, pointer or split):
+    /// `use_var`, then `coerce` to the read's type. Args
+    /// `[var, kind]` (kind the [`kind_word`] of a kind narrower than 64
+    /// bits, else 0); result `[value, raw]`, the coerced value and the
+    /// `use_var` value (the Rust code keeps the variable's facts on it).
+    /// `raw` must be the `use_var` result itself, not a copy or a coerce
+    /// of it: any other value silently loses the variable's facts rather
+    /// than failing.
+    pub const READ_LOCAL: u32 = 6;
+    /// A fresh local bound to a value: `declare_var` of the value's type,
+    /// then `def_var`. Args `[value]`; result `[var]`.
+    pub const BIND_LOCAL: u32 = 7;
+    /// The definition of a plain local (no home or pointer): `def_var`.
+    /// Args `[var, value]`; no result.
+    pub const WRITE_LOCAL: u32 = 8;
     /// [`OVERFLOW`]'s operators.
     pub const ADD: u64 = 1;
     pub const SUB: u64 = 2;

@@ -199,6 +199,37 @@ bound and both, from signed and unsigned kinds; `<<`, `>>`; negation of
 narrow and word kinds): 12 negation, 12 shift-range and 34 narrowing
 tests from Vesper, 0 differences, equal JIT runs, optimize on and off.
 
+## Part 2b (second step): plain locals' reads, bindings and writes
+
+Lane 1's design: Rust chooses the arm and keeps `vars`, `local_types` and
+the value facts; the hook emits the Cranelift variable operations. Three
+more `codegen_swap::scalar` requests, offered only for a plain local (no
+narrow element home, no pointer, not split):
+
+- `READ_LOCAL` (args `[var, kind]`, answer `[value, raw]`): `use_var`,
+  then `coerce` to the read's type. Asked by the graph walk's last `Read`
+  arm for an empty path, no constructor and a scalar, non-function,
+  one-word type. `raw` is the `use_var` result itself, on which Rust
+  merges the variable's facts as `Codegen::use_var` does.
+- `BIND_LOCAL` (args `[value]`, answer `[var]`): `declare_var` of the
+  value's type, then `def_var`, where Rust binds a fresh local
+  (`bind_with_box`).
+- `WRITE_LOCAL` (args `[var, value]`, no answer): `def_var` of a declared
+  local. The graph walk's `Bind` defines a variable declared earlier, so
+  it and a plain `=` or compound write to a local use this request.
+
+`Codegen::def_var` is split into `note_def` (facts), `b.def_var` and
+`def_homes` (the narrow-home and pointer stores), without changing
+behaviour. Lane 1 reviewed the hunks and the shape. Over the corpus (298
+compiles): 2,577 reads, 3,475 bindings and 2,207 writes from Vesper,
+22,129 requests in all, 0 CLIF, object and run differences.
+`vesper_locals_match_the_rust_lowering_across_blocks` compiles locals
+bound in one block and read in a successor (a branch join and a loop,
+narrow and one-word kinds): 34 reads and 26 writes from Vesper, 0
+differences, optimize on and off. The "left to Rust" counts still list
+`Read`, `Bind` and `Write`, because the instruction request is declined
+first and the Rust arm then asks the local requests.
+
 ## Stage 1 guard
 
 Parts 1 and 2a add two Vesper packages, two tests, a report and BUILD.bazel
@@ -259,8 +290,9 @@ Stage 1 run on the branch is linked from the PR.
 
 ## What is left
 
-- Part 2b: `Read`, `Bind` and `Write` (most of what is left), the raising
-  arms (gap 4), floats with lane 11, string constants with lane 9.
+- Part 2b: reads of fields and aggregates, homes and split locals (Rust
+  keeps them), `sdiv`'s guard, floats with lane 11, string constants
+  with lane 9.
 - Part 3: the swap through the `scalar` hook, the full suite on the hybrid
   build, and the SH4 scoreboard row (emission alone and the whole compile,
   ABBA and callgrind).

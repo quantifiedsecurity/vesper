@@ -22,6 +22,7 @@ use @vesper/cranelift::{
     call_arg,
     call_arg_count,
     call_builder,
+    call_result,
     call_op,
     call_result_value,
     call_return_builder,
@@ -98,6 +99,15 @@ pub const TEST_DIVISOR: u32 = 12;
 pub const TEST_NEGATE: u32 = 13;
 pub const TEST_SHIFT_RANGE: u32 = 14;
 pub const TEST_NARROW: u32 = 15;
+
+// A plain local's read, fresh binding and write (`codegen_swap::scalar`'s
+// READ_LOCAL, BIND_LOCAL and WRITE_LOCAL, renumbered the same way). The
+// Rust code chooses the arm and keeps the variable maps; the hook emits
+// the Cranelift variable operations. READ_LOCAL's args carry the
+// optimizer flag after the Rust words: `[var, kind, optimize]`.
+pub const LOCAL_READ: u32 = 16;
+pub const LOCAL_BIND: u32 = 17;
+pub const LOCAL_WRITE: u32 = 18;
 
 // `TEST_OVERFLOW`'s operators.
 const T_ADD: u64 = 1;
@@ -515,6 +525,33 @@ fn scalar(call: u64, inout b: Builder) -> u64 eff [Ffi[Cranelift]] {
     }
     if op == TEST_NARROW {
         return narrow_test(call, inout b);
+    }
+    if op == LOCAL_READ {
+        // `use_var`, then `coerce` to the read's type; the raw value too,
+        // which the Rust code keeps the variable's facts on.
+        let var = Var {
+            id: wrapping_u32(call_arg(call, 0))
+        };
+        let raw = use_var(inout b, var);
+        let v = coerce(inout b, raw, call_arg(call, 1), call_arg(call, 2) != 0);
+        call_result_value(call, v);
+        call_result_value(call, raw);
+        return HANDLED;
+    }
+    if op == LOCAL_BIND {
+        let v = value_of_word(call_arg(call, 0));
+        let t = value_type(inout b, v);
+        let var = declare_var(inout b, t);
+        def_var(inout b, var, v);
+        call_result(call, widen_u64(var.id));
+        return HANDLED;
+    }
+    if op == LOCAL_WRITE {
+        let var = Var {
+            id: wrapping_u32(call_arg(call, 0))
+        };
+        def_var(inout b, var, value_of_word(call_arg(call, 1)));
+        return HANDLED;
     }
     if op == TEST_DIVISOR {
         let d = value_of_word(call_arg(call, 0));
