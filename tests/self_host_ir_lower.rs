@@ -105,13 +105,16 @@ fn package() -> &'static Package {
     P.get_or_init(|| Package::load("packages/vesper-place-ir-lower"))
 }
 
-/// Every `n`-th corpus world (`IR_LOWER_STEP`, default 1).
+/// Every `n`-th corpus world (`IR_LOWER_STEP`, default 2): every world
+/// takes about 11 minutes in a debug build, close to Bazel's `long`
+/// timeout, so the default runs half; `IR_LOWER_STEP=1` runs every world
+/// (the report's numbers).
 fn step() -> usize {
     std::env::var("IR_LOWER_STEP")
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(1)
+        .unwrap_or(2)
 }
 
 /// A corpus world with Rust's lowering.

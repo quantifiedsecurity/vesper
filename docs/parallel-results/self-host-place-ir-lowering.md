@@ -82,8 +82,10 @@ functions and on Rust's same functions.
 
 At the end of part 1, 161 of the skipped functions reached a closure or
 handler and 4,841 a payload operation (part 2's numbers are below). The
-unoptimized build runs the whole differential in 403 s (Bazel's `long`
-timeout is 900 s).
+unoptimized build ran the whole part 1 differential in 403 s; with part 2
+and the grown corpus (296 worlds) it takes 680 s, close to Bazel's `long`
+timeout of 900 s, so the test defaults to every second world
+(`IR_LOWER_STEP=1` runs them all; the tables here are from full runs).
 
 The harness can fail: dropping `overflow_ops` from the fallible test makes
 `tests/fixtures/freestanding/checked_sum.ves` and

@@ -46,7 +46,8 @@ skipped. `decode_program` (tests/common/ir_words.rs) reads them back.
 
 `tests/self_host_ir_lower.rs`: every function the port lowers must be
 `Debug`-equal to Rust's `FunctionIr`, and the IR check must report the
-same diagnostics on both. `IR_LOWER_STEP=n` runs every n-th corpus world.
+same diagnostics on both. It runs every second corpus world by default; `IR_LOWER_STEP=1` runs
+every world and `IR_LOWER_STEP=n` every n-th.
 The ignored `ir_lower_speed` (with `CHECK_HARNESS_SPEED=1`) times both
 sides ABBA, and `callgrind_one_side` (`IR_LOWER_SIDE=rust|vesper|vesper-read`)
 runs one side for callgrind.
