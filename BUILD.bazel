@@ -210,6 +210,12 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # Self-hosting SH3 lane 12 (#1251): bounds hoisting on the same corpus.
+        "test/self_host_bounds_hoist": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # Self-hosting SH2 lane 11 (#1183): the dyn passes in Vesper against
         # src/dyn_fn.rs and src/dyn_trait.rs over the dyn suites, mutants and
         # the repository's .ves sources. Anchored globs.
@@ -264,6 +270,13 @@ vesper_crate(
         # Self-hosting SH3 lane 9 (#1248): @vesper/ir-opt against ir_opt on
         # the same corpus. Anchored globs.
         "test/self_host_ir_opt": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
+        # Self-hosting SH3 lane 10 (#1249): the optimizer's certificate
+        # checker over every proposal of the same corpus. Anchored globs.
+        "test/self_host_optimize": glob([
             "examples/**",
             "packages/**",
             "tests/fixtures/**",
@@ -597,6 +610,7 @@ vesper_crate(
         "test/self_host_check_tensor_types": "eternal",
         # The region and sequence rules differential (#1181): ~7 min debug.
         "test/self_host_check_regions_seqs": "long",
+        "test/self_host_bounds_hoist": "long",
         # The dyn differential runs both passes over every .ves source twice.
         "test/self_host_check_dyn": "long",
         # The package assembler differential (#1178) compiles the AST package.
@@ -611,6 +625,8 @@ vesper_crate(
         "test/self_host_egraph": "long",
         # The ir_opt differential (#1248) runs ir_opt on every corpus world.
         "test/self_host_ir_opt": "long",
+        # The optimizer differential (#1249) checks every corpus world.
+        "test/self_host_optimize": "long",
     },
 )
 
