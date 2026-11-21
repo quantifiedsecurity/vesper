@@ -171,7 +171,17 @@ fn forward_block(
             }
         }
     }
-    let r = forward_places(in p, in names, in cls, in v, inout sc, bk, in places, in isym, inout aliases);
+    let r = forward_places(
+        in p,
+        in names,
+        in cls,
+        in v,
+        inout sc,
+        bk,
+        in places,
+        in isym,
+        inout aliases
+    );
     for k in 0..places.len() {
         sc.pidx.try_set(w(at32(in places, k)), NONE);
     }

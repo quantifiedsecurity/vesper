@@ -358,7 +358,14 @@ fn confirmed(need: u64, rank: i64, s: Slot) -> bool {
     need == s.key && rank == s.rank
 }
 
-pub fn reuse_program(inout p: Program, in names: Names, in cls: ChunkSeq[u8], in facts: Facts, in orig: ChunkSeq[u64], inout out: Reuse) {
+pub fn reuse_program(
+    inout p: Program,
+    in names: Names,
+    in cls: ChunkSeq[u8],
+    in facts: Facts,
+    in orig: ChunkSeq[u64],
+    inout out: Reuse
+) {
     if !facts.active {
         return;
     }
@@ -483,7 +490,8 @@ fn reuse_function(
     let mut exits: ChunkSeq[Range] = ChunkSeq::with_capacity[Range](nb);
     let mut exit_caller: ChunkSeq[u8] = ChunkSeq::with_capacity[u8](nb);
     for b in 0..nb {
-        exits.push(
+        exits
+            .push(
             Range {
                 start: 0,
                 len: 0
@@ -533,7 +541,18 @@ fn reuse_function(
                 live.push(slot_at(in slab, add(r.start, k)));
             }
         } else if active.len() > 1 {
-            join(in slab, in exits, in active, b, inout live, inout next_join, inout jb, inout jv, inout jstart, inout jin);
+            join(
+                in slab,
+                in exits,
+                in active,
+                b,
+                inout live,
+                inout next_join,
+                inout jb,
+                inout jv,
+                inout jstart,
+                inout jin
+            );
         }
         let mut caller_used = false;
         for k in 0..active.len() {
@@ -570,7 +589,8 @@ fn reuse_function(
                         let key = u64_of(in facts.skey, add(fa, j));
                         let size = u64_of(in facts.ssize, add(fa, j));
                         let r = bump_rank(inout ranks, inout touched, key);
-                        live.push(
+                        live
+                            .push(
                             Slot {
                                 slot_id: next_slot,
                                 bind: i.dest,
@@ -599,7 +619,9 @@ fn reuse_function(
                             if confirmed(fa, chosen.rank, chosen) {
                                 out.matched = inc(out.matched);
                                 let np = p.pool.len();
-                                p.pool.push(
+                                p
+                                    .pool
+                                    .push(
                                     PoolRow {
                                         kind: POOL_FIP,
                                         label: 0
@@ -622,8 +644,12 @@ fn reuse_function(
                     return false;
                 }
                 if kind == F_NEED {
-                    let tail = inc(k) == n_inst && flows_to_return(in p, f, b, w(i.dest))
-                        && !caller_used && ret_key == inc(fa);
+                    let tail = inc(k)
+                        == n_inst
+                        && flows_to_return(in p, f, b, w(i.dest))
+                        && !caller_used
+                        && ret_key
+                        == inc(fa);
                     if tail {
                         caller_used = true;
                         calls.set(i.dest, CS_CALLER, 0, 0, 0);
@@ -644,7 +670,8 @@ fn reuse_function(
             ranks.try_set(u64_of(in touched, k), 0);
         }
         touched.clear();
-        exits.try_set(
+        exits
+            .try_set(
             b,
             Range {
                 start: slab.len(),
@@ -755,7 +782,8 @@ fn join(
                 jin.push(w(sp.bind));
                 jin.push(sp.sidx);
             }
-            live.push(
+            live
+                .push(
                 Slot {
                     slot_id: 0,
                     bind: n32(canon),
@@ -836,7 +864,8 @@ fn write_trailer(
     for step in 0..n {
         let mut best: u64 = n;
         for k in 0..n {
-            if u8_of(in done, k) == 0
+            if u8_of(in done, k)
+                == 0
                 && (best == n || at32(in calls.v, k) < at32(in calls.v, best)) {
                 best = k;
             }
@@ -871,7 +900,8 @@ fn write_trailer(
     for step in 0..nbk {
         let mut best: u64 = nbk;
         for k in 0..nbk {
-            if u8_of(in bdone, k) == 0
+            if u8_of(in bdone, k)
+                == 0
                 && (best == nbk || u64_of(in blocks, k) < u64_of(in blocks, best)) {
                 best = k;
             }
