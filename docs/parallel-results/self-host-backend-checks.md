@@ -41,8 +41,9 @@ emits, and the report they print.
   verifiers' logic is not. It also prints Rust's report in the same dump
   format.
 - **`tests/self_host_backend_checks.rs`** (new): the differential.
-- `BUILD.bazel`: the test's data (anchored globs, including
-  `crates/vesper-resonance/vesper/**`) and the `long` tag.
+- `BUILD.bazel`: the test's data (anchored globs plus
+  `//crates/vesper-resonance:files` for `@vesper/resonance`) and the `long`
+  tag.
 
 The package is not a port of a crate with a seed, so it does not join the
 port harness; its check is the differential test.
