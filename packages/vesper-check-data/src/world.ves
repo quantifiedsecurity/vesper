@@ -172,6 +172,12 @@ impl Known {
             || s
             == self
             .isize_
+            || s
+            == self
+            .i128_
+            || s
+            == self
+            .u128_
     }
 
     // `numeric::is_wide_name`: the two-word integers (#1174). Not in
