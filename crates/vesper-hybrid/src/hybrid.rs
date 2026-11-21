@@ -50,7 +50,6 @@ mod check_words;
 
 // The wasm backend swap's input encoder (#1289): the Place IR words of
 // #1259 and the wasm section, shared with tests/self_host_wasm_backend.rs.
-#[allow(dead_code)]
 #[path = "../../../tests/common/ir_words.rs"]
 mod ir_words;
 #[path = "../../../tests/common/wasm_words.rs"]
