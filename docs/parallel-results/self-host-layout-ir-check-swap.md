@@ -71,7 +71,7 @@ Inputs the encoder cannot carry (a few type forms the check-data format
 does not have yet) go to the Rust function. `VESPER_HYBRID_STATS=1` prints
 how many calls Vesper answered.
 
-### Two fixes to the census translations
+### Three fixes to the census translations
 
 1. **Borrowed matching (#1189).** It merged after the census. A match
    scrutinee read from a borrowed slot binds `in` borrows instead of moving
@@ -87,6 +87,14 @@ how many calls Vesper answered.
    skipped the fields of kind 3 constructor patterns (the multi-segment
    path form). `origins_build` now charges every node Rust charges and
    clears the index on any limit. The encoder carries kind 3 fields too.
+3. **Lent closures and lent function parameters** (#1261, merged while
+   this PR was open). Calling a borrowed, non-`copy` function value reads
+   it rather than consuming it, and a lent closure's body borrows its
+   captures. The port records each function's indirect callees
+   (`Flow.callees`) and follows the new `Read` and `Indirect` rules; the
+   encoder passes a lent closure's captured parameters as `in`. Before the
+   port, 55 of 350 default-step cases had to go to Rust. After it, 8 do
+   (the element-view world below), and the other 342 have 0 differences.
 
 ## Differential results
 

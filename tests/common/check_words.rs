@@ -613,9 +613,13 @@ pub fn ir_input(w: &World, program: &vesper::ir::Program) -> Option<Vec<u8>> {
     body.push(program.functions.len() as u64);
     for f in program.functions.values() {
         body.push(f.params.len() as u64);
+        // A lent closure's body (§4.2, #1242) borrows its captures `in`.
+        let lent = w.lent_closures.get(&f.name);
         for p in &f.params {
             body.push(e.name(&p.name));
-            body.push(pass_word(p.pass));
+            let borrowed =
+                p.pass == Pass::Sink && lent.is_some_and(|names| names.contains(&p.name));
+            body.push(pass_word(if borrowed { Pass::In } else { p.pass }));
             body.push(e.ty(&p.ty));
             body.push(p.span.start as u64);
             body.push(p.span.end as u64);

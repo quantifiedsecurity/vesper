@@ -184,13 +184,6 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
-        # Self-hosting SH2 lane 9 (#1181): the region, sequence, tiled and
-        # vector rules over the same corpus. Anchored globs.
-        "test/self_host_check_regions_seqs": glob([
-            "examples/**",
-            "packages/**",
-            "tests/fixtures/**",
-        ]),
         # SH2 lane 5 (#1177): @vesper/check-layout and @vesper/ir-check over
         # the same corpus.
         "test/hybrid_layout": glob([
@@ -199,6 +192,13 @@ vesper_crate(
             "tests/fixtures/**",
         ]),
         "test/hybrid_ir_check": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
+        # Self-hosting SH2 lane 9 (#1181): the region, sequence, tiled and
+        # vector rules over the same corpus. Anchored globs.
+        "test/self_host_check_regions_seqs": glob([
             "examples/**",
             "packages/**",
             "tests/fixtures/**",
