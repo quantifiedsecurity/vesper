@@ -240,6 +240,14 @@ time divided by Rust time, input decode subtracted).
 |---|---|---|---|--:|---|---|
 | regions, sequences, strings, arrays, tiled, vectors | SH2-9 (#1181) | type and world rules (part 1) | 0 of 282 worlds; E0200, E0792, E0797, E1404, E1501-E1503, E1520 on mutants | 1.12x types, 1.17x world | with the expression rules | [self-host-check-regions-seqs.md](../parallel-results/self-host-check-regions-seqs.md) |
 
+**SH3 IR ports.** Each row is one IR pass port, measured like the SH2
+checker ports until its hybrid swap lands (the pass alone against the Rust
+pass, ABBA, port-compiler profile, encode and decode listed separately).
+
+| Port | Lane | Ported so far | Differential | Pass alone | Hybrid swap | Report |
+|---|---|---|---|--:|---|---|
+| `ir_opt` (memory forwarding, `@fip` reuse) | SH3-9 (#1248) | the whole pass; thread + validate stay Rust | 0 of 666 inputs (corpus, mutants, fip cases), both modes | 0.0036x (0.0087x with encode and decode) | after SH3-1 part 2 | [self-host-ir-opt.md](../parallel-results/self-host-ir-opt.md) |
+
 ## Estimates
 
 These are rough. They come from the port waves so far, where one lane ported
