@@ -567,9 +567,12 @@ fn effectful_row(w: &World, row: &Effects) -> bool {
 
 /// Whether every type the IR check reads can be encoded.
 fn program_encodable(w: &World, p: &vesper::ir::Program) -> bool {
-    // Element view matches (#1173) are not in `@vesper/ir-check` yet: Rust
-    // checks the worlds that have them.
+    // Element view matches (#1173) and lent closures and function
+    // parameters (#1242) are not in `@vesper/ir-check` yet: Rust checks the
+    // programs that have them.
     w.element_views.is_empty()
+        && w.lent_closures.is_empty()
+        && !p.functions.values().any(calls_lent_function)
         && w.adts.values().all(|a| {
             a.variants
                 .iter()
@@ -582,6 +585,21 @@ fn program_encodable(w: &World, p: &vesper::ir::Program) -> bool {
                 && f.blocks
                     .iter()
                     .all(|b| b.instructions.iter().all(|i| encodable(&i.ty)))
+        })
+}
+
+/// Whether `f` calls a function value that is not `copy` (a lent function
+/// parameter is read by its call, #1242).
+fn calls_lent_function(f: &vesper::ir::FunctionIr) -> bool {
+    f.blocks
+        .iter()
+        .flat_map(|b| &b.instructions)
+        .any(|i| match &i.op {
+            vesper::ir::Op::Indirect { callee, .. } => !matches!(
+                f.values.get(callee),
+                Some(Type::Function { mode, .. }) if *mode == vesper::ast::Mode::Copy
+            ),
+            _ => false,
         })
 }
 
