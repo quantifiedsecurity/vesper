@@ -388,6 +388,9 @@ vesper_crate(
             "examples/**",
             "packages/**",
             "tests/fixtures/**",
+            # The Vesper programs of the Lean and tiled tests (part 2).
+            "tests/lean*.rs",
+            "tests/tiled.rs",
         ]) + ["//crates/vesper-lean-syntax:files"],
         # Self-hosting SH3 lane 8 (#1247): @vesper/egraph against egg and
         # egglog on the same corpus. Anchored globs.
@@ -406,6 +409,13 @@ vesper_crate(
         # Self-hosting SH3 lane 10 (#1249): the optimizer's certificate
         # checker over every proposal of the same corpus. Anchored globs.
         "test/self_host_optimize": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
+        # Part 2: the search that produces those proposals, ported to
+        # @vesper/egraph, over the same corpus.
+        "test/self_host_optimize_search": glob([
             "examples/**",
             "packages/**",
             "tests/fixtures/**",
@@ -500,6 +510,7 @@ vesper_crate(
         "test/self_host_check_regions_seqs": {"CHECK_HARNESS_STRIDE": "4"},
         "test/self_host_egraph": {"CHECK_HARNESS_STRIDE": "4"},
         "test/self_host_front_v2": {"VESPER_FRONT_FUZZ": "1000"},
+        "test/self_host_lean_extract": {"CHECK_HARNESS_STRIDE": "4"},
         # With its own PLACE_IR_STEP of 4: every 16th world.
         "test/self_host_place_ir": {"CHECK_HARNESS_STRIDE": "4"},
     },
@@ -830,6 +841,7 @@ vesper_crate(
         "test/self_host_lean_extract": "long",
         # The optimizer differential (#1249) checks every corpus world.
         "test/self_host_optimize": "eternal",
+        "test/self_host_optimize_search": "eternal",
         # The test runner discovery differential (#1337) JIT-compiles the port
         # and runs the corpus and its mutants: 5-10 min in a debug build.
         "test/self_host_test_runner": "long",
