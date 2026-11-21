@@ -451,7 +451,7 @@ fn plain_data(inout e: Env, inout c: Ctx, ty: u32) -> bool {
 // ----- drop facts per type (src/fip.rs, src/native.rs) --------------------------
 
 // `fip::is_box_type`: the built-in `Box[T]` (no handle drop plan runs here).
-fn is_box(in c: Ctx, ty: u32) -> bool {
+pub fn is_box(in c: Ctx, ty: u32) -> bool {
     let n = c.types.node(ty);
     c.world.box_active && n.kind == K_NAMED && n.name == c.world.k.box_ && n.n == 1
 }
@@ -660,7 +660,7 @@ fn box_visit(inout c: Ctx, ty: u32, inout seen: ChunkSeq[u32]) -> bool {
     found
 }
 
-fn contains_box(inout c: Ctx, ty: u32) -> bool {
+pub fn contains_box(inout c: Ctx, ty: u32) -> bool {
     let mut seen: ChunkSeq[u32] = ChunkSeq::new[u32]();
     box_visit(inout c, ty, inout seen)
 }
@@ -717,7 +717,7 @@ fn recursive_visit(inout c: Ctx, ty0: u32, inout seen: ChunkSeq[u32]) -> bool {
     found
 }
 
-fn type_is_recursive(inout c: Ctx, ty: u32) -> bool {
+pub fn type_is_recursive(inout c: Ctx, ty: u32) -> bool {
     let mut seen: ChunkSeq[u32] = ChunkSeq::new[u32]();
     recursive_visit(inout c, ty, inout seen)
 }

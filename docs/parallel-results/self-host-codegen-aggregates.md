@@ -92,6 +92,50 @@ plans a non-generic function. Specialized instances and nested graphs
 (handled bodies) are left for the swap, where the hook receives the
 instance's generic map and `nested` flag.
 
+## Part 2: emission (drop glue first)
+
+Lane 1's #1309 lends the native backend's builder and module to a family
+hook. The emitter is `packages/vesper-codegen-aggregates/emit`
+(`@vesper/codegen-aggregates-emit`, hook `drops_hook`), separate from the
+pure decisions package because emission needs the `Ffi[Cranelift]`
+capability.
+
+The first ported request is `codegen_swap::drops::DROP_BOX`
+(`Codegen::drop_box_value`). It covers the inline drop of a value that owns
+boxes (null test, box fields, the enum tag chain), the recursive types'
+helper functions (`__vesper_drop_<fnv1a of the type's text>`, local in an
+object, preemptible in JIT) and the box frees (`vesper_box_free`). Blocks,
+instructions, imports and declarations are made in the Rust emitter's
+order.
+
+The request carries only the value, so the test's glue appends the value's
+type, together with the ADTs it reaches, as a check-data input
+(`check_words::layout_input`). The hook checks the whole drop before it
+emits anything, and declines when the drop:
+
+- reaches a `Box[dyn T]`, whose drop belongs to the dyn runtime (lane 10);
+- targets a freestanding object, where Rust reports the missing box
+  runtime;
+- comes before an object module has defined `vesper_box_free`. Rust then
+  defines the AOT box runtime and its live counter. The shim has no data
+  lookup by name, so the hook cannot tell whether the counter already
+  exists.
+
+The differential is
+crates/vesper-codegen-swap-test/tests/self_host_codegen_aggregates_drops.rs.
+It compares CLIF per function, object bytes and JIT runs, with the
+optimizer on and off. It runs over the corpus worlds whose objects free
+boxes (the corpus has 1) and over the `Box` programs of tests/fip.rs and
+tests/borrowed_box_match.rs, which include recursive lists and enums of
+boxes.
+
+| | Count |
+|---|--:|
+| Builds compared | 12 (6 programs, optimizer on and off) |
+| Box drops emitted from Vesper | 138 |
+| Declined (object before the box runtime) | 2 |
+| CLIF, object and run differences | **0** |
+
 ## Stage 1 guard
 
 No file of the Stage 1 guard is touched: src/verified_codegen/**, src/ir.rs,
@@ -126,13 +170,13 @@ any compile path. The default compiler's objects are byte-identical.
 
 ## What is left
 
-1. After lane 1's first PR: emission (addressing, allocation, loads and
-   stores, `data_into`, pattern tests and bindings, equality helpers, drop
-   glue, fip box operations), taking over lane 1's pilot, with CLIF and
-   object differentials; the `ffi_lowering::drops` pass through SH3 lane 1's
-   IR harness. Lane 1 is adding the shim calls drop glue needs on a lent
-   module (`vcl_module_get_function`, the module kind, JIT reference
-   normalization).
+1. The rest of emission: addressing, allocation, loads and stores,
+   `data_into`, pattern tests and bindings, equality helpers and fip box
+   operations. This includes taking over lane 1's pilot. Aggregate
+   instructions will recompute homes and split words from the Program, which
+   lane 1 agreed to. The `ffi_lowering::drops` pass goes through SH3 lane 1's
+   IR harness. A data lookup by name in the shim would let `DROP_BOX` also
+   cover the first box free of an object.
 2. 128-bit elements after lane 3 (#1277) merges.
 3. The `aggregate` and `drops` hook installs, the full suite and the SH4
    scoreboard row.
