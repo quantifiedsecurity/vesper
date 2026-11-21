@@ -180,6 +180,15 @@ kind test to existing name checks and at most two tokens of lookahead at a
    encoding wrote one word per element and dropped the high word. The
    evaluator reads such tables right (`wide_tables_keep_both_words`).
 
+9. **The Lean arithmetic oracle model still says "parse range".**
+   `lean/ArithmeticOracle.lean` classes a literal past `u64::MAX` as
+   `literalParseRange` (E0002). The parser now accepts it and the checker
+   rejects it as out of range for its kind (E0209), since no kind of the
+   oracle's 64-bit profile holds it. `lean/` is under the Stage 1 guard, so
+   the harness (`src/bin/arithmetic_oracle42/process.rs` and
+   `tests/oracle42_acceptance.rs`) maps that class to E0209. The Lean
+   class can be renamed in a guarded follow-up.
+
 ## What is left
 
 The gaps above. SH2 and SH3 ports may now use `effect`, `handle`, `sink` and
