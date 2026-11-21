@@ -109,14 +109,91 @@ the time `Codegen` spends deciding, which is folded into emission. The
 scoreboard row (emission alone and the whole compile, ABBA and callgrind)
 comes with part 2, when the Vesper decisions drive emission.
 
+## Part 2a: emission through the `scalar` hook
+
+Lane 1's swap point (#1309, src/codegen_swap.rs) asks the `scalar` hook to
+emit each Place IR instruction of the family at `ir_graph_at`. Part 2a
+answers the operators and constants from Vesper:
+
+- `codegen_scalar_plan` (`@vesper/codegen-scalar`, lib.ves) reads the
+  program the backend is emitting and plans each instruction it emits:
+  the request, the condition code or operation, and the coerce words (the
+  narrow kind `coerce` reduces the result and each operand to). It follows
+  `expr_at`'s arm order and leaves every arm it does not plan to Rust.
+- `scalar_hook` (`packages/vesper-codegen-scalar/emit`,
+  `@vesper/codegen-scalar-emit`) emits one planned instruction over the
+  lent builder. It checks the operand lanes only the builder knows
+  (floats and 128-bit words take other arms, mismatched lanes are an error
+  in Rust) and declines before emitting anything when they do not fit.
+- crates/vesper-codegen-swap-test/tests/self_host_codegen_scalar_emit.rs:
+  the glue encodes the lent program once, looks the site up in the plan,
+  passes the plan's words, the optimizer flag and the operand values to
+  the hook, and compares with lane 1's harness (`compare`: per-function
+  CLIF, object bytes, sampled JIT runs), optimize on and off.
+
+Planned: `Constant` (integers, bools, `f64`), `Unit` and `Loop` zeros,
+integer compares, `+ - * / %` (unchecked; unsigned `/`, `%`), `& | ^`,
+`~`, `!`, unchecked `-`, unchecked shifts and rotations, and the widen,
+wrapping and unchecked narrow conversions. Two details decide the bytes:
+
+- `ir_temp` declares a fresh Cranelift variable for every operand, and
+  `expr_at`'s `Name` arm reads it back with `use_var` and `coerce`s it to
+  the operand's type, so a `u16` operand gets its `band_imm` again before
+  each use. The hook declares, defines and reads the same variables (the
+  variable numbers decide where the SSA builder puts later zero defaults)
+  and coerces each operand.
+- `coerce` takes the narrow-move form when the function is emitted with
+  the optimizer, which the lent request does not carry, so the glue passes
+  the flag (gap 2 below).
+
+| Check (`CODEGEN_SCALAR_STEP=1`) | Count |
+|---|--:|
+| Builds compared (149 worlds with a `main`, optimize on and off) | 298 |
+| Functions compared (over both builds) | 882 |
+| JIT runs compared | 74 |
+| CLIF / object / run / one-sided differences | 0 / 0 / 0 / 0 |
+| Instructions emitted from Vesper | 12,613 |
+| Planned but declined by the hook | 0 |
+| Left to Rust | 15,933 |
+
+Emitted per request: `iconst` 8,024, `binop` 2,306, `icmp` 1,427, zero 582,
+`convert` 138, `f64const` 122, `not` 14 (the compiled corpus has no
+unchecked shift, `~` or unchecked negation). Left to Rust: `Read` 10,307,
+`Bind` 3,649, `Write` 295; `+`/`-`/`*` 1,203 and `/`/`%` 129 (checked
+arithmetic, divisor checks, signed `/`, floats, operands that are not
+one-word integers); comparisons 123 (aggregates, functions, floats, text);
+the bitwise intrinsics 84; string constants 51; unary `-` 42 (checked or
+float); `f32` constants 34; `Exit` 10, `Try` 6.
+
 ## Stage 1 guard
 
-Part 1 adds a Vesper package, a test, a report and BUILD.bazel entries. It
-does not touch src/** at all (so not `src/verified_codegen/**`, `src/ir.rs`,
+Parts 1 and 2a add two Vesper packages, two tests, a report and BUILD.bazel
+entries. They do not touch src/** at all (so not `src/verified_codegen/**`, `src/ir.rs`,
 `ir_opt::optimize` or src/native.rs), nor lean/**, bootstrap/** or
 packages/vesper-compiler/**. Nothing installs a hook, so the default
 compiler's objects are byte-identical to the base branch's. The Bootstrap
 Stage 1 run on the branch is linked from the PR.
+
+## Compiler gaps
+
+1. **`@vesper/check-layout` has no `i128`/`u128` layout** (finding 1).
+2. **The lent request does not say whether the optimizer is on.**
+   `Codegen::coerce` emits `ireduce` + `uextend`/`sextend` under
+   `operands_only` and a mask or shift pair otherwise; `Lent` carries
+   neither, so the test passes the flag. The hybrid swap needs it on
+   `Lent` (or a `Site` flag) from lane 1.
+3. **The Rust walk's own maps are not lent.** `ir_temp` also enters each
+   temporary in `Codegen::vars` and `local_types`; no later code reads
+   them for a scalar temporary (the differential is clean), but a family
+   that emits reads or binds needs the walk's variables (`vars`,
+   `registers`, homes, split locals), which the swap point keeps in Rust.
+4. **Arms that raise** (checked arithmetic, divisor checks, checked
+   negation, narrowing and shift ranges) call `check_overflow` /
+   `primitive_failure`, which build a `RuntimeError` value and perform
+   `Fail::raise` through the control family, and `sdiv`'s guard jumps
+   through `Codegen::jump`, which records edge value infos. They wait for
+   requests that lend those (lane 10's raise path and an edge-info
+   request).
 
 ## Findings
 
@@ -145,9 +222,8 @@ Stage 1 run on the branch is linked from the PR.
 
 ## What is left
 
-- Part 2, after lane 1's first PR: emission for the graph walk and the
-  expressions through the lent builder, compared as per-function CLIF and
-  object bytes through lane 1's harness, with optimize on and off.
+- Part 2b: `Read`, `Bind` and `Write` (most of what is left), the raising
+  arms (gap 4), floats with lane 11, string constants with lane 9.
 - Part 3: the swap through the `scalar` hook, the full suite on the hybrid
   build, and the SH4 scoreboard row (emission alone and the whole compile,
   ABBA and callgrind).

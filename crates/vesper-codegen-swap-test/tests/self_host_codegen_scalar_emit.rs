@@ -18,16 +18,13 @@
 //! once, looks the request's site up in the plan and passes the plan's
 //! words, the optimizer flag and the operand values to the hook.
 //! `CODEGEN_SCALAR_STEP=n` compares every n-th corpus world (default 4).
-#[path = "common/check_harness.rs"]
+#[path = "../../../tests/common/check_harness.rs"]
 mod check_harness;
-#[path = "common/check_words.rs"]
+#[path = "../../../tests/common/check_words.rs"]
 mod check_words;
-#[path = "common/clif_diff.rs"]
-mod clif_diff;
-#[path = "common/ir_words.rs"]
+#[path = "../../../tests/common/ir_words.rs"]
 mod ir_words;
 
-use clif_diff::*;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -35,6 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vesper::codegen_swap::{self, CodegenHooks, Lent, NO_VALUE};
 use vesper::ir::Program;
 use vesper::native::WordFunction;
+use vesper_codegen_swap_test::*;
 
 /// The plan's words per record: `[function, block, instruction, request,
 /// a, b]`.
@@ -178,12 +176,18 @@ fn scalar(lent: &mut Lent<'_, '_>) -> Result<bool, String> {
     let mut args = vec![a, b, u64::from(OPTIMIZE.with(Cell::get))];
     args.extend_from_slice(lent.args);
     let hook = &vesper().hook;
-    let (answer, crossing) =
-        vesper_cranelift_sys::lend(lent.builder, &mut *lent.module, request, &args, |call| {
+    let (answer, crossing) = vesper_cranelift_sys::lend_as(
+        kind(lent),
+        lent.builder,
+        &mut *lent.module,
+        request,
+        &args,
+        |call| {
             // SAFETY: the hook takes one word, the lent call's address,
             // which is live for the whole call.
             unsafe { hook.call(&[call]) }
-        });
+        },
+    );
     let answer = answer?;
     if let Some(e) = crossing.error {
         return Err(format!("scalar hook (request {request}): {e}"));
