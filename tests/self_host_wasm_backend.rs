@@ -72,7 +72,10 @@ fn string_literals(src: &str) -> Vec<String> {
         }
         if b[i] == b'r' && b.get(i + 1) == Some(&b'#') && b.get(i + 2) == Some(&b'"') {
             let start = i + 3;
-            let end = src[start..].find("\"#").map(|e| start + e).unwrap_or(b.len());
+            let end = src[start..]
+                .find("\"#")
+                .map(|e| start + e)
+                .unwrap_or(b.len());
             out.push(src[start..end].to_string());
             i = end + 2;
             continue;
@@ -490,7 +493,10 @@ const CONSTRUCTS: [&str; 16] = [
 /// What the Vesper backend returned.
 #[derive(Debug)]
 pub enum Outcome {
-    Module { core: Vec<u8>, wit: String },
+    Module {
+        core: Vec<u8>,
+        wit: String,
+    },
     /// An error class as `error_class` spells it, and its site.
     Error(String, u64),
     /// A construct this port does not lower yet (handlers, host frames).
@@ -635,9 +641,14 @@ pub fn differential_run(step: usize, execute: bool) -> Tally {
                 (_, Outcome::NotPorted(_)) => t.not_ported += 1,
                 (Ok(a), Outcome::Module { core, wit }) => {
                     if &a.core != core {
-                        t.diffs.push(format!("{tag}: core differs ({} vs {} bytes)", a.core.len(), core.len()));
+                        t.diffs.push(format!(
+                            "{tag}: core differs ({} vs {} bytes)",
+                            a.core.len(),
+                            core.len()
+                        ));
                     } else if &a.wit != wit {
-                        t.diffs.push(format!("{tag}: WIT differs\n{}\n---\n{wit}", a.wit));
+                        t.diffs
+                            .push(format!("{tag}: WIT differs\n{}\n---\n{wit}", a.wit));
                     } else {
                         let component = wrap(core.clone(), wit, o.world);
                         if component != a.component {
@@ -659,7 +670,9 @@ pub fn differential_run(step: usize, execute: bool) -> Tally {
                         }
                     }
                 }
-                (Err(e), Outcome::Error(class, _)) if &error_class(e) == class => t.errors_agree += 1,
+                (Err(e), Outcome::Error(class, _)) if &error_class(e) == class => {
+                    t.errors_agree += 1
+                }
                 _ => t.diffs.push(format!(
                     "{tag}: rust {:?} port {:?}",
                     rust.as_ref().map(|_| "module").map_err(error_class),
@@ -718,9 +731,10 @@ fn timing() {
         let Some(input) = wasm_input(&c.world, &program, "main", &o) else {
             continue;
         };
-        if let (Ok(a), Outcome::Module { .. }) =
-            (wasm_backend::compile(&c.world, "main", &o), outcome(&f.words(&input)))
-        {
+        if let (Ok(a), Outcome::Module { .. }) = (
+            wasm_backend::compile(&c.world, "main", &o),
+            outcome(&f.words(&input)),
+        ) {
             work.push((c, input, a));
         }
     }
