@@ -95,6 +95,9 @@ pub const PLAN_CONVERT: u32 = 10;
 // hook answers the flag and the Rust code raises.
 pub const TEST_OVERFLOW: u32 = 11;
 pub const TEST_DIVISOR: u32 = 12;
+pub const TEST_NEGATE: u32 = 13;
+pub const TEST_SHIFT_RANGE: u32 = 14;
+pub const TEST_NARROW: u32 = 15;
 
 // `TEST_OVERFLOW`'s operators.
 const T_ADD: u64 = 1;
@@ -394,11 +397,124 @@ fn overflow_test(call: u64, inout b: Builder) -> u64 eff [Ffi[Cranelift]] {
     HANDLED
 }
 
+// `IntegerKind::max` of a one-word kind, as an `i64` immediate (u64's
+// max is -1, as Rust's `as i64` makes it).
+fn kind_max_imm(k: u64) -> i64 {
+    if k == 1 {
+        255
+    } else if k == 2 {
+        65535
+    } else if k == 3 {
+        4294967295
+    } else if k == 4 || k == 5 {
+        -1
+    } else if k == 6 {
+        127
+    } else if k == 7 {
+        32767
+    } else if k == 8 {
+        2147483647
+    } else {
+        9223372036854775807
+    }
+}
+
+// `IntegerKind::min` of a one-word kind.
+fn kind_min_imm(k: u64) -> i64 {
+    if kind_unsigned(k) {
+        0
+    } else if k == 6 || k == 7 || k == 8 {
+        narrow_min(k)
+    } else {
+        -9223372036854775807 - 1
+    }
+}
+
+// The maximum of kind `k` as an unsigned magnitude, for comparing kinds.
+fn max_magnitude(k: u64) -> u64 {
+    if k == 4 || k == 5 {
+        18446744073709551615
+    } else {
+        wrapping_u64(kind_max_imm(k))
+    }
+}
+
+// The magnitude of kind `k`'s minimum (0 for an unsigned kind).
+fn min_magnitude(k: u64) -> u64 {
+    if kind_unsigned(k) {
+        0
+    } else if k == 6 {
+        128
+    } else if k == 7 {
+        32768
+    } else if k == 8 {
+        2147483648
+    } else {
+        9223372036854775808
+    }
+}
+
+// `Codegen::convert`'s checked narrowing bounds from kind `f` to `t`, or
+// DECLINED when the target holds every source value.
+fn narrow_test(call: u64, inout b: Builder) -> u64 eff [Ffi[Cranelift]] {
+    let f = call_arg(call, 0);
+    let t = call_arg(call, 1);
+    let v = value_of_word(call_arg(call, 2));
+    let high_needed = max_magnitude(t) < max_magnitude(f);
+    let r = if kind_unsigned(f) {
+        // The lane is the value as a u64; the target minimum is at most 0.
+        if !high_needed {
+            return DECLINED;
+        }
+        ins_icmp_imm(inout b, cc_ugt(), v, kind_max_imm(t))
+    } else {
+        // `to.min() > from.min()`: the target's minimum is nearer zero.
+        let low_needed = min_magnitude(t) < min_magnitude(f);
+        if !low_needed && !high_needed {
+            return DECLINED;
+        }
+        if low_needed && high_needed {
+            let low = ins_icmp_imm(inout b, cc_slt(), v, kind_min_imm(t));
+            let high = ins_icmp_imm(inout b, cc_sgt(), v, kind_max_imm(t));
+            ins_bor(inout b, low, high)
+        } else if low_needed {
+            ins_icmp_imm(inout b, cc_slt(), v, kind_min_imm(t))
+        } else {
+            ins_icmp_imm(inout b, cc_sgt(), v, kind_max_imm(t))
+        }
+    };
+    call_result_value(call, r);
+    HANDLED
+}
+
 // One planned request on the lent builder; DECLINED emits nothing.
 fn scalar(call: u64, inout b: Builder) -> u64 eff [Ffi[Cranelift]] {
     let op = call_op(call);
     if op == TEST_OVERFLOW {
         return overflow_test(call, inout b);
+    }
+    if op == TEST_NEGATE {
+        // Signed MIN and every nonzero unsigned value overflow.
+        let k = call_arg(call, 0);
+        let v = value_of_word(call_arg(call, 1));
+        let r = if kind_unsigned(k) {
+            ins_icmp_imm(inout b, cc_ne(), v, 0)
+        } else {
+            ins_icmp_imm(inout b, cc_eq(), v, kind_min_imm(k))
+        };
+        call_result_value(call, r);
+        return HANDLED;
+    }
+    if op == TEST_SHIFT_RANGE {
+        // Negative amounts are huge as unsigned lanes.
+        let n = value_of_word(call_arg(call, 0));
+        let bits = wrapping_i64(call_arg(call, 1));
+        let r = ins_icmp_imm(inout b, cc_uge(), n, bits);
+        call_result_value(call, r);
+        return HANDLED;
+    }
+    if op == TEST_NARROW {
+        return narrow_test(call, inout b);
     }
     if op == TEST_DIVISOR {
         let d = value_of_word(call_arg(call, 0));

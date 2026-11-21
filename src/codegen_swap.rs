@@ -598,6 +598,17 @@ pub mod scalar {
     /// `Codegen::check_divisor`'s test. Args `[divisor]`; result
     /// `[nonzero]`, an `i8` flag.
     pub const DIVISOR: u32 = 2;
+    /// `expr_at`'s checked negation of a one-word kind. Args `[kind, v]`;
+    /// result `[overflow]` (`v` is the signed minimum, or any nonzero
+    /// unsigned value).
+    pub const NEGATE: u32 = 3;
+    /// `Codegen::shift`'s range test. Args `[amount, bits]`; result
+    /// `[bad]` (the amount, as an unsigned lane, is at least `bits`).
+    pub const SHIFT_RANGE: u32 = 4;
+    /// `Codegen::convert`'s checked narrowing bounds. Args
+    /// `[from kind, to kind, v]`; result `[overflow]`. The hook declines
+    /// when the target holds every value of the source (no test).
+    pub const NARROW: u32 = 5;
     /// [`OVERFLOW`]'s operators.
     pub const ADD: u64 = 1;
     pub const SUB: u64 = 2;

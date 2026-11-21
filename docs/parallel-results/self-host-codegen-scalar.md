@@ -181,11 +181,23 @@ raises. Two family dispatch hunks do that (flagged for lane 1's review):
   byte-identical; `check_overflow`/`primitive_failure` and the operation
   after the test stay in Rust.
 
+Three more requests cover the other raising arms in the same shape:
+`NEGATE` (args `[kind, v]`, checked unary `-` of a one-word kind),
+`SHIFT_RANGE` (args `[amount, bits]`, `Codegen::shift`) and `NARROW`
+(args `[from, to, v]`, `Codegen::convert`'s bounds; the hook declines
+when the target holds every source value, as Rust then emits no test).
+A test pins every request and kind word (`scalar_request_words_are_pinned`).
+
 `scalar_hook` emits every overflow test of `checked_arithmetic` (narrow
 signed and unsigned, carry and borrow, `umulhi`/`smulhi`, the signed
-`MIN / -1`). Over the same corpus run: 1,145 overflow tests and 92
-divisor tests from Vesper, 13,850 requests in all, still 0 CLIF, object
-and run differences.
+`MIN / -1`). Over the same corpus run: 1,145 overflow tests, 92 divisor
+tests and 20 negation tests from Vesper, 13,870 requests in all, still 0
+CLIF, object and run differences. The compiled corpus has no checked
+shift or narrowing, so `vesper_raising_tests_match_the_rust_lowering`
+compiles a program that has them (narrowings with a low bound, a high
+bound and both, from signed and unsigned kinds; `<<`, `>>`; negation of
+narrow and word kinds): 12 negation, 12 shift-range and 34 narrowing
+tests from Vesper, 0 differences, equal JIT runs, optimize on and off.
 
 ## Stage 1 guard
 
@@ -216,8 +228,9 @@ Stage 1 run on the branch is linked from the PR.
    `Fail::raise` through the control family, and `sdiv`'s guard jumps
    through `Codegen::jump`, which records edge value infos. Part 2b
    follows lane 1's shape: the hook answers the overflow or zero-divisor
-   flag and the Rust path raises (above). The narrowing and shift-range
-   checks and `sdiv`'s guard are next in the same shape.
+   flag and the Rust path raises (above), for every raising arm of a
+   one-word kind. `sdiv`'s guard (a diamond through `Codegen::jump`) and
+   the 128-bit checks (`wide_checked`, lane 11) are left.
 
 ## Findings
 

@@ -40,6 +40,9 @@ const RECORD: usize = 6;
 /// `scalar_hook`'s numbers for the raising arms' tests.
 const TEST_OVERFLOW: u32 = 11;
 const TEST_DIVISOR: u32 = 12;
+const TEST_NEGATE: u32 = 13;
+const TEST_SHIFT_RANGE: u32 = 14;
+const TEST_NARROW: u32 = 15;
 
 /// The plan entry and the hook, compiled once with no hook in effect (a
 /// hook compiled under its own `with_hooks` would wait on itself).
@@ -111,8 +114,8 @@ fn op_name(lent: &Lent<'_, '_>) -> String {
 static EMITTED: AtomicU64 = AtomicU64::new(0);
 static REFUSED: AtomicU64 = AtomicU64::new(0);
 static UNPLANNED: AtomicU64 = AtomicU64::new(0);
-/// Requests emitted from Vesper per hook request (plan 1-10, tests 11-12).
-static BY_REQUEST: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
+/// Requests emitted from Vesper per hook request (plan 1-10, tests 11-15).
+static BY_REQUEST: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 
 /// Identifies a lent program for the cache: its address, function count
 /// and instruction count (a later compile may reuse the address).
@@ -151,6 +154,9 @@ fn scalar(lent: &mut Lent<'_, '_>) -> Result<bool, String> {
         codegen_swap::INSTRUCTION => None,
         codegen_swap::scalar::OVERFLOW => Some(TEST_OVERFLOW),
         codegen_swap::scalar::DIVISOR => Some(TEST_DIVISOR),
+        codegen_swap::scalar::NEGATE => Some(TEST_NEGATE),
+        codegen_swap::scalar::SHIFT_RANGE => Some(TEST_SHIFT_RANGE),
+        codegen_swap::scalar::NARROW => Some(TEST_NARROW),
         _ => return Ok(false),
     };
     if let Some(request) = test {
@@ -324,6 +330,9 @@ fn emission() {
         "convert",
         "overflow test",
         "divisor test",
+        "negate test",
+        "shift-range test",
+        "narrow test",
     ];
     let by: Vec<String> = BY_REQUEST
         .iter()
@@ -402,4 +411,76 @@ fn scalar_request_words_are_pinned() {
         assert_eq!(op_word(op), Some(word), "{op}");
     }
     assert_eq!(op_word("%"), None);
+    // The requests the glue renumbers for `scalar_hook`.
+    use codegen_swap::scalar::{DIVISOR, NARROW, NEGATE, OVERFLOW, SHIFT_RANGE};
+    assert_eq!(
+        [OVERFLOW, DIVISOR, NEGATE, SHIFT_RANGE, NARROW],
+        [1, 2, 3, 4, 5]
+    );
+}
+
+/// The raising arms the compiled corpus rarely reaches: checked
+/// narrowings in every direction (signed/unsigned, with a low bound, a
+/// high bound or both), checked shifts and checked negation. Compiled with
+/// the hook against Rust, optimize on and off.
+const RAISING: &str = "
+fn n8(x: i64) -> i8 eff [Fail[ArithOverflow]] { narrow_i8(x) }
+fn nu(x: u64) -> u16 eff [Fail[ArithOverflow]] { narrow_u16(x) }
+fn ni(x: i32) -> u32 eff [Fail[ArithOverflow]] { narrow_u32(x) }
+fn nw(x: u32) -> i32 eff [Fail[ArithOverflow]] { narrow_i32(x) }
+fn nl(x: i64) -> u64 eff [Fail[ArithOverflow]] { narrow_u64(x) }
+fn sl(x: u32, n: u32) -> u32 eff [Fail[ArithOverflow]] { x << n }
+fn sr(x: i16, n: u32) -> i16 eff [Fail[ArithOverflow]] { x >> n }
+fn ng(x: i32) -> i32 eff [Fail[ArithOverflow]] { -x }
+fn nn(x: i64) -> i64 eff [Fail[ArithOverflow]] { -x }
+fn sum() -> i64 eff [Fail[ArithOverflow]] {
+    widen_i64(n8(100)) + widen_i64(nu(7)) + widen_i64(ni(5)) + widen_i64(nw(9))
+        + narrow_i64(nl(3)) + widen_i64(sl(1, 3)) + widen_i64(sr(64, 2))
+        + widen_i64(ng(4)) + nn(2)
+}
+fn main() -> i64 {
+    handle Fail[ArithOverflow] in {
+        sum()
+    } with {
+        return v => v,
+        raise(_, _) => -1,
+    }
+}
+";
+
+#[test]
+fn vesper_raising_tests_match_the_rust_lowering() {
+    big_stack(|| {
+        let parsed = vesper::parser::parse(RAISING);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let checked = vesper::check::check(&parsed.module);
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let tests = [TEST_NEGATE, TEST_SHIFT_RANGE, TEST_NARROW];
+        let before = tests.map(|t| BY_REQUEST[t as usize].load(Ordering::Relaxed));
+        let mut total = Diff::default();
+        if let Err(e) = build(&checked.world, "main", true) {
+            panic!("the raising program does not build: {e}");
+        }
+        for optimize in [true, false] {
+            PLAN.with(|p| *p.borrow_mut() = None);
+            total.add(compare(
+                "raising",
+                &checked.world,
+                "main",
+                hooks(),
+                optimize,
+                true,
+            ));
+        }
+        let after = tests.map(|t| BY_REQUEST[t as usize].load(Ordering::Relaxed));
+        eprintln!(
+            "raising tests: {}; negate/shift/narrow {before:?} -> {after:?}",
+            total.summary()
+        );
+        assert_eq!((total.worlds, total.ran), (2, 2), "{}", total.summary());
+        for (b, a) in before.iter().zip(after) {
+            assert!(a > *b, "a raising test never came from Vesper");
+        }
+        assert!(total.is_clean(), "{}", total.summary());
+    });
 }

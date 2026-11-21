@@ -5421,7 +5421,17 @@ impl<M: Module> Codegen<'_, '_, M> {
                         .contains(&(e.span.start, e.span.end))
                 {
                     // Signed MIN and every nonzero unsigned value overflow.
-                    let overflow = if kind.unsigned() {
+                    // SH4 swap point (#1280): the `scalar` hook may emit
+                    // the test of a one-word kind.
+                    let swapped = crate::codegen_swap::scalar::kind_word(kind).and_then(|k| {
+                        self.swap_scalar(
+                            crate::codegen_swap::scalar::NEGATE,
+                            &[k, crate::codegen_swap::word(v)],
+                        )
+                    });
+                    let overflow = if let Some(flag) = swapped {
+                        flag
+                    } else if kind.unsigned() {
                         self.b.ins().icmp_imm(IntCC::NotEqual, v, 0)
                     } else if kind.wide() {
                         let min = self.wide_const(i128::MIN);
@@ -6113,10 +6123,16 @@ impl<M: Module> Codegen<'_, '_, M> {
         if crate::numeric::is_shift(op) && self.world.overflow_ops.contains(&(span.start, span.end))
         {
             // Negative amounts are huge as unsigned lanes.
-            let bad =
-                self.b
-                    .ins()
-                    .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, n, i64::from(kind.bits()));
+            // SH4 swap point (#1280): the `scalar` hook may emit the test.
+            let args = [crate::codegen_swap::word(n), u64::from(kind.bits())];
+            let bad = match self.swap_scalar(crate::codegen_swap::scalar::SHIFT_RANGE, &args) {
+                Some(v) => v,
+                None => self.b.ins().icmp_imm(
+                    IntCC::UnsignedGreaterThanOrEqual,
+                    n,
+                    i64::from(kind.bits()),
+                ),
+            };
             self.check_overflow(bad)?;
         }
         if let Some(r) = self.wide_shift_const(op, kind, a, n) {
@@ -6412,7 +6428,22 @@ impl<M: Module> Codegen<'_, '_, M> {
             Conversion::Widen => Ok(v),
             Conversion::Wrapping => Ok(self.coerce(v, Some(&to.ty()))),
             Conversion::Narrow => {
-                if self.world.overflow_ops.contains(&(span.start, span.end)) {
+                // SH4 swap point (#1280): the `scalar` hook may emit the
+                // bounds test (a decline when there is none to emit).
+                let swapped = if self.world.overflow_ops.contains(&(span.start, span.end)) {
+                    use crate::codegen_swap::scalar;
+                    match (scalar::kind_word(from), scalar::kind_word(to)) {
+                        (Some(f), Some(t)) => {
+                            self.swap_scalar(scalar::NARROW, &[f, t, crate::codegen_swap::word(v)])
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(overflow) = swapped {
+                    self.check_overflow(overflow)?;
+                } else if self.world.overflow_ops.contains(&(span.start, span.end)) {
                     let (low, high) = if from.unsigned() {
                         // The lane is the value as a u64; the target
                         // minimum is at most 0.
