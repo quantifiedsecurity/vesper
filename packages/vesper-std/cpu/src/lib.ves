@@ -25,7 +25,9 @@ pub fn x86_rdpmc(index: u32) -> u64 eff [Ffi[StdCpu]] {
 }
 
 // One hardware random word (`rdrand`), or `None` when the generator had
-// none ready. Callers retry a few times, as Intel recommends.
+// none ready. Callers retry a few times, as Intel recommends. RDRAND is an
+// invalid opcode on a CPU without it (CPUID.01H:ECX bit 30), so callers
+// check that first.
 pub fn x86_rdrand64() -> Option[u64] eff [Ffi[StdCpu]] {
     let mut out: u64 = 0;
     if StdCpu::vstd_cpu_rdrand64(inout out) == 0 {
@@ -50,7 +52,8 @@ pub fn aarch64_pmevcntr(index: u32) -> u64 eff [Ffi[StdCpu]] {
 }
 
 // One hardware random word (`mrs rndr`, FEAT_RNG), or `None` when the
-// generator had none ready.
+// generator had none ready. It is undefined without FEAT_RNG
+// (ID_AA64ISAR0_EL1.RNDR), so callers check that first.
 pub fn aarch64_rndr() -> Option[u64] eff [Ffi[StdCpu]] {
     let mut out: u64 = 0;
     if StdCpu::vstd_cpu_rndr(inout out) == 0 {

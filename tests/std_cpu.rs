@@ -3,7 +3,8 @@
 //! machine code (`ffi_lowering::cpu`).
 //!
 //! * The JIT runs the reads that every common system enables in user
-//!   space: the time-stamp counter and RDRAND on x86_64, and the generic
+//!   space: the time-stamp counter and (where CPUID reports it) RDRAND on
+//!   x86_64, and the generic
 //!   timer on AArch64. The performance counter reads (RDPMC, PMCCNTR_EL0,
 //!   PMXEVCNTR_EL0) trap unless the operating system grants them, so they
 //!   are only compiled.
@@ -234,14 +235,13 @@ fn the_jit_runs_the_unprivileged_reads() {
         for optimize in [true, false] {
             let tsc = checked.jit_with_options("tsc", &[], optimize).unwrap();
             assert_eq!(word(&tsc), 1, "rdtsc (optimize {optimize})");
-            let rand = word(&checked.jit_with_options("rand", &[], optimize).unwrap());
+            // RDRAND is an invalid opcode on a CPU without it, so the
+            // read runs only where CPUID reports it.
             #[cfg(target_arch = "x86_64")]
             if std::arch::is_x86_feature_detected!("rdrand") {
+                let rand = word(&checked.jit_with_options("rand", &[], optimize).unwrap());
                 assert!(rand >= 100 + 8, "rdrand gave {rand} (optimize {optimize})");
-            } else {
-                assert_eq!(rand, 0);
             }
-            let _ = rand;
         }
     } else if cfg!(target_arch = "aarch64") {
         let pkg = driver(AARCH64);
