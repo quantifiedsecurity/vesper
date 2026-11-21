@@ -110,29 +110,28 @@ fn guarded_shift_amounts_are_total() {
     // (source of `f(w: u64, i: u64) -> u64`, Rust model)
     type Model = fn(u64, u64) -> u64;
     let cases: [(&str, Model); 8] = [
-        (
-            "if i < 8 { (w >> (i * 8)) & 255 } else { 0 }",
-            |w, i| if i < 8 { (w >> (i * 8)) & 255 } else { 0 },
-        ),
+        ("if i < 8 { (w >> (i * 8)) & 255 } else { 0 }", |w, i| {
+            if i < 8 { (w >> (i * 8)) & 255 } else { 0 }
+        }),
         ("w >> ((i % 8) * 8)", |w, i| w >> ((i % 8) * 8)),
-        (
-            "let hw = (w >> 21) & 3; (w >> 5) << (hw * 16)",
-            |w, _| (w >> 5) << (((w >> 21) & 3) * 16),
-        ),
+        ("let hw = (w >> 21) & 3; (w >> 5) << (hw * 16)", |w, _| {
+            (w >> 5) << (((w >> 21) & 3) * 16)
+        }),
         ("w >> (63 - (i & 63))", |w, i| w >> (63 - (i & 63))),
-        (
-            "if i < 64 { w >> (63 - i) } else { 0 }",
-            |w, i| if i < 64 { w >> (63 - i) } else { 0 },
-        ),
-        (
-            "if i >= 16 { return 0; } w << (i * 4 + 3)",
-            |w, i| if i >= 16 { 0 } else { w << (i * 4 + 3) },
-        ),
+        ("if i < 64 { w >> (63 - i) } else { 0 }", |w, i| {
+            if i < 64 { w >> (63 - i) } else { 0 }
+        }),
+        ("if i >= 16 { return 0; } w << (i * 4 + 3)", |w, i| {
+            if i >= 16 { 0 } else { w << (i * 4 + 3) }
+        }),
         ("w >> ((i & 255) / 4)", |w, i| w >> ((i & 255) / 4)),
         ("w << ((i & 1023) >> 4)", |w, i| w << ((i & 1023) >> 4)),
     ];
     for (body, model) in cases {
-        let source = format!("fn f(w: u64, i: u64) -> u64 {{ {body} }}\n{}", fold_main(70));
+        let source = format!(
+            "fn f(w: u64, i: u64) -> u64 {{ {body} }}\n{}",
+            fold_main(70)
+        );
         assert_eq!(failing_ops(&source), Vec::<String>::new(), "{source}");
         agree(&source, &fold(70, model));
     }
@@ -159,9 +158,8 @@ fn shifts_that_could_fail_still_need_fail() {
         // A negative amount is out of range on a signed kind.
         ("if j < 8 { w >> (j * 8) } else { 0 }", "w >> (j * 8)"),
     ] {
-        let source = format!(
-            "fn f(w: u64, i: u64, j: i64) -> u64 {{ {body} }}\nfn main() -> u64 {{ 0 }}"
-        );
+        let source =
+            format!("fn f(w: u64, i: u64, j: i64) -> u64 {{ {body} }}\nfn main() -> u64 {{ 0 }}");
         rejects_at(&source, "E0401", at);
     }
 }
@@ -170,26 +168,25 @@ fn shifts_that_could_fail_still_need_fail() {
 fn guarded_divisors_need_no_handler() {
     type Model = fn(u64, u64) -> u64;
     let cases: [(&str, Model); 5] = [
-        (
-            "if i == 0 { return 0; } w / i",
-            |w, i| if i == 0 { 0 } else { w / i },
-        ),
-        (
-            "if i != 0 { w % i } else { 0 }",
-            |w, i| if i != 0 { w % i } else { 0 },
-        ),
+        ("if i == 0 { return 0; } w / i", |w, i| {
+            w.checked_div(i).unwrap_or(0)
+        }),
+        ("if i != 0 { w % i } else { 0 }", |w, i| {
+            if i != 0 { w % i } else { 0 }
+        }),
         ("w / ((i & 15) + 1)", |w, i| w / ((i & 15) + 1)),
-        (
-            "if i < 100 { w % (i * 3 + 2) } else { 1 }",
-            |w, i| if i < 100 { w % (i * 3 + 2) } else { 1 },
-        ),
-        (
-            "if i > 0 && i < 1000 { w / (i * 7) } else { 2 }",
-            |w, i| if i > 0 && i < 1000 { w / (i * 7) } else { 2 },
-        ),
+        ("if i < 100 { w % (i * 3 + 2) } else { 1 }", |w, i| {
+            if i < 100 { w % (i * 3 + 2) } else { 1 }
+        }),
+        ("if i > 0 && i < 1000 { w / (i * 7) } else { 2 }", |w, i| {
+            if i > 0 && i < 1000 { w / (i * 7) } else { 2 }
+        }),
     ];
     for (body, model) in cases {
-        let source = format!("fn f(w: u64, i: u64) -> u64 {{ {body} }}\n{}", fold_main(40));
+        let source = format!(
+            "fn f(w: u64, i: u64) -> u64 {{ {body} }}\n{}",
+            fold_main(40)
+        );
         assert_eq!(failing_ops(&source), Vec::<String>::new(), "{source}");
         agree(&source, &fold(40, model));
     }
@@ -207,8 +204,7 @@ fn divisions_that_could_fail_still_need_fail() {
         // `i & 15` may be zero.
         ("w % (i & 15)", "w % (i & 15)"),
     ] {
-        let source =
-            format!("fn f(w: u64, i: u64) -> u64 {{ {body} }}\nfn main() -> u64 {{ 0 }}");
+        let source = format!("fn f(w: u64, i: u64) -> u64 {{ {body} }}\nfn main() -> u64 {{ 0 }}");
         rejects_at(&source, "E0401", at);
     }
     // Signed `MIN / -1` keeps its rule: a nonzero divisor is not enough.
@@ -246,9 +242,8 @@ fn integer_not_is_the_complement_on_every_kind() {
         ("i64", 0, -1),
         ("isize", 41, -42),
     ] {
-        let source = format!(
-            "fn f(x: {k}) -> {k} {{ !x }}\nfn main() -> {k} {{ let v: {k} = {x}; f(v) }}"
-        );
+        let source =
+            format!("fn f(x: {k}) -> {k} {{ !x }}\nfn main() -> {k} {{ let v: {k} = {x}; f(v) }}");
         agree(&source, &not.to_string());
     }
     // 128-bit kinds.
