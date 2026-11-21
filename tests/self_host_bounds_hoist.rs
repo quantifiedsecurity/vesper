@@ -14,9 +14,10 @@
 //! the native backend reads after the pass, are compared on the pass's input
 //! and on its output.
 //!
-//! The rewrite (loop versioning, `SeqOp::Hoisted`) stays in Rust until lane
-//! 1's IR writer (#1259) lands; each step's input is Rust's rewrite of the
-//! previous one, so every decision on every intermediate IR is covered.
+//! Each step's input is Rust's rewrite of the previous one, so every
+//! decision on every intermediate IR is covered. The port's own rewrite
+//! (loop versioning, `SeqOp::Hoisted`) is compared with `bounds_hoist::run`
+//! in tests/self_host_bounds_hoist_pass.rs.
 #[path = "common/check_harness.rs"]
 mod check_harness;
 #[path = "self_host_bounds_hoist/corpus.rs"]
