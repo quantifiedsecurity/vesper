@@ -496,6 +496,35 @@ pub fn bytes_ord(in l: L, ao: u64, al: u64, bo: u64, bl: u64) -> u64 {
     ord(al, bl)
 }
 
+// Byte order of string occurrences a and b, over their big-endian words
+// (decode_tables): equal words up to the shorter one leave the length to
+// decide, as zero padding sorts before every byte.
+pub fn occ_ord(in l: L, a: u64, b: u64) -> u64 {
+    let la = sw(in l.inw, add(mul(a, 2), 2));
+    let lb = sw(in l.inw, add(mul(b, 2), 2));
+    let wa = sw(in l.skat, a);
+    let wb = sw(in l.skat, b);
+    let n = min(la, lb);
+    let mut j: u64 = 0;
+    let mut p: u64 = 0;
+    loop {
+        if p >= n {
+            break;
+        }
+        let x = sw(in l.sk, add(wa, j));
+        let y = sw(in l.sk, add(wb, j));
+        if x < y {
+            return Order::Less;
+        }
+        if x > y {
+            return Order::Greater;
+        }
+        j = inc(j);
+        p = add(p, 8);
+    }
+    ord(la, lb)
+}
+
 // Whether the pool range holds the literal s.
 pub fn is_lit(in l: L, off: u64, len: u64, in s: Str) -> bool {
     if len != s.len() {
@@ -721,15 +750,7 @@ pub fn before(in l: L, kind: u64, a: u64, b: u64) -> bool {
 
 pub fn order_of(in l: L, kind: u64, a: u64, b: u64) -> u64 {
     if kind == SortKind::Strings {
-        let ia = mul(a, 2);
-        let ib = mul(b, 2);
-        bytes_ord(
-            in l,
-            sw(in l.inw, inc(ia)),
-            sw(in l.inw, add(ia, 2)),
-            sw(in l.inw, inc(ib)),
-            sw(in l.inw, add(ib, 2))
-        )
+        occ_ord(in l, a, b)
     } else if kind == SortKind::Selections {
         let x = man(in l, a);
         let y = man(in l, b);

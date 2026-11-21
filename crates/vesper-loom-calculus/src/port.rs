@@ -69,6 +69,7 @@ use crate::{
 };
 use semver::{Op, Version, VersionReq};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::{BuildHasherDefault, Hasher};
 
 const NONE: u64 = u64::MAX;
 
@@ -110,12 +111,51 @@ pub(crate) fn name_valid(name: &str) -> bool {
     binding::package_name_valid(name)
 }
 
+/// No interned occurrence (the end of a `chain`).
+const NO_OCC: u32 = u32::MAX;
+
+/// A word-at-a-time multiplicative hash of a string (FxHash's mixing).
+/// Interning hashes every string occurrence of the input, where SipHash
+/// cost about a tenth of the call on small graphs.
+fn fx_hash(bytes: &[u8]) -> u64 {
+    const K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+    let mut h = bytes.len() as u64;
+    let (words, rest) = bytes.as_chunks::<8>();
+    for c in words {
+        h = (h.rotate_left(5) ^ u64::from_le_bytes(*c)).wrapping_mul(K);
+    }
+    let mut tail = [0u8; 8];
+    tail[..rest.len()].copy_from_slice(rest);
+    h = (h.rotate_left(5) ^ u64::from_le_bytes(tail)).wrapping_mul(K);
+    h ^ (h >> 29)
+}
+
+/// A hasher for keys that are already hashes.
+#[derive(Default)]
+struct Identity(u64);
+
+impl Hasher for Identity {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("only u64 keys are hashed")
+    }
+    fn write_u64(&mut self, x: u64) {
+        self.0 = x;
+    }
+}
+
 #[derive(Default)]
 struct Enc<'a> {
     body: Vec<u64>,
     text: Vec<u8>,
     occ: Vec<(u64, u64)>,
-    interned: HashMap<String, u64>,
+    /// Interned strings by their hash: the first occurrence with that hash,
+    /// then `chain` links the others. Comparing against `text` avoids
+    /// owning a copy of every string.
+    interned: HashMap<u64, u32, BuildHasherDefault<Identity>>,
+    chain: Vec<u32>,
     vers: Vec<u64>,
     nver: u64,
     reqs: Vec<u64>,
@@ -132,14 +172,21 @@ impl<'a> Enc<'a> {
         self.w(u64::from(x));
     }
     fn intern(&mut self, s: &str) -> u64 {
-        if let Some(&i) = self.interned.get(s) {
-            return i;
+        let h = fx_hash(s.as_bytes());
+        let mut at = self.interned.get(&h).copied().unwrap_or(NO_OCC);
+        while at != NO_OCC {
+            let (off, len) = self.occ[at as usize];
+            if &self.text[off as usize..(off + len) as usize] == s.as_bytes() {
+                return u64::from(at);
+            }
+            at = self.chain[at as usize];
         }
-        let i = self.occ.len() as u64;
+        let i = self.occ.len() as u32;
         self.occ.push((self.text.len() as u64, s.len() as u64));
         self.text.extend_from_slice(s.as_bytes());
-        self.interned.insert(s.to_owned(), i);
-        i
+        self.chain
+            .push(self.interned.insert(h, i).unwrap_or(NO_OCC));
+        u64::from(i)
     }
     fn s(&mut self, s: &str) {
         let i = self.intern(s);

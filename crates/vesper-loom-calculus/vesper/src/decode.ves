@@ -22,6 +22,7 @@ use self::util::{
     SortKind,
     add,
     bytes_ord,
+    gb,
     inc,
     sort,
     sw
@@ -30,6 +31,8 @@ use self::util::{
 pub fn new_l(in words: Slice[u64], in text: Slice[u8]) -> L {
     let mut l = L {
         inw: ChunkSeq::new[u64](),
+        skat: ChunkSeq::new[u64](),
+        sk: ChunkSeq::new[u64](),
         pos: 0,
         pool: ChunkSeq::new[u8](),
         out: ChunkSeq::new[u64](),
@@ -100,18 +103,8 @@ pub fn new_l(in words: Slice[u64], in text: Slice[u8]) -> L {
         ea: ChunkSeq::new[u64](),
         eb: ChunkSeq::new[u64]()
     };
-    for i in 0..words.len() {
-        match words.try_get(i) {
-            Option::Some(w) => l.inw.push(w),
-            Option::None => (),
-        }
-    }
-    for i in 0..text.len() {
-        match text.try_get(i) {
-            Option::Some(b) => l.pool.push(b),
-            Option::None => (),
-        }
-    }
+    l.inw.extend(in words);
+    l.pool.extend(in text);
     l
 }
 
@@ -155,6 +148,36 @@ pub fn decode_tables(inout l: L) {
     for i in 0..nocc {
         l.idx.push(i);
         l.rank.push(0);
+        let base = add(1, add(i, i));
+        let off = sw(in l.inw, base);
+        let len = sw(in l.inw, inc(base));
+        l.skat.push(l.sk.len());
+        let mut p: u64 = 0;
+        loop {
+            if p >= len {
+                break;
+            }
+            let mut w: u64 = 0;
+            if add(p, 8) <= len {
+                w = match l.pool.try_read_u64_be(add(off, p)) {
+                    Option::Some(v) => v,
+                    Option::None => 0,
+                };
+            } else {
+                // The last, partial word: zero padded on the right.
+                for b in 0..8 {
+                    let q = add(p, b);
+                    let x: u64 = if q < len {
+                        widen_u64(gb(in l, add(off, q)))
+                    } else {
+                        0
+                    };
+                    w = (w << 8) | x;
+                }
+            }
+            l.sk.push(w);
+            p = add(p, 8);
+        }
     }
     sort(inout l, SortKind::Strings);
     let mut k: u64 = 0;
