@@ -196,6 +196,13 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # SH4 lane 6 (#1280): @vesper/codegen-scalar's decisions against the
+        # native Codegen core over the same corpus.
+        "test/self_host_codegen_scalar": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # Self-hosting SH2 lane 11 (#1183): the dyn passes in Vesper against
         # src/dyn_fn.rs and src/dyn_trait.rs over the dyn suites, mutants and
         # the repository's .ves sources. Anchored globs.
@@ -550,6 +557,7 @@ vesper_crate(
         "test/hybrid_layout": "long",
         "test/hybrid_ir_check": "long",
         "test/self_host_place_ir": "long",
+        "test/self_host_codegen_scalar": "long",
         "test/self_host_check_harness": "long",
         # The dyn differential runs both passes over every .ves source twice.
         "test/self_host_check_dyn": "long",
