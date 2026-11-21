@@ -84,7 +84,7 @@ const OP_STR: u32 = 100;
 // Method and callee names, interned once in a fixed order (`name_at`).
 // 0-18 sequence methods, 19-33 shared block methods, 34-39 string
 // methods, 40-44 free callees, 45-68 the `Wide` accesses in
-// `WIDE_NAMES` order.
+// `WIDE_NAMES` order, 69 `try_get_mut` (an alias of `try_get`).
 pub struct SeqNames {
     syms: ChunkSeq[u32],
 }
@@ -165,6 +165,7 @@ pub fn seq_names_new(inout n: Names) -> SeqNames {
     intern(inout n, inout s, "try_write_u32_be");
     intern(inout n, inout s, "try_write_u64_le");
     intern(inout n, inout s, "try_write_u64_be");
+    intern(inout n, inout s, "try_get_mut");
     SeqNames {
         syms: s
     }
@@ -363,7 +364,7 @@ fn seq_method(i: u32) -> u32 {
         2 => OP_POP,
         3 => OP_GET,
         4 => OP_SET,
-        5 => OP_TRY_GET,
+        5 | 69 => OP_TRY_GET,
         6 => OP_TRY_SET,
         7 => OP_CLEAR,
         8 => OP_TRUNCATE,
@@ -386,7 +387,7 @@ fn slice_method(i: u32) -> u32 {
         0 => OP_SLICE_LEN,
         3 => OP_SLICE_GET,
         4 => OP_SLICE_SET,
-        5 => OP_TRY_GET,
+        5 | 69 => OP_TRY_GET,
         6 => OP_TRY_SET,
         _ => shared_method(i),
     }

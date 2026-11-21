@@ -70,6 +70,11 @@ clean corpus fires none of these diagnostics, so each task adds mutants.
 | `regions_seqs_world` | `seq::check_world`, then `tiled::check_world_adts` | the world itself; `Slice[T]` moved into parameters (kept pass and `sink`), results, nested slices and fields; two cycles of tile widths (8, 12, 16, none, 64) and field temperatures over every ADT | 16,113 | E1501 2,011; E1502 3,056; E1503 634; E1520 10,412 | 0 |
 | `regions_seqs_resolve` | `seq::resolve` of 79 callees (every method and free callee, qualified and malformed names) on 11 receivers, each result's properties and `fip_allocation` | | 869 | | 0 |
 
+The table is from the base `e43a56f`. On `main` at `a64f537` the corpus is
+287 worlds, and SH2 lane 1 (#1221) made `try_get_mut` an alias of `try_get`
+in `seq::resolve`; the port mirrors it and the resolve task now has 80
+callees. Still 0 of 287 worlds differ (types 841,018 lines, world 20,173).
+
 Every diagnostic is compared by code, message, help and span (none of
 these has related labels; the test asserts that). The JIT with the
 optimizer off returns the same text as with it on, for each task. The

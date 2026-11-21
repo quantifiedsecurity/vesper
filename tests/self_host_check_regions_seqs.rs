@@ -413,6 +413,7 @@ const CALLEES: &[&str] = &[
     "get",
     "set",
     "try_get",
+    "try_get_mut",
     "try_set",
     "clear",
     "truncate",
