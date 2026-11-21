@@ -109,4 +109,4 @@ and the SH3, SH4 and SH5 additions apply, with these changes.
 - The remaining parts of the SH2-SH5 lanes (their own claims).
 - A Vesper-native backend (SH7): Cranelift stays behind its shim.
 - The DDC auditor and the `src/bin/*42` oracles, which stay Rust on purpose
-  unless the owner says otherwise (see the plan).
+  (owner, 2026-11-21: "keep oracles in rust").

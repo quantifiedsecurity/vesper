@@ -86,7 +86,7 @@ What the plan expects to be left, and why it cannot go:
 | `vesper-crypto-sys` (SH6 lane 17) | about 1-2k | Vetted crypto and TLS (RustCrypto, libcrux, dalek, rustls) are never hand-rolled. Each entry is a direct call into the library. An owner call could replace them with a C library (BoringSSL, aws-lc), which would remove this shim too. |
 | A naga shim, if lane 15 cannot precompile shaders | a few functions | WGSL to SPIR-V translation exists only in Rust. |
 
-Kept Rust on purpose (owner call, not impossibility):
+Kept Rust on purpose (owner, 2026-11-21: "keep oracles in rust"):
 
 | Rust left | Lines | Why |
 |---|--:|---|
