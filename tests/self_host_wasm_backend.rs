@@ -752,6 +752,25 @@ fn timing() {
             }
         })
     };
-    eprintln!("{} modules", work.len());
+    let encode = time(|| {
+        for (c, _, _) in &work {
+            for _ in 0..reps {
+                let p = backend_program(&c.world, &o).unwrap();
+                std::hint::black_box(wasm_input(&c.world, &p, "main", &o));
+            }
+        }
+    });
+    let front = time(|| {
+        for (c, _, _) in &work {
+            for _ in 0..reps {
+                std::hint::black_box(backend_program(&c.world, &o));
+            }
+        }
+    });
+    eprintln!(
+        "{} modules; encoding the input {:?}",
+        work.len(),
+        encode.saturating_sub(front)
+    );
     abba("wasm backend", &mut rust, &mut port);
 }

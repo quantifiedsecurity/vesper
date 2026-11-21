@@ -87,7 +87,22 @@ Float32, GenericOperation, InoutEffectArgument and IntegerWidth (1 each).
 
 ### Speed
 
-TIMING
+Ignored test `timing` (`CHECK_HARNESS_SPEED=1`, release test build, ABBA
+best of six, one 4-core cloud host): the 160 compilations above that run,
+five times each, default options.
+
+| Side | Time | vs Rust |
+|---|---|---|
+| Rust `compile`, less `lower_world` + `optimize` and the wit-component wrap | 135 ms | 1.00x |
+| Port (JIT, optimized), from the encoded input | 36 ms | 0.27x |
+| Port plus encoding its input (15 ms) | 51 ms | 0.38x |
+
+So part 1 is at parity with room to spare: about 45 µs per module against
+170 µs. The Rust side builds `String` keys and `BTreeMap`s for instance
+names, evidence keys and type displays, where the port uses interned
+symbols and dense tables. The comparison is of the ported part only:
+handler-heavy programs are not in it yet. Before this lane there was no
+Vesper backend, so "before" is the Rust column.
 
 ## Stage 1 guard
 
