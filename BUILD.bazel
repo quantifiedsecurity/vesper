@@ -223,6 +223,8 @@ vesper_crate(
             "//crates/vesper-port-build:files",
             "//crates/vesper-port-pilot:files",
             "//crates/vesper-prism:files",
+            # vesper/target/ is outside :files (no **/target/** glob).
+            "//crates/vesper-prism:target_package",
             "//crates/vesper-prism-h3:files",
             "//crates/vesper-quarry:files",
             "//crates/vesper-resonance:files",
