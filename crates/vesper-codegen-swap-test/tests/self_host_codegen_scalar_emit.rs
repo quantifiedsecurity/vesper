@@ -372,3 +372,34 @@ fn dump(dir: &str, worlds: &[&check_harness::Case], total: &Diff) {
         }
     }
 }
+
+/// The words of `codegen_swap::scalar` are a protocol with
+/// `@vesper/codegen-scalar-emit` (`overflow_test` reads kinds as 1 `u8` ...
+/// 10 `isize` and operators as 1 `+` ... 4 `/`): reordering
+/// `numeric::INTEGER_KINDS` must not change them silently.
+#[test]
+fn scalar_request_words_are_pinned() {
+    use codegen_swap::scalar::{kind_word, op_word};
+    use vesper::numeric::IntegerKind as K;
+    let kinds = [
+        (K::U8, 1),
+        (K::U16, 2),
+        (K::U32, 3),
+        (K::U64, 4),
+        (K::Usize, 5),
+        (K::I8, 6),
+        (K::I16, 7),
+        (K::I32, 8),
+        (K::I64, 9),
+        (K::Isize, 10),
+    ];
+    for (kind, word) in kinds {
+        assert_eq!(kind_word(kind), Some(word), "{kind:?}");
+    }
+    assert_eq!(kind_word(K::I128), None);
+    assert_eq!(kind_word(K::U128), None);
+    for (op, word) in [("+", 1), ("-", 2), ("*", 3), ("/", 4)] {
+        assert_eq!(op_word(op), Some(word), "{op}");
+    }
+    assert_eq!(op_word("%"), None);
+}
