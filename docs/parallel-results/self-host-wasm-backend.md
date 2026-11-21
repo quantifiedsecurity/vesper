@@ -36,6 +36,31 @@ compiler; nothing here changes a default build or deletes Rust code.
   an ignored census of what the Rust backend accepts.
 - BUILD.bazel data and size entries for the new test.
 
+### The swap (on #1309's `vesper::codegen_swap`)
+
+- `crates/vesper-hybrid/modules/wasm_backend` (`@vesper/hybrid-wasm-backend`)
+  exports `compile_words` (export ABI 4) over `@vesper/wasm-backend`.
+  build.rs and BUILD.bazel link it (`//:place_ir_package`,
+  `//:wasm_backend_package`), and `port/wasm_backend.rs` is its blessed
+  binding.
+- `src/hybrid.rs` installs the `wasm` hook. The hook encodes the input
+  (`tests/common/wasm_words.rs`, now shared by the hook and the test),
+  calls the module and wraps the module with wit-component into the same
+  `WasmArtifact` Rust returns. An error declines to the Rust backend, so
+  messages keep Rust's text (the error classes already agree, above). So
+  does a program with handlers or host capabilities, which is not ported
+  yet. `VESPER_HYBRID_STATS=1` prints how many programs it compiled and
+  declined.
+- `hook_artifact_matches_rust` (tests/self_host_wasm_backend.rs): wherever
+  the hook answers, its whole artifact (`Debug`) equals Rust's. That holds
+  for 200 answered compilations of a third of the cases, and the hook never
+  answers where Rust fails.
+- The hybrid differential (crates/vesper-hybrid/tests/differential.rs)
+  gains a fourth command, `build --target wasm32-wasip2 -o {out}`, and
+  compares the component bytes. Over 538 files it runs 2,152 commands per
+  compiler with **0 differences**. `wasm_module_runs_from_vesper` checks
+  that `examples/transaction.ves` compiles from Vesper.
+
 ### Component wrapping stays in Rust (owner call)
 
 `component::encode` is 40 lines over wit-parser and wit-component, but what
@@ -101,7 +126,14 @@ five times each, default options.
 | Port (JIT, optimized), from the encoded input | 36 ms | 0.27x |
 | Port plus encoding its input (15 ms) | 51 ms | 0.38x |
 
-So part 1 is at parity with room to spare: about 45 µs per module against
+The hybrid CLI, `build --target wasm32-wasip2` over the 538 differential
+files (debug builds of both compilers, best of two, one host): the default
+takes 24.2 s and the hybrid 36.6 s (1.51x). The hook compiled 82 programs
+and declined 141; the rest fail before the backend. Most of the gap is the
+input encoder and the second, Rust compilation of each declined program, in
+an unoptimized build.
+
+So the ported backend itself is at parity with room to spare: about 45 µs per module against
 170 µs. The Rust side builds `String` keys and `BTreeMap`s for instance
 names, evidence keys and type displays, where the port uses interned
 symbols and dense tables. The comparison is of the ported part only:
@@ -159,7 +191,9 @@ no swap point. The [Bootstrap Stage 1 run on this branch](https://github.com/rob
 
 - Part 2: handlers (direct and WasmFX), host capability frames, evidence
   binding, so the 60 not-ported compilations compare too.
-- The swap: the hybrid module `wasm_backend` and its `wasm` hook. It waits
-  for lane 1's first PR (#1275, `src/codegen_swap.rs`), which has not opened
-  yet. The SH4 scoreboard row comes with the swap.
+- A declined program pays for the encoding and the Vesper attempt before
+  the Rust backend runs. Part 2 shrinks the declined set; until then the
+  hybrid's wasm builds are slower than the default (below).
+- A `divergent` build for the wasm module (the harness-can-fail check the
+  other swaps have).
 - Candidate SH5 lane: component wrapping (wit-component and wit-parser).
