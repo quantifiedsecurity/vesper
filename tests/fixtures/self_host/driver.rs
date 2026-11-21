@@ -415,6 +415,14 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     // SH4 lane 15 (#1289): the wasm backend port uses `use`
                     // (#880) and `pub const`.
                     || path.ends_with("packages/vesper-wasm-backend")
+                    // SH2 lane 10 (#1182): `pub fn` items, which the Stage 1
+                    // parser reads with a different tree (out.ves has no
+                    // loops, so the loop filter below keeps it).
+                    || path.ends_with("packages/vesper-check-loops-atomics")
+                    // SH5 lane 14 (#1337): `use` (#880) and `pub fn`.
+                    || path.ends_with("packages/vesper-test-runner")
+                    // SH4 lane 17 (#1291): `use` (#880) and const items.
+                    || path.ends_with("packages/vesper-backend-checks")
                 {
                     continue;
                 }
