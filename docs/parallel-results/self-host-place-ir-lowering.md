@@ -11,8 +11,8 @@ The lane lands in parts. This report grows with each one.
 
 | Part | What |
 | --- | --- |
-| 1 (this PR) | `lower_world` and `thread_tokens` for every expression kind except closures, handlers and payload operations; the differential |
-| 2 | closures and handlers (nested functions, captures, handler clauses) |
+| 1 (#1265) | `lower_world` and `thread_tokens` for every expression kind except closures, handlers and payload operations; the differential |
+| 2 (#1265) | closures and handlers (nested functions, captures, handler clauses) |
 | 3 | sequence, tiled, vector and `Box` operations (`seq::resolve` and the other resolvers, with a structured payload kind) |
 | 4 | the swap: the hybrid `ir_lower` module through lane 1's `lower` hook, the full suite on the hybrid build, the scoreboard row |
 
@@ -63,14 +63,11 @@ read off Rust in this part and written into the input per call:
   `tiled::resolve_ir_call`, `VectorOp::resolve` or the `Box` builtins route
   to a payload operation (the spans of the Rust lowering's `Seq`, `Tiled`,
   `Vector` and `Fip` instructions). Those are written as foreign
-  expressions. Closures and handlers are written in full (parameters,
-  bodies, clauses, moves), but the port does not lower them yet, so it
-  skips a function that reaches either;
+  expressions, and the port skips a function that reaches one;
 - the intrinsic name class of a call of a plain name (the name tables of
   `vesper-core::numeric` and `capability_effects`).
 
-Part 2 lowers the closures and handlers; part 3 removes the foreign
-expressions.
+Part 3 removes the foreign expressions.
 
 ### The differential
 
@@ -83,8 +80,8 @@ functions and on Rust's same functions.
 | --: | --: | --: | --: | --: | --: |
 | 290 | 10,426 | 5,002 | 178,614 | 0 | 0 |
 
-The skipped functions, by the first construct the port does not lower
-yet: 161 reach a closure or handler, 4,841 a payload operation. The
+At the end of part 1, 161 of the skipped functions reached a closure or
+handler and 4,841 a payload operation (part 2's numbers are below). The
 unoptimized build runs the whole differential in 403 s (Bazel's `long`
 timeout is 900 s).
 
@@ -120,7 +117,69 @@ hybrid build).
 Callgrind counts (lowering alone and the whole corpus) follow in a later
 commit on this PR.
 
-### Compiler gaps
+## Part 2
+
+### What changed
+
+`src/lower.ves` gains `prepare_nested` and the `Closure` and `Handle`
+instructions; `src/ast.ves` reads closure rows (parameters, body, moves)
+and handler rows (effect label, name and arguments, state, body, return
+and operation clauses, outgoing effects, moves); the encoder writes them
+and the payload pool count. No Rust source changed.
+
+- `free_names` and `clause_free_names` of `check.rs`, over the rows, with
+  bound names as a symbol-indexed count and an undo trail;
+- `capture_params` (the `permissions` of the function's parameters for a
+  borrowed handler body), `pattern_params`, and `add_nested` with
+  `nested_name`, inherited generics, the capability snapshot (a handler's
+  label added for its body only), external captures and the handler
+  body's owner;
+- handler clauses: the effect's generics substituted into each operation's
+  parameters and result, the state parameter, and the continuation's
+  function type (linear or affine by the effect);
+- `Op::Closure` and `Op::Handle`: the pool entry, the alias map sorted by
+  name, and the moves; a stateful handler leaves out the places its state
+  expression initializes (sink reads, with their projections, and inner
+  closure and handler moves).
+
+Nested functions are appended to the function table as they are prepared
+and lowered after the world's, so each one sees its parent's scope as
+Rust's `pending` stack does. The pool rows are the input's, by position.
+A closure or clause whose body has a foreign expression is skipped,
+because its free names are not all in the input.
+
+### The differential
+
+| Worlds | Functions lowered | Functions skipped | Instructions compared | Functions differing | IR check differing |
+| --: | --: | --: | --: | --: | --: |
+| 290 | 11,180 | 4,873 | 181,508 | 0 | 0 |
+
+Rust's lowering has 600 closure and handler functions on the corpus; the
+port lowers 587 of them, and the other 13 hold a payload operation. Of the
+world functions, 10,439 are plain, 154 have closures or handlers (no
+payload operation) and 4,869 have a payload operation, which part 3
+covers.
+
+The harness catches a wrong capture: giving a borrowed handler body's
+captures `sink` instead of their permission makes 13 functions differ on
+every third world (`tests/fixtures/capability_effects/more/accept/resume_public.ves`,
+`tests/fixtures/verified_codegen/fail_implicit.ves` and more).
+
+### Numbers
+
+Same method as part 1, over the larger lowered set.
+
+| Step | Time | vs `ir::lower_world` |
+| --- | --: | --: |
+| `ir::lower_world` (Rust) | 322 ms | 1.00x |
+| Vesper entry | 154 ms | 0.48x |
+| Vesper read alone | 25 ms | 0.08x |
+| **Vesper lowering alone** | **129 ms** | **0.40x** |
+| Encode | 227 ms | 0.71x |
+| Decode | 140 ms | 0.43x |
+| Whole swap | 521 ms | 1.62x |
+
+## Compiler gaps
 
 1. **Re-initializing a moved owned local inside a loop is refused.**
    Rotating two buffers (`let t = a; a = b; b = t;`) in a loop is E0303
@@ -149,7 +208,7 @@ commit on this PR.
    `@vesper/place-ir`'s. #1239 (value enums and importable constants) has
    since merged; the port switches when this branch merges `main`.
 
-### Stage 1 guard
+## Stage 1 guard
 
 `src/ir.rs`, `src/loops/ir.rs`, `src/seq/ir.rs`, `ir_opt::optimize`,
 `src/verified_codegen/**`, `lean/**`, `bootstrap/**` and
@@ -157,6 +216,6 @@ commit on this PR.
 source at all), and nothing installs a `lower` hook. The bootstrap-stage1
 workflow runs on this branch; its digests are in the PR.
 
-### What is left
+## What is left
 
-Parts 2 to 4 above. The skipped functions are the coverage still to come.
+Parts 3 and 4 above. The skipped functions are the coverage still to come.

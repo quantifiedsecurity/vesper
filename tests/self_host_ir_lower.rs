@@ -23,18 +23,21 @@ use vesper::ast::{Expr, ExprKind, Statement};
 use vesper::check::World;
 use vesper::ir::Program;
 
-/// Why the port leaves a function out: 0 nothing (it lowers), 1 a closure
-/// or handler, 2 a routed sequence, tiled, vector or `Box` operation.
+/// What a world function's body holds: 0 neither of the below, 1 a closure
+/// or handler (lowered, with nested functions), 2 a routed sequence, tiled,
+/// vector or `Box` operation anywhere (part 3; the function, or the nested
+/// function holding it, is skipped).
 fn skip_reason(e: &Expr, routed: &BTreeSet<(usize, usize)>) -> u8 {
     let mut reason = 0;
     let mut visit = |x: &Expr| {
-        if matches!(x.kind, ExprKind::Closure { .. } | ExprKind::Handle { .. }) {
-            reason = 1;
-        } else if matches!(x.kind, ExprKind::Call { .. } | ExprKind::Index(..))
+        if matches!(x.kind, ExprKind::Call { .. } | ExprKind::Index(..))
             && routed.contains(&(x.span.start, x.span.end))
-            && reason == 0
         {
             reason = 2;
+        } else if matches!(x.kind, ExprKind::Closure { .. } | ExprKind::Handle { .. })
+            && reason == 0
+        {
+            reason = 1;
         }
     };
     walk(e, &mut visit);
@@ -157,6 +160,7 @@ fn vesper_lowering_matches_rust() {
     let (mut lowered_fns, mut skipped_fns, mut instructions) = (0u64, 0u64, 0usize);
     let mut ir_check_differs = 0;
     let mut reasons = [0u64; 3];
+    let (mut rust_nested, mut vesper_nested) = (0u64, 0u64);
     for c in lowered() {
         let routed = ir_lower_words::foreign(&c.program);
         for f in c.world.functions.values() {
@@ -170,6 +174,17 @@ fn vesper_lowering_matches_rust() {
             continue;
         };
         worlds += 1;
+        rust_nested += c
+            .program
+            .functions
+            .keys()
+            .filter(|n| n.starts_with('$'))
+            .count() as u64;
+        vesper_nested += program
+            .functions
+            .keys()
+            .filter(|n| n.starts_with('$'))
+            .count() as u64;
         lowered_fns += lowered_n;
         skipped_fns += skipped_n;
         assert_eq!(
@@ -206,8 +221,9 @@ fn vesper_lowering_matches_rust() {
     eprintln!(
         "ir lower: {bad} functions differ; {worlds} worlds ({skipped_worlds} not encodable), \
          {lowered_fns} functions lowered, {skipped_fns} skipped, {instructions} instructions; \
-         IR check differs on {ir_check_differs} worlds; by construct: {} lowerable, {} with \
-         closures or handlers, {} with payload operations",
+         IR check differs on {ir_check_differs} worlds; world functions: {} plain, {} with \
+         closures or handlers, {} with payload operations; closure and handler functions: \
+         {vesper_nested} of Rust's {rust_nested} lowered",
         reasons[0], reasons[1], reasons[2]
     );
     assert!(worlds > 50, "only {worlds} worlds");
