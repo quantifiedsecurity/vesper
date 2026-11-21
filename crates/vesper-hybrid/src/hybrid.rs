@@ -52,8 +52,18 @@ mod ir_inline_binding;
 
 #[rustfmt::skip]
 #[allow(clippy::all)]
+#[path = "../port/ir_opt.rs"]
+mod ir_opt_binding;
+
+#[rustfmt::skip]
+#[allow(clippy::all)]
 #[path = "../port/place_ir.rs"]
 mod place_ir_binding;
+
+#[rustfmt::skip]
+#[allow(clippy::all)]
+#[path = "../port/bounds_hoist.rs"]
+mod bounds_hoist_binding;
 
 #[path = "parse_words.rs"]
 mod parse_words;
@@ -79,6 +89,11 @@ mod test_runner_words;
 #[path = "../../../tests/common/inline_words.rs"]
 mod inline_words;
 
+// The IR optimizer swap's encoder and decoder (#1248), shared with the root
+// package's tests/self_host_ir_opt.rs.
+#[path = "../../../tests/common/ir_opt_words.rs"]
+mod ir_opt_words;
+
 // Place IR words both ways (#1240), shared with tests/self_host_place_ir*.rs.
 #[path = "../../../tests/common/ir_words.rs"]
 mod ir_words;
@@ -101,8 +116,12 @@ static EXPORT_DECLINED: AtomicU64 = AtomicU64::new(0);
 static TEST_RUNNER_CALLS: AtomicU64 = AtomicU64::new(0);
 /// Programs inlined by the Vesper inliner module.
 static IR_INLINE_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Programs optimized by the Vesper IR optimizer module.
+static IR_OPT_CALLS: AtomicU64 = AtomicU64::new(0);
 /// Programs the IR swap point's identity hooks sent through Vesper.
 static PLACE_IR_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Programs `modules/bounds_hoist` hoisted.
+static BOUNDS_HOIST_CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn count() {
     LAYOUT_CALLS.fetch_add(1, Relaxed);
@@ -284,6 +303,26 @@ fn vesper_inline(
     report
 }
 
+/// `ir_swap`'s `opt` hook from `modules/ir_opt`: `ir_opt::optimize` of
+/// `@vesper/ir-opt` (memory forwarding and `@fip` reuse), then Rust's
+/// token threading and IR check on the decoded program
+/// (`ir_opt_words::finish`). A program the Place IR words cannot encode,
+/// or a block egglog would refuse (the message is egglog's own), stays in
+/// Rust.
+fn vesper_optimize(
+    world: &vesper::check::World,
+    program: &mut vesper::ir::Program,
+) -> Result<usize, String> {
+    let ours = ir_opt_words::optimize_with(world, program, ir_opt_binding::opt_words);
+    match ours {
+        Some(result) => {
+            IR_OPT_CALLS.fetch_add(1, Relaxed);
+            result
+        }
+        None => vesper::ir_opt::optimize(world, program),
+    }
+}
+
 /// `program` read into `@vesper/place-ir` tables and written back, in
 /// place: the identity Vesper pass. A program the format cannot encode
 /// stays as Rust made it.
@@ -304,8 +343,9 @@ const VESPER_IR_PASSES: vesper::ir_swap::IrPasses = vesper::ir_swap::IrPasses {
         place_ir_round_trip(Some(world), &mut program);
         program
     }),
+    // SH3 lane 9 (#1248): the IR optimizer of `@vesper/ir-opt`.
     opt: Some(|world, program| {
-        let n = vesper::ir_opt::optimize(world, program)?;
+        let n = vesper_optimize(world, program)?;
         place_ir_round_trip(Some(world), program);
         Ok(n)
     }),
@@ -315,12 +355,46 @@ const VESPER_IR_PASSES: vesper::ir_swap::IrPasses = vesper::ir_swap::IrPasses {
         place_ir_round_trip(Some(world), program);
         report
     }),
+    // SH3 lane 12 (#1251): bounds hoisting from `modules/bounds_hoist`.
     hoist: Some(|program| {
-        let n = vesper::bounds_hoist::run(program);
-        place_ir_round_trip(None, program);
+        let Some(p) = ir_words::through_vesper(None, program, bounds_hoist_binding::hoist_words)
+        else {
+            return vesper::bounds_hoist::run(program);
+        };
+        BOUNDS_HOIST_CALLS.fetch_add(1, Relaxed);
+        let n = versioned_loops(&p).saturating_sub(versioned_loops(program));
+        *program = p;
         n
     }),
 };
+
+/// The loops of `program` behind a bounds guard: branches on a
+/// `SeqOp::BoundsGuard` result of their own block, one per versioned loop
+/// (the count `bounds_hoist::run` returns, which no caller reads).
+fn versioned_loops(program: &vesper::ir::Program) -> usize {
+    use vesper::ir::{Op, Terminator};
+    use vesper::seq::SeqOp;
+    program
+        .functions
+        .values()
+        .flat_map(|f| &f.blocks)
+        .filter(|b| {
+            let Terminator::Branch { condition, .. } = b.terminator else {
+                return false;
+            };
+            b.instructions.iter().any(|i| {
+                i.dest == condition
+                    && matches!(
+                        i.op,
+                        Op::Seq {
+                            op: SeqOp::BoundsGuard { .. },
+                            ..
+                        }
+                    )
+            })
+        })
+        .count()
+}
 
 extern "C" fn install() {
     // Nothing runs before this constructor, so the slots are empty.
@@ -396,8 +470,16 @@ extern "C" fn report() {
         IR_INLINE_CALLS.load(Relaxed)
     );
     eprintln!(
+        "vesper-hybrid: ir-opt answered {} calls from Vesper",
+        IR_OPT_CALLS.load(Relaxed)
+    );
+    eprintln!(
         "vesper-hybrid: place-ir round-tripped {} programs through Vesper",
         PLACE_IR_CALLS.load(Relaxed)
+    );
+    eprintln!(
+        "vesper-hybrid: bounds-hoist hoisted {} programs in Vesper",
+        BOUNDS_HOIST_CALLS.load(Relaxed)
     );
 }
 
