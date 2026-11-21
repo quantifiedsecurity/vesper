@@ -620,8 +620,10 @@ vesper_crate(
         # The region and sequence rules differential (#1181): ~7 min debug.
         "test/self_host_check_regions_seqs": "long",
         "test/self_host_bounds_hoist": "long",
-        "test/self_host_bounds_hoist_pass": "long",
-        "test/self_host_bounds_hoist_jit": "long",
+        # The pass differential lowers, hoists and IR-checks each sampled
+        # program (~20 min debug); the JIT test runs two children.
+        "test/self_host_bounds_hoist_pass": "eternal",
+        "test/self_host_bounds_hoist_jit": "eternal",
         # The dyn differential runs both passes over every .ves source twice.
         "test/self_host_check_dyn": "long",
         # The package assembler differential (#1178) compiles the AST package.

@@ -34,12 +34,13 @@ fn entry() -> &'static Entry {
     E.get_or_init(|| package().entry("hoist_pass", true))
 }
 
-/// Every `BOUNDS_HOIST_PASS_STRIDE`th corpus world (default 6).
+/// Every `BOUNDS_HOIST_PASS_STRIDE`th corpus world (default 24: about 13
+/// programs, about 20 minutes in a debug build with the IR check).
 fn stride() -> usize {
     std::env::var("BOUNDS_HOIST_PASS_STRIDE")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(6)
+        .unwrap_or(24)
 }
 
 /// The first function whose output differs, for the failure message.

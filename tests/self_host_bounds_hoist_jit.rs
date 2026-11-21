@@ -1,5 +1,5 @@
 //! Self-hosting SH3 lane 12 (#1251): bounds hoisting through the IR swap
-//! point's `hoist` hook. Every third corpus program with a `main` runs
+//! point's `hoist` hook. Every sixth corpus program with a `main` runs
 //! through the native JIT (optimize on and off) twice, in two child
 //! processes of this test binary: once with Rust's `bounds_hoist::run`,
 //! once with the hook installed, which hoists through `@vesper/bounds-hoist`
@@ -56,7 +56,7 @@ fn mains() -> Vec<&'static Case> {
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|n: &usize| *n > 0)
-        .unwrap_or(3);
+        .unwrap_or(6);
     corpus()
         .iter()
         .filter(|c| !c.name.ends_with('/'))

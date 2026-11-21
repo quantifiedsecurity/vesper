@@ -111,9 +111,9 @@ repeats the op, pass and type-flag codes.
   - Pool kind 6 is `SeqOp::BoundsGuard`. Its label packs `inclusive` (bit 0), `form.negated` (bit 1), `form.plus` (bits 8 to 15) and `form.minus` (bits 16 to 23).
   - In `tests/common/ir_words.rs`, `made_payload` builds these and `decode_program` maps them after the input pool's entries.
 - **`tests/self_host_bounds_hoist_pass.rs`** runs the pass harness (`ir_words::compare_pass`). It compares Rust `bounds_hoist::run` with the Vesper pass and checks that the canonical dump matches, the programs are `Debug`-equal, and the IR check agrees.
-  - It samples every 6th program by default; `BOUNDS_HOIST_PASS_STRIDE=1` runs them all.
+  - It samples every 24th program by default (CI runs it in a debug build); `BOUNDS_HOIST_PASS_STRIDE=1` runs them all.
   - It also holds ignored `timing` and `callgrind` tests.
-- **`tests/self_host_bounds_hoist_jit.rs`** runs every third corpus `main` through the native JIT, with optimize on and off. It runs once with Rust hoisting and once with the Vesper pass installed as the `hoist` hook, each in a child process on a large stack, and compares the results.
+- **`tests/self_host_bounds_hoist_jit.rs`** runs every sixth corpus `main` (`BOUNDS_HOIST_JIT_STEP`) through the native JIT, with optimize on and off. It runs once with Rust hoisting and once with the Vesper pass installed as the `hoist` hook, each in a child process on a large stack, and compares the results.
 - **`tests/self_host_bounds_hoist/corpus.rs`** holds the corpus at the hoisting boundary, shared by all three tests.
 - **The hybrid build**:
   - `crates/vesper-hybrid/modules/bounds_hoist` (`@vesper/hybrid-bounds-hoist`, entry `hoist_words`) and its blessed binding `port/bounds_hoist.rs`.
