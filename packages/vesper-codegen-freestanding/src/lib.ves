@@ -72,7 +72,14 @@ pub fn freestanding_script(in req: Slice[u8]) -> ChunkSeq[u8] {
     if r.bad {
         return bad_request();
     }
-    let s = linker_script(target, in req[name.start..span_end(name)], ram_base, ram_bytes, image_base, stack_bytes);
+    let s = linker_script(
+        target,
+        in req[name.start..span_end(name)],
+        ram_base,
+        ram_bytes,
+        image_base,
+        stack_bytes
+    );
     let mut out: ChunkSeq[u8] = ChunkSeq::new[u8]();
     push64(inout out, 0);
     put_str(inout out, in s.as_slice());
@@ -137,11 +144,14 @@ pub fn freestanding_link(in req: Slice[u8]) -> ChunkSeq[u8] {
         let object = r.span(in req);
         let function = r.span(in req);
         let offset = r.word(in req);
-        entries.push(TrapEntry {
-            object: object,
-            function: function,
-            offset: offset
-        });
+        entries
+            .push(
+            TrapEntry {
+                object: object,
+                function: function,
+                offset: offset
+            }
+        );
     }
     if r.bad {
         return bad_request();

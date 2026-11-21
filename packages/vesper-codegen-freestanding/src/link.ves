@@ -268,7 +268,14 @@ pub fn linker_new(opts: LinkOptions) -> Linker {
 impl Linker {
     // Adds input object `b[base..base + len]` named `b[name]`. False (and
     // `err` set) when it is malformed or not for the target.
-    pub fn add_object(inout self, in b: Slice[u8], name: Span, base: u64, len: u64, inout err: ChunkSeq[u8]) -> bool {
+    pub fn add_object(
+        inout self,
+        in b: Slice[u8],
+        name: Span,
+        base: u64,
+        len: u64,
+        inout err: ChunkSeq[u8]
+    ) -> bool {
         let mut why: ChunkSeq[u8] = ChunkSeq::new[u8]();
         let o = parse_object(in b, name, base, len, inout self.secs, inout self.syms, inout why);
         let oname = b[name.start..add(name.start, name.len)];
@@ -319,7 +326,11 @@ impl Linker {
             for si in 1..o.nsec {
                 let s = sec(in self.secs, o, si);
                 if !s.name_ok {
-                    fail_object_in(inout err, in b[on.start..add(on.start, on.len)], in "invalid section name");
+                    fail_object_in(
+                        inout err,
+                        in b[on.start..add(on.start, on.len)],
+                        in "invalid section name"
+                    );
                     return false;
                 }
                 let out = classify(s);
@@ -327,14 +338,22 @@ impl Linker {
                     continue;
                 }
                 if out == 5 {
-                    fail_section(inout err, in b[on.start..add(on.start, on.len)], in b[s.name_at..add(s.name_at, s.name_len)]);
+                    fail_section(
+                        inout err,
+                        in b[on.start..add(on.start, on.len)],
+                        in b[s.name_at..add(s.name_at, s.name_len)]
+                    );
                     return false;
                 }
                 let data_at = self.pdata.len();
                 let mut data_len: u64 = 0;
                 if out != OUT_BSS {
                     if !s.data_ok {
-                        fail_object_in(inout err, in b[on.start..add(on.start, on.len)], in "invalid section data");
+                        fail_object_in(
+                            inout err,
+                            in b[on.start..add(on.start, on.len)],
+                            in "invalid section data"
+                        );
                         return false;
                     }
                     if !is_nobits(s) {
@@ -343,21 +362,25 @@ impl Linker {
                     }
                 }
                 let ok = self.piece_of.try_set(add(o.sec0, si), self.pieces.len());
-                self.pieces.push(Piece {
-                    obj: oi,
-                    sec: si,
-                    out: out,
-                    boot: text_eq(in b, s.name_at, s.name_len, in ".text.boot"),
-                    align: if s.align == 0 {
-                        1
-                    } else {
-                        s.align
-                    },
-                    data_at: data_at,
-                    data_len: data_len,
-                    size: s.size,
-                    address: 0
-                });
+                self
+                    .pieces
+                    .push(
+                    Piece {
+                        obj: oi,
+                        sec: si,
+                        out: out,
+                        boot: text_eq(in b, s.name_at, s.name_len, in ".text.boot"),
+                        align: if s.align == 0 {
+                            1
+                        } else {
+                            s.align
+                        },
+                        data_at: data_at,
+                        data_len: data_len,
+                        size: s.size,
+                        address: 0
+                    }
+                );
             }
         }
         let mut boots: u64 = 0;
@@ -433,7 +456,11 @@ impl Linker {
                     continue;
                 }
                 if !s.name_ok {
-                    fail_object_in(inout err, in b[on.start..add(on.start, on.len)], in "invalid symbol name");
+                    fail_object_in(
+                        inout err,
+                        in b[on.start..add(on.start, on.len)],
+                        in "invalid symbol name"
+                    );
                     return false;
                 }
                 if s.name_len == 0 || sym_is_section(s) {
@@ -443,7 +470,10 @@ impl Linker {
                 let global = sym_global(s);
                 let name = b[s.name_at..add(s.name_at, s.name_len)];
                 let hash = fnv(in name);
-                if global && (self.is_linker_symbol(in name) || self.global_hashed(in name, hash) != NONE64) {
+                if global
+                    && (
+                    self.is_linker_symbol(in name) || self.global_hashed(in name, hash) != NONE64
+                ) {
                     fail_duplicate(inout err, in name);
                     return false;
                 }
@@ -452,15 +482,19 @@ impl Linker {
                 if global {
                     self.globals.push(self.linked.len());
                 }
-                self.linked.push(Linked {
-                    obj: oi,
-                    hash: hash,
-                    name_at: at,
-                    name_len: s.name_len,
-                    address: address,
-                    size: s.size,
-                    global: global
-                });
+                self
+                    .linked
+                    .push(
+                    Linked {
+                        obj: oi,
+                        hash: hash,
+                        name_at: at,
+                        name_len: s.name_len,
+                        address: address,
+                        size: s.size,
+                        global: global
+                    }
+                );
             }
         }
         let start = self.global(in "_start".as_bytes());
@@ -517,7 +551,14 @@ impl Linker {
         for i in 0..self.globals.len() {
             let row = w_at(in self.globals, i);
             let l = linked_at(in self.linked, row);
-            if l.hash == hash && l.name_len == name.len() && bytes_eq(in self.names.as_slice(), l.name_at, in name, 0, name.len()) {
+            if l
+                .hash
+                == hash
+                && l
+                .name_len
+                == name
+                .len()
+                && bytes_eq(in self.names.as_slice(), l.name_at, in name, 0, name.len()) {
                 return row;
             }
         }
@@ -533,7 +574,8 @@ impl Linker {
         NONE64
     }
 
-    fn relocate(inout self, in b: Slice[u8], oi: u64, pi: u64, rel: Rel, inout err: ChunkSeq[u8]) -> bool {
+    fn relocate(inout self, in b: Slice[u8], oi: u64, pi: u64, rel: Rel, inout err: ChunkSeq[u8])
+        -> bool {
         let o = obj_at(in self.objs, oi);
         let on = o.name;
         let oname = b[on.start..add(on.start, on.len)];
@@ -670,91 +712,131 @@ impl Linker {
                     let p = piece_at(in self.pieces, i);
                     if widen_u64(p.out) == k {
                         let o = add(data_at, sub(p.address, start));
-                        let ok = data.try_copy_from(o, in self.pdata[p.data_at..add(p.data_at, p.data_len)]);
+                        let ok = data
+                            .try_copy_from(o, in self.pdata[p.data_at..add(p.data_at, p.data_len)]);
                     }
                 }
             }
-            secs.push(OutSec {
-                name: k,
-                address: start,
-                data_at: data_at,
-                data_len: if bss {
-                    0
-                } else {
-                    sub(end, start)
-                },
-                mem_bytes: sub(end, start),
-                nobits: bss,
-                writable: k >= widen_u64(OUT_DATA),
-                executable: k == widen_u64(OUT_TEXT)
-            });
+            secs
+                .push(
+                OutSec {
+                    name: k,
+                    address: start,
+                    data_at: data_at,
+                    data_len: if bss {
+                        0
+                    } else {
+                        sub(end, start)
+                    },
+                    mem_bytes: sub(end, start),
+                    nobits: bss,
+                    writable: k >= widen_u64(OUT_DATA),
+                    executable: k == widen_u64(OUT_TEXT)
+                }
+            );
         }
-        secs.push(OutSec {
-            name: 4,
-            address: self.stack_bottom,
-            data_at: data.len(),
-            data_len: 0,
-            mem_bytes: sub(self.stack_top, self.stack_bottom),
-            nobits: true,
-            writable: true,
-            executable: false
-        });
+        secs
+            .push(
+            OutSec {
+                name: 4,
+                address: self.stack_bottom,
+                data_at: data.len(),
+                data_len: 0,
+                mem_bytes: sub(self.stack_top, self.stack_bottom),
+                nobits: true,
+                writable: true,
+                executable: false
+            }
+        );
         let mut segs: ChunkSeq[OutSeg] = ChunkSeq::new[OutSeg]();
-        segs.push(OutSeg {
-            first: 0,
-            end: 2,
-            flags: pf_rx()
-        });
-        segs.push(OutSeg {
-            first: 2,
-            end: 5,
-            flags: pf_rw()
-        });
+        segs
+            .push(
+            OutSeg {
+                first: 0,
+                end: 2,
+                flags: pf_rx()
+            }
+        );
+        segs
+            .push(
+            OutSeg {
+                first: 2,
+                end: 5,
+                flags: pf_rw()
+            }
+        );
         let mut out_syms: ChunkSeq[OutSym] = ChunkSeq::new[OutSym]();
         for i in 0..self.linked.len() {
             let l = linked_at(in self.linked, i);
             let section = section_of(in secs, l.address);
-            out_syms.push(OutSym {
-                name_at: l.name_at,
-                name_len: l.name_len,
-                value: l.address,
-                size: l.size,
-                global: l.global,
-                function: section == 0,
-                section: section
-            });
+            out_syms
+                .push(
+                OutSym {
+                    name_at: l.name_at,
+                    name_len: l.name_len,
+                    value: l.address,
+                    size: l.size,
+                    global: l.global,
+                    function: section == 0,
+                    section: section
+                }
+            );
         }
         for i in 0..LINKER_SYMBOLS {
             let at = self.names.len();
             let n = linker_name(i).as_bytes();
             self.names.extend(in n);
             let value = w_at(in self.defined, i);
-            out_syms.push(OutSym {
-                name_at: at,
-                name_len: n.len(),
-                value: value,
-                size: 0,
-                global: true,
-                function: false,
-                section: NONE64
-            });
-            self.linked.push(Linked {
-                obj: LINKER_OBJECT,
-                hash: 0,
-                name_at: at,
-                name_len: n.len(),
-                address: value,
-                size: 0,
-                global: true
-            });
+            out_syms
+                .push(
+                OutSym {
+                    name_at: at,
+                    name_len: n.len(),
+                    value: value,
+                    size: 0,
+                    global: true,
+                    function: false,
+                    section: NONE64
+                }
+            );
+            self
+                .linked
+                .push(
+                Linked {
+                    obj: LINKER_OBJECT,
+                    hash: 0,
+                    name_at: at,
+                    name_len: n.len(),
+                    address: value,
+                    size: 0,
+                    global: true
+                }
+            );
         }
         let machine = machine_of(self.opts.target);
-        self.elf = write_executable(machine, self.e_flags, self.entry, in secs, in data, in segs, in self.names, in out_syms, inout self.placements);
+        self
+            .elf = write_executable(
+            machine,
+            self.e_flags,
+            self.entry,
+            in secs,
+            in data,
+            in segs,
+            in self.names,
+            in out_syms,
+            inout self.placements
+        );
     }
 
     // `resolve_traps` and `patch_trap_table`: the PC of each entry, written
     // into the linked image's trap table.
-    pub fn patch_traps(inout self, in b: Slice[u8], in entries: ChunkSeq[TrapEntry], inout pcs: ChunkSeq[u64], inout err: ChunkSeq[u8]) -> bool {
+    pub fn patch_traps(
+        inout self,
+        in b: Slice[u8],
+        in entries: ChunkSeq[TrapEntry],
+        inout pcs: ChunkSeq[u64],
+        inout err: ChunkSeq[u8]
+    ) -> bool {
         for i in 0..entries.len() {
             let e = match entries.try_get(i) {
                 Option::Some(v) => v,
@@ -775,13 +857,29 @@ impl Linker {
                 let l = linked_at(in self.linked, k);
                 if found == NONE64 && l.obj != LINKER_OBJECT && l.name_len == e.function.len {
                     let on = obj_at(in self.objs, l.obj).name;
-                    if on.len == e.object.len && bytes_eq(in b, on.start, in b, e.object.start, on.len) && bytes_eq(in self.names.as_slice(), l.name_at, in b, e.function.start, l.name_len) {
+                    if on
+                        .len
+                        == e
+                        .object
+                        .len
+                        && bytes_eq(in b, on.start, in b, e.object.start, on.len)
+                        && bytes_eq(
+                        in self.names.as_slice(),
+                        l.name_at,
+                        in b,
+                        e.function.start,
+                        l.name_len
+                    ) {
                         found = k;
                     }
                 }
             }
             if found == NONE64 {
-                fail_unresolved(inout err, in b[e.function.start..add(e.function.start, e.function.len)], in "trap table".as_bytes());
+                fail_unresolved(
+                    inout err,
+                    in b[e.function.start..add(e.function.start, e.function.len)],
+                    in "trap table".as_bytes()
+                );
                 return false;
             }
             pcs.push(add(linked_at(in self.linked, found).address, e.offset));
@@ -789,12 +887,21 @@ impl Linker {
         let mut table = NONE64;
         for k in 0..self.linked.len() {
             let l = linked_at(in self.linked, k);
-            if table == NONE64 && name_is(in self.names[l.name_at..add(l.name_at, l.name_len)], in "vesper_trap_table") {
+            if table
+                == NONE64
+                && name_is(
+                in self.names[l.name_at..add(l.name_at, l.name_len)],
+                in "vesper_trap_table"
+            ) {
                 table = l.address;
             }
         }
         if table == NONE64 {
-            fail_unresolved(inout err, in "vesper_trap_table".as_bytes(), in "trap table".as_bytes());
+            fail_unresolved(
+                inout err,
+                in "vesper_trap_table".as_bytes(),
+                in "trap table".as_bytes()
+            );
             return false;
         }
         let count_at = self.file_offset(table);
@@ -900,11 +1007,14 @@ impl Linker {
             put_str(inout out, in self.names[l.name_at..add(l.name_at, l.name_len)]);
             push64(inout out, l.address);
             push64(inout out, l.size);
-            push64(inout out, if l.global {
-                1
-            } else {
-                0
-            });
+            push64(
+                inout out,
+                if l.global {
+                    1
+                } else {
+                    0
+                }
+            );
         }
         push64(inout out, pcs.len());
         for i in 0..pcs.len() {
@@ -949,7 +1059,14 @@ fn name_is(in name: Slice[u8], in s: Str) -> bool {
 
 // `checks::compare_code`: the bytes of `symbol` in the relocatable object
 // `b[base..base + len]` equal `b[code]`.
-pub fn compare_code(in b: Slice[u8], base: u64, len: u64, symbol: Span, code: Span, inout err: ChunkSeq[u8]) {
+pub fn compare_code(
+    in b: Slice[u8],
+    base: u64,
+    len: u64,
+    symbol: Span,
+    code: Span,
+    inout err: ChunkSeq[u8]
+) {
     let mut secs: ChunkSeq[Sec] = ChunkSeq::new[Sec]();
     let mut syms: ChunkSeq[Sym] = ChunkSeq::new[Sym]();
     let mut why: ChunkSeq[u8] = ChunkSeq::new[u8]();
@@ -962,7 +1079,15 @@ pub fn compare_code(in b: Slice[u8], base: u64, len: u64, symbol: Span, code: Sp
     let mut found = NONE64;
     for k in 1..o.nsym {
         let s = sym(in syms, o, k);
-        if found == NONE64 && s.name_ok && s.name_len == symbol.len && bytes_eq(in b, s.name_at, in sname, 0, symbol.len) {
+        if found
+            == NONE64
+            && s
+            .name_ok
+            && s
+            .name_len
+            == symbol
+            .len
+            && bytes_eq(in b, s.name_at, in sname, 0, symbol.len) {
             found = k;
         }
     }
@@ -994,7 +1119,11 @@ pub fn compare_code(in b: Slice[u8], base: u64, len: u64, symbol: Span, code: Sp
         fail_mismatch(inout err, in sname);
         return;
     }
-    if !bytes_eq(in b, add(section.data_at, start), in b, code.start, code.len) || s.size != code.len {
+    if !bytes_eq(in b, add(section.data_at, start), in b, code.start, code.len)
+        || s
+        .size
+        != code
+        .len {
         fail_mismatch(inout err, in sname);
     }
 }

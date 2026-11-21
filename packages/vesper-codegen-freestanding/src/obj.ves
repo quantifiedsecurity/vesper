@@ -173,10 +173,12 @@ fn c_string(in b: Slice[u8], t_at: u64, t_len: u64, at: u64) -> Option[Span] {
         return Option::None;
     }
     match b[start..end].find_byte(0) {
-        Option::Some(n) => Option::Some(Span {
-            start: start,
-            len: n
-        }),
+        Option::Some(n) => Option::Some(
+            Span {
+                start: start,
+                len: n
+            }
+        ),
         Option::None => Option::None,
     }
 }
@@ -231,11 +233,25 @@ pub fn parse_object(
         nsym: 0,
         symtab: 0
     };
-    if len < EHDR_BYTES || rd8(in b, base) != 127 || rd8(in b, add(base, 1)) != 69 || rd8(in b, add(base, 2)) != 76 || rd8(in b, add(base, 3)) != 70 {
+    if len
+        < EHDR_BYTES
+        || rd8(in b, base)
+        != 127
+        || rd8(in b, add(base, 1))
+        != 69
+        || rd8(in b, add(base, 2))
+        != 76
+        || rd8(in b, add(base, 3))
+        != 70 {
         why.extend(in "not an ELF file".as_bytes());
         return o;
     }
-    if rd8(in b, add(base, 4)) != 2 || rd8(in b, add(base, 5)) != 1 || rd8(in b, add(base, 6)) != 1 {
+    if rd8(in b, add(base, 4))
+        != 2
+        || rd8(in b, add(base, 5))
+        != 1
+        || rd8(in b, add(base, 6))
+        != 1 {
         why.extend(in "not a little-endian ELF64 file".as_bytes());
         return o;
     }
@@ -260,7 +276,15 @@ pub fn parse_object(
     if shstrndx == widen_u64(SHN_XINDEX) {
         shstrndx = w32(o32(in b, o, add(shoff, 40)));
     }
-    if shnum == NONE64 || shstrndx == NONE64 || shnum > o.len / SHDR_BYTES || !inside(o, shoff, wrapping_mul(shnum, SHDR_BYTES)) {
+    if shnum
+        == NONE64
+        || shstrndx
+        == NONE64
+        || shnum
+        > o
+        .len
+        / SHDR_BYTES
+        || !inside(o, shoff, wrapping_mul(shnum, SHDR_BYTES)) {
         why.extend(in "invalid section header table".as_bytes());
         return o;
     }
@@ -270,21 +294,24 @@ pub fn parse_object(
         let offset = w64(o64(in b, o, add(h, 24)));
         let size = w64(o64(in b, o, add(h, 32)));
         let data_ok = sh_type == SHT_NOBITS || inside(o, offset, size);
-        secs.push(Sec {
-            name_at: widen_u64(wrapping_u32(w32(o32(in b, o, h)))),
-            name_len: 0,
-            sh_type: sh_type,
-            flags: w64(o64(in b, o, add(h, 8))),
-            data_at: add(base, offset),
-            size: size,
-            link: wrapping_u32(w32(o32(in b, o, add(h, 40)))),
-            info: wrapping_u32(w32(o32(in b, o, add(h, 44)))),
-            align: w64(o64(in b, o, add(h, 48))),
-            entsize: w64(o64(in b, o, add(h, 56))),
-            rel: 0,
-            data_ok: data_ok,
-            name_ok: false
-        });
+        secs
+            .push(
+            Sec {
+                name_at: widen_u64(wrapping_u32(w32(o32(in b, o, h)))),
+                name_len: 0,
+                sh_type: sh_type,
+                flags: w64(o64(in b, o, add(h, 8))),
+                data_at: add(base, offset),
+                size: size,
+                link: wrapping_u32(w32(o32(in b, o, add(h, 40)))),
+                info: wrapping_u32(w32(o32(in b, o, add(h, 44)))),
+                align: w64(o64(in b, o, add(h, 48))),
+                entsize: w64(o64(in b, o, add(h, 56))),
+                rel: 0,
+                data_ok: data_ok,
+                name_ok: false
+            }
+        );
     }
     o.nsec = shnum;
     // Section names.
@@ -560,10 +587,13 @@ pub fn string_table(
         } else {
             let ok = offsets.try_set(id, offset);
             for c in 0..l {
-                data.push(match strs.try_get(add(s, c)) {
-                    Option::Some(v) => v,
-                    Option::None => 0,
-                });
+                data
+                    .push(
+                    match strs.try_get(add(s, c)) {
+                        Option::Some(v) => v,
+                        Option::None => 0,
+                    }
+                );
             }
             data.push(0);
             offset = add(offset, add(l, 1));
@@ -580,7 +610,13 @@ fn at64(in s: ChunkSeq[u64], i: u64) -> u64 {
 }
 
 // Byte `pos` (1-based from the end) of string `id`, 0 past its start.
-fn rev_byte(in strs: ChunkSeq[u8], in starts: ChunkSeq[u64], in lens: ChunkSeq[u64], id: u64, pos: u64) -> u8 {
+fn rev_byte(
+    in strs: ChunkSeq[u8],
+    in starts: ChunkSeq[u64],
+    in lens: ChunkSeq[u64],
+    id: u64,
+    pos: u64
+) -> u8 {
     let l = at64(in lens, id);
     if pos > l {
         return 0;
@@ -592,7 +628,13 @@ fn rev_byte(in strs: ChunkSeq[u8], in starts: ChunkSeq[u64], in lens: ChunkSeq[u
 }
 
 // String `a` sorts before string `b`.
-fn rev_greater(in strs: ChunkSeq[u8], in starts: ChunkSeq[u64], in lens: ChunkSeq[u64], a: u64, b: u64) -> bool {
+fn rev_greater(
+    in strs: ChunkSeq[u8],
+    in starts: ChunkSeq[u64],
+    in lens: ChunkSeq[u64],
+    a: u64,
+    b: u64
+) -> bool {
     let mut pos: u64 = 1;
     loop {
         let x = rev_byte(in strs, in starts, in lens, a, pos);
@@ -744,15 +786,75 @@ pub fn write_stub_object(
     pad_to(inout out, ELF_ALIGN);
     // Section headers.
     let n = grow(inout out, SHDR_BYTES);
-    section_header(inout out, at64(in sh_offsets, 0), widen_u64(SHT_PROGBITS), SHF_ALLOC | SHF_EXECINSTR, text_off, code.len(), 0, 0, align, 0);
-    section_header(inout out, at64(in sh_offsets, 1), widen_u64(SHT_RELA), SHF_INFO_LINK, rela_off, rela_size, 3, 1, ELF_ALIGN, RELA_BYTES);
-    section_header(inout out, at64(in sh_offsets, 2), widen_u64(SHT_SYMTAB), 0, symtab_off, symtab_size, 4, 1, ELF_ALIGN, SYM_BYTES);
-    section_header(inout out, at64(in sh_offsets, 3), widen_u64(SHT_STRTAB), 0, strtab_off, strtab.len(), 0, 0, 1, 0);
-    section_header(inout out, at64(in sh_offsets, 4), widen_u64(SHT_STRTAB), 0, shstrtab_off, shstrtab.len(), 0, 0, 1, 0);
+    section_header(
+        inout out,
+        at64(in sh_offsets, 0),
+        widen_u64(SHT_PROGBITS),
+        SHF_ALLOC | SHF_EXECINSTR,
+        text_off,
+        code.len(),
+        0,
+        0,
+        align,
+        0
+    );
+    section_header(
+        inout out,
+        at64(in sh_offsets, 1),
+        widen_u64(SHT_RELA),
+        SHF_INFO_LINK,
+        rela_off,
+        rela_size,
+        3,
+        1,
+        ELF_ALIGN,
+        RELA_BYTES
+    );
+    section_header(
+        inout out,
+        at64(in sh_offsets, 2),
+        widen_u64(SHT_SYMTAB),
+        0,
+        symtab_off,
+        symtab_size,
+        4,
+        1,
+        ELF_ALIGN,
+        SYM_BYTES
+    );
+    section_header(
+        inout out,
+        at64(in sh_offsets, 3),
+        widen_u64(SHT_STRTAB),
+        0,
+        strtab_off,
+        strtab.len(),
+        0,
+        0,
+        1,
+        0
+    );
+    section_header(
+        inout out,
+        at64(in sh_offsets, 4),
+        widen_u64(SHT_STRTAB),
+        0,
+        shstrtab_off,
+        shstrtab.len(),
+        0,
+        0,
+        1,
+        0
+    );
     out
 }
 
-fn add_name(inout strs: ChunkSeq[u8], inout starts: ChunkSeq[u64], inout lens: ChunkSeq[u64], in name: Str) {
+fn add_name(
+    inout strs: ChunkSeq[u8],
+    inout starts: ChunkSeq[u64],
+    inout lens: ChunkSeq[u64],
+    in name: Str
+) {
     starts.push(strs.len());
     let n = name.as_bytes();
     lens.push(n.len());

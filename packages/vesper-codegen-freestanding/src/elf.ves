@@ -188,19 +188,23 @@ pub fn write_executable(
             }
             mem_end = max64(mem_end, add(s.address, s.mem_bytes));
         }
-        placements.push(Placement {
-            vaddr: seg_base,
-            offset: off,
-            file_bytes: sub(file_end, off),
-            mem_bytes: sub(mem_end, seg_base)
-        });
+        placements
+            .push(
+            Placement {
+                vaddr: seg_base,
+                offset: off,
+                file_bytes: sub(file_end, off),
+                mem_bytes: sub(mem_end, seg_base)
+            }
+        );
     }
     // String tables and symbols.
     let mut shstrtab: ChunkSeq[u8] = ChunkSeq::new[u8]();
     shstrtab.push(0);
     let mut sh_names: ChunkSeq[u32] = ChunkSeq::new[u32]();
     for i in 0..secs.len() {
-        sh_names.push(append_name(inout shstrtab, in section_name(s_at(in secs, i).name).as_bytes()));
+        sh_names
+            .push(append_name(inout shstrtab, in section_name(s_at(in secs, i).name).as_bytes()));
     }
     let symtab_name = append_name(inout shstrtab, in ".symtab".as_bytes());
     let strtab_name = append_name(inout shstrtab, in ".strtab".as_bytes());
@@ -228,7 +232,10 @@ pub fn write_executable(
                 if !s.global {
                     locals = add(locals, 1);
                 }
-                let name = append_name(inout strtab, in names[s.name_at..add(s.name_at, s.name_len)]);
+                let name = append_name(
+                    inout strtab,
+                    in names[s.name_at..add(s.name_at, s.name_len)]
+                );
                 push32(inout symtab, name);
                 let bind: u8 = if s.global {
                     1
@@ -291,9 +298,45 @@ pub fn write_executable(
         header_at(inout out, name, kind, flags, s.address, off, s.mem_bytes, 0, 0, 8, 0);
     }
     let strtab_index = add(secs.len(), 2);
-    header_at(inout out, widen_u64(symtab_name), SHT_SYMTAB, 0, 0, symtab_off, symtab.len(), strtab_index, first_global, 8, 24);
-    header_at(inout out, widen_u64(strtab_name), SHT_STRTAB, 0, 0, strtab_off, strtab.len(), 0, 0, 1, 0);
-    header_at(inout out, widen_u64(shstrtab_name), SHT_STRTAB, 0, 0, shstrtab_off, shstrtab.len(), 0, 0, 1, 0);
+    header_at(
+        inout out,
+        widen_u64(symtab_name),
+        SHT_SYMTAB,
+        0,
+        0,
+        symtab_off,
+        symtab.len(),
+        strtab_index,
+        first_global,
+        8,
+        24
+    );
+    header_at(
+        inout out,
+        widen_u64(strtab_name),
+        SHT_STRTAB,
+        0,
+        0,
+        strtab_off,
+        strtab.len(),
+        0,
+        0,
+        1,
+        0
+    );
+    header_at(
+        inout out,
+        widen_u64(shstrtab_name),
+        SHT_STRTAB,
+        0,
+        0,
+        shstrtab_off,
+        shstrtab.len(),
+        0,
+        0,
+        1,
+        0
+    );
     // ELF header.
     let mut h: ChunkSeq[u8] = ChunkSeq::new[u8]();
     h.push(127);
@@ -455,7 +498,17 @@ pub fn read_executable(in b: Slice[u8]) -> ChunkSeq[u8] {
 }
 
 fn read_into(in b: Slice[u8], inout out: ChunkSeq[u8], inout err: ChunkSeq[u8]) {
-    if b.len() < 64 || rd8(in b, 0) != 127 || rd8(in b, 1) != 69 || rd8(in b, 2) != 76 || rd8(in b, 3) != 70 {
+    if b
+        .len()
+        < 64
+        || rd8(in b, 0)
+        != 127
+        || rd8(in b, 1)
+        != 69
+        || rd8(in b, 2)
+        != 76
+        || rd8(in b, 3)
+        != 70 {
         set_err(inout err, in "not an ELF file");
         return;
     }

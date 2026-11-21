@@ -67,7 +67,12 @@ pub fn fail_relocation(inout err: ChunkSeq[u8], in object: Slice[u8], r_type: u3
 }
 
 // `RelocationOutOfRange { object, symbol, r_type }`.
-pub fn fail_range(inout err: ChunkSeq[u8], in object: Slice[u8], in symbol: Slice[u8], r_type: u32) {
+pub fn fail_range(
+    inout err: ChunkSeq[u8],
+    in object: Slice[u8],
+    in symbol: Slice[u8],
+    r_type: u32
+) {
     err.clear();
     push64(inout err, E_RELOCATION_OUT_OF_RANGE);
     put_str(inout err, in object);
