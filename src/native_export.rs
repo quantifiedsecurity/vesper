@@ -1408,7 +1408,8 @@ fn define_wide_entry<M: Module>(
         let inst = b.ins().call(callee, &call);
         let returned = b.inst_results(inst)[0];
         let word = if wide_result {
-            b.ins().store(flags, returned, result.expect("a result pointer"), 0);
+            b.ins()
+                .store(flags, returned, result.expect("a result pointer"), 0);
             b.ins().iconst(types::I64, 0)
         } else {
             returned

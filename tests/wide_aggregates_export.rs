@@ -75,7 +75,10 @@ fn wide_values_cross_through_pointers() {
     assert_eq!(f("positive").result_words, 3);
     assert_eq!(f("cell").result_words, 5);
     let binding = rust_binding(&i, &BindingOptions::default());
-    assert!(binding.contains("pub fn add(a: u128, b: u128) -> u128"), "{binding}");
+    assert!(
+        binding.contains("pub fn add(a: u128, b: u128) -> u128"),
+        "{binding}"
+    );
     assert!(binding.contains("<u128 as Abi>::WORDS"), "{binding}");
 }
 
@@ -167,7 +170,11 @@ int main(void) {{
         .arg(dir.join("main"))
         .output()
         .unwrap();
-    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
     let run = Command::new(dir.join("main")).output().unwrap();
     assert!(run.status.success());
     let _ = std::fs::remove_dir_all(&dir);

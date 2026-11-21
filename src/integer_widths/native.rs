@@ -372,7 +372,10 @@ impl<M: Module> Codegen<'_, '_, M> {
         let (mut q, mut rhat) = self.word_divrem(top, vn1);
         let mut live = None;
         for _ in 0..2 {
-            let full = self.b.ins().icmp_imm(IntCC::UnsignedGreaterThanOrEqual, q, DIGIT);
+            let full = self
+                .b
+                .ins()
+                .icmp_imm(IntCC::UnsignedGreaterThanOrEqual, q, DIGIT);
             let lhs = self.b.ins().imul(q, vn0);
             let rhs = self.b.ins().ishl_imm(rhat, 32);
             let rhs = self.b.ins().bor(rhs, next);
@@ -712,9 +715,10 @@ fn widen(declared: &Type, actual: &Type) -> Option<Type> {
                 .collect();
             any.then_some(Type::Tuple(ts))
         }
-        (d, a) if is_wide(a)
-            && !is_wide(d)
-            && (matches!(d, Type::IntLiteral(_)) || IntegerKind::from_type(d).is_some()) =>
+        (d, a)
+            if is_wide(a)
+                && !is_wide(d)
+                && (matches!(d, Type::IntLiteral(_)) || IntegerKind::from_type(d).is_some()) =>
         {
             Some(a.clone())
         }

@@ -90,18 +90,20 @@ fn pairs() -> Vec<(u128, u128)> {
     out
 }
 
-const WORDS: &str =
-    "fn w(hi: u64, lo: u64) -> u128 { (widen_u128(hi) << 64) | widen_u128(lo) }
+const WORDS: &str = "fn w(hi: u64, lo: u64) -> u128 { (widen_u128(hi) << 64) | widen_u128(lo) }
 ";
 
 fn word_call(v: u128) -> String {
     format!("w({}, {})", (v >> 64) as u64, v as u64)
 }
 
+/// Rust's quotient and remainder of a pair, as bit patterns.
+type Reference = fn(u128, u128) -> (u128, u128);
+
 /// One program per chunk of pairs: `main` returns the quotient and the
 /// remainder of each pair, as `kind`.
 fn check_chunks(kind: &str, cases: &[(u128, u128)], show: fn(u128) -> String) {
-    let (convert, reference): (&str, fn(u128, u128) -> (u128, u128)) = if kind == "u128" {
+    let (convert, reference): (&str, Reference) = if kind == "u128" {
         ("", |n, d| (n / d, n % d))
     } else {
         ("wrapping_i128", |n, d| {
@@ -113,7 +115,13 @@ fn check_chunks(kind: &str, cases: &[(u128, u128)], show: fn(u128) -> String) {
         let mut calls = vec![];
         let mut expected = vec![];
         for (n, d) in chunk {
-            calls.push(format!("q({}({}), {}({}))", convert, word_call(*n), convert, word_call(*d)));
+            calls.push(format!(
+                "q({}({}), {}({}))",
+                convert,
+                word_call(*n),
+                convert,
+                word_call(*d)
+            ));
             let (q, r) = reference(*n, *d);
             expected.push(format!("({}, {})", show(q), show(r)));
         }
@@ -127,7 +135,11 @@ fn check_chunks(kind: &str, cases: &[(u128, u128)], show: fn(u128) -> String) {
 fn main() -> ({types}) {{ ({},) }}",
             calls.join(", ")
         );
-        run_all(&source, &format!("({},)", expected.join(", ")).replace(",)", if chunk.len() == 1 { ",)" } else { ")" }));
+        run_all(
+            &source,
+            &format!("({},)", expected.join(", "))
+                .replace(",)", if chunk.len() == 1 { ",)" } else { ")" }),
+        );
     }
 }
 
@@ -141,7 +153,12 @@ fn signed_division_agrees_with_rust() {
     let cases: Vec<(u128, u128)> = pairs()
         .into_iter()
         .flat_map(|(n, d)| {
-            [(n, d), (n.wrapping_neg(), d), (n, d.wrapping_neg()), (n.wrapping_neg(), d.wrapping_neg())]
+            [
+                (n, d),
+                (n.wrapping_neg(), d),
+                (n, d.wrapping_neg()),
+                (n.wrapping_neg(), d.wrapping_neg()),
+            ]
         })
         .filter(|(n, d)| *d != 0 && !(*n as i128 == i128::MIN && *d as i128 == -1))
         .collect();
