@@ -203,12 +203,27 @@ fn entry_name(i: usize) -> String {
     format!("numeric_runtime_{i}")
 }
 
+/// The repository root: Cargo runs tests in this crate's directory, Bazel in
+/// the runfiles root.
+fn repo() -> std::path::PathBuf {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for base in [manifest.join("../.."), std::path::PathBuf::from(".")] {
+        if base
+            .join("packages/vesper-codegen-numeric/src/lib.ves")
+            .exists()
+        {
+            return base;
+        }
+    }
+    panic!("cannot find packages/vesper-codegen-numeric");
+}
+
 /// `@vesper/cranelift`, the package and one entry per configuration,
 /// checked for the host.
 fn checked() -> &'static ForeignChecked {
     static C: OnceLock<ForeignChecked> = OnceLock::new();
     C.get_or_init(|| {
-        let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = repo();
         let shim = std::fs::read_to_string(repo.join("packages/vesper-cranelift/src/lib.ves"))
             .unwrap();
         let mut source = shim.clone();
@@ -477,8 +492,7 @@ fn rust_decisions() -> String {
 
 /// `shapes.ves` alone, compiled as a world (it needs no Cranelift handle).
 fn vesper_decisions(optimize: bool) -> String {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("packages/vesper-codegen-numeric/src/shapes.ves");
+    let path = repo().join("packages/vesper-codegen-numeric/src/shapes.ves");
     let source = std::fs::read_to_string(path).unwrap();
     let parsed = parser::parse(&source);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);

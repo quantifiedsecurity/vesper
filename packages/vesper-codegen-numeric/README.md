@@ -2,7 +2,8 @@
 
 Native lowering of the numeric and memory families in Vesper: self-hosting
 wave SH4, lane 11 (#1285). The Rust lowering stays the default compiler; this
-package is compared with it by `tests/self_host_codegen_numeric.rs`.
+package is compared with it by
+`crates/vesper-codegen-numeric-test/tests/self_host_codegen_numeric.rs`.
 
 | File | Ports | Compared by |
 |---|---|---|

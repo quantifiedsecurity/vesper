@@ -40,7 +40,7 @@ swap later only needs lane 1's lent module handle.
 
 ## The comparison
 
-`tests/self_host_codegen_numeric.rs`, test
+`crates/vesper-codegen-numeric-test/tests/self_host_codegen_numeric.rs`, test
 `runtime_symbols_match_the_rust_lowering`:
 
 - **Reference:** the real compiler, not a copy of its code. Three programs
@@ -92,11 +92,16 @@ mirrors those three small tables; everything else is the public Rust API.
 
 This PR touches none of `src/verified_codegen/**`, `src/ir.rs`,
 `ir_opt::optimize`, `lean/**`, `bootstrap/**` or `packages/vesper-compiler/**`,
-and no Rust source of the compiler: the diff is the new package, the new test,
-this report, a `[dev-dependencies]` line for `vesper-cranelift-sys` in the
-root `Cargo.toml` (with its `Cargo.lock` line, in its own commit) and the
-test's data and timeout in `BUILD.bazel`. The default compiler's objects are
-therefore unchanged. The bootstrap-stage1 workflow run on this branch is
+and no Rust source of the compiler: the diff is the new package, the new test
+crate `crates/vesper-codegen-numeric-test`, this report, and its workspace
+member line in the root `Cargo.toml` (with its `Cargo.lock` lines, in its own
+commit). The default compiler's objects are therefore unchanged.
+
+The test has its own crate because it links both the compiler and the
+Cranelift shim, and the shim's tests already depend on the compiler. A
+dev-dependency of the root crate on the shim works in Cargo but is a cycle in
+Bazel (`//:vesper` and `//crates/vesper-cranelift-sys`), which failed the
+first CI run. The bootstrap-stage1 workflow run on this branch is
 linked from the PR.
 
 ## Compiler gaps

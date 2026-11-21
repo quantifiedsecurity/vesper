@@ -229,11 +229,6 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
-        # Self-hosting SH4 lane 11 (#1285): @vesper/codegen-numeric emits the
-        # AOT runtimes through @vesper/cranelift. Anchored glob.
-        "test/self_host_codegen_numeric": glob([
-            "packages/vesper-codegen-numeric/**",
-        ]) + ["//packages/vesper-cranelift:files"],
         "test/self_host_check_core_typing_exprs": glob([
             "examples/**",
             "packages/**",
@@ -587,8 +582,6 @@ vesper_crate(
         "test/self_host_check_core_typing": "long",
         "test/self_host_check_core_typing_exprs": "long",
         "test/self_host_check_fip": "long",
-        # Checks the shim library and the package, then JIT-compiles both.
-        "test/self_host_codegen_numeric": "long",
         # The e-graph differential (#1247) runs egg and egglog on the corpus.
         "test/self_host_egraph": "long",
     },
