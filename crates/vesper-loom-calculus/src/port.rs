@@ -7,13 +7,16 @@
 //!
 //! Every string is an occurrence: an index into the string table at the
 //! front, whose entries are `(offset, length)` ranges of the text bytes.
-//! Vesper sorts the table by bytes, so the rank of a string (its id) orders
-//! like the string; sets are written in `BTreeSet` order, which is then
+//! The rank of a string in byte order is its id, so ids order like the
+//! strings. The top bit of `nocc` says the occurrence indices in byte order
+//! follow the pairs (`order*`); Vesper checks that order and sorts the table
+//! itself when it is wrong or missing. Sets are written in `BTreeSet` order, which is then
 //! ascending by id.
 //!
 //! ```text
-//! nocc, (off, len)*
-//! nver, (major, minor, patch, pre, build, text)*          strings: pre, build, text
+//! nocc | 1 << 63, (off, len)*, order*
+//! nver, (major, minor, patch, pre, build, text)*          strings: pre, build, and text
+//!                                                        (always "": the port writes a version's text)
 //! nreq, (text, ncmp, (op, major, minor, has_minor, patch, has_patch, pre)*)*
 //! body
 //! ```
@@ -205,7 +208,9 @@ impl<'a> Enc<'a> {
             v.patch,
             self.intern(v.pre.as_str()),
             self.intern(v.build.as_str()),
-            self.intern(&v.to_string()),
+            // The text field is unused: the port writes a version's
+            // text from its components (`put_ver`).
+            self.intern(""),
         ];
         self.vers.extend(entry);
         self.versions.push(v);
@@ -330,12 +335,20 @@ impl<'a> Enc<'a> {
     }
     fn words(&self) -> Vec<u64> {
         let mut words = Vec::with_capacity(
-            3 + 2 * self.occ.len() + self.vers.len() + self.reqs.len() + self.body.len(),
+            3 + 3 * self.occ.len() + self.vers.len() + self.reqs.len() + self.body.len(),
         );
-        words.push(self.occ.len() as u64);
+        // The top bit says the occurrences in byte order follow the pairs.
+        words.push(self.occ.len() as u64 | 1 << 63);
         for &(off, len) in &self.occ {
             words.extend([off, len]);
         }
+        let text = |i: &u64| {
+            let (off, len) = self.occ[*i as usize];
+            &self.text[off as usize..(off + len) as usize]
+        };
+        let at = words.len();
+        words.extend(0..self.occ.len() as u64);
+        words[at..].sort_unstable_by(|a, b| text(a).cmp(text(b)));
         words.push(self.nver);
         words.extend(&self.vers);
         words.push(self.nreq);
@@ -572,4 +585,66 @@ pub(crate) fn check_upgrade(baseline: &Solution, candidate: &Solution) -> Upgrad
 /// Live Vesper allocations, for leak tests.
 pub fn live_allocations() -> i64 {
     binding::live_allocations()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The raw result words and pool of `validate_manifest` on `words`.
+    fn raw(words: &[u64], text: &[u8]) -> (Vec<u64>, Vec<u8>) {
+        let l = binding::validate_manifest(words, text);
+        let r = l.as_ref();
+        (r.out().to_vec(), r.pool().to_vec())
+    }
+
+    /// A wrong or missing string order makes the port sort the table
+    /// itself, with the same result as the order the wrapper sends.
+    #[test]
+    fn a_wrong_or_missing_string_order_is_sorted_by_the_port() {
+        // Parsed without validation, so the port reports the errors.
+        let manifest: Manifest = toml::from_str(
+            r#"
+[package]
+name = "@robot-head/krabka-wal"
+version = "0.4.0-rc.1+b7"
+edition = "2026"
+capability_ceiling = ["Storage", "Net", "Clock", "Fail", "Fail"]
+[features]
+io_uring = { enables_effects = ["Storage", "Bogus"], sys_deps = ["liburing ^2.6.0", "bad dep"] }
+compression = { deps = ["@vesper-compression/lz4-pure", "@missing/dep"] }
+[dependencies]
+"std/bytes" = { version = "^1.3.0", effects = [] }
+"@vesper-compression/lz4-pure" = { version = "^2.1.0", effects = [], optional = true }
+"@vesper-io/uring-reactor" = { version = "^0.9.2", effects = ["Storage", "Fail", "Nope"] }
+"#,
+        )
+        .unwrap();
+        let mut enc = Enc::default();
+        enc.manifest(&manifest);
+        let words = enc.words();
+        let n = enc.occ.len();
+        assert!(n > 8 && words[0] == n as u64 | 1 << 63);
+        let given = raw(&words, &enc.text);
+        assert!(!given.0.is_empty());
+        let order = 1 + 2 * n..1 + 3 * n;
+        // Reversed, repeated, out of range, and left out.
+        let mut reversed = words.clone();
+        reversed[order.clone()].reverse();
+        let mut repeated = words.clone();
+        repeated[order.clone()].fill(words[order.start]);
+        let mut out_of_range = words.clone();
+        out_of_range[order.end - 1] = n as u64;
+        let mut missing = words.clone();
+        missing.drain(order);
+        missing[0] = n as u64;
+        for (what, w) in [
+            ("reversed", reversed),
+            ("repeated", repeated),
+            ("out of range", out_of_range),
+            ("missing", missing),
+        ] {
+            assert_eq!(raw(&w, &enc.text), given, "{what} order");
+        }
+    }
 }
