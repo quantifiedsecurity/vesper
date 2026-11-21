@@ -105,7 +105,17 @@ struct Inputs {
     log: check_words::WorldLog,
     layout: Option<(check_words::Cursor, check_layout_binding::LayoutInput)>,
     ir: Option<(check_words::Cursor, ir_check_binding::IrInput)>,
+    /// Every layout the Vesper module answered in this compilation, by
+    /// type: `Layout::of` depends only on the world and the type, so a
+    /// repeated type reuses the answer instead of crossing again.
+    layouts: LayoutMemo,
 }
+
+type LayoutMemo = std::collections::HashMap<
+    u64,
+    Vec<(vesper::ast::Type, Result<vesper::layout::Layout, String>)>,
+    std::hash::BuildHasherDefault<check_words::Fx>,
+>;
 
 impl Inputs {
     fn new(world: &vesper::check::World) -> Self {
@@ -113,6 +123,7 @@ impl Inputs {
             log: check_words::WorldLog::new(world),
             layout: None,
             ir: None,
+            layouts: LayoutMemo::default(),
         }
     }
 }
@@ -129,6 +140,15 @@ const VESPER_LAYOUT: vesper::layout::LayoutTable = vesper::layout::LayoutTable {
             world,
             || Inputs::new(world),
             |inputs| {
+                let key = check_words::type_hash(ty);
+                if let Some((_, layout)) = inputs
+                    .layouts
+                    .get(&key)
+                    .and_then(|b| b.iter().find(|(t, _)| t == ty))
+                {
+                    timer.lap(&stats::LAYOUT.encode);
+                    return Some((layout.clone(), true));
+                }
                 let (cur, input) = inputs.layout.get_or_insert_with(|| {
                     (
                         check_words::Cursor::default(),
@@ -138,11 +158,19 @@ const VESPER_LAYOUT: vesper::layout::LayoutTable = vesper::layout::LayoutTable {
                 let part = inputs.log.layout_part(world, cur, ty)?;
                 let timer = timer.lap(&stats::LAYOUT.encode);
                 let words = input.layout_of(&part);
-                Some((timer.lap(&stats::LAYOUT.vesper), words))
+                let timer = timer.lap(&stats::LAYOUT.vesper);
+                let layout = check_words::decode_layout(&words);
+                timer.lap(&stats::LAYOUT.decode);
+                inputs
+                    .layouts
+                    .entry(key)
+                    .or_default()
+                    .push((ty.clone(), layout.clone()));
+                Some((layout, false))
             },
         );
-        let (timer, words, scoped) = match cached {
-            Some(Some((timer, words))) => (timer, words, true),
+        let (layout, scoped, reused) = match cached {
+            Some(Some((layout, reused))) => (layout, true, reused),
             Some(None) => return vesper::layout::rust_layout_of(world, ty),
             None => {
                 let Some(input) = check_words::layout_input(world, ty) else {
@@ -150,12 +178,16 @@ const VESPER_LAYOUT: vesper::layout::LayoutTable = vesper::layout::LayoutTable {
                 };
                 let timer = timer.lap(&stats::LAYOUT.encode);
                 let words = check_layout_binding::layout_of_words(&input);
-                (timer.lap(&stats::LAYOUT.vesper), words, false)
+                let timer = timer.lap(&stats::LAYOUT.vesper);
+                let layout = check_words::decode_layout(&words);
+                timer.lap(&stats::LAYOUT.decode);
+                (layout, false, false)
             }
         };
         CHECK_LAYOUT_CALLS.fetch_add(1, Relaxed);
-        let layout = check_words::decode_layout(&words);
-        timer.lap(&stats::LAYOUT.decode);
+        if reused {
+            stats::LAYOUT.reused.fetch_add(1, Relaxed);
+        }
         stats::LAYOUT.call(
             scoped,
             || vesper::layout::rust_layout_of(world, ty),
@@ -237,6 +269,7 @@ mod stats {
         pub name: &'static str,
         pub calls: AtomicU64,
         pub scoped: AtomicU64,
+        pub reused: AtomicU64,
         pub encode: AtomicU64,
         pub vesper: AtomicU64,
         pub decode: AtomicU64,
@@ -250,6 +283,7 @@ mod stats {
                 name,
                 calls: AtomicU64::new(0),
                 scoped: AtomicU64::new(0),
+                reused: AtomicU64::new(0),
                 encode: AtomicU64::new(0),
                 vesper: AtomicU64::new(0),
                 decode: AtomicU64::new(0),
@@ -284,7 +318,7 @@ mod stats {
             let ms = |a: &AtomicU64| a.load(Relaxed) as f64 / 1e6;
             eprintln!(
                 "vesper-hybrid: cost {}: {} calls ({} in a compilation scope), encode {:.3} ms, \
-                 vesper {:.3} ms, decode {:.3} ms, rust {:.3} ms, {} differ",
+                 vesper {:.3} ms, decode {:.3} ms, rust {:.3} ms, {} differ, {} reused",
                 self.name,
                 self.calls.load(Relaxed),
                 self.scoped.load(Relaxed),
@@ -293,6 +327,7 @@ mod stats {
                 ms(&self.decode),
                 ms(&self.rust),
                 self.differ.load(Relaxed),
+                self.reused.load(Relaxed),
             );
         }
     }

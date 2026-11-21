@@ -21,7 +21,8 @@ calls):
 
 | Swap | Rust pass | Input before | Input after | Whole swap before | Whole swap after |
 |---|--:|--:|--:|--:|--:|
-| check-layout (`Layout::of`) | 29 ms | 70 ms (2.39x) | 11.6 ms (0.41x) | 11.3x | 3.83x |
+| check-layout (`Layout::of`), answers reused | 28-29 ms | 71 ms (2.43x) | 9.9 ms (0.36x) | 11.4x | **0.62x** |
+| check-layout without answer reuse (first PR commit) | 29 ms | 70 ms (2.39x) | 11.6 ms (0.41x) | 11.3x | 3.83x |
 | ir-check (`ir_check::validate`) | 94 ms | 0.41x | 0.47x | 1.04x | 1.11x |
 | parse | 49-55 ms | none (source lent) | none | 1.6x | 1.6x |
 
@@ -39,8 +40,19 @@ inside a scope, so the encode-once path cannot save anything there yet,
 and its bookkeeping costs a little (0.41x to 0.47x, within this host's
 noise). It pays off once a hook runs per function.
 
-The layout's input is now 0.41x of the pass, not under the 10% target;
-see "What is left".
+**Answer reuse** (approved 2026-11-21): `Layout::of` depends only on the
+world and the type, so the hybrid keeps every answer the Vesper layout
+gave in the compilation's slot and returns it for a repeated type. Each
+distinct type still runs through Vesper once per compilation, and
+`VESPER_HYBRID_STATS=time` still compares every call, reused or not, with
+the Rust layout: 0 of 46,421 differ. Most calls repeat (121 of 126 on
+`bootstrap/corpus/ackermann.ves`), so the whole layout swap is now faster
+than the Rust pass (0.62x): Vesper 5.4 ms and answer decoding 1.9 ms, down
+from 65 ms and 30 ms. The remaining "input" time (0.36x) is mostly the
+slot and memo lookup plus the stats timers themselves.
+
+The layout's input is 0.36x of the pass, not under the 10% target, but
+the swap as a whole now beats the pass it replaces; see "What is left".
 
 ## What changed
 
@@ -219,12 +231,12 @@ branch is linked from the PR.
 
 ## What is left
 
-- **The 10% target.** The layout's input is 0.41x of its Rust pass. The
-  remaining cost is the slot lookup, hashing the type, and the 72-byte
-  part (timers included). Two ways past it: send the per-call type index
-  through a scalar export parameter instead of a part, or memoize answers
-  per (world, type) in the slot. Memoizing changes how often Vesper runs,
-  so it is the owner's call.
+- **The 10% target.** With answer reuse the layout swap is 0.62x of its
+  Rust pass overall, but the lookup before a reused answer (slot, type
+  hash, bucket compare, timers) is still 0.36x. A cheaper key (the type's
+  address within one compilation is not stable, so a pre-hashed type in
+  the caller would be needed) is a change to `src/layout.rs` callers,
+  outside this lane.
 - **The `Program` updated in place.** No IR pass hook is installed in the
   hybrid at this base (#1259 part 2 adds `place_ir`), so a program is
   still encoded whole per call. Next: a per-function program-section
