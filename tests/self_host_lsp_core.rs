@@ -494,7 +494,118 @@ fn envelope_cases() -> Vec<(Vec<u8>, ProtocolLimits)> {
             },
         ));
     }
+    for n in number_texts() {
+        let body = format!(r#"{{"jsonrpc":"2.0","method":"x","params":[{n}]}}"#);
+        cases.push((body.into_bytes(), d));
+    }
     cases
+}
+
+/// A deterministic xorshift for generated cases.
+fn xorshift(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+/// Numbers around serde_json's "number out of range": its reader is not
+/// correctly rounded (1.7976931348623158e308 is refused), long integers and
+/// fractions overflow its u64 significand, and exponents overflow i32.
+fn number_texts() -> Vec<String> {
+    let max = "179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368";
+    let mut texts: Vec<String> = [
+        "1.7976931348623157e308",
+        "1.7976931348623158e308",
+        "1.79769313486231580799e308",
+        "1.797693134862315807e308",
+        "17976931348623157e292",
+        "17976931348623158e292",
+        "1e308",
+        "1e309",
+        "10e308",
+        "0.1e310",
+        "-1e309",
+        "1e-400",
+        "-1e-400",
+        "1e2147483647",
+        "1e2147483648",
+        "0e2147483648",
+        "0.0e99999999999",
+        "1e-2147483648",
+        "1e-99999999999",
+        "123456789012345678901234567890e280",
+        "18446744073709551615e289",
+        "18446744073709551616e289",
+        "184467440737095516150e288",
+        "1.0000000000000000000000000000001e308",
+        "0.00000000000000000000000000000000000000001e349",
+        "4.9e-324",
+        "2.2250738585072014e-308",
+    ]
+    .iter()
+    .map(|t| t.to_string())
+    .collect();
+    texts.push(max.into());
+    texts.push(format!("{max}0"));
+    texts.push(format!("{max}.99999"));
+    texts.push(format!("1{}", "0".repeat(308)));
+    texts.push(format!("1{}", "0".repeat(309)));
+    texts.push(format!("0.{}1e330", "0".repeat(20)));
+    let mut state = 0x9e3779b97f4a7c15;
+    for _ in 0..400 {
+        let digits = 1 + xorshift(&mut state) % 25;
+        let mut t: String = (0..digits)
+            .map(|i| {
+                let d = xorshift(&mut state) % 10;
+                char::from(b'0' + if i == 0 { 1 + d % 9 } else { d } as u8)
+            })
+            .collect();
+        if xorshift(&mut state).is_multiple_of(2) {
+            let at = 1 + xorshift(&mut state) % digits;
+            if at < digits {
+                t.insert(at as usize, '.');
+            }
+        }
+        let e = 270 + xorshift(&mut state) % 60;
+        texts.push(format!("{t}e{e}"));
+    }
+    texts
+}
+
+/// Floats whose shortest digits tie (two candidates equally near), and
+/// random doubles: serde_json's writer takes the even candidate.
+// The ties are exact doubles whose shortest text is shorter than the
+// literal, which is the point.
+#[allow(clippy::excessive_precision)]
+fn float_cases() -> Vec<f64> {
+    let mut v = vec![
+        1000000000000000.25,
+        123456789012345.625,
+        2251799813685248.75,
+        562949953421312.125,
+        0.5,
+        1.5,
+        2.5,
+        9007199254740993.0,
+        1e23,
+        5e-324,
+    ];
+    let mut state = 0x2545f4914f6cdd1d;
+    for _ in 0..3000 {
+        let bits = xorshift(&mut state);
+        let f = f64::from_bits(bits);
+        if f.is_finite() {
+            v.push(f);
+        }
+    }
+    for k in 0..12 {
+        for _ in 0..200 {
+            let n = xorshift(&mut state) >> (8 + xorshift(&mut state) % 30);
+            v.push(n as f64 / (1u64 << k) as f64);
+        }
+    }
+    v
 }
 
 #[test]
@@ -904,6 +1015,15 @@ fn encode_cases() -> Vec<(Envelope, ProtocolLimits)> {
         },
         d,
     ));
+    for chunk in float_cases().chunks(100) {
+        cases.push((
+            Envelope::Notification {
+                method: "floats".into(),
+                params: Some(Value::Array(chunk.iter().map(|f| json!(f)).collect())),
+            },
+            d,
+        ));
+    }
     cases
 }
 
