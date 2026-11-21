@@ -263,11 +263,10 @@ vesper_crate(
         # Self-hosting SH5 lane 18 (#1341): @vesper/lean-extract against
         # lean::extract on the same corpus; it imports @vesper/lean-syntax.
         "test/self_host_lean_extract": glob([
-            "crates/vesper-lean-syntax/vesper/**",
             "examples/**",
             "packages/**",
             "tests/fixtures/**",
-        ]),
+        ]) + ["//crates/vesper-lean-syntax:files"],
         # Self-hosting SH3 lane 8 (#1247): @vesper/egraph against egg and
         # egglog on the same corpus. Anchored globs.
         "test/self_host_egraph": glob([
