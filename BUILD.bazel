@@ -253,6 +253,11 @@ vesper_crate(
             "//crates/vesper-warp-tcp:files",
             "//crates/vesper-warp-wheel:files",
         ],
+        # SH4 lane 14 (#1288): @vesper/codegen-freestanding against the
+        # freestanding image builder.
+        "test/self_host_freestanding": glob([
+            "packages/vesper-codegen-freestanding/**",
+        ]),
         # SH3 lane 11 (#1250): the inliner differential on the same corpus.
         "test/self_host_ir_inline": glob([
             "examples/**",
@@ -827,6 +832,9 @@ vesper_crate(
         # Four round-trip tests and the pass harness share one stage build;
         # past 900 s on a busy runner.
         "test/self_host_place_ir": "eternal",
+        # SH4 lane 14 (#1288): 22 Cranelift image builds and the package's
+        # JIT compile before the comparisons; 5-8 minutes unoptimized.
+        "test/self_host_freestanding": "eternal",
         # Builds 51 port libraries with the vesper binary.
         "test/self_host_codegen_export": "long",
         "test/self_host_place_ir_jit": "long",
