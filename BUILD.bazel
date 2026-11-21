@@ -189,6 +189,11 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # SH4 lane 14 (#1288): @vesper/codegen-freestanding against the
+        # freestanding image builder.
+        "test/self_host_freestanding": glob([
+            "packages/vesper-codegen-freestanding/**",
+        ]),
         # SH3 lane 1 (#1240): @vesper/place-ir round trips over the same
         # corpus at every native IR pass boundary.
         "test/self_host_place_ir": glob([
