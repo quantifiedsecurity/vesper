@@ -18,9 +18,12 @@ and salsa. This lane adds no Rust code to the compiler and deletes none.
     - It does the Rust preflight checks in the same order: depth, nodes,
       string bytes and work, then duplicate keys.
     - It then applies serde_json's number rules: `-0` is a float, so as an
-      id it is `InvalidId` and as an error code `InvalidEnvelope`; numbers
-      that overflow to infinity are refused; long integers are decoded as
-      floats.
+      id it is `InvalidId` and as an error code `InvalidEnvelope`.
+  - `numbers.ves`: serde_json's "number out of range" as its reader
+    decides it without `float_roundtrip`. That is a u64 significand whose
+    overflow moves the exponent or drops digits, then powers of ten
+    applied in binary64, which is not correctly rounded:
+    `1.7976931348623158e308` is refused although it rounds to `f64::MAX`.
   - `encode.ves`: `encode_frame`.
     - The output budget (`JsonBudget`).
     - serde_json's compact writer, write by write. The output limit is
@@ -28,7 +31,10 @@ and salsa. This lane adds no Rust code to the compiler and deletes none.
       `OutputLimit`/`WorkLimit` split is the same.
     - Escapes use lowercase `\u00XX`.
     - Floats use ryu's `format64` layout from the serde port's shortest
-      digits, including the `e+16` sign.
+      digits, including the `e+16` sign. Where two shortest candidates
+      tie, serde_json's writer (zmij) takes the even one and Rust's
+      `Display` digits round up, so `even_tie` moves to the even one:
+      `1000000000000000.25` is `1000000000000000.2`.
   - `lib.ves`:
     - The entries `lsp_frames`, `lsp_envelope` and `lsp_encode`.
     - **`lsp_serve`**, the transport half of the stdio loop (`dispatch` in
@@ -85,8 +91,8 @@ tests run unoptimized in CI):
 | Test | Compared | Differences |
 |---|--:|--:|
 | `frames_match_rust`: `read_frame` on both streams of every session, plus the framing cases of crates/vesper-lsp and every truncation and limit edge | 176 streams | 0 |
-| `envelopes_match_rust`: `parse_envelope` on every body in both directions, plus the envelope cases | 537 bodies | 0 |
-| `responses_match_byte_for_byte`: every frame the server wrote, re-encoded by `@vesper/lsp`, equals the server's bytes; the encoder cases give the same frame or error as Rust | 218 server frames + 37 cases | 0 |
+| `envelopes_match_rust`: `parse_envelope` on every body in both directions, the envelope cases, and 433 numbers around serde_json's out-of-range edge (boundaries, long significands, i32 exponent overflow, 400 random) | 970 bodies | 0 |
+| `responses_match_byte_for_byte`: every frame the server wrote, re-encoded by `@vesper/lsp`, equals the server's bytes; the encoder cases, including about 5,400 floats (ties, random bits, dyadic fractions), give the same frame or error as Rust | 218 server frames + 92 cases | 0 |
 | `stdio_loop_matches_server`: `lsp_serve` against `dispatch`'s transport decisions on every session and framing case; each refusal is a frame the live server wrote | 152 streams, 417 records, 17 refusals | 0 |
 | `documents_match_rust`: every result, count, total, revision, version and text after every op of every session and of crates/vesper-lsp/tests/documents.rs, plus revision overflow | 36 scripts, 268 ops | 0 |
 | `memo_invalidation_matches_salsa`: salsa's `WillExecute` and `DidValidateMemoizedValue` events, in order, against `memo_replay`'s log, plus every fetched value's fingerprint | 32 databases, 1,056 executions, 237 validations, 1,015 fetches | 0 |
@@ -205,10 +211,14 @@ branch (linked from the PR) compares a fresh `bootstrap/run.sh stage1
    - Workaround: build each layout from pieces.
    - Repro: `let mut s: ChunkSeq[u8] = ChunkSeq::new(); s.insert(0, 1);`
      reports an unknown method.
-4. **A view of a view is refused.** `s.pool.as_bytes()[a..b]` gives
+4. **A guard does not bound a constant-array index.** `if e <= 308 {
+   TABLE[e] }` on a `[u64; 309]` still carries `Fail`, and arrays have no
+   `try_get`. The power-of-ten table is padded to 512 and indexed with
+   `e & 511` (also noted in self-host-diagnostics.md).
+5. **A view of a view is refused.** `s.pool.as_bytes()[a..b]` gives
    E1531/E1521. Binding the view first, `let p = s.pool.as_bytes();`, then
    `p[a..b]`, works.
-5. **Shifts and `*` always carry `Fail`, and there is no `wrapping_neg`.**
+6. **Shifts and `*` always carry `Fail`, and there is no `wrapping_neg`.**
    Byte packing needs `wrapping_shl_u64` with a `u32` count, and negation
    needs `wrapping_sub(0, v)`. These are minor ergonomics gaps, not
    correctness gaps.

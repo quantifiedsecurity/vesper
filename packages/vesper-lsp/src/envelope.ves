@@ -17,14 +17,13 @@ use @vesper/serde::{
     doc_field,
     doc_new,
     doc_parse,
-    number_decode,
-    number_pow5,
     string_decode,
     string_equals
 };
 use @vesper/serde::index::{
     tok
 };
+use self::numbers::number_out_of_range;
 use self::limits::{
     Perr,
     Plimits,
@@ -321,31 +320,13 @@ fn negative_zero(in body: Slice[u8], t: Token) -> bool {
         == 48
 }
 
-// serde_json refuses a number whose binary64 value is infinite. A token of
-// at most 19 digits without a fraction or exponent is an integer it keeps
-// exactly; any other is decoded (correctly rounded, which serde_json's
-// float parser matches at the overflow threshold).
+// serde_json refuses a number its reader takes out of range
+// (numbers.ves). Integers that fit a u64 never are.
 fn json_numbers(in doc: Doc, in body: Slice[u8]) -> Unit eff [Fail[Perr]] {
-    let mut pow5: ChunkSeq[u64] = ChunkSeq::new();
     for i in 0..doc.tokens.len() {
         let t = token(in doc, i);
-        if t.kind == Kind::Number {
-            let mut simple = wrapping_sub(t.end, t.start) <= 19;
-            for k in t.start..t.end {
-                let c = byte(in body, k);
-                if c == 46 || c == 101 || c == 69 {
-                    simple = false;
-                }
-            }
-            if !simple {
-                if pow5.len() == 0 {
-                    pow5 = number_pow5();
-                }
-                let d = number_decode(in body[t.start..t.end], in pow5[0..pow5.len()]);
-                if (d.bits >> 52) & 2047 == 2047 {
-                    Fail::raise(Perr::PJson);
-                }
-            }
+        if t.kind == Kind::Number && number_out_of_range(in body[t.start..t.end]) {
+            Fail::raise(Perr::PJson);
         }
     }
 }

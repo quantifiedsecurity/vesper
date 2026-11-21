@@ -4,6 +4,7 @@
 // - limits.ves: `ProtocolLimits` and `ProtocolErrorKind`.
 // - frame.ves: `read_frame` (bounded headers, the body).
 // - envelope.ves: `parse_envelope` over the serde port's token tape.
+// - numbers.ves: serde_json's "number out of range".
 // - encode.ves: `encode_frame` (the output budget and serde_json's writer).
 // - lib.ves: the entries, and `lsp_serve`, the transport half of the stdio
 //   loop of src/lsp.rs (`dispatch`).
