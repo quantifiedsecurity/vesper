@@ -2554,7 +2554,20 @@ impl Checker<'_> {
                             env,
                             e.span.clone(),
                         );
-                        args[0].clone()
+                        if args[0] == Type::Infer {
+                            // `Err(e)?` with nothing to infer its `Ok` type
+                            // from: the operand never succeeds, so its `Ok`
+                            // payload is `Unit` and every backend has a
+                            // layout for it (SH5 lane 6, #1329).
+                            let ok = Type::unit();
+                            self.constrain_literals(
+                                value,
+                                &Type::Named("Result".into(), vec![ok.clone(), args[1].clone()]),
+                            );
+                            ok
+                        } else {
+                            args[0].clone()
+                        }
                     } else {
                         self.error("E0200", TRY_OPERAND, e.span.clone());
                         Type::Infer
