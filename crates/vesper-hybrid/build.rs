@@ -24,6 +24,12 @@ const MODULES: &[(&str, &str, &str)] = &[
     // SH4 lane 1 (#1275): the census lowering family, emitted through
     // lent Cranelift handles.
     ("hybrid_codegen", "modules/codegen", "port/codegen.rs"),
+    // SH4 lane 12 (#1286): the export ABI v2 glue over the lent module.
+    (
+        "hybrid_codegen_export",
+        "modules/codegen_export",
+        "port/codegen_export.rs",
+    ),
 ];
 
 /// The divergence check of the differential harness: the enum tag word
