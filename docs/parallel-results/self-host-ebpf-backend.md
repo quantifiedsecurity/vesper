@@ -134,7 +134,12 @@ No guarded file is touched: nothing under `src/verified_codegen/**`,
 
 ## What's left
 
-- The eBPF stack wrapper on lane 17's `@vesper/backend-checks`.
+- The eBPF stack wrapper on lane 17's `@vesper/backend-checks` (PR #1319):
+  build a `StackGraph` and `StackPol` from the lowered program, run
+  `stack_bound::analyze_stack`, append the eBPF findings
+  (`ebpf.stack.kernel_limit` from `@vesper/ebpf`'s `check_stack`,
+  `stack.analyzers_disagree`) as report rows, then `render`, and compare
+  with `src/stack_bound.rs`.
 - The hybrid module and the swap through lane 1's `src/codegen_swap.rs`,
   with the hybrid build's `vesper build --target bpf` objects compared
   against the Rust build's.
