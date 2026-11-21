@@ -67,8 +67,12 @@ USES_BYTES = ["decoder", "response", "target"]
 ]
 
 vesper_crate(
+    # The build script finds each library's package directory; vesper/target/
+    # is outside the crate's file glob (which never globs **/target/**), so
+    # it is listed here.
     build_script_data = [":%s_vesper" % library for library in LIBRARIES] +
-                        [":%s_vesper_binding" % library for library in LIBRARIES],
+                        [":%s_vesper_binding" % library for library in LIBRARIES] +
+                        glob(["vesper/target/**"]),
     build_script_env = dict(
         [
             # rules_rust already makes these execpaths absolute.
