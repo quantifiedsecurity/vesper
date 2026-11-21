@@ -1367,7 +1367,13 @@ fn define_wide_entry<M: Module>(
     if fail == 1 {
         entry.params.push(AbiParam::new(pointer));
     }
-    entry.returns.push(AbiParam::new(types::I64));
+    // A wide result is written through the result pointer; any other
+    // return (a float register included) passes through.
+    entry.returns.push(if wide_result {
+        AbiParam::new(types::I64)
+    } else {
+        sig.returns[0]
+    });
     let id = m
         .declare_function(&export.symbol, Linkage::Export, &entry)
         .map_err(|e| e.to_string())?;

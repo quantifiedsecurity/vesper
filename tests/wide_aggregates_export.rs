@@ -19,6 +19,7 @@ pub fn bump(inout a: u128) { a = wrapping_add(a, 1); }
 pub fn positive(a: i128) -> Option[i128] { if a < 0 { Option::None } else { Option::Some(a) } }
 pub fn cell(tag: u8, v: i128) -> Cell { Cell { tag: tag, v: v, w: wrapping_u128(v) } }
 pub fn swap(in c: Cell) -> Cell { Cell { tag: c.tag, v: wrapping_i128(c.w), w: wrapping_u128(c.v) } }
+pub fn ratio(a: u128, s: f64) -> f64 { if a > 4 { s } else { 0.5 } }
 pub fn quot(a: u128, b: u128) -> u128 eff [Fail[RuntimeError]] { if b == 0 { Fail::raise(RuntimeError::DivisionByZero) } a / b }
 ";
 
@@ -127,6 +128,7 @@ extern int64_t {positive}(w *r, w *a);
 extern int64_t {cell}(w *r, int64_t tag, w *v);
 extern int64_t {swap}(w *r, w *c);
 extern int64_t {quot}(w *r, w *a, w *b, w *fail);
+extern double {ratio}(w *a, double s);
 static void show(const char *name, w *v, int n) {{
   printf("%s", name);
   for (int i = 0; i < n; i++) printf(" %llx", (unsigned long long)v[i]);
@@ -149,6 +151,7 @@ int main(void) {{
   w x[2] = {{0, 6}}, y[2] = {{3, 0}}, z[2] = {{0, 0}}, fail[2] = {{0, 0}};
   {quot}(r, x, y, fail); show("quot", r, 2);
   {quot}(r, x, z, fail); printf("quot fail %llu\n", (unsigned long long)fail[0]);
+  printf("ratio %g %g\n", {ratio}(x, 2.5), {ratio}(y, 2.5));
   return 0;
 }}
 "#,
@@ -161,6 +164,7 @@ int main(void) {{
         cell = s("cell"),
         swap = s("swap"),
         quot = s("quot"),
+        ratio = s("ratio"),
     );
     std::fs::write(dir.join("main.c"), main).unwrap();
     let built = Command::new("cc")
@@ -190,6 +194,7 @@ int main(void) {{
          cell 7 5 ffffffffffffffff 5 ffffffffffffffff\n\
          swap 9 3 4 1 2\n\
          quot 0 2\n\
-         quot fail 1\n"
+         quot fail 1\n\
+         ratio 2.5 0.5\n"
     );
 }
