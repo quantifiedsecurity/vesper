@@ -77,6 +77,11 @@ file with tests and every `@vesper-std` package, plus
 `@vesper-std/bytes`: 116 runs, identical stdout, stderr and exit codes.
 `VESPER_HYBRID_STATS=1` shows the hybrid answered discovery from Vesper.
 
+The package joins the other ports on the exclusion list of
+`tests/fixtures/self_host/driver.rs`: the Stage 1 parser that
+`tests/self_host_front_end.rs` drives has no `use` (#880). In Bazel the
+differential runs with the `long` timeout (5-10 min in a debug build).
+
 The runner's own suites pass on the default build unchanged:
 `tests/test_runner_cli.rs`, `tests/anvil_cli.rs`,
 `tests/imported_source_tests.rs` and the unit tests of `src/test_runner.rs`.
