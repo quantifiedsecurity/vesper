@@ -1234,6 +1234,8 @@ fn compile_exports<M: Module>(
     exports: &BTreeMap<String, String>,
     optimize: bool,
 ) -> Result<String, String> {
+    // One encode-once swap input per compilation (SH4 lane 2, #1276).
+    let _inputs = crate::swap_input::open(world);
     let mut all = InstanceMap::new();
     for name in exports.keys() {
         let reached = instances(world, name)?;
