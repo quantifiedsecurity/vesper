@@ -61,11 +61,10 @@ optimizer: with the optimizer at zero the build would take about 59.5 s
      program on up to 8 scoped threads (64 MiB stacks, like the CLI thread).
      `VESPER_OPT_POLICY_THREADS=n` sets the count. Results are combined in
      name order, so the output does not depend on the thread count.
-- **Native call sites.** `src/native.rs`, `src/native_export.rs` and
-  `src/native_session.rs` call `ir_opt_policy::optimize` where they called
-  `ir_opt::optimize` (one line each). #1259 moves these call sites into
-  `src/ir_swap.rs`; when it merges, the default `opt` path there calls the
-  policy instead. The verified backend (`src/verified_codegen.rs`,
+- **Native call site.** The default `opt` path of `src/ir_swap.rs` (#1259),
+  which `src/native.rs`, `src/native_export.rs` and `src/native_session.rs`
+  call, now calls `ir_opt_policy::optimize` instead of `ir_opt::optimize`
+  (one line). An installed `opt` hook still replaces it. The verified backend (`src/verified_codegen.rs`,
   `verified_codegen/coverage.rs`), the wasm backend, the evaluator
   (`src/runtime.rs`) and `vesper emit --emit ir` still call
   `ir_opt::optimize` directly.
@@ -196,6 +195,3 @@ is linked from the PR.
 - The cache is opt-in and lives for one process. A disk cache keyed by the same content
   hash would make repeat builds skip saturation (1.2 s here); validation
   would still run.
-- When #1259 merges, its `src/ir_swap.rs` default `opt` path calls
-  `ir_opt_policy::optimize` (the merge resolves the three call-site lines
-  there).

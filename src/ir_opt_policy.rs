@@ -32,8 +32,9 @@
 //! checks that over the corpus. Only the text of a validation error can
 //! differ (errors are reported per group).
 //!
-//! The policy runs only on the native paths (`src/native.rs`,
-//! `src/native_export.rs`, `src/native_session.rs`). The verified backend,
+//! The policy runs only on the native paths: it is the default `opt` path
+//! of `src/ir_swap.rs`, which `src/native.rs`, `src/native_export.rs` and
+//! `src/native_session.rs` call. The verified backend,
 //! the wasm backend and the evaluator keep calling `ir_opt::optimize`
 //! directly, so `bootstrap/stage1.lock` does not move. `VESPER_OPT_POLICY=off`
 //! turns the policy off (every native call goes straight to
