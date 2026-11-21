@@ -299,12 +299,9 @@ pub fn scalar_normalize(input: Scalar) -> Option[Scalar] {
         }
         let mu = s.var.mask & rm;
         let value = (s.var.value | rv) & ~mu;
-        let moved = (s.umin ^ before.umin)
-            | (s.umax ^ before.umax)
-            | (bits(s.smin) ^ bits(before.smin))
-            | (bits(s.smax) ^ bits(before.smax))
-            | (value ^ before.var.value)
-            | (mu ^ before.var.mask);
+        let moved_u = (s.umin ^ before.umin) | (s.umax ^ before.umax);
+        let moved_s = (bits(s.smin) ^ bits(before.smin)) | (bits(s.smax) ^ bits(before.smax));
+        let moved = moved_u | moved_s | (value ^ before.var.value) | (mu ^ before.var.mask);
         s.var = tn(value, mu);
         if moved == 0 {
             break;

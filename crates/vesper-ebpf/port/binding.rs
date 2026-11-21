@@ -1145,6 +1145,7 @@ unsafe extern "C" {
     fn vesper_ebpf_core_combine(kind: i64, values: *mut u64) -> i64;
     fn vesper_ebpf_core_local_value(kind: i64, lt: *mut u64, access: *mut u64, local_id: i64) -> i64;
     fn vesper_ebpf_core_patch(present: i64, code: i64, imm: i64, off: i64, has_next: i64, next_imm: i64, expected: i64, value: i64) -> i64;
+    fn vesper_ebpf_core_target_value(kind: i64, lt: *mut u64, ltext: *mut u64, access: *mut u64, tab: *mut u64, idx: *mut u64, strs: *mut u64, ids: *mut u64, value: *mut u64, bad: *mut u64) -> i64;
     fn vesper_ebpf_core_values(kind: i64, lt: *mut u64, ltext: *mut u64, access: *mut u64, tab: *mut u64, idx: *mut u64, strs: *mut u64, cands: *mut u64) -> i64;
     fn vesper_ebpf_helpers_allowed(prog_type: *mut u64, id: i64) -> i64;
     fn vesper_ebpf_helpers_gpl_compatible(license: *mut u64) -> i64;
@@ -1306,6 +1307,21 @@ pub fn core_patch(present: bool, code: u64, imm: u64, off: u64, has_next: bool, 
     // every handle passed is owned or borrowed as its mode requires.
     let raw = unsafe { vesper_ebpf_core_patch(present as i64, code as i64, imm as i64, off as i64, has_next as i64, next_imm as i64, expected as i64, value as i64) };
     unsafe { vesper_port_abi::seq_take::<u64>(RUNTIME, raw as u64) }
+}
+
+/// Calls `core_target_value` of the Vesper library `ebpf` (`vesper_ebpf_core_target_value`).
+pub fn core_target_value(kind: u64, lt: &[u64], ltext: &[u8], access: &[u32], tab: &[u64], idx: &[u64], strs: &[u8], ids: &[u32], value: &mut u64, bad: &mut u64) -> u64 {
+    let mut arg_value = [0u64; <u64 as Abi>::WORDS];
+    Abi::put(&*value, &mut arg_value);
+    let mut arg_bad = [0u64; <u64 as Abi>::WORDS];
+    Abi::put(&*bad, &mut arg_bad);
+    // SAFETY: `vesper_ebpf_core_target_value` has exactly this signature in the export ABI; every
+    // pointer is a live, writable buffer of the size the ABI requires, and
+    // every handle passed is owned or borrowed as its mode requires.
+    let raw = vesper_port_abi::with_slice(lt, |view_lt| vesper_port_abi::with_slice(ltext, |view_ltext| vesper_port_abi::with_slice(access, |view_access| vesper_port_abi::with_slice(tab, |view_tab| vesper_port_abi::with_slice(idx, |view_idx| vesper_port_abi::with_slice(strs, |view_strs| vesper_port_abi::with_slice(ids, |view_ids| unsafe { vesper_ebpf_core_target_value(kind as i64, view_lt, view_ltext, view_access, view_tab, view_idx, view_strs, view_ids, arg_value.as_mut_ptr(), arg_bad.as_mut_ptr()) })))))));
+    *value = <u64 as Abi>::get(&arg_value);
+    *bad = <u64 as Abi>::get(&arg_bad);
+    raw as u64
 }
 
 /// Calls `core_values` of the Vesper library `ebpf` (`vesper_ebpf_core_values`).

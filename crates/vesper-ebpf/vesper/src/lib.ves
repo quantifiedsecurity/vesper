@@ -109,6 +109,7 @@ use self::core::{
     filter_candidates,
     local_value,
     patch_insn,
+    target_value,
     values_over
 };
 use self::callgraph::{
@@ -480,6 +481,35 @@ pub fn core_values(
     in cands: Slice[u64]
 ) -> ChunkSeq[u64] {
     values_over(kind, in lt, in ltext, in access, in tab, in idx, in strs, in cands)
+}
+
+// `CoreSpec::target_value_with` without split modules, in one call: the
+// result code, with the value and the bad member index in `value` and `bad`.
+pub fn core_target_value(
+    kind: u64,
+    in lt: Slice[u64],
+    in ltext: Slice[u8],
+    in access: Slice[u32],
+    in tab: Slice[u64],
+    in idx: Slice[u64],
+    in strs: Slice[u8],
+    in ids: Slice[u32],
+    inout value: u64,
+    inout bad: u64
+) -> u64 {
+    target_value(
+        kind,
+        in lt,
+        in ltext,
+        in access,
+        in tab,
+        in idx,
+        in strs,
+        in ids,
+        0,
+        inout value,
+        inout bad
+    )
 }
 
 pub fn core_combine(kind: u64, in values: Slice[u64]) -> ChunkSeq[u64] {
