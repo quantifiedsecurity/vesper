@@ -58,7 +58,7 @@ default compiler installs a hook.
   - `vcl_module_kind` returns object, JIT, or freestanding (an object for
     an OS-less target). A host lends a module as JIT with `lend_as` or
     `lend_module_as`. `codegen_swap` passes `Lent::jit` from the module
-    type of `define_instances`.
+    type of `define_instances`, and `Lent::optimize` from the build.
   - `vcl_define_function` into a JIT module applies the Rust backend's
     `DefinitionLinkage::Jit.normalize_references`: references are not
     colocated.
