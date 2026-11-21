@@ -222,6 +222,11 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # Self-hosting SH4 lane 11 (#1285): @vesper/codegen-numeric emits the
+        # AOT runtimes through @vesper/cranelift. Anchored glob.
+        "test/self_host_codegen_numeric": glob([
+            "packages/vesper-codegen-numeric/**",
+        ]) + ["//packages/vesper-cranelift:files"],
         # Self-hosting SH2 lane 12 (#1184): @vesper/check-fip against
         # fip::check_world on the same corpus, its checker cases and mutants.
         "test/self_host_check_fip": glob([
@@ -558,6 +563,8 @@ vesper_crate(
         # The core typing differential (#1179) checks every corpus world.
         "test/self_host_check_core_typing": "long",
         "test/self_host_check_fip": "long",
+        # Checks the shim library and the package, then JIT-compiles both.
+        "test/self_host_codegen_numeric": "long",
     },
 )
 
