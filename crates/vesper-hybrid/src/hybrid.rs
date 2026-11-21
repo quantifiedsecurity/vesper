@@ -127,7 +127,7 @@ struct Inputs {
 enum SharedState {
     /// Not opened yet, or off (`VESPER_HYBRID_SHARED=0`).
     Unopened,
-    Open(crossing::Shared),
+    Open(Box<crossing::Shared>),
     /// An ADT cannot be encoded: each swap keeps its own input, as before.
     Refused,
 }
@@ -148,7 +148,7 @@ impl Inputs {
         }
         if matches!(self.shared, SharedState::Unopened) {
             self.shared = match crossing::Shared::open(&mut self.log, world) {
-                Some(s) => SharedState::Open(s),
+                Some(s) => SharedState::Open(Box::new(s)),
                 None => SharedState::Refused,
             };
         }
