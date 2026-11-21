@@ -82,7 +82,7 @@ Claims: lanes 1-18 are #1275-#1292 (lane n is issue 1274+n).
 |---|---|---|---|---|---|---|
 | 3 | [128-bit aggregates, division, export cells](03-wide-aggregates.md) | #1277 | native reads `[i128; N]` elements wrong; slow 128-bit division; no 128-bit export cells | #1270; SH2 lane 2 gaps 3, 5 | now, from main | `src/native_arrays.rs`, 128-bit hunks of `src/native_aggregates.rs`, `src/integer_widths/native.rs`, `src/native_export.rs`, `src/native_export/binding_v4.rs`, `tests/wide_aggregates*.rs`, report |
 | 4 | [Callback parameters in registers](04-callback-registers.md) | #1278 | lent callbacks keep parameters in stack slots (+1.3% to +4.1% Ir) | #1271 (SH3 lane 3) | now, from main | `register_locals`/`in_param_registers` hunks of `src/native.rs`, `tests/callback_registers*.rs`, report |
-| 5 | [Optimizer time on large programs](05-optimizer-budget.md) | #1279 | `ir_opt::optimize` is 72% of the combined checker build | SH3 lane 7 gap 1 | **after the owner picks an option** (below) | new `src/ir_opt_policy.rs` and its default-`opt` hunk in `src/ir_swap.rs`, `tests/optimizer_budget*.rs`, report |
+| 5 | [Optimizer time on large programs](05-optimizer-budget.md) | #1279 | `ir_opt::optimize` is 72% of the combined checker build | SH3 lane 7 gap 1 | now, from main (owner chose option A, 2026-11-21) | new `src/ir_opt_policy.rs` and its default-`opt` hunk in `src/ir_swap.rs`, `tests/optimizer_budget*.rs`, report |
 
 ### Native lowering ports
 
@@ -115,11 +115,10 @@ Each starts now, stacked on #1259, with the parts that read the IR and decide
 |---|---|---|---|---|
 | 18 | [SH4 scoreboard and SH5 plan](18-scoreboard-sh5-plan.md) | #1292 | last: when lanes 6-17 have each merged a first swap | `docs/maintenance/self-hosting-plan.md` (SH4 results, SH5 sections, gap table), new `docs/agent-prompts/self-host-sh5/**`, `docs/parallel-results/self-host-sh4-scoreboard.md` |
 
-**Start now:** lanes 1-4 and 6-17 (1, 2 and 6-17 stacked on #1259; 3 and 4 from
+**Start now:** lanes 1-17 (1, 2 and 6-17 stacked on #1259; 3, 4 and 5 from
 `main`).
 **After lane 1's first PR:** emission and the swap in lanes 6-14, and the swaps
 of lanes 15-17.
-**After the owner's call:** lane 5.
 **Last:** lane 18.
 
 **Recommended merge order.**
@@ -172,8 +171,8 @@ encoding, constants, element views) applies, with these additions.
   content-hash cache, skipping saturation where it finds nothing), which
   leaves `bootstrap/stage1.lock` alone; (B) budgets inside `ir_opt::optimize`,
   which edits guarded code and needs a Stage 1 re-lock; (C) no Rust change,
-  relying on SH3 lane 9's Vesper `ir_opt` on `@vesper/egraph`. The plan
-  recommends A. Lane 5 does not start until the owner picks.
+  relying on SH3 lane 9's Vesper `ir_opt` on `@vesper/egraph`. **The owner
+  chose A (2026-11-21).**
 - **WIT component wrapping (lane 15).** If wit-component's part the backend
   uses is large, lane 15 keeps it behind a `.vsys` extern and reports the
   size; whether to port it later is an owner call.
