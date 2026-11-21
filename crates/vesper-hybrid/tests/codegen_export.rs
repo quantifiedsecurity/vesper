@@ -115,13 +115,7 @@ fn build(
 fn stat(stderr: &str, prefix: &str) -> u64 {
     stderr
         .lines()
-        .find_map(|l| {
-            l.strip_prefix(prefix)?
-                .split(' ')
-                .next()?
-                .parse()
-                .ok()
-        })
+        .find_map(|l| l.strip_prefix(prefix)?.split(' ').next()?.parse().ok())
         .unwrap_or(0)
 }
 
@@ -153,14 +147,18 @@ fn compare(port: &Port, repo: &Path, scratch: &Path, default: &Path, hybrid: &Pa
         let (rust, rust_json, _) = build(default, library, &input, &a, optimize);
         let (vesper, vesper_json, stderr) = build(hybrid, library, &input, &b, optimize);
         out.builds += 1;
-        out.swapped += stat(&stderr, "vesper-hybrid: codegen emitted the export glue of ");
+        out.swapped += stat(
+            &stderr,
+            "vesper-hybrid: codegen emitted the export glue of ",
+        );
         out.planned += stat(&stderr, "vesper-hybrid: codegen planned ");
         out.written += stat(&stderr, "vesper-hybrid: codegen wrote ");
         if rust != vesper {
             out.differ.push(format!("{library} (optimize {optimize})"));
         }
         if rust_json != vesper_json {
-            out.differ.push(format!("{library} interface (optimize {optimize})"));
+            out.differ
+                .push(format!("{library} interface (optimize {optimize})"));
         }
     }
     out
@@ -208,5 +206,8 @@ fn export_objects_and_interfaces_match_rust() {
     assert!(t.differ.is_empty(), "objects differ: {:?}", t.differ);
     assert!(t.swapped > 0, "the export hook never ran");
     assert_eq!(t.planned, t.builds, "the plan hook missed a build");
-    assert_eq!(t.written, t.builds, "the interface_json hook missed a build");
+    assert_eq!(
+        t.written, t.builds,
+        "the interface_json hook missed a build"
+    );
 }

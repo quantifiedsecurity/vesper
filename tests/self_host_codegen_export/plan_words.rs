@@ -97,7 +97,9 @@ impl Enc<'_> {
         let world = self.world;
         let (class, name, flag, parts): (u64, &str, u64, Vec<Type>) = match ty {
             _ if is_extern_handle(world, ty) => {
-                let Type::Named(n, _) = ty else { unreachable!() };
+                let Type::Named(n, _) = ty else {
+                    unreachable!()
+                };
                 (C_EXTERN, n, 0, vec![])
             }
             Type::Named(n, a) if a.is_empty() && vesper::numeric::is_wide_name(n) => {

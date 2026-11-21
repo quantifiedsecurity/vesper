@@ -148,7 +148,9 @@ pub type PlanHook = fn(
     &std::collections::BTreeSet<String>,
     &str,
     &crate::native::export::Directives,
-) -> Option<Result<crate::native::export::LibraryInterface, Vec<crate::native::export::ExportError>>>;
+) -> Option<
+    Result<crate::native::export::LibraryInterface, Vec<crate::native::export::ExportError>>,
+>;
 /// The interface file hook: `native_export::interface_json`'s text (the
 /// pretty JSON and its trailing newline); `None` declines.
 pub type InterfaceJsonHook = fn(&crate::native::export::LibraryInterface) -> Option<String>;

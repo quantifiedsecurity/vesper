@@ -250,7 +250,9 @@ fn vesper_plan(
 > {
     let input = plan_words::plan_input(world, public, library, directives);
     PLAN_CALLS.fetch_add(1, Relaxed);
-    Some(plan_words::decode_plan(&codegen_export_binding::plan(&input)))
+    Some(plan_words::decode_plan(&codegen_export_binding::plan(
+        &input,
+    )))
 }
 
 /// The `interface_json` hook of `vesper::codegen_swap` from
