@@ -229,6 +229,13 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # Self-hosting SH3 lane 8 (#1247): @vesper/egraph against egg and
+        # egglog on the same corpus. Anchored globs.
+        "test/self_host_egraph": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # @vesper-std/fs, process and env (#1125): drivers over the packages
         # and their .vsys imports.
         "test/std_env": [":files"],
@@ -558,6 +565,8 @@ vesper_crate(
         # The core typing differential (#1179) checks every corpus world.
         "test/self_host_check_core_typing": "long",
         "test/self_host_check_fip": "long",
+        # The e-graph differential (#1247) runs egg and egglog on the corpus.
+        "test/self_host_egraph": "long",
     },
 )
 
