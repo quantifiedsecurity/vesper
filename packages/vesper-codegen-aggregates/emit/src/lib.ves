@@ -19,12 +19,13 @@
 //   runtime's drop) or that check-layout cannot lay out;
 // - a freestanding object (the Rust code reports that a box needs a
 //   runtime);
-// - an object module that has not defined `vesper_box_free` yet (the AOT
-//   box runtime and its live counter: the shim has no data lookup by name,
-//   so the hook cannot tell whether the counter exists).
+//
+// An object module's first box free defines the AOT box runtime's
+// `vesper_box_free` and its live counter (`fip::aot_runtime`).
 
 use @vesper/cranelift::{
     Block,
+    DataId,
     FuncId,
     SigId,
     Ty,
@@ -42,20 +43,31 @@ use @vesper/cranelift::{
     call_return_module,
     cc_eq,
     create_block,
+    data_align,
+    data_new,
+    data_zeroinit,
+    declare_data,
     declare_function,
+    define_data,
     define_function,
+    import_data,
     import_function,
     ins_brif0,
     ins_call,
     ins_iadd_imm,
+    ins_atomic_rmw,
+    ins_iconst,
     ins_icmp_imm,
     ins_jump0,
     ins_load,
     ins_return,
+    ins_symbol_value,
     linkage_import,
     linkage_local,
     linkage_preemptible,
+    mem_trusted,
     module_freestanding,
+    module_get_data,
     module_get_function,
     module_jit,
     module_kind,
@@ -112,6 +124,12 @@ const L_PRODUCT: u8 = 1;
 // FNV-1a, 64 bits (`native::fnv1a64`).
 const FNV_OFFSET: u64 = 14695981039346656037;
 const FNV_PRIME: u64 = 1099511628211;
+// `AtomicRmwOp::Add` (`ins_atomic_rmw`).
+const RMW_ADD: u32 = 1;
+// The AOT box runtime's live counter: 8 bytes, aligned to 8.
+const LIVE_SIZE: u64 = 8;
+// A box free decrements the live count.
+const LIVE_DECREMENT: i64 = -1;
 // The enum tag is the first word.
 const TAG_OFFSET: i32 = 0;
 
@@ -223,10 +241,7 @@ fn free_ok(inout st: St, inout m: Module) -> bool eff [Ffi[Cranelift]] {
     if st.kind == module_freestanding() {
         return false;
     }
-    match module_get_function(inout m, in "vesper_box_free".as_bytes()) {
-        Option::Some(id) => true,
-        Option::None => false,
-    }
+    true
 }
 
 // A field or box content `ty` that holds a box loads as a pointer
@@ -307,16 +322,74 @@ fn box_free(inout st: St, inout b: Builder, inout m: Module, ptr: Value) eff [Ff
         sig_param(inout m, sig, ty_i64());
         declare_function(inout m, in "vesper_box_free".as_bytes(), linkage_import(), sig)
     } else {
-        match module_get_function(inout m, in "vesper_box_free".as_bytes()) {
-            Option::Some(id) => id,
-            Option::None => FuncId {
-                id: NONE32
-            },
-        }
+        declare_or_define_free(inout m)
     };
     let f = import_function(inout b, inout m, id);
     let args = vals1(ptr);
     let call = ins_call(inout b, f, in args.as_slice());
+}
+
+// `fip::aot_runtime::live_counter`: the `vesper_box_live` counter.
+fn live_counter(inout m: Module) -> DataId eff [Ffi[Cranelift]] {
+    match module_get_data(inout m, in "vesper_box_live".as_bytes()) {
+        Option::Some(id) => return id,
+        Option::None => {}
+    }
+    let id = declare_data(inout m, in "vesper_box_live".as_bytes(), linkage_local(), true);
+    match data_new() {
+        Option::Some(nd) => {
+            let mut d = nd;
+            data_zeroinit(inout d, LIVE_SIZE);
+            data_align(inout d, LIVE_SIZE);
+            let ok = define_data(inout m, id, d);
+        }
+        Option::None => {}
+    }
+    id
+}
+
+// `fip::aot_runtime::declare_or_define_free`: the object's
+// `vesper_box_free`, a null test, libc `free` and the live count's
+// decrement.
+fn declare_or_define_free(inout m: Module) -> FuncId eff [Ffi[Cranelift]] {
+    match module_get_function(inout m, in "vesper_box_free".as_bytes()) {
+        Option::Some(id) => return id,
+        Option::None => {}
+    }
+    let live = live_counter(inout m);
+    let sig = sig_new(inout m, call_conv_default());
+    sig_param(inout m, sig, ty_i64());
+    let libc_free = declare_function(inout m, in "free".as_bytes(), linkage_import(), sig);
+    let id = declare_function(inout m, in "vesper_box_free".as_bytes(), linkage_local(), sig);
+    match builder_new(in m, sig) {
+        Option::Some(nb) => {
+            let mut fb = nb;
+            let entry = create_block(inout fb);
+            let do_free = create_block(inout fb);
+            let done = create_block(inout fb);
+            let n = append_block_params_for_function_params(inout fb, entry);
+            switch_to_block(inout fb, entry);
+            let ptr = block_param(inout fb, entry, 0);
+            let is_null = ins_icmp_imm(inout fb, cc_eq(), ptr, 0);
+            ins_brif0(inout fb, is_null, done, do_free);
+            switch_to_block(inout fb, do_free);
+            let f = import_function(inout fb, inout m, libc_free);
+            let args = vals1(ptr);
+            let call = ins_call(inout fb, f, in args.as_slice());
+            let gv = import_data(inout fb, in m, live);
+            let address = ins_symbol_value(inout fb, ty_i64(), gv);
+            let delta = ins_iconst(inout fb, ty_i64(), LIVE_DECREMENT);
+            let old = ins_atomic_rmw(inout fb, RMW_ADD, ty_i64(), mem_trusted(), address, delta);
+            ins_jump0(inout fb, done);
+            switch_to_block(inout fb, done);
+            let none: ChunkSeq[u32] = ChunkSeq::new[u32]();
+            ins_return(inout fb, in none.as_slice());
+            seal_all_blocks(inout fb);
+            let ok = define_function(inout m, id, fb);
+        }
+        Option::None => {}
+    }
+    id
 }
 
 // `emit_drop_box_value`.

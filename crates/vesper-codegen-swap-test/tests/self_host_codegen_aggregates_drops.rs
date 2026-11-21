@@ -74,6 +74,7 @@ fn drops(lent: &mut Lent<'_, '_>) -> Result<bool, String> {
         ty: lent.ty,
         results: &mut *lent.results,
         jit: lent.jit,
+        optimize: lent.optimize,
     };
     let handled = vesper_hook(&mut with_type, hook())?;
     if handled {

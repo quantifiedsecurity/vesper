@@ -104,7 +104,11 @@ The first ported request is `codegen_swap::drops::DROP_BOX`
 (`Codegen::drop_box_value`). It covers the inline drop of a value that owns
 boxes (null test, box fields, the enum tag chain), the recursive types'
 helper functions (`__vesper_drop_<fnv1a of the type's text>`, local in an
-object, preemptible in JIT) and the box frees (`vesper_box_free`). Blocks,
+object, preemptible in JIT) and the box frees (`vesper_box_free`). An
+object's first box free also defines the AOT box runtime: the
+`vesper_box_live` counter, the libc `free` import and the local
+`vesper_box_free` body (`fip::aot_runtime::declare_or_define_free`), found
+again by name through the shim's `module_get_data`. Blocks,
 instructions, imports and declarations are made in the Rust emitter's
 order.
 
@@ -115,11 +119,7 @@ emits anything, and declines when the drop:
 
 - reaches a `Box[dyn T]`, whose drop belongs to the dyn runtime (lane 10);
 - targets a freestanding object, where Rust reports the missing box
-  runtime;
-- comes before an object module has defined `vesper_box_free`. Rust then
-  defines the AOT box runtime and its live counter. The shim has no data
-  lookup by name, so the hook cannot tell whether the counter already
-  exists.
+  runtime.
 
 The differential is
 crates/vesper-codegen-swap-test/tests/self_host_codegen_aggregates_drops.rs.
@@ -132,8 +132,8 @@ boxes.
 | | Count |
 |---|--:|
 | Builds compared | 12 (6 programs, optimizer on and off) |
-| Box drops emitted from Vesper | 138 |
-| Declined (object before the box runtime) | 2 |
+| Box drops emitted from Vesper | 140 |
+| Declined | 0 |
 | CLIF, object and run differences | **0** |
 
 ## Stage 1 guard
@@ -175,8 +175,7 @@ any compile path. The default compiler's objects are byte-identical.
    operations. This includes taking over lane 1's pilot. Aggregate
    instructions will recompute homes and split words from the Program, which
    lane 1 agreed to. The `ffi_lowering::drops` pass goes through SH3 lane 1's
-   IR harness. A data lookup by name in the shim would let `DROP_BOX` also
-   cover the first box free of an object.
+   IR harness.
 2. 128-bit elements after lane 3 (#1277) merges.
 3. The `aggregate` and `drops` hook installs, the full suite and the SH4
    scoreboard row.
