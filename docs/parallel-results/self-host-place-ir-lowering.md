@@ -114,8 +114,11 @@ The word encoding costs more than the lowering, as lane 1 measured; ABI v4
 input and lane 1's tables are how that goes away (part 4 measures the
 hybrid build).
 
-Callgrind counts (lowering alone and the whole corpus) follow in a later
-commit on this PR.
+Callgrind: the Rust side over every 50th world (`IR_LOWER_STEP=50`,
+`callgrind_one_side`) is 24.5 M Ir. The Vesper side did not finish under
+callgrind within two hours here, because the test JIT-compiles the
+package inside valgrind. Part 4 measures Ir on the hybrid build, where the
+package is compiled ahead of time.
 
 ## Part 2
 
