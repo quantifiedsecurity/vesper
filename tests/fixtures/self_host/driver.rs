@@ -416,6 +416,10 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     // with `pub fn` and import with `use` (#880).
                     || path.ends_with("packages/vesper-lsp")
                     || path.ends_with("packages/vesper-memo")
+                    // SH2 lane 10 (#1182): `pub fn` items, which the Stage 1
+                    // parser reads with a different tree (out.ves has no
+                    // loops, so the loop filter below keeps it).
+                    || path.ends_with("packages/vesper-check-loops-atomics")
                 {
                     continue;
                 }
