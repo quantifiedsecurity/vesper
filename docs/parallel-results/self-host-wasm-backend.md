@@ -109,7 +109,7 @@ Vesper backend, so "before" is the Rust column.
 This lane adds a Vesper package and a test. It does not touch
 src/verified_codegen/**, src/ir.rs, `ir_opt::optimize`, lean/**,
 bootstrap/**, packages/vesper-compiler/** or the Rust wasm lowering, and adds
-no swap point. STAGE1
+no swap point. The [Bootstrap Stage 1 run on this branch](https://github.com/robot-head/vesper/actions/runs/44865402211) checks that a fresh `bootstrap/run.sh stage1 --reproduce --outcome` matches bootstrap/stage1.lock.
 
 ## Compiler gaps
 
