@@ -85,7 +85,12 @@ the guard carries the same reasons):
    crucible, chrono, simpulse and loom-cas (anvil_hash's verdict cache)
    therefore stay and flip with the seed pattern, unless lane 14 or lane 16
    replaces the cache store.
-2. `doc` and `verify` commands (part 3).
+2. `doc` and `verify` stay in the compiler binary: moving them frees no
+   crate (vesper-doc is reached through the LSP and doctests, loom-cas through
+   anvil_hash, fmt through LSP actions), and `verify_commands` belongs to
+   SH5 lane 18. With part 2, every remaining row of the guard's `ALLOWED`
+   table is used by checking, code generation, `vesper test` or `vesper lsp`,
+   so this lane closes.
 3. semver stays: `vesper build` exports the package interface in its types
    (`src/interface.rs`).
 4. Census: part 2 updates the STATUS rows in `scripts/rust-census.py` for
