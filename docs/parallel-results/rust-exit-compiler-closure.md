@@ -88,8 +88,10 @@ the guard carries the same reasons):
 2. `doc` and `verify` commands (part 3).
 3. semver stays: `vesper build` exports the package interface in its types
    (`src/interface.rs`).
-4. The census rows (`scripts/rust-census.py`): updated once plan PR #1415,
-   which adds the script, is on main.
+4. Census: part 2 updates the STATUS rows in `scripts/rust-census.py` for
+   simd, migrate, loom-trust, loom-admission, highlight and vesper-tools; the
+   generated `docs/maintenance/rust-census.md` is left to lane 1's next
+   regeneration.
 
 ## Compiler gaps
 
