@@ -84,18 +84,8 @@ fn mains() -> Vec<&'static Case> {
         .collect()
 }
 
-#[test]
-fn child_runs_corpus_mains() {
-    let Some(mode) = std::env::var_os(CHILD) else {
-        return;
-    };
-    let out = std::env::var_os(OUT).expect("output path");
-    if mode == "vesper" {
-        // Compile the round-trip entry before the hooks exist: its own JIT
-        // build goes through the swap point too.
-        round_trip_entry();
-        vesper::ir_swap::install(IDENTITY).unwrap();
-    }
+/// Every corpus main through the JIT, optimize on and off, one line each.
+fn run_mains() -> String {
     let quiet = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let mut text = String::new();
@@ -114,6 +104,29 @@ fn child_runs_corpus_mains() {
         }
     }
     std::panic::set_hook(quiet);
+    text
+}
+
+#[test]
+fn child_runs_corpus_mains() {
+    let Some(mode) = std::env::var_os(CHILD) else {
+        return;
+    };
+    let out = std::env::var_os(OUT).expect("output path");
+    if mode == "vesper" {
+        // Compile the round-trip entry before the hooks exist: its own JIT
+        // build goes through the swap point too.
+        round_trip_entry();
+        vesper::ir_swap::install(IDENTITY).unwrap();
+    }
+    // Debug builds lower and JIT deep corpus programs with large frames;
+    // the default 2 MiB test thread overflows, so run on a big stack.
+    let text = std::thread::Builder::new()
+        .stack_size(1 << 29)
+        .spawn(run_mains)
+        .unwrap()
+        .join()
+        .unwrap();
     if mode == "vesper" {
         let n = ROUND_TRIPS.load(std::sync::atomic::Ordering::Relaxed);
         eprintln!("jit child: {n} programs went through @vesper/place-ir");
