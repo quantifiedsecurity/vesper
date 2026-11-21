@@ -14,7 +14,9 @@
 //! - `plan`: every value's home (the result buffer, a field of a later
 //!   constructor, or the destination of a plain write), after the window
 //!   rule of `drop_unsafe_places`;
-//! - `split_sources`: the reads that lend their storage to a split `let`.
+//! - `split_sources`: the reads that lend their storage to a split `let`;
+//! - the drop facts of each local's and value's type, and the graph's
+//!   `fip::seq_drop_plan`, `replace_drops` and `temporary_drops`.
 //!
 //! The input is `@vesper/place-ir`'s (tests/common/ir_words.rs) followed by
 //! [`facts`]: what the decisions read from the checker's `World` that
@@ -109,6 +111,10 @@ fn put(out: &mut Vec<u8>, x: u64) {
 /// element views: n, n x (span start, end)
 /// per program function, in program order:
 ///     n, n x name text   the free names of its closure and handler bodies
+/// per program function, in program order:
+///     n, n x (lent, k, k x name text)   each closure instruction, in
+///                        instruction order: whether it is a lent closure
+///                        (§4.2) and the names its body uses
 /// ```
 ///
 /// A text is its byte length, then its bytes padded to 8.
@@ -136,6 +142,36 @@ pub fn facts(w: &World, program: &Program) -> Vec<u8> {
         put(&mut out, free.len() as u64);
         for n in &free {
             put_text(&mut out, n);
+        }
+    }
+    for f in program.functions.values() {
+        let closures: Vec<&vesper::ast::Expr> = f
+            .blocks
+            .iter()
+            .flat_map(|b| &b.instructions)
+            .filter_map(|i| match &i.op {
+                Op::Closure { expr, .. } => Some(expr),
+                _ => None,
+            })
+            .collect();
+        put(&mut out, closures.len() as u64);
+        for expr in closures {
+            let (lent, used) = match &expr.kind {
+                vesper::ast::ExprKind::Closure { params, body, .. } => {
+                    let mut used = vesper::check::free_names(body);
+                    for p in params {
+                        used.remove(&p.name);
+                    }
+                    let key = vesper::ir::nested_name("closure", &body.span);
+                    (w.lent_closures.contains_key(&key), used)
+                }
+                _ => (false, BTreeSet::new()),
+            };
+            put(&mut out, lent as u64);
+            put(&mut out, used.len() as u64);
+            for n in &used {
+                put_text(&mut out, n);
+            }
         }
     }
     out

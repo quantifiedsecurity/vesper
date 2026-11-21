@@ -5,11 +5,12 @@ Claim #1282. Prompt:
 Rust stays the default build: nothing here installs a hook or changes
 lowering.
 
-## Part 1: the aggregate decisions
+## Part 1: the aggregate and drop decisions
 
 The lane starts with what it can do before lane 1 (#1275) lends Cranelift
 handles to Vesper: the parts of native lowering that read the IR and decide,
-with no emission. Part 1 ports the decisions of src/native_aggregates.rs to
+with no emission. Part 1 ports the decisions of src/native_aggregates.rs
+and the drop plans of src/fip.rs to
 `packages/vesper-codegen-aggregates` (`@vesper/codegen-aggregates`):
 
 | Rust (src/native_aggregates.rs) | What it decides | Vesper |
@@ -19,6 +20,10 @@ with no emission. Part 1 ports the decisions of src/native_aggregates.rs to
 | `split_locals` | which locals live in word variables (#1090), with the paths their uses read | `split_locals` |
 | `plan` with `Graph` and `drop_unsafe_places` | where each constructed aggregate is built: the result buffer, a field of a later constructor, or a write's destination (#990, #1022) | `plan`, `consumer_home`, `param_home`, `sources`, `pass_through`, `window_ok`, `drop_unsafe_once` |
 | `split_sources` | the reads that lend their storage to a split `let` | in `function_decisions` |
+| `fip::needs_drop`, `may_need_drop`, `elem_needs_drop`, `type_contains_box`; `type_is_recursive` (src/native.rs) | what a value of each local's and value's type owns, and which types get a drop or equality helper function | `needs_drop`, `may_need_drop`, `elem_needs_drop`, `contains_box`, `type_is_recursive` |
+| `fip::seq_drop_plan`, `borrowed_scrutinees` | the sequence, string and aggregate slots native code frees itself | `seq_drop_plan`, `borrowed_scrutinees` |
+| `fip::replace_drops` | the writes that free the value they replace | `replace_drops` |
+| `fip::temporary_drops` | where each owned temporary is dropped | `temporary_drops` |
 
 The package reads a program through @vesper/place-ir (#1259) and the world
 through @vesper/check-data, and keeps every Rust map as a dense table by
@@ -30,12 +35,20 @@ src/: a `#[doc(hidden)] pub mod` line in src/native.rs and the new file,
 which calls the decision functions as `Codegen` does for a top-level graph
 and prints what they return.
 
-The decisions also read three facts the checker's `World` has that
+The decisions also read four facts the checker's `World` has that
 check-data does not carry. The test appends them after the program section
 (tests/self_host_codegen_aggregates.rs `facts`): every world function with
 whether its effect row is empty and whether it is `fip`, the element-view
-spans, and the free names of each function's closure and handler bodies
-(their expressions stay Rust payloads in place-ir).
+spans, the free names of each function's closure and handler bodies, and
+for each closure instruction whether it is a lent closure (§4.2) and the
+names its body uses (closure and handler expressions stay Rust payloads in
+place-ir).
+
+`seq_drop_plan` and `borrowed_scrutinees` are also ported by lane 9
+(@vesper/codegen-seq, #1295). The two PRs are open at the same time, so
+this package keeps a private copy, which `temporary_drops` needs. Once
+both have merged, a follow-up makes this package depend on lane 9's copy
+(a TODO in the source names #1295).
 
 ### Differential
 
@@ -50,21 +63,26 @@ Full corpus, release build:
 
 | | Count |
 |---|--:|
-| Worlds | 292 (0 not encodable) |
-| Functions | 17,409 |
-| Decision lines | 350,617 |
-| Locals (`plain_data`, `split_words`) | 321,679 |
-| Split locals | 3,748 |
-| Homes in the result buffer | 5,238 |
-| Homes in a constructor's field | 2,491 |
+| Worlds | 294 (0 not encodable) |
+| Functions | 17,888 |
+| Decision lines | 617,437 |
+| Locals (`plain_data`, `split_words`) | 339,835 |
+| Split locals | 4,157 |
+| Homes in the result buffer | 5,532 |
+| Homes in a constructor's field | 2,512 |
 | Homes in a write's destination | 46 |
 | Split sources | 6 |
+| Locals with a drop fact | 15,384 |
+| Values with a drop fact | 206,048 |
+| Slots `seq_drop_plan` frees | 5,045 |
+| Writes that free what they replace | 4,522 |
+| Temporaries dropped | 16,462 |
 | **Worlds that differ** | **0** |
 
-Cost over the same 292 worlds (`decisions_cost`, `CHECK_HARNESS_SPEED=1`,
-best of 5, release build): Rust's decision functions with their text 3.52 s;
-the package's entry, decoding the input included, 1.88 s (0.53x of Rust);
-encoding the input 2.10 s (mostly check-data's world section, which lane 2's
+Cost over the same 294 worlds (`decisions_cost`, `CHECK_HARNESS_SPEED=1`,
+best of 5, release build): Rust's decision functions with their text 7.66 s;
+the package's entry, decoding the input included, 4.57 s (0.60x of Rust);
+encoding the input 2.57 s (mostly check-data's world section, which lane 2's
 encode-once input removes for the swap).
 
 The decisions run with no generic arguments (top-level graphs), as `Codegen`
@@ -106,14 +124,13 @@ any compile path. The default compiler's objects are byte-identical.
 
 ## What is left
 
-1. Drop and equality decisions: `fip::needs_drop`, `may_need_drop`,
-   `elem_needs_drop`, `replace_drops`, `temporary_drops`, and which types
-   get structural equality helpers.
-2. After lane 1's first PR: emission (addressing, allocation, loads and
+1. After lane 1's first PR: emission (addressing, allocation, loads and
    stores, `data_into`, pattern tests and bindings, equality helpers, drop
    glue, fip box operations), taking over lane 1's pilot, with CLIF and
    object differentials; the `ffi_lowering::drops` pass through SH3 lane 1's
-   IR harness.
-3. 128-bit elements after lane 3 (#1277) merges.
-4. The `aggregate` and `drops` hook installs, the full suite and the SH4
+   IR harness. Lane 1 is adding the shim calls drop glue needs on a lent
+   module (`vcl_module_get_function`, the module kind, JIT reference
+   normalization).
+2. 128-bit elements after lane 3 (#1277) merges.
+3. The `aggregate` and `drops` hook installs, the full suite and the SH4
    scoreboard row.

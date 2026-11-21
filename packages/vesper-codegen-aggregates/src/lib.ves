@@ -9,7 +9,11 @@
 // - `split_locals`: the copy-struct locals kept as word variables (#1090);
 // - `plan`: where each constructed aggregate is built (#990, #1022),
 //   with the window rule of `drop_unsafe_places`;
-// - `split_sources`: the reads that lend their storage to a split `let`.
+// - `split_sources`: the reads that lend their storage to a split `let`;
+// - the drop decisions of src/fip.rs: what each type owns (`needs_drop`,
+//   `may_need_drop`, `elem_needs_drop`, `type_contains_box`) and whether
+//   it gets a drop or equality helper (`type_is_recursive`), and per graph
+//   `seq_drop_plan`, `replace_drops` and `temporary_drops`.
 //
 // The input is @vesper/place-ir's (names, types, world, program section)
 // and then the `World` facts check-data does not carry
@@ -37,7 +41,8 @@ use @vesper/check-data::names::{
 };
 use @vesper/check-data::types::{
     Types,
-    default_type
+    default_type,
+    substitute
 };
 use @vesper/check-data::world::{
     SpanRow,
@@ -68,6 +73,7 @@ const K_NAMED: u8 = 1;
 const K_TUPLE: u8 = 2;
 const K_FN: u8 = 3;
 const K_ROW: u8 = 4;
+const K_INFER: u8 = 5;
 
 const L_SCALAR: u8 = 0;
 const L_PRODUCT: u8 = 1;
@@ -118,6 +124,8 @@ const FN_FIP: u32 = 4;
 // Symbol flags of the graph being planned.
 const S_PARAM: u32 = 1;
 const S_CAPTURE: u32 = 2;
+const S_SINK: u32 = 4;
+const S_INOUT: u32 = 8;
 
 // Home kinds (`Home`).
 const H_NONE: u8 = 0;
@@ -195,7 +203,19 @@ pub struct Env {
     free_a: ChunkSeq[u64],
     free_n: ChunkSeq[u64],
     free: ChunkSeq[u32],
+    // each program function's closure instructions, in instruction order:
+    // closures cl_a[f]..cl_a[f]+cl_n[f] of (lent, used names
+    // cu[cua[k]..cua[k]+cun[k]])
+    cl_a: ChunkSeq[u64],
+    cl_n: ChunkSeq[u64],
+    cl_lent: ChunkSeq[u8],
+    cua: ChunkSeq[u64],
+    cun: ChunkSeq[u64],
+    cu: ChunkSeq[u32],
     s_eq: u32,
+    s_box_box: u32,
+    s_new: u32,
+    s_with_capacity: u32,
     s_i128: u32,
     s_u128: u32,
     s_div: u32,
@@ -227,7 +247,16 @@ fn read_env(inout r: Reader, in b: Slice[u8], inout names: Names, functions: u64
         free_a: ChunkSeq::new[u64](),
         free_n: ChunkSeq::new[u64](),
         free: ChunkSeq::new[u32](),
+        cl_a: ChunkSeq::new[u64](),
+        cl_n: ChunkSeq::new[u64](),
+        cl_lent: ChunkSeq::new[u8](),
+        cua: ChunkSeq::new[u64](),
+        cun: ChunkSeq::new[u64](),
+        cu: ChunkSeq::new[u32](),
         s_eq: names.intern(in "=".as_bytes()),
+        s_box_box: names.intern(in "Box::Box".as_bytes()),
+        s_new: names.intern(in "New".as_bytes()),
+        s_with_capacity: names.intern(in "WithCapacity".as_bytes()),
         s_i128: names.intern(in "i128".as_bytes()),
         s_u128: names.intern(in "u128".as_bytes()),
         s_div: names.intern(in "/".as_bytes()),
@@ -274,6 +303,26 @@ fn read_env(inout r: Reader, in b: Slice[u8], inout names: Names, functions: u64
         for i in 0..n {
             let s = read_text(inout r, in b, inout names);
             e.free.push(s);
+        }
+    }
+    for f in 0..functions {
+        e.cl_a.push(e.cl_lent.len());
+        let n = r.word(in b);
+        e.cl_n.push(n);
+        for k in 0..n {
+            let lent: u8 = if r.word(in b) != 0 {
+                1
+            } else {
+                0
+            };
+            e.cl_lent.push(lent);
+            e.cua.push(e.cu.len());
+            let m = r.word(in b);
+            e.cun.push(m);
+            for i in 0..m {
+                let s = read_text(inout r, in b, inout names);
+                e.cu.push(s);
+            }
         }
     }
     e
@@ -397,6 +446,310 @@ fn drop_free(inout e: Env, inout c: Ctx, ty: u32) -> bool {
 fn plain_data(inout e: Env, inout c: Ctx, ty: u32) -> bool {
     let l = lay(inout e, inout c, ty);
     l != NONE32 && plain_walk(in e, in c, l, true)
+}
+
+// ----- drop facts per type (src/fip.rs, src/native.rs) --------------------------
+
+// `fip::is_box_type`: the built-in `Box[T]` (no handle drop plan runs here).
+fn is_box(in c: Ctx, ty: u32) -> bool {
+    let n = c.types.node(ty);
+    c.world.box_active && n.kind == K_NAMED && n.name == c.world.k.box_ && n.n == 1
+}
+
+fn arg_of(in c: Ctx, ty: u32, i: u64) -> u32 {
+    c.types.arg(ty, i)
+}
+
+fn on_stack(in seen: ChunkSeq[u32], x: u32) -> bool {
+    for i in 0..seen.len() {
+        if u32_at(in seen, i) == x {
+            return true;
+        }
+    }
+    false
+}
+
+fn pop32(inout seen: ChunkSeq[u32]) {
+    let n = seen.len();
+    if n > 0 {
+        seen.truncate(wrapping_sub(n, 1));
+    }
+}
+
+// `dyn_trait::is_dyn_generic`: a name that starts with `__dyn__`.
+fn dyn_generic_name(in c: Ctx, s: u32) -> bool {
+    let size = c.names.size(s);
+    if size < 7 {
+        return false;
+    }
+    // "__dyn__"
+    c
+        .names
+        .byte(s, 0)
+        == 95
+        && c
+        .names
+        .byte(s, 1)
+        == 95
+        && c
+        .names
+        .byte(s, 2)
+        == 100
+        && c
+        .names
+        .byte(s, 3)
+        == 121
+        && c
+        .names
+        .byte(s, 4)
+        == 110
+        && c
+        .names
+        .byte(s, 5)
+        == 95
+        && c
+        .names
+        .byte(s, 6)
+        == 95
+}
+
+// `fip::drop_visit`: `needs_drop` (`unknown` false) and `may_need_drop`
+// (`unknown` true). `seen` holds the (defaulted) types on the walk.
+fn drop_visit(inout c: Ctx, ty0: u32, inout seen: ChunkSeq[u32], unknown: bool) -> bool {
+    let ty = default_type(inout c.types, ty0);
+    let n = c.types.node(ty);
+    let k = c.world.k;
+    if n.kind == K_NAMED {
+        if (n.name == k.chunk_seq && n.n == 1) || (n.name == k.string && n.n == 0) {
+            return true;
+        }
+        if (n.name == k.dyn_ && n.n == 1) || (n.n == 0 && dyn_generic_name(in c, n.name)) {
+            return true;
+        }
+        if is_box(in c, ty)
+            || (n.name == k.slice && n.n == 1)
+            || (n.name == k.tiled_seq && (n.n == 1 || n.n == 2))
+            || n
+            .name
+            == k
+            .region_box
+            || n
+            .name
+            == k
+            .watermark {
+            return false;
+        }
+        let ai = c.world.lookup(n.name);
+        if ai == NO_ADT {
+            return unknown
+                && !(c.world.k.is_scalar(n.name) || is_wide_name(in c, n.name))
+                && n
+                .name
+                != k
+                .never
+                && !is_text(in c, ty)
+                && vector_words(in c.types, in c.names, k, ty)
+                == 0;
+        }
+        let a = c.world.adt(ai);
+        if w(a.gn) != w(n.n) {
+            return unknown;
+        }
+        if on_stack(in seen, ty) {
+            return false;
+        }
+        seen.push(ty);
+        let vars = c.world.vars_of(in c.types, a, ty);
+        let mut found = false;
+        for vi in 0..w(a.vn) {
+            let v = c.world.variant(add(w(a.va), vi));
+            for fi in 0..w(v.fc) {
+                if !found {
+                    let f = c.world.field(add(w(v.fa), fi));
+                    let ft = substitute(inout c.types, f.ty, in vars);
+                    found = drop_visit(inout c, ft, inout seen, unknown);
+                }
+            }
+        }
+        pop32(inout seen);
+        return found;
+    }
+    if n.kind == K_TUPLE {
+        for i in 0..w(n.n) {
+            if drop_visit(inout c, arg_of(in c, ty, i), inout seen, unknown) {
+                return true;
+            }
+        }
+        return false;
+    }
+    n.kind == K_INFER && unknown
+}
+
+fn is_wide_name(in c: Ctx, s: u32) -> bool {
+    let size = c.names.size(s);
+    size
+        == 4
+        && (c.names.byte(s, 0) == 105 || c.names.byte(s, 0) == 117)
+        && c
+        .names
+        .byte(s, 1)
+        == 49
+        && c
+        .names
+        .byte(s, 2)
+        == 50
+        && c
+        .names
+        .byte(s, 3)
+        == 56
+}
+
+// `fip::needs_drop`.
+fn needs_drop(inout c: Ctx, ty: u32) -> bool {
+    let mut seen: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    drop_visit(inout c, ty, inout seen, false)
+}
+
+// `fip::may_need_drop`.
+fn may_need_drop(inout c: Ctx, ty: u32) -> bool {
+    let mut seen: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    drop_visit(inout c, ty, inout seen, true)
+}
+
+// `fip::type_contains_box`: `seen` holds the ADT names on the walk.
+fn box_visit(inout c: Ctx, ty: u32, inout seen: ChunkSeq[u32]) -> bool {
+    if is_box(in c, ty) {
+        return true;
+    }
+    let n = c.types.node(ty);
+    if n.kind == K_TUPLE {
+        for i in 0..w(n.n) {
+            if box_visit(inout c, arg_of(in c, ty, i), inout seen) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if n.kind != K_NAMED {
+        return false;
+    }
+    for i in 0..w(n.n) {
+        if box_visit(inout c, arg_of(in c, ty, i), inout seen) {
+            return true;
+        }
+    }
+    let ai = c.world.lookup(n.name);
+    if ai == NO_ADT || on_stack(in seen, n.name) {
+        return false;
+    }
+    seen.push(n.name);
+    let a = c.world.adt(ai);
+    let vars = c.world.vars_of(in c.types, a, ty);
+    let mut found = false;
+    for vi in 0..w(a.vn) {
+        let v = c.world.variant(add(w(a.va), vi));
+        for fi in 0..w(v.fc) {
+            if !found {
+                let f = c.world.field(add(w(v.fa), fi));
+                let ft = substitute(inout c.types, f.ty, in vars);
+                found = box_visit(inout c, ft, inout seen);
+            }
+        }
+    }
+    pop32(inout seen);
+    found
+}
+
+fn contains_box(inout c: Ctx, ty: u32) -> bool {
+    let mut seen: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    box_visit(inout c, ty, inout seen)
+}
+
+// `fip::elem_needs_drop`.
+fn elem_needs_drop(inout c: Ctx, ty: u32) -> bool {
+    if needs_drop(inout c, ty) {
+        return true;
+    }
+    let t = default_type(inout c.types, ty);
+    contains_box(inout c, t)
+}
+
+// `native::type_is_recursive`: the drop and equality helpers.
+fn recursive_visit(inout c: Ctx, ty0: u32, inout seen: ChunkSeq[u32]) -> bool {
+    let ty = default_type(inout c.types, ty0);
+    if is_box(in c, ty) {
+        return recursive_visit(inout c, arg_of(in c, ty, 0), inout seen);
+    }
+    let n = c.types.node(ty);
+    if n.kind == K_TUPLE {
+        for i in 0..w(n.n) {
+            if recursive_visit(inout c, arg_of(in c, ty, i), inout seen) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if n.kind != K_NAMED {
+        return false;
+    }
+    let ai = c.world.lookup(n.name);
+    if ai == NO_ADT {
+        return false;
+    }
+    if on_stack(in seen, ty) {
+        return true;
+    }
+    seen.push(ty);
+    let a = c.world.adt(ai);
+    let vars = c.world.vars_of(in c.types, a, ty);
+    let mut found = false;
+    for vi in 0..w(a.vn) {
+        let v = c.world.variant(add(w(a.va), vi));
+        for fi in 0..w(v.fc) {
+            if !found {
+                let f = c.world.field(add(w(v.fa), fi));
+                let ft = substitute(inout c.types, f.ty, in vars);
+                found = recursive_visit(inout c, ft, inout seen);
+            }
+        }
+    }
+    pop32(inout seen);
+    found
+}
+
+fn type_is_recursive(inout c: Ctx, ty: u32) -> bool {
+    let mut seen: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    recursive_visit(inout c, ty, inout seen)
+}
+
+// The drop facts of `ty` as five digits (`needs_drop`, `may_need_drop`,
+// `elem_needs_drop`, `type_contains_box` of the defaulted type,
+// `type_is_recursive`), or false when all are 0.
+fn drop_facts(inout c: Ctx, ty: u32, inout o: ChunkSeq[u8]) -> bool {
+    let t = default_type(inout c.types, ty);
+    let nd = needs_drop(inout c, t);
+    let mnd = may_need_drop(inout c, t);
+    let en = elem_needs_drop(inout c, t);
+    let cb = contains_box(inout c, t);
+    let rec = type_is_recursive(inout c, t);
+    if !(nd || mnd || en || cb || rec) {
+        return false;
+    }
+    put_flag(inout o, " nd=", nd);
+    put_flag(inout o, " mnd=", mnd);
+    put_flag(inout o, " en=", en);
+    put_flag(inout o, " cb=", cb);
+    put_flag(inout o, " rec=", rec);
+    true
+}
+
+fn put_flag(inout o: ChunkSeq[u8], in label: Str, x: bool) {
+    put(inout o, label);
+    if x {
+        o.push(49);
+    } else {
+        o.push(48);
+    }
 }
 
 // `fip::mentions_box` without the `active` test.
@@ -1102,6 +1455,11 @@ fn graph_of(in p: Program, inout c: Ctx, inout s: Syms, fi: u64) -> G {
     at = inc(at);
     for i in 0..np {
         s.flag(n32(p.op(at)), S_PARAM);
+        if p.op(inc(at)) == PASS_SINK {
+            s.flag(n32(p.op(at)), S_SINK);
+        } else if p.op(inc(at)) == PASS_INOUT {
+            s.flag(n32(p.op(at)), S_INOUT);
+        }
         let k = p.op(add(at, 2));
         at = add(at, add(6, k));
     }
@@ -2698,6 +3056,997 @@ fn split_locals(inout e: Env, inout c: Ctx, in p: Program, inout g: G, in s: Sym
 
 // ----- the decisions as text ---------------------------------------------------
 
+// ----- the drop plans of a graph (src/fip.rs) -----------------------------------
+
+// `fip::SeqDrop`, by local index (0: not planned).
+const SD_NONE: u8 = 0;
+const SD_SEQ: u8 = 1;
+const SD_STR: u8 = 2;
+const SD_OWNED: u8 = 3;
+const SD_FIELDS: u8 = 4;
+
+// `seq::holds_sequence`: field types are not substituted.
+fn holds_visit(inout c: Ctx, ty: u32, inout seen: ChunkSeq[u32]) -> bool {
+    let n = c.types.node(ty);
+    let k = c.world.k;
+    if n.kind == K_TUPLE {
+        for i in 0..w(n.n) {
+            if holds_visit(inout c, arg_of(in c, ty, i), inout seen) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if n.kind != K_NAMED {
+        return false;
+    }
+    if (n.name == k.chunk_seq || n.name == k.slice) && n.n == 1 {
+        return true;
+    }
+    for i in 0..w(n.n) {
+        if holds_visit(inout c, arg_of(in c, ty, i), inout seen) {
+            return true;
+        }
+    }
+    let ai = c.world.lookup(n.name);
+    if ai == NO_ADT || on_stack(in seen, n.name) {
+        return false;
+    }
+    seen.push(n.name);
+    let a = c.world.adt(ai);
+    let mut found = false;
+    for vi in 0..w(a.vn) {
+        let v = c.world.variant(add(w(a.va), vi));
+        for fi in 0..w(v.fc) {
+            if !found {
+                let f = c.world.field(add(w(v.fa), fi));
+                found = holds_visit(inout c, f.ty, inout seen);
+            }
+        }
+    }
+    pop32(inout seen);
+    found
+}
+
+fn holds_sequence(inout c: Ctx, ty: u32) -> bool {
+    let mut seen: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    holds_visit(inout c, ty, inout seen)
+}
+
+// `fip::is_box_pattern` of the pattern at word `q`.
+fn box_pattern(inout e: Env, inout c: Ctx, in p: Program, q: u64) -> bool {
+    if !c.world.box_active || p.op(q) != PAT_CONSTRUCTOR {
+        return false;
+    }
+    let body = add(q, 3);
+    let name = n32(p.op(body));
+    if name != c.world.k.box_ && name != e.s_box_box {
+        return false;
+    }
+    p.op(add(body, 2)) == 1 && n32(p.op(add(body, 3))) == e.digit(inout c.names, 0)
+}
+
+// `pattern_has_box` of `seq_drop_plan`.
+fn pattern_has_box(inout e: Env, inout c: Ctx, in p: Program, q: u64) -> bool {
+    if box_pattern(inout e, inout c, in p, q) {
+        return true;
+    }
+    let kind = p.op(q);
+    let body = add(q, 3);
+    if kind == PAT_TUPLE {
+        let n = p.op(body);
+        let mut at = inc(body);
+        for i in 0..n {
+            if pattern_has_box(inout e, inout c, in p, at) {
+                return true;
+            }
+            at = pattern_end(in p, at);
+        }
+    } else if kind == PAT_CONSTRUCTOR {
+        let n = p.op(add(body, 2));
+        let mut at = add(body, 3);
+        for i in 0..n {
+            if pattern_has_box(inout e, inout c, in p, inc(at)) {
+                return true;
+            }
+            at = pattern_end(in p, inc(at));
+        }
+    }
+    false
+}
+
+// The graph instruction that defines each value, or NONE32_64.
+fn def_insts(in p: Program, in g: G) -> ChunkSeq[u64] {
+    let mut out = filled64(g.nv, NONE32_64);
+    for k in 0..g.ni {
+        let d = w(p.inst(add(g.i0, k)).dest);
+        if d < g.nv {
+            set64(inout out, d, k);
+        }
+    }
+    out
+}
+
+fn def_op(in p: Program, in g: G, in defs: ChunkSeq[u64], v: u32) -> u8 {
+    if w(v) >= defs.len() {
+        return 255;
+    }
+    let k = u64_at(in defs, w(v));
+    if k == NONE32_64 {
+        255
+    } else {
+        p.inst(add(g.i0, k)).op
+    }
+}
+
+// The pass word of a `Read` at operand word `a`.
+fn read_pass(in p: Program, a: u64) -> u64 {
+    p.op(add(a, 2))
+}
+
+fn mark_sym(in s: Syms, inout set: ChunkSeq[u8], sym: u32) {
+    let li = s.local_of(sym);
+    if li != NONE32_64 {
+        set8(inout set, li, 1);
+    }
+}
+
+fn mark_bound(in p: Program, in s: Syms, inout set: ChunkSeq[u8], q: u64) {
+    let mut names: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    pattern_binds(in p, q, inout names);
+    for i in 0..names.len() {
+        mark_sym(in s, inout set, u32_at(in names, i));
+    }
+}
+
+// `fip::borrowed_scrutinees`, by value id.
+fn borrowed_scrutinees(in e: Env, in p: Program, in g: G, in s: Syms) -> ChunkSeq[u8] {
+    let mut matched = filled8(g.nv, 0);
+    for b in 0..g.nb {
+        let blk = p.block(add(g.b0, b));
+        if blk.term == TERM_MATCH {
+            let v = p.op(blk.ta);
+            if v < g.nv {
+                set8(inout matched, v, 1);
+            }
+        }
+    }
+    // Names by local index: the non-`sink` parameters, then what a
+    // borrowed match binds.
+    let nl = g.lsym.len();
+    let mut names = filled8(nl, 0);
+    for li in 0..nl {
+        let sym = u32_at(in g.lsym, li);
+        if s.has(sym, S_PARAM) && !s.has(sym, S_SINK) {
+            set8(inout names, li, 1);
+        }
+    }
+    let mut out = filled8(g.nv, 0);
+    loop {
+        let mut grew = false;
+        for k in 0..g.ni {
+            let inst = p.inst(add(g.i0, k));
+            let d = w(inst.dest);
+            let a = inst.a;
+            if inst.op == OP_READ {
+                let li = s.local_of(n32(p.op(a)));
+                if d
+                    < g
+                    .nv
+                    && u8_at(in matched, d)
+                    != 0
+                    && li
+                    != NONE32_64
+                    && u8_at(in names, li)
+                    != 0
+                    && u8_at(in out, d)
+                    == 0 {
+                    set8(inout out, d, 1);
+                    grew = true;
+                }
+            } else if inst.op == OP_SEQ {
+                let label = p.pool_row(p.op(a)).label;
+                if d
+                    < g
+                    .nv
+                    && u8_at(in matched, d)
+                    != 0
+                    && u8_at(in out, d)
+                    == 0
+                    && (label == e.s_try_get || label == e.s_hoisted_try_get) {
+                    set8(inout out, d, 1);
+                    grew = true;
+                }
+            } else if inst.op == OP_BIND {
+                let v = p.op(a);
+                if v < g.nv && u8_at(in out, v) != 0 {
+                    let mut bound: ChunkSeq[u32] = ChunkSeq::new[u32]();
+                    pattern_binds(in p, inc(a), inout bound);
+                    for i in 0..bound.len() {
+                        let li = s.local_of(u32_at(in bound, i));
+                        if li != NONE32_64 && u8_at(in names, li) == 0 {
+                            set8(inout names, li, 1);
+                            grew = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    out
+}
+
+fn plan_kind(in plan: ChunkSeq[u8], in s: Syms, sym: u32) -> u8 {
+    let li = s.local_of(sym);
+    if li == NONE32_64 {
+        SD_NONE
+    } else {
+        u8_at(in plan, li)
+    }
+}
+
+fn owned_or_fields(k: u8) -> bool {
+    k == SD_OWNED || k == SD_FIELDS
+}
+
+// `fip::seq_drop_plan`, by local index.
+//
+// TODO(#1282): @vesper/codegen-seq (#1295) ports this and
+// `borrowed_scrutinees` too; once both PRs merge, depend on its copy.
+fn seq_drop_plan(inout e: Env, inout c: Ctx, in p: Program, in g: G, in s: Syms) -> ChunkSeq[u8] {
+    let nl = g.lsym.len();
+    let mut plan = filled8(nl, SD_NONE);
+    if (e.fn_bits(g.name) & FN_FIP) != 0 {
+        return plan;
+    }
+    let k = c.world.k;
+    let mut any = false;
+    for li in 0..nl {
+        let sym = u32_at(in g.lsym, li);
+        let ty = u32_at(in g.lty, li);
+        let n = c.types.node(ty);
+        let param = s.has(sym, S_PARAM);
+        let mut kind = SD_NONE;
+        if n.kind == K_NAMED && n.name == k.chunk_seq && n.n == 1 {
+            kind = SD_SEQ;
+        } else if n.kind == K_NAMED && n.name == k.string && n.n == 0 {
+            kind = SD_STR;
+        } else if param && needs_drop(inout c, ty) {
+            kind = SD_OWNED;
+        } else if n
+            .kind
+            == K_NAMED
+            && c
+            .world
+            .lookup(n.name)
+            != NO_ADT
+            && !param
+            && (holds_sequence(inout c, ty) || needs_drop(inout c, ty)) {
+            kind = SD_FIELDS;
+        }
+        if kind == SD_NONE || s.has(sym, S_CAPTURE) || (param && !s.has(sym, S_SINK)) {
+            continue;
+        }
+        set8(inout plan, li, kind);
+        any = true;
+    }
+    if !any {
+        return plan;
+    }
+    let mut refused = filled8(nl, 0);
+    let borrowed = borrowed_scrutinees(in e, in p, in g, in s);
+    let defs = def_insts(in p, in g);
+    let mut closure: u64 = u64_at(in e.cl_a, g.fi);
+    let mut parts: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    for ki in 0..g.ni {
+        let inst = p.inst(add(g.i0, ki));
+        let a = inst.a;
+        let op = inst.op;
+        if op == OP_READ && read_pass(in p, a) == PASS_SINK {
+            let root = n32(p.op(a));
+            let pk = plan_kind(in plan, in s, root);
+            let pr = p.path(p.op(inc(a)));
+            if (pr.n > 0 && may_need_drop(inout c, inst.ty) && !owned_or_fields(pk))
+                || pk
+                == SD_STR {
+                mark_sym(in s, inout refused, root);
+            }
+        } else if op == OP_WRITE {
+            let place = n32(p.op(a));
+            let root = place_root(inout c.names, place);
+            let pk = plan_kind(in plan, in s, root);
+            if (has_dot(in c.names, place) && !owned_or_fields(pk))
+                || n32(p.op(inc(a)))
+                != e
+                .s_eq
+                || (pk == SD_STR && s.has(root, S_PARAM)) {
+                mark_sym(in s, inout refused, root);
+            }
+        } else if op == OP_BIND {
+            let v = n32(p.op(a));
+            let q = inc(a);
+            let dop = def_op(in p, in g, in defs, v);
+            let borrow_read = dop
+                == OP_READ
+                && read_pass(in p, p.inst(add(g.i0, u64_at(in defs, w(v)))).a)
+                != PASS_SINK;
+            if borrow_read
+                || (w(v) < g.nv && u8_at(in borrowed, w(v)) != 0)
+                || (p.op(q) != PAT_BIND && pattern_has_box(inout e, inout c, in p, q)) {
+                mark_bound(in p, in s, inout refused, q);
+            }
+        } else if op == OP_CLOSURE {
+            let ci = closure;
+            closure = inc(closure);
+            if u8_at(in e.cl_lent, ci) != 0 {
+                continue;
+            }
+            let at = inc(a);
+            let na = p.op(at);
+            let ua = u64_at(in e.cua, ci);
+            let un = u64_at(in e.cun, ci);
+            for j in 0..na {
+                let name = n32(p.op(add(inc(at), wrapping_mul(j, 2))));
+                let slot = n32(p.op(add(add(at, 2), wrapping_mul(j, 2))));
+                let mut used = false;
+                for i in 0..un {
+                    if u32_at(in e.cu, add(ua, i)) == name {
+                        used = true;
+                    }
+                }
+                if used {
+                    mark_sym(in s, inout refused, name);
+                    mark_sym(in s, inout refused, slot);
+                }
+            }
+            let mt = add(inc(at), wrapping_mul(na, 2));
+            for j in 0..p.op(mt) {
+                mark_sym(in s, inout refused, n32(p.op(add(inc(mt), wrapping_mul(j, 2)))));
+            }
+        } else if op == OP_HANDLE {
+            let at = add(a, 3);
+            let na = p.op(at);
+            for j in 0..na {
+                let slot = n32(p.op(add(add(at, 2), wrapping_mul(j, 2))));
+                if plan_kind(in plan, in s, slot) == SD_STR {
+                    mark_sym(in s, inout refused, slot);
+                }
+            }
+            let mt = add(inc(at), wrapping_mul(na, 2));
+            for j in 0..p.op(mt) {
+                mark_sym(in s, inout refused, n32(p.op(add(inc(mt), wrapping_mul(j, 2)))));
+            }
+        }
+    }
+    // A match arm binds through its pattern, not a `let`.
+    for b in 0..g.nb {
+        let blk = p.block(add(g.b0, b));
+        if blk.term == TERM_MATCH {
+            let n = p.op(inc(blk.ta));
+            let mut at = add(blk.ta, 2);
+            for i in 0..n {
+                mark_bound(in p, in s, inout refused, at);
+                at = inc(pattern_end(in p, at));
+            }
+        }
+    }
+    for li in 0..nl {
+        if u8_at(in refused, li) != 0 {
+            set8(inout plan, li, SD_NONE);
+        }
+    }
+    plan
+}
+
+// The local indices a closure (lent or not) or handler leaves out of
+// `replace_drops`' candidates.
+fn closure_refusals(
+    inout e: Env,
+    in p: Program,
+    in s: Syms,
+    ii: u64,
+    ci: u64,
+    inout out: ChunkSeq[u8]
+) {
+    let inst = p.inst(ii);
+    let a = inst.a;
+    let at = if inst.op == OP_HANDLE {
+        add(a, 3)
+    } else {
+        inc(a)
+    };
+    let na = p.op(at);
+    let lent = inst.op == OP_CLOSURE && u8_at(in e.cl_lent, ci) != 0;
+    if lent {
+        return;
+    }
+    let ua = u64_at(in e.cua, ci);
+    let un = u64_at(in e.cun, ci);
+    for j in 0..na {
+        let name = n32(p.op(add(inc(at), wrapping_mul(j, 2))));
+        let slot = n32(p.op(add(add(at, 2), wrapping_mul(j, 2))));
+        let mut used = inst.op == OP_HANDLE;
+        if !used {
+            for i in 0..un {
+                if u32_at(in e.cu, add(ua, i)) == name {
+                    used = true;
+                }
+            }
+        }
+        if used {
+            mark_sym(in s, inout out, name);
+            mark_sym(in s, inout out, slot);
+        }
+    }
+    let mt = add(inc(at), wrapping_mul(na, 2));
+    for j in 0..p.op(mt) {
+        mark_sym(in s, inout out, n32(p.op(add(inc(mt), wrapping_mul(j, 2)))));
+    }
+}
+
+// Whether instruction `ii` takes part in `replace_drops`' dataflow (a read
+// of a field that owns nothing moves nothing out).
+fn replace_moves(inout c: Ctx, in p: Program, ii: u64) -> bool {
+    let inst = p.inst(ii);
+    if inst
+        .op
+        == OP_READ
+        && read_pass(in p, inst.a)
+        == PASS_SINK
+        && p
+        .path(p.op(inc(inst.a)))
+        .n
+        > 0 {
+        return may_need_drop(inout c, inst.ty);
+    }
+    true
+}
+
+// One instruction's effect on the maybe-moved candidates (by candidate
+// index, `cidx` by local index).
+fn replace_step(
+    inout c: Ctx,
+    in p: Program,
+    in e: Env,
+    in s: Syms,
+    in cidx: ChunkSeq[u64],
+    ii: u64,
+    inout state: ChunkSeq[u8],
+    base: u64
+) {
+    let inst = p.inst(ii);
+    let a = inst.a;
+    if inst.op == OP_READ && read_pass(in p, a) == PASS_SINK {
+        let li = s.local_of(n32(p.op(a)));
+        if li != NONE32_64 && u64_at(in cidx, li) != NONE32_64 {
+            set8(inout state, add(base, u64_at(in cidx, li)), 1);
+        }
+    } else if inst.op == OP_WRITE {
+        let place = n32(p.op(a));
+        if n32(p.op(inc(a))) == e.s_eq && !has_dot(in c.names, place) {
+            let li = s.local_of(place);
+            if li != NONE32_64 && u64_at(in cidx, li) != NONE32_64 {
+                set8(inout state, add(base, u64_at(in cidx, li)), 0);
+            }
+        }
+    } else if inst.op == OP_BIND {
+        let mut names: ChunkSeq[u32] = ChunkSeq::new[u32]();
+        pattern_binds(in p, inc(a), inout names);
+        for i in 0..names.len() {
+            let li = s.local_of(u32_at(in names, i));
+            if li != NONE32_64 && u64_at(in cidx, li) != NONE32_64 {
+                set8(inout state, add(base, u64_at(in cidx, li)), 0);
+            }
+        }
+    }
+}
+
+// `fip::replace_drops` of a top-level graph: the (block, index) of every
+// write that frees what it replaces, as 1 by graph instruction.
+fn replace_drops(inout e: Env, inout c: Ctx, in p: Program, in g: G, in s: Syms) -> ChunkSeq[u8] {
+    let mut out = filled8(g.ni, 0);
+    if (e.fn_bits(g.name) & FN_FIP) != 0 {
+        return out;
+    }
+    let nl = g.lsym.len();
+    let mut borrowed = filled8(nl, 0);
+    let mut cand = filled8(nl, 0);
+    let mut any = false;
+    for li in 0..nl {
+        let sym = u32_at(in g.lsym, li);
+        if s.has(sym, S_CAPTURE) || !may_need_drop(inout c, u32_at(in g.lty, li)) {
+            continue;
+        }
+        if s.has(sym, S_PARAM) {
+            if s.has(sym, S_SINK) {
+                set8(inout cand, li, 1);
+                any = true;
+            } else if s.has(sym, S_INOUT) {
+                set8(inout borrowed, li, 1);
+                any = true;
+            }
+        } else {
+            set8(inout cand, li, 1);
+            any = true;
+        }
+    }
+    let mut refused = filled8(nl, 0);
+    let mut closure: u64 = u64_at(in e.cl_a, g.fi);
+    for k in 0..g.ni {
+        let ii = add(g.i0, k);
+        let op = p.inst(ii).op;
+        if op == OP_CLOSURE || op == OP_HANDLE {
+            let ci = closure;
+            if op == OP_CLOSURE {
+                closure = inc(closure);
+            }
+            closure_refusals(inout e, in p, in s, ii, ci, inout refused);
+        }
+    }
+    let mut nc: u64 = 0;
+    let mut cidx = filled64(nl, NONE32_64);
+    let mut any_b = false;
+    for li in 0..nl {
+        if u8_at(in refused, li) != 0 {
+            set8(inout cand, li, 0);
+        }
+        if u8_at(in cand, li) != 0 {
+            set64(inout cidx, li, nc);
+            nc = inc(nc);
+        }
+        if u8_at(in borrowed, li) != 0 {
+            any_b = true;
+        }
+    }
+    if nc == 0 && !any_b {
+        return out;
+    }
+    let nb = g.nb;
+    let width = if nc == 0 {
+        1
+    } else {
+        nc
+    };
+    // exit states, nb x width, and whether each was computed
+    let mut exit = filled8(wrapping_mul(nb, width), 0);
+    let mut known = filled8(nb, 0);
+    let mut state = filled8(width, 0);
+    loop {
+        let mut changed = false;
+        for b in 0..nb {
+            replace_entry(in g, in exit, in known, b, width, inout state);
+            let blk = p.block(add(g.b0, b));
+            for i in 0..blk.ic {
+                let ii = add(blk.i0, i);
+                if replace_moves(inout c, in p, ii) {
+                    replace_step(inout c, in p, in e, in s, in cidx, ii, inout state, 0);
+                }
+            }
+            let base = wrapping_mul(b, width);
+            let mut same = u8_at(in known, b) != 0;
+            for j in 0..width {
+                if u8_at(in exit, add(base, j)) != u8_at(in state, j) {
+                    same = false;
+                }
+            }
+            if !same {
+                for j in 0..width {
+                    set8(inout exit, add(base, j), u8_at(in state, j));
+                }
+                set8(inout known, b, 1);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for b in 0..nb {
+        replace_entry(in g, in exit, in known, b, width, inout state);
+        let blk = p.block(add(g.b0, b));
+        for i in 0..blk.ic {
+            let ii = add(blk.i0, i);
+            let inst = p.inst(ii);
+            if inst.op == OP_WRITE && n32(p.op(inc(inst.a))) == e.s_eq {
+                let root = place_root(inout c.names, n32(p.op(inst.a)));
+                let li = s.local_of(root);
+                if li != NONE32_64 {
+                    let ci = u64_at(in cidx, li);
+                    if u8_at(in borrowed, li)
+                        != 0
+                        || (ci != NONE32_64 && u8_at(in state, ci) == 0) {
+                        set8(inout out, wrapping_sub(ii, g.i0), 1);
+                    }
+                }
+            }
+            if replace_moves(inout c, in p, ii) {
+                replace_step(inout c, in p, in e, in s, in cidx, ii, inout state, 0);
+            }
+        }
+    }
+    out
+}
+
+// The union of the computed exit states of block `b`'s predecessors.
+fn replace_entry(
+    in g: G,
+    in exit: ChunkSeq[u8],
+    in known: ChunkSeq[u8],
+    b: u64,
+    width: u64,
+    inout state: ChunkSeq[u8]
+) {
+    for j in 0..width {
+        set8(inout state, j, 0);
+    }
+    let qa = u64_at(in g.qa, b);
+    for i in 0..u64_at(in g.qn, b) {
+        let q = w(u32_at(in g.preds, add(qa, i)));
+        if u8_at(in known, q) != 0 {
+            let base = wrapping_mul(q, width);
+            for j in 0..width {
+                if u8_at(in exit, add(base, j)) != 0 {
+                    set8(inout state, j, 1);
+                }
+            }
+        }
+    }
+}
+
+// ----- `fip::temporary_drops` ---------------------------------------------------
+
+const AT_ENTRY: u64 = 18446744073709551615;
+
+// Per value: the call borrows (block, index), jumps (target, k) and other uses.
+pub struct Uses {
+    // linked lists over the entries below, by value
+    bh: ChunkSeq[u64],
+    jh: ChunkSeq[u64],
+    other: ChunkSeq[u8],
+    eb: ChunkSeq[u64],
+    ei: ChunkSeq[u64],
+    ev: ChunkSeq[u64],
+    ej: ChunkSeq[u8],
+    enext: ChunkSeq[u64],
+}
+
+fn uses_new(nv: u64) -> Uses {
+    Uses {
+        bh: filled64(nv, NONE32_64),
+        jh: filled64(nv, NONE32_64),
+        other: filled8(nv, 0),
+        eb: ChunkSeq::new[u64](),
+        ei: ChunkSeq::new[u64](),
+        ev: ChunkSeq::new[u64](),
+        ej: ChunkSeq::new[u8](),
+        enext: ChunkSeq::new[u64](),
+    }
+}
+
+impl Uses {
+    fn add_borrow(inout self, v: u64, b: u64, i: u64) {
+        let x = self.eb.len();
+        self.eb.push(b);
+        self.ei.push(i);
+        self.ev.push(v);
+        self.ej.push(0);
+        self.enext.push(u64_at(in self.bh, v));
+        set64(inout self.bh, v, x);
+    }
+
+    fn add_jump(inout self, v: u64, b: u64, k: u64) {
+        let x = self.eb.len();
+        self.eb.push(b);
+        self.ei.push(k);
+        self.ev.push(v);
+        self.ej.push(1);
+        self.enext.push(u64_at(in self.jh, v));
+        set64(inout self.jh, v, x);
+    }
+
+    fn count(in self, head: u64) -> u64 {
+        let mut n: u64 = 0;
+        let mut x = head;
+        loop {
+            if x == NONE32_64 {
+                break;
+            }
+            n = inc(n);
+            x = u64_at(in self.enext, x);
+        }
+        n
+    }
+}
+
+fn sole_jump(in u: Uses, v: u64) -> bool {
+    u8_at(in u.other, v) == 0 && u64_at(in u.bh, v) == NONE32_64 && u.count(u64_at(in u.jh, v)) == 1
+}
+
+// Whether the defaulted type is a scalar name with no arguments.
+fn scalar_result(inout e: Env, inout c: Ctx, ty: u32) -> bool {
+    let t = default_type(inout c.types, ty);
+    let n = c.types.node(t);
+    n.kind == K_NAMED && n.n == 0 && (scalar_name(in e, in c, n.name) || n.name == c.world.k.bool_)
+}
+
+// `fip::temporary_drops`: each owned temporary as (block, index, value),
+// where it is dropped after instruction `index` of `block`, or at the
+// block's entry (`AT_ENTRY`).
+fn temporary_drops(
+    inout e: Env,
+    inout c: Ctx,
+    in p: Program,
+    in g: G,
+    in s: Syms,
+    in plan: ChunkSeq[u8],
+    inout bs: ChunkSeq[u64],
+    inout is: ChunkSeq[u64],
+    inout vals: ChunkSeq[u32]
+) {
+    let nv = g.nv;
+    let nl = g.lsym.len();
+    let borrowed = borrowed_scrutinees(in e, in p, in g, in s);
+    let defs = def_insts(in p, in g);
+    // Locals bound to a borrow own nothing; neither do the names a
+    // borrowed match binds.
+    let mut borrow_bound = filled8(nl, 0);
+    for k in 0..g.ni {
+        let inst = p.inst(add(g.i0, k));
+        if inst.op != OP_BIND {
+            continue;
+        }
+        let v = n32(p.op(inst.a));
+        let q = inc(inst.a);
+        if p
+            .op(q)
+            == PAT_BIND
+            && def_op(in p, in g, in defs, v)
+            == OP_READ
+            && read_pass(in p, p.inst(add(g.i0, u64_at(in defs, w(v)))).a)
+            != PASS_SINK {
+            mark_sym(in s, inout borrow_bound, n32(p.op(add(q, 3))));
+        }
+        if w(v) < nv && u8_at(in borrowed, w(v)) != 0 {
+            mark_bound(in p, in s, inout borrow_bound, q);
+        }
+    }
+    // The fip call slots (the trailer's first table).
+    let f = p.function(g.fi);
+    let mut slot = filled8(nv, 0);
+    if f.tn > 0 {
+        let ns = p.op(f.ta);
+        for i in 0..ns {
+            let v = p.op(add(inc(f.ta), wrapping_mul(i, 5)));
+            if v < nv {
+                set8(inout slot, v, 1);
+            }
+        }
+    }
+    let mut u = uses_new(nv);
+    let mut def_b = filled64(nv, NONE32_64);
+    let mut def_i = filled64(nv, NONE32_64);
+    let mut produced = filled8(nv, 0);
+    let mut ops: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    let mut brw: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    for b in 0..g.nb {
+        for k in 0..u64_at(in g.pn, b) {
+            let pv = w(g.param(b, k));
+            if pv < nv {
+                set64(inout def_b, pv, b);
+                set64(inout def_i, pv, AT_ENTRY);
+            }
+        }
+        let blk = p.block(add(g.b0, b));
+        for i in 0..blk.ic {
+            let ii = add(blk.i0, i);
+            let inst = p.inst(ii);
+            let d = w(inst.dest);
+            let a = inst.a;
+            if d < nv {
+                set64(inout def_b, d, b);
+                set64(inout def_i, d, i);
+            }
+            let mut owned = false;
+            if inst.op == OP_CALL || inst.op == OP_INDIRECT {
+                owned = d >= nv || u8_at(in slot, d) == 0;
+            } else if inst.op == OP_SEQ {
+                let label = p.pool_row(p.op(a)).label;
+                owned = label == e.s_new || label == e.s_with_capacity;
+            } else if inst.op == OP_READ && read_pass(in p, a) == PASS_SINK {
+                let root = n32(p.op(a));
+                let pk = plan_kind(in plan, in s, root);
+                let path_empty = p.path(p.op(inc(a))).n == 0;
+                if path_empty || owned_or_fields(pk) {
+                    if pk == SD_SEQ || pk == SD_OWNED || pk == SD_FIELDS {
+                        owned = true;
+                    } else if pk == SD_NONE {
+                        let li = s.local_of(root);
+                        owned = li
+                            != NONE32_64
+                            && named0(in c, u32_at(in g.lty, li), c.world.k.string)
+                            && !s
+                            .has(root, S_PARAM)
+                            && u8_at(in borrow_bound, li)
+                            == 0;
+                    }
+                }
+            }
+            if owned && d < nv {
+                set8(inout produced, d, 1);
+            }
+            brw.clear();
+            if inst.op == OP_CALL || inst.op == OP_INDIRECT {
+                let at = inc(a);
+                for j in 0..arg_count(in p, at) {
+                    if p.op(arg_word(at, j, 0)) != PASS_SINK && p.op(arg_word(at, j, 2)) == 0 {
+                        brw.push(n32(p.op(arg_word(at, j, 1))));
+                    }
+                }
+            } else if inst.op == OP_SEQ && scalar_result(inout e, inout c, inst.ty) {
+                let at = inc(a);
+                for j in 0..arg_count(in p, at) {
+                    if p.op(arg_word(at, j, 0)) == 0 && p.op(arg_word(at, j, 2)) == 0 {
+                        brw.push(n32(p.op(arg_word(at, j, 1))));
+                    }
+                }
+            }
+            ops.clear();
+            push_operands(in p, ii, inout ops);
+            let mut taken = filled8(ops.len(), 0);
+            for x in 0..brw.len() {
+                let v = u32_at(in brw, x);
+                let mut found = false;
+                for y in 0..ops.len() {
+                    if !found && u8_at(in taken, y) == 0 && u32_at(in ops, y) == v {
+                        set8(inout taken, y, 1);
+                        found = true;
+                    }
+                }
+            }
+            for x in 0..brw.len() {
+                let v = w(u32_at(in brw, x));
+                if v < nv {
+                    u.add_borrow(v, b, i);
+                }
+            }
+            for y in 0..ops.len() {
+                let v = w(u32_at(in ops, y));
+                if u8_at(in taken, y) == 0 && v < nv {
+                    set8(inout u.other, v, 1);
+                }
+            }
+        }
+        if blk.term == TERM_JUMP {
+            let target = p.op(blk.ta);
+            let n = p.op(inc(blk.ta));
+            for k in 0..n {
+                let v = p.op(add(add(blk.ta, 2), k));
+                if v < nv {
+                    u.add_jump(v, target, k);
+                }
+            }
+        } else {
+            let ta = u64_at(in g.ta, b);
+            for k in 0..u64_at(in g.tn, b) {
+                let v = w(u32_at(in g.tv, add(ta, k)));
+                if v < nv {
+                    set8(inout u.other, v, 1);
+                }
+            }
+        }
+    }
+    // Block parameters that receive only owned values used nowhere else:
+    // per parameter slot (pa[b] + k), its senders and whether all qualify.
+    let np = g.params.len();
+    loop {
+        let mut senders = filled64(np, 0);
+        let mut bad = filled8(np, 0);
+        for x in 0..u.eb.len() {
+            if u8_at(in u.ej, x) == 0 {
+                continue;
+            }
+            let b = u64_at(in u.eb, x);
+            let k = u64_at(in u.ei, x);
+            if b >= g.nb || k >= u64_at(in g.pn, b) {
+                continue;
+            }
+            let at = add(u64_at(in g.pa, b), k);
+            let v = u64_at(in u.ev, x);
+            set64(inout senders, at, inc(u64_at(in senders, at)));
+            if u8_at(in produced, v) == 0 || !sole_jump(in u, v) {
+                set8(inout bad, at, 1);
+            }
+        }
+        let mut grew = false;
+        for b in 0..g.nb {
+            for k in 0..u64_at(in g.pn, b) {
+                let at = add(u64_at(in g.pa, b), k);
+                let pv = w(g.param(b, k));
+                if pv >= nv || u8_at(in produced, pv) != 0 {
+                    continue;
+                }
+                if u64_at(in senders, at) > 0 && u8_at(in bad, at) == 0 {
+                    set8(inout produced, pv, 1);
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    // A value forwarded to an owned parameter is dropped there instead.
+    let mut forwarded = filled8(nv, 0);
+    for v in 0..nv {
+        let mut x = u64_at(in u.jh, v);
+        loop {
+            if x == NONE32_64 {
+                break;
+            }
+            let tb = u64_at(in u.eb, x);
+            let pv = if tb < g.nb {
+                w(g.param(tb, u64_at(in u.ei, x)))
+            } else {
+                NONE32_64
+            };
+            if pv < nv && u8_at(in produced, pv) != 0 {
+                set8(inout forwarded, v, 1);
+            }
+            x = u64_at(in u.enext, x);
+        }
+    }
+    for v in 0..nv {
+        if u8_at(in produced, v) == 0 || u8_at(in forwarded, v) != 0 {
+            continue;
+        }
+        let b = u64_at(in def_b, v);
+        let i = u64_at(in def_i, v);
+        if b == NONE32_64 || u8_at(in u.other, v) != 0 || u64_at(in u.jh, v) != NONE32_64 {
+            continue;
+        }
+        let mut ok = true;
+        let mut last = i;
+        let mut any = false;
+        let mut x = u64_at(in u.bh, v);
+        loop {
+            if x == NONE32_64 {
+                break;
+            }
+            let ub = u64_at(in u.eb, x);
+            let ui = u64_at(in u.ei, x);
+            if ub != b || (i != AT_ENTRY && ui <= i) {
+                ok = false;
+            }
+            if !any || ui > last {
+                last = ui;
+            }
+            any = true;
+            x = u64_at(in u.enext, x);
+        }
+        if !ok {
+            continue;
+        }
+        bs.push(b);
+        is.push(last);
+        vals.push(n32(v));
+    }
+}
+
+fn put_seq_drop(inout o: ChunkSeq[u8], k: u8) {
+    if k == SD_SEQ {
+        put(inout o, "seq");
+    } else if k == SD_STR {
+        put(inout o, "str");
+    } else if k == SD_OWNED {
+        put(inout o, "owned");
+    } else {
+        put(inout o, "fields");
+    }
+}
+
 fn put_path(inout o: ChunkSeq[u8], in names: Names, in syms: ChunkSeq[u32], a: u64, n: u64) {
     if n == 0 {
         o.push(45);
@@ -2752,6 +4101,68 @@ fn function_decisions(
         } else {
             o.push(45);
         }
+        o.push(10);
+        let mut d: ChunkSeq[u8] = ChunkSeq::new[u8]();
+        if drop_facts(inout c, t, inout d) {
+            put(inout o, "drops ");
+            c.names.write(u32_at(in g.lsym, li), inout o);
+            o.extend(in d.as_slice());
+            o.push(10);
+        }
+    }
+    for v in 0..g.nv {
+        let t = u32_at(in g.vty, v);
+        if t == NONE32 {
+            continue;
+        }
+        let mut d: ChunkSeq[u8] = ChunkSeq::new[u8]();
+        if drop_facts(inout c, t, inout d) {
+            put(inout o, "vdrops v");
+            push_decimal(inout o, v);
+            o.extend(in d.as_slice());
+            o.push(10);
+        }
+    }
+    let sd = seq_drop_plan(inout e, inout c, in p, in g, in s);
+    for li in 0..g.lsym.len() {
+        let kd = u8_at(in sd, li);
+        if kd != SD_NONE {
+            put(inout o, "seqdrop ");
+            c.names.write(u32_at(in g.lsym, li), inout o);
+            o.push(32);
+            put_seq_drop(inout o, kd);
+            o.push(10);
+        }
+    }
+    let rd = replace_drops(inout e, inout c, in p, in g, in s);
+    for b in 0..g.nb {
+        let blk = p.block(add(g.b0, b));
+        for i in 0..blk.ic {
+            if u8_at(in rd, add(wrapping_sub(blk.i0, g.i0), i)) != 0 {
+                put(inout o, "replace ");
+                push_decimal(inout o, b);
+                o.push(32);
+                push_decimal(inout o, i);
+                o.push(10);
+            }
+        }
+    }
+    let mut tb: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut ti: ChunkSeq[u64] = ChunkSeq::new[u64]();
+    let mut tv: ChunkSeq[u32] = ChunkSeq::new[u32]();
+    temporary_drops(inout e, inout c, in p, in g, in s, in sd, inout tb, inout ti, inout tv);
+    for x in 0..tb.len() {
+        put(inout o, "temp ");
+        push_decimal(inout o, u64_at(in tb, x));
+        o.push(32);
+        let i = u64_at(in ti, x);
+        if i == AT_ENTRY {
+            put(inout o, "entry");
+        } else {
+            push_decimal(inout o, i);
+        }
+        put(inout o, " v");
+        push_decimal(inout o, w(u32_at(in tv, x)));
         o.push(10);
     }
     let r = split_locals(inout e, inout c, in p, inout g, in s);

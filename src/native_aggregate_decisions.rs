@@ -14,6 +14,28 @@ use crate::ir::{FunctionIr, Program};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+/// The drop facts of `ty` (`fip::needs_drop`, `may_need_drop`,
+/// `elem_needs_drop`, `type_contains_box` and `type_is_recursive`, which
+/// picks the drop and equality helpers), or `None` when all are false.
+fn drop_facts(world: &World, ty: &crate::ast::Type) -> Option<String> {
+    let ty = crate::numeric::default_type(ty);
+    let facts = [
+        crate::fip::needs_drop(world, &ty),
+        crate::fip::may_need_drop(world, &ty),
+        crate::fip::elem_needs_drop(world, &ty),
+        crate::fip::type_contains_box(world, &ty),
+        super::type_is_recursive(world, &ty),
+    ];
+    if !facts.contains(&true) {
+        return None;
+    }
+    let mut out = String::new();
+    for (label, x) in ["nd", "mnd", "en", "cb", "rec"].iter().zip(facts) {
+        let _ = write!(out, " {label}={}", x as u8);
+    }
+    Some(out)
+}
+
 fn path_text(path: &[String]) -> String {
     if path.is_empty() {
         "-".into()
@@ -26,6 +48,13 @@ fn path_text(path: &[String]) -> String {
 ///
 /// - `local L pd=P sw=N` for every local: `plain_data` of its type (0/1)
 ///   and the word count of `split_words` (`-` when it is not splittable);
+/// - `drops L ..` and `vdrops vV ..`: the drop facts ([`drop_facts`]) of
+///   each local's and value's type, when one holds;
+/// - `seqdrop L KIND`: the slots `fip::seq_drop_plan` frees, with what;
+/// - `replace B I`: the writes `fip::replace_drops` lets free what they
+///   replace;
+/// - `temp B I vV` (`I` is `entry` at a block's entry): the owned
+///   temporaries `fip::temporary_drops` drops;
 /// - `split L P1 P2 ..` for every local `split_locals` splits, with the
 ///   field paths its uses read (`-` reads it whole);
 /// - `home vV result`, `home vV field vP OFFSET` or
@@ -40,6 +69,35 @@ pub fn function_decisions(world: &World, f: &FunctionIr, out: &mut String) {
         let sw =
             aggregates::split_words(world, &ty).map_or("-".to_owned(), |w| w.len().to_string());
         let _ = writeln!(out, "local {n} pd={pd} sw={sw}");
+        if let Some(d) = drop_facts(world, t) {
+            let _ = writeln!(out, "drops {n}{d}");
+        }
+    }
+    for (v, t) in &f.values {
+        if let Some(d) = drop_facts(world, t) {
+            let _ = writeln!(out, "vdrops v{v}{d}");
+        }
+    }
+    for (n, k) in crate::fip::seq_drop_plan(world, f) {
+        let k = match k {
+            crate::fip::SeqDrop::Seq => "seq",
+            crate::fip::SeqDrop::Str => "str",
+            crate::fip::SeqDrop::Owned => "owned",
+            crate::fip::SeqDrop::Fields => "fields",
+        };
+        let _ = writeln!(out, "seqdrop {n} {k}");
+    }
+    for (b, i) in crate::fip::replace_drops(world, f, None) {
+        let _ = writeln!(out, "replace {b} {i}");
+    }
+    for ((b, i), vs) in crate::fip::temporary_drops(world, f) {
+        for v in vs {
+            if i == crate::fip::AT_BLOCK_ENTRY {
+                let _ = writeln!(out, "temp {b} entry v{v}");
+            } else {
+                let _ = writeln!(out, "temp {b} {i} v{v}");
+            }
+        }
     }
     let split = aggregates::split_locals(world, f, &none);
     for (n, reads) in &split {
