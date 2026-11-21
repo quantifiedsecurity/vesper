@@ -54,7 +54,7 @@ const DIVERGENT: [(&str, &str, &str); 5] = [
     (
         "router",
         "let child = static_child(in r, node, in segments, lo, hi);",
-        "let child = if current.param_child == none() {\n        static_child(in r, node, in segments, lo, hi)\n    } else {\n        none()\n    };",
+        "let child = if param_child == none() {\n        static_child(in r, node, in segments, lo, hi)\n    } else {\n        none()\n    };",
     ),
     // tests/connection.rs: an out-of-order completion reserves no room.
     (

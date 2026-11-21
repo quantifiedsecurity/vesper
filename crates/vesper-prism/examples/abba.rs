@@ -315,6 +315,10 @@ fn main() {
                 println!("{name} {}", measure(name, ops));
             }
         }
+        // One workload only (for profiling): `abba measure <ops> <workload>`.
+        ["measure", ops, name] if WORKLOADS.contains(name) => {
+            println!("{name} {}", measure(name, ops.parse().unwrap()));
+        }
         ["compare", rust, port, epochs, ops] => {
             compare(rust, port, epochs.parse().unwrap(), ops.parse().unwrap())
         }
