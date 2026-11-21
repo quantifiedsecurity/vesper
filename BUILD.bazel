@@ -654,6 +654,9 @@ vesper_crate(
         "test/self_host_egraph": "long",
         # The optimizer differential (#1249) checks every corpus world.
         "test/self_host_optimize": "eternal",
+        # The test runner discovery differential (#1337) JIT-compiles the port
+        # and runs the corpus and its mutants: 5-10 min in a debug build.
+        "test/self_host_test_runner": "long",
     },
 )
 
