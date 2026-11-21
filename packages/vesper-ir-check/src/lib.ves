@@ -2414,10 +2414,7 @@ impl Flow {
             }
             // Calling a borrowed slot's function value that is not `copy`
             // reads it (a lent function parameter, §4.2).
-            if pass == P_SINK
-                && np == 1
-                && p.op(add(a, 4)) == 0
-                && self.callee(i.dest) {
+            if pass == P_SINK && np == 1 && p.op(add(a, 4)) == 0 && self.callee(i.dest) {
                 let si = s.find_slot(p.rank_of(root));
                 let tn = t.node(i.ty);
                 if si
@@ -2426,8 +2423,12 @@ impl Flow {
                     .slot_at(si)
                     .pass
                     != P_SINK
-                    && tn.kind == K_FN
-                    && tn.mode != M_COPY {
+                    && tn
+                    .kind
+                    == K_FN
+                    && tn
+                    .mode
+                    != M_COPY {
                     pass = P_IN;
                 }
             }
