@@ -71,7 +71,8 @@ subtract encode + decode (about 1.1x of lowering here) from its pass time,
 and the ABI v4 tree input (docs/parallel-results/self-host-tree-abi.md) is
 how that cost goes away.
 
-The tests default to every fourth world (`PLACE_IR_STEP`, 432 programs),
+The tests default to every fourth world (`PLACE_IR_STEP`, 432 programs; the
+pass harness test takes every sixteenth of those),
 because running the passes over the whole corpus takes over half an hour in a
 debug build. `PLACE_IR_STEP=1` runs every world (the numbers above).
 
