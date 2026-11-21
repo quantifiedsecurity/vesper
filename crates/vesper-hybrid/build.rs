@@ -21,6 +21,9 @@ const MODULES: &[(&str, &str, &str)] = &[
         "port/check_layout.rs",
     ),
     ("hybrid_ir_check", "modules/ir_check", "port/ir_check.rs"),
+    // SH4 lane 1 (#1275): the census lowering family, emitted through
+    // lent Cranelift handles.
+    ("hybrid_codegen", "modules/codegen", "port/codegen.rs"),
     // SH5 lane 14 (#1337): test discovery of `vesper test`.
     (
         "hybrid_test_runner",

@@ -202,6 +202,57 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # Self-hosting SH4 lane 12 (#1286): the export ABI's binding generator
+        # and directives in Vesper, over every library a port crate links
+        # (built with the vesper binary from each crate's own files).
+        "test/self_host_codegen_export": glob([
+            "examples/**/*.ves",
+            "packages/**",
+            "tests/**/*.ves",
+        ]) + [
+            "//crates/vesper-aegis:files",
+            "//crates/vesper-alloc:files",
+            "//crates/vesper-aura:files",
+            "//crates/vesper-beacon:files",
+            "//crates/vesper-bench:files",
+            "//crates/vesper-chorus:files",
+            "//crates/vesper-crucible:files",
+            "//crates/vesper-diagnostics:files",
+            "//crates/vesper-ebpf:files",
+            "//crates/vesper-flux:files",
+            "//crates/vesper-fmt:files",
+            "//crates/vesper-forge:files",
+            "//crates/vesper-grammar:files",
+            "//crates/vesper-highlight:files",
+            "//crates/vesper-hybrid:files",
+            "//crates/vesper-ignis:files",
+            "//crates/vesper-kinetic:files",
+            "//crates/vesper-lean-syntax:files",
+            "//crates/vesper-lint:files",
+            "//crates/vesper-loom-audit:files",
+            "//crates/vesper-loom-calculus:files",
+            "//crates/vesper-loom-solver:files",
+            "//crates/vesper-pact:files",
+            "//crates/vesper-port-build:files",
+            "//crates/vesper-port-pilot:files",
+            "//crates/vesper-prism:files",
+            # vesper/target/ is outside :files (no **/target/** glob).
+            "//crates/vesper-prism:target_package",
+            "//crates/vesper-prism-h3:files",
+            "//crates/vesper-quarry:files",
+            "//crates/vesper-resonance:files",
+            "//crates/vesper-semver:files",
+            "//crates/vesper-serde:files",
+            "//crates/vesper-silicon:files",
+            "//crates/vesper-simpulse:files",
+            "//crates/vesper-span:files",
+            "//crates/vesper-std-driver:files",
+            "//crates/vesper-tensor:files",
+            "//crates/vesper-warp:files",
+            "//crates/vesper-warp-bbr:files",
+            "//crates/vesper-warp-tcp:files",
+            "//crates/vesper-warp-wheel:files",
+        ],
         # SH3 lane 11 (#1250): the inliner differential on the same corpus.
         "test/self_host_ir_inline": glob([
             "examples/**",
@@ -337,6 +388,9 @@ vesper_crate(
             "examples/**",
             "packages/**",
             "tests/fixtures/**",
+            # The Vesper programs of the Lean and tiled tests (part 2).
+            "tests/lean*.rs",
+            "tests/tiled.rs",
         ]) + ["//crates/vesper-lean-syntax:files"],
         # Self-hosting SH3 lane 8 (#1247): @vesper/egraph against egg and
         # egglog on the same corpus. Anchored globs.
@@ -355,6 +409,13 @@ vesper_crate(
         # Self-hosting SH3 lane 10 (#1249): the optimizer's certificate
         # checker over every proposal of the same corpus. Anchored globs.
         "test/self_host_optimize": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
+        # Part 2: the search that produces those proposals, ported to
+        # @vesper/egraph, over the same corpus.
+        "test/self_host_optimize_search": glob([
             "examples/**",
             "packages/**",
             "tests/fixtures/**",
@@ -449,6 +510,7 @@ vesper_crate(
         "test/self_host_check_regions_seqs": {"CHECK_HARNESS_STRIDE": "4"},
         "test/self_host_egraph": {"CHECK_HARNESS_STRIDE": "4"},
         "test/self_host_front_v2": {"VESPER_FRONT_FUZZ": "1000"},
+        "test/self_host_lean_extract": {"CHECK_HARNESS_STRIDE": "4"},
         # With its own PLACE_IR_STEP of 4: every 16th world.
         "test/self_host_place_ir": {"CHECK_HARNESS_STRIDE": "4"},
     },
@@ -745,12 +807,15 @@ vesper_crate(
         # Four round-trip tests and the pass harness share one stage build;
         # past 900 s on a busy runner.
         "test/self_host_place_ir": "eternal",
+        # Builds 51 port libraries with the vesper binary.
+        "test/self_host_codegen_export": "long",
         "test/self_host_place_ir_jit": "long",
         "test/self_host_ir_lower": "long",
         # The eBPF backend differential (#1290) loads every corpus world.
         "test/self_host_ebpf_backend": "long",
         "test/self_host_check_harness": "long",
-        "test/self_host_check_loops_atomics": "long",
+        # The loops and atomics differential (#1182) passed 900 s on loaded CI.
+        "test/self_host_check_loops_atomics": "eternal",
         # The tensor types differential (#1186) JIT-compiles the port and
         # replays mutants and the corpus.
         "test/self_host_check_tensor_types": "eternal",
@@ -777,6 +842,7 @@ vesper_crate(
         "test/self_host_lean_extract": "long",
         # The optimizer differential (#1249) checks every corpus world.
         "test/self_host_optimize": "eternal",
+        "test/self_host_optimize_search": "eternal",
         # The test runner discovery differential (#1337) JIT-compiles the port
         # and runs the corpus and its mutants: 5-10 min in a debug build.
         "test/self_host_test_runner": "long",
@@ -919,6 +985,16 @@ vesper_package(
     manifest = "packages/vesper-std/hash/sys/Loom.toml",
     visibility = ["//visibility:public"],
     deps = [":std_hash_package"],
+)
+
+# The codegen base as a dependency of the hybrid compiler's codegen module
+# (self-hosting SH4 lane 1, #1275); @vesper/cranelift is in its own package.
+vesper_package(
+    name = "codegen_base_package",
+    srcs = glob(["packages/vesper-codegen-base/src/**/*.ves"]),
+    manifest = "packages/vesper-codegen-base/Loom.toml",
+    visibility = ["//visibility:public"],
+    deps = ["//packages/vesper-cranelift:cranelift_package"],
 )
 
 filegroup(
