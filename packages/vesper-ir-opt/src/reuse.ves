@@ -43,22 +43,27 @@ use @vesper/place-ir::{
     Program
 };
 use self::view::{
-    C_NEVER,
     FnView,
-    NONE,
-    OP_BIND,
-    OP_CALL,
-    OP_FIP,
-    TERM_JUMP,
-    TERM_RETURN,
-    T_BLOCK,
-    T_RAW,
-    T_VALUE,
     at32,
     block_params_at,
     class_of,
     fn_view
 };
+
+// Constants are copied, not imported: the Vesper package assembler
+// (@vesper/check-names-packages) does not resolve an imported constant
+// yet (E0111), and tests/self_host_check_names_packages.rs assembles this
+// package too.
+const C_NEVER: u8 = 2;
+const NONE: u32 = 4294967295;
+const OP_BIND: u8 = 3;
+const OP_CALL: u8 = 11;
+const OP_FIP: u8 = 19;
+const TERM_JUMP: u8 = 1;
+const TERM_RETURN: u8 = 0;
+const T_BLOCK: u8 = 7;
+const T_RAW: u8 = 0;
+const T_VALUE: u8 = 6;
 
 // Instruction facts.
 pub const F_NONE: u8 = 0;

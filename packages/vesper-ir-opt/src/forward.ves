@@ -40,25 +40,11 @@ use @vesper/egraph::run::{
     run_rounds
 };
 use @vesper/egraph::{
-    V_BARRIER,
-    V_READ,
-    V_REF,
-    V_START,
-    V_WRITE,
     memory_arity,
     memory_rules
 };
 use self::view::{
-    C_SCALAR,
     FnView,
-    NONE,
-    OP_BIND,
-    OP_HANDLE,
-    OP_READ,
-    OP_WRITE,
-    PAT_BIND,
-    P_SINK,
-    T_VALUE,
     at32,
     block_entry,
     block_params_at,
@@ -68,6 +54,31 @@ use self::view::{
     place_text,
     resolve
 };
+
+// Constants are copied, not imported: the Vesper package assembler
+// (@vesper/check-names-packages) does not resolve an imported constant
+// yet (E0111), and tests/self_host_check_names_packages.rs assembles this
+// package too.
+const C_SCALAR: u8 = 1;
+const NONE: u32 = 4294967295;
+const OP_BIND: u8 = 3;
+const OP_HANDLE: u8 = 15;
+const OP_READ: u8 = 2;
+const OP_WRITE: u8 = 4;
+const PAT_BIND: u64 = 1;
+const P_SINK: u64 = 2;
+const T_VALUE: u8 = 6;
+
+// @vesper/egraph's memory terms (its `V_*` constants). They are copied, not
+// imported: the Vesper package assembler (@vesper/check-names-packages)
+// does not resolve a constant imported from another package's root yet
+// (E0111), and tests/self_host_check_names_packages.rs assembles this
+// package too.
+const V_REF: u32 = 0;
+const V_START: u32 = 1;
+const V_WRITE: u32 = 2;
+const V_BARRIER: u32 = 3;
+const V_READ: u32 = 4;
 
 // ir_opt's `(run 12)`.
 const ROUNDS: u64 = 12;

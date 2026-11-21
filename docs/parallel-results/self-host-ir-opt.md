@@ -110,6 +110,12 @@ None blocked the port; it compiled as written. Workarounds worth a gap entry:
   `SeqOp::Hoisted`).
 - **`fip::slot_key` is `pub(crate)`.** The harness transcribes it to write
   facts; a `pub` wrapper (outside this lane's paths) would remove the copy.
+- **The Vesper package assembler does not resolve imported constants.**
+  `@vesper/check-names-packages` (SH2 lane 6) reports E0111 for a `pub
+  const` imported from another module (`use self::view::{NONE}`) or another
+  package's root (`use @vesper/egraph::{V_REF}`), which the Rust assembler
+  accepts; tests/self_host_check_names_packages.rs assembles every corpus
+  package, so each file of this package keeps its own copies.
 - **No sort in the package.** Call slots and join blocks are ordered by
   selection over short lists; `@vesper-std/sort` would do for longer ones.
 

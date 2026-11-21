@@ -33,7 +33,6 @@ use self::view::{
     type_classes
 };
 use self::forward::{
-    S_OK,
     forward_program
 };
 use self::reuse::{
@@ -41,6 +40,12 @@ use self::reuse::{
     reuse_new,
     reuse_program
 };
+
+// Constants are copied, not imported: the Vesper package assembler
+// (@vesper/check-names-packages) does not resolve an imported constant
+// yet (E0111), and tests/self_host_check_names_packages.rs assembles this
+// package too.
+const S_OK: u8 = 0;
 
 const MODE_OPTIMIZE: u64 = 0;
 
