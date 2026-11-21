@@ -7,13 +7,12 @@
 // stores the result into a fresh stack slot, emitting exactly the
 // Cranelift calls of the Rust function in the same order.
 //
-// The host encodes one `Op::Vector` instruction as a request (see
-// `numeric_hook`); this file reads it and never consults the IR.
+// `Codegen::vector_op` sends one request per operation (see
+// `codegen_swap::numeric`); this file reads it and never consults the IR.
 
-// The `numeric` requests (crates/vesper-codegen-numeric-test's adapter and
-// the hybrid's): a lanes operation, and `Isa::supported`.
-pub const NUM_VECTOR: u32 = 1;
-pub const NUM_ISA_SUPPORTED: u32 = 2;
+// `codegen_swap::numeric::VECTOR` and `ISA_SUPPORTED`.
+pub const NUM_VECTOR: u32 = 2;
+pub const NUM_ISA_SUPPORTED: u32 = 3;
 
 // Argument words of NUM_VECTOR: the intrinsic (`family << 8 | op`), the
 // element, the lane count, the number of literal constants, the constants,
@@ -815,8 +814,16 @@ fn vx_emit(call: u64, inout b: Builder, in m: Module, i: u32, e: u32, lanes: u32
 }
 
 // One `numeric` request on the lent handles.
-fn numeric_request(call: u64, inout b: Builder, in m: Module) -> u64 eff [Ffi[Cranelift]] {
+fn numeric_request(call: u64, inout b: Builder, inout m: Module) -> u64 eff [Ffi[Cranelift]] {
     let op = call_op(call);
+    if op == NUM_TILED {
+        if !tiled_known(call) {
+            return HOOK_DECLINED;
+        }
+        let v = tiled_request(call, inout b, inout m);
+        call_result_value(call, v);
+        return HOOK_HANDLED;
+    }
     if op == NUM_ISA_SUPPORTED {
         let v = ins_iconst(inout b, vx_i64(), wrapping_i64(vx_arg(call, 0)));
         call_result_value(call, v);
@@ -846,14 +853,14 @@ pub fn numeric_hook(call: u64) -> u64 eff [Ffi[Cranelift]] {
         Some(b) => b,
         None => return HOOK_DECLINED,
     };
-    let m = match call_module(call) {
+    let mut m = match call_module(call) {
         Some(m) => m,
         None => {
             call_return_builder(call, b);
             return HOOK_DECLINED;
         }
     };
-    let handled = numeric_request(call, inout b, in m);
+    let handled = numeric_request(call, inout b, inout m);
     call_return_module(call, m);
     call_return_builder(call, b);
     handled

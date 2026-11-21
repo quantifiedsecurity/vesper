@@ -15,7 +15,7 @@ vesper_crate(
     ],
     test_timeouts = {
         "test/self_host_codegen_swap": "long",
-        # SH4 lane 11 (#1285): the vector differential, 1,340 builds.
-        "test/self_host_codegen_numeric_vector": "long",
+        # SH4 lane 11 (#1285): the vector and TiledSeq differentials.
+        "test/self_host_codegen_numeric_swap": "long",
     },
 )

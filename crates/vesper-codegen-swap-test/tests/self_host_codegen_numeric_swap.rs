@@ -1,31 +1,28 @@
-//! Self-hosting SH4 lane 11 (#1285), part 2: the vector operations
-//! (`Op::Vector`, `Codegen::vector_op` of src/native_vector.rs) emitted by
-//! `@vesper/codegen-numeric` through the `numeric` hook of
-//! `vesper::codegen_swap` (lane 1, #1275).
+//! Self-hosting SH4 lane 11 (#1285), part 2: the `numeric` family emitted
+//! by `@vesper/codegen-numeric` through the `numeric` hook of
+//! `vesper::codegen_swap` (lane 1, #1275):
 //!
-//! A generated corpus covers every lanes intrinsic on every element type and
-//! every shape. Each program is compiled by the native backend with no hook
-//! and with the Vesper hook, with the optimizer on and off; every function's
-//! CLIF text, the object bytes and the JIT result must be equal
-//! (tests/common/clif_diff.rs).
+//! - the vector operations (`Op::Vector`, `Codegen::vector_op` of
+//!   src/native_vector.rs), over a generated corpus of every lanes
+//!   intrinsic on every element type and shape;
+//! - the `TiledSeq` operations (`Codegen::tiled_op` of
+//!   src/tiled/native.rs, the `numeric::TILED` request), over the
+//!   programs of tests/tiled.rs and a column-type corpus.
+//!
+//! Each program is compiled by the native backend with no hook and with
+//! the Vesper hook, with the optimizer on and off; every function's CLIF
+//! text, the object bytes and the JIT result must be equal.
 use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 use vesper::codegen_swap::{self, CodegenHooks, INSTRUCTION, Lent};
 use vesper::ffi_lowering::{self, ForeignChecked, Handler, Imports};
-use vesper::ir::Op;
 use vesper::native::WordFunction;
-use vesper::vector::{
-    BinOp, CmpOp, Conv, Elem, Intrinsic, MaskOp, ReduceOp, Shape, ShiftOp, UnaryOp, VectorOp,
-};
+use vesper::vector::{Elem, Shape};
 use vesper_codegen_swap_test::*;
 
 /// Package files in assembly order after `@vesper/cranelift` (shim gap 4:
 /// a package cannot import a `.vsys` library through the JIT harness).
-const FILES: [&str; 3] = ["rt.ves", "shapes.ves", "vector.ves"];
-
-/// `vector.ves`'s requests.
-const NUM_VECTOR: u32 = 1;
-const NUM_ISA_SUPPORTED: u32 = 2;
+const FILES: [&str; 4] = ["rt.ves", "shapes.ves", "tiled_ops.ves", "vector.ves"];
 
 fn repo() -> std::path::PathBuf {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -101,164 +98,25 @@ fn hook() -> &'static WordFunction {
 
 // ------------------------------------------------------------- the adapter
 
-/// `shapes.ves`'s element codes.
-fn elem_code(e: Elem) -> u64 {
-    match e {
-        Elem::U8 => 0,
-        Elem::U32 => 1,
-        Elem::U64 => 2,
-        Elem::I64 => 3,
-        Elem::F32 => 4,
-        Elem::F64 => 5,
-    }
-}
-
-/// `shapes.ves`'s intrinsic code `family << 8 | op`, or `None` for the
-/// slice operations and `Isa::supported` (not lanes requests).
-fn intrinsic_code(i: Intrinsic) -> Option<u64> {
-    use Intrinsic as I;
-    let (family, op): (u64, u64) = match i {
-        I::Splat => (2, 0),
-        I::From => (3, 0),
-        I::Binary(op) => (
-            4,
-            match op {
-                BinOp::Add => 0,
-                BinOp::Sub => 1,
-                BinOp::Mul => 2,
-                BinOp::Div => 3,
-                BinOp::Min => 4,
-                BinOp::Max => 5,
-                BinOp::And => 6,
-                BinOp::Or => 7,
-                BinOp::Xor => 8,
-                BinOp::SaturatingAdd => 9,
-                BinOp::SaturatingSub => 10,
-            },
-        ),
-        I::Not => (5, 0),
-        I::Unary(op) => (
-            6,
-            match op {
-                UnaryOp::Sqrt => 0,
-                UnaryOp::Abs => 1,
-                UnaryOp::Neg => 2,
-            },
-        ),
-        I::MulAdd => (7, 0),
-        I::Convert(c) => (
-            8,
-            match c {
-                Conv::ToBits => 0,
-                Conv::FromBits => 1,
-                Conv::Widen => 2,
-                Conv::Narrow => 3,
-            },
-        ),
-        I::Shift(op) => (
-            9,
-            match op {
-                ShiftOp::Shl => 0,
-                ShiftOp::Shr => 1,
-            },
-        ),
-        I::Compare(op) => (
-            10,
-            match op {
-                CmpOp::Eq => 0,
-                CmpOp::Ne => 1,
-                CmpOp::Lt => 2,
-                CmpOp::Le => 3,
-                CmpOp::Gt => 4,
-                CmpOp::Ge => 5,
-            },
-        ),
-        I::Select => (11, 0),
-        I::MaskBinary(op) => (
-            12,
-            match op {
-                MaskOp::And => 0,
-                MaskOp::Or => 1,
-                MaskOp::Xor => 2,
-            },
-        ),
-        I::MaskNot => (13, 0),
-        I::MaskCount => (14, 0),
-        I::MaskBitmask => (15, 0),
-        I::MaskAny => (16, 0),
-        I::MaskAll => (17, 0),
-        I::Reduce(op) => (
-            18,
-            match op {
-                ReduceOp::Add => 0,
-                ReduceOp::Xor => 1,
-                ReduceOp::Or => 2,
-                ReduceOp::And => 3,
-                ReduceOp::Min => 4,
-                ReduceOp::Max => 5,
-            },
-        ),
-        I::Extract => (19, 0),
-        I::Replace => (20, 0),
-        I::Shuffle => (21, 0),
-        I::LoadMasked => (22, 0),
-        I::InBounds => (26, 0),
-        I::Active => (27, 0),
-        I::Load | I::Store | I::StoreMasked | I::IsaSupported => return None,
-    };
-    Some(family << 8 | op)
-}
-
-/// The request of one `Op::Vector` instruction: `(op, argument words)`.
-fn encode(lent: &Lent<'_, '_>, op: &VectorOp) -> Option<(u32, Vec<u64>)> {
-    match op {
-        VectorOp::IsaSupported(p) => {
-            let enabled = vesper::vector::isa_enabled(lent.module.isa(), *p);
-            Some((NUM_ISA_SUPPORTED, vec![u64::from(enabled)]))
-        }
-        VectorOp::Lanes {
-            intrinsic,
-            shape,
-            constants,
-        } => {
-            let mut words = vec![
-                intrinsic_code(*intrinsic)?,
-                elem_code(shape.elem),
-                u64::from(shape.lanes),
-                constants.len() as u64,
-            ];
-            words.extend(constants.iter().map(|c| u64::from(*c)));
-            words.extend_from_slice(lent.args);
-            Some((NUM_VECTOR, words))
-        }
-    }
-}
-
-/// The `numeric` hook: an `Op::Vector` instruction goes to the Vesper
-/// emission; everything else is declined.
+/// The `numeric` hook: the family's requests (`codegen_swap::numeric`) go
+/// to the Vesper emission; [`INSTRUCTION`] requests are declined, so the
+/// Rust code dispatches the operation and sends its typed request.
 fn numeric(lent: &mut Lent<'_, '_>) -> Result<bool, String> {
-    if lent.op != INSTRUCTION {
+    if lent.op == INSTRUCTION {
         return Ok(false);
     }
-    let inst = lent
-        .program
-        .functions
-        .get(lent.site.function)
-        .and_then(|f| f.blocks.get(lent.site.block as usize))
-        .and_then(|b| b.instructions.get(lent.site.inst as usize))
-        .ok_or("numeric hook: no instruction at the site")?;
-    let Op::Vector { op, .. } = &inst.op else {
-        return Ok(false);
-    };
-    let Some((request, words)) = encode(lent, op) else {
-        return Ok(false);
-    };
+    let words = lent.args.to_vec();
+    call_vesper(lent, lent.op, &words)
+}
+
+/// Runs request `request` with `words` through the Vesper hook.
+fn call_vesper(lent: &mut Lent<'_, '_>, request: u32, words: &[u64]) -> Result<bool, String> {
     let f = hook();
     let (answer, crossing) = vesper_cranelift_sys::lend(
         lent.builder,
         &mut *lent.module,
         request,
-        &words,
+        words,
         // SAFETY: the hook takes one word, the lent call's address.
         |call| unsafe { f.call(&[call]) },
     );
@@ -585,4 +443,90 @@ fn vector_operations_match_the_rust_lowering() {
         "only {compiled} programs checked: {skipped:?}"
     );
     assert!(handled > 0);
+}
+
+// ------------------------------------------------------------ TiledSeq
+
+/// The raw-string programs with a `main` in tests/tiled.rs.
+fn tiled_rs_programs() -> Vec<(String, String)> {
+    let text = std::fs::read_to_string(repo().join("tests/tiled.rs")).unwrap();
+    let mut out = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find("r#\"") {
+        let after = &rest[start + 3..];
+        let Some(end) = after.find("\"#") else {
+            break;
+        };
+        let body = &after[..end];
+        if body.contains("fn main") {
+            out.push((format!("tiled.rs #{}", out.len()), body.to_string()));
+        }
+        rest = &after[end + 2..];
+    }
+    out
+}
+
+/// Every column type in hot and cold position, read and written.
+fn column_programs() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (t, one) in [
+        ("u8", "3"),
+        ("u16", "300"),
+        ("u32", "70000"),
+        ("u64", "5000000000"),
+        ("i32", "7"),
+        ("i64", "9"),
+        ("f32", "1.5"),
+        ("f64", "2.5"),
+        ("bool", "true"),
+    ] {
+        for place in ["hot", "cold"] {
+            let source = format!(
+                "copy struct Pair {{ a: u64, b: u64 }}\n\
+                 tiled(8) copy struct Row {{ {place} x: {t}, hot k: u64, cold p: Pair }}\n\
+                 fn main() -> u64 {{\n\
+                 \x20   let mut s: TiledSeq[Row] = TiledSeq::new[Row]();\n\
+                 \x20   s.push(Row {{ x: {one}, k: 1, p: Pair {{ a: 2, b: 3 }} }});\n\
+                 \x20   s.push(Row {{ x: {one}, k: 4, p: Pair {{ a: 5, b: 6 }} }});\n\
+                 \x20   s.col_set[x](1, {one});\n\
+                 \x20   s.col_set[p](0, Pair {{ a: 7, b: 8 }});\n\
+                 \x20   let r = s.get(1);\n\
+                 \x20   s.set(0, r);\n\
+                 \x20   let x = s.col_get[x](0);\n\
+                 \x20   let same: u64 = if x == r.x {{ 1 }} else {{ 0 }};\n\
+                 \x20   wrapping_add(wrapping_add(s.col_get[p](0).a, s.col_get[k](1)), wrapping_add(same, wrapping_add(s.len(), s.tile_count())))\n\
+                 }}\n"
+            );
+            out.push((format!("{place} {t}"), source));
+        }
+    }
+    out
+}
+
+#[test]
+fn tiled_operations_match_the_rust_lowering() {
+    let _ = hook();
+    let before = HANDLED.load(Ordering::Relaxed);
+    let mut diff = Diff::default();
+    let mut compiled = Vec::new();
+    let mut rejected = Vec::new();
+    for (name, source) in tiled_rs_programs().into_iter().chain(column_programs()) {
+        let Some(world) = accepted(&source) else {
+            rejected.push(name);
+            continue;
+        };
+        for optimize in [false, true] {
+            diff.add(compare(&name, &world, "main", hooks(), optimize, true));
+        }
+        compiled.push(name);
+    }
+    let handled = HANDLED.load(Ordering::Relaxed) - before;
+    eprintln!(
+        "tiled differential: {} programs (rejected: {rejected:?}), {}; {handled} requests from Vesper",
+        compiled.len(),
+        diff.summary(),
+    );
+    assert!(diff.is_clean(), "{}", diff.summary());
+    assert!(compiled.len() >= 20, "{compiled:?} {rejected:?}");
+    assert!(diff.worlds >= 40, "{}", diff.summary());
 }
