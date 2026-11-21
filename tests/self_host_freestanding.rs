@@ -269,7 +269,11 @@ struct VesperLinked {
     elf: Vec<u8>,
 }
 
-fn link_request(objects: &[(String, Vec<u8>)], options: &link::LinkOptions, traps: &[Trap]) -> Request {
+fn link_request(
+    objects: &[(String, Vec<u8>)],
+    options: &link::LinkOptions,
+    traps: &[Trap],
+) -> Request {
     let mut req = Request::default()
         .word(target_word(options.machine))
         .word(options.image_base)
@@ -444,7 +448,10 @@ fn trap_entries(image: &FreestandingImage) -> Vec<Trap> {
 fn stub_constants_match_silicon() {
     let packed = unsafe { port().constants.call(&[]) }.unwrap();
     assert_eq!(packed & 0xff, u64::from(stub::riscv_mie_mask()));
-    assert_eq!((packed >> 8) & 0xff, u64::from(stub::aarch64_daifset_mask()));
+    assert_eq!(
+        (packed >> 8) & 0xff,
+        u64::from(stub::aarch64_daifset_mask())
+    );
     let mut shift = 16;
     for t in FreestandingTarget::ALL {
         for e in [
@@ -600,10 +607,7 @@ fn code_comparison_agrees() {
             let missing = Err(FreestandingError::CodeMismatch {
                 function: "no_such_function".into(),
             });
-            assert_eq!(
-                vesper_compare_code(bytes, "no_such_function", &[]),
-                missing
-            );
+            assert_eq!(vesper_compare_code(bytes, "no_such_function", &[]), missing);
         }
     }
 }
@@ -612,9 +616,7 @@ fn code_comparison_agrees() {
 fn rela(object: &[u8], section: &str) -> (usize, usize) {
     use object::{Object, ObjectSection};
     let file = object::File::parse(object).unwrap();
-    let s = file
-        .section_by_name(&format!(".rela{section}"))
-        .unwrap();
+    let s = file.section_by_name(&format!(".rela{section}")).unwrap();
     let (off, size) = s.file_range().unwrap();
     (off as usize, size as usize / 24)
 }
@@ -645,11 +647,7 @@ fn linker_errors_agree() {
         let objects = &image.objects;
         // Missing, doubled and moved inputs.
         same_link(&format!("{name}: no stub"), &objects[1..], &options);
-        same_link(
-            &format!("{name}: no runtime"),
-            &objects[..2],
-            &options,
-        );
+        same_link(&format!("{name}: no runtime"), &objects[..2], &options);
         let mut twice = objects.clone();
         twice.push(objects[2].clone());
         same_link(&format!("{name}: runtime twice"), &twice, &options);
@@ -675,7 +673,11 @@ fn linker_errors_agree() {
             o.ram_bytes = ram_bytes;
             o.image_base = image_base;
             o.stack_bytes = stack;
-            same_link(&format!("{name}: {ram_bytes:#x} {image_base:#x} {stack}"), objects, &o);
+            same_link(
+                &format!("{name}: {ram_bytes:#x} {image_base:#x} {stack}"),
+                objects,
+                &o,
+            );
         }
         // Different e_flags.
         let mut flags = objects.clone();
@@ -732,7 +734,10 @@ fn stub_rejects_semihosting_on_riscv() {
 #[ignore]
 fn link_cost() {
     use std::time::Instant;
-    let rounds: usize = std::env::var("LINK_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(50);
+    let rounds: usize = std::env::var("LINK_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
     let inputs: Vec<_> = images()
         .iter()
         .map(|(_, i)| (i.objects.clone(), link_options(i), trap_entries(i)))
