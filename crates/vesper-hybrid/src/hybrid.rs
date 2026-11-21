@@ -225,6 +225,11 @@ const VESPER_IR_CHECK: vesper::ir_check::IrCheckTable = vesper::ir_check::IrChec
             Some(Some((timer, words))) => (timer, words, true),
             Some(None) => return vesper::ir_check::rust_validate(world, program),
             None => {
+                // `ir_input` (and `ir_part` above) refuse what
+                // `@vesper/ir-check` does not cover yet, among them every
+                // world with element view matches (#1221): those go to
+                // `rust_validate` (test: `element_views_stay_on_rust` in
+                // tests/hybrid_ir_check.rs).
                 let Some(input) = check_words::ir_input(world, program) else {
                     return vesper::ir_check::rust_validate(world, program);
                 };
