@@ -111,6 +111,7 @@ members = [
     "crates/vesper-tools",
     "experiments/native-pulse",
     "crates/vesper-cranelift-sys",
+    "crates/vesper-codegen-numeric-test",
 ]
 # Preserve the pre-extraction `cargo test` coverage of moved unit tests.
 default-members = [
@@ -262,6 +263,7 @@ default-run = "vesper"
 name = "vesper"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 # The host shim of @vesper-std/fs, process and env (#1125). `vesper jit`
