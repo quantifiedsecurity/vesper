@@ -588,7 +588,9 @@ vesper_crate(
         "test/self_host_check_data": "long",
         "test/hybrid_layout": "long",
         "test/hybrid_ir_check": "long",
-        "test/self_host_place_ir": "long",
+        # Four round-trip tests and the pass harness share one stage build;
+        # past 900 s on a busy runner.
+        "test/self_host_place_ir": "eternal",
         "test/self_host_place_ir_jit": "long",
         "test/self_host_check_harness": "long",
         # The tensor types differential (#1186) JIT-compiles the port and
