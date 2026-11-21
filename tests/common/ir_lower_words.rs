@@ -47,9 +47,7 @@
 use super::check_words::{Enc, mode_word, pass_word};
 use super::ir_words::{Payload, Pool};
 use std::collections::BTreeSet;
-use vesper::ast::{
-    Clause, Expr, ExprKind, Literal, Param, Pattern, PatternKind, Statement, Type,
-};
+use vesper::ast::{Clause, Expr, ExprKind, Literal, Param, Pattern, PatternKind, Statement, Type};
 use vesper::check::World;
 use vesper::ir::{Op, Program};
 
@@ -492,9 +490,7 @@ impl<'a> Lw<'a> {
                     ret,
                     ops,
                 } => {
-                    let st = state
-                        .as_ref()
-                        .map(|(p, s)| (self.pattern(p), self.expr(s)));
+                    let st = state.as_ref().map(|(p, s)| (self.pattern(p), self.expr(s)));
                     let b = self.expr(body);
                     let mut clauses = vec![];
                     for c in std::iter::once(ret.as_ref()).chain(ops) {
@@ -515,7 +511,12 @@ impl<'a> Lw<'a> {
                     w.push(b);
                     w.push(ops.len() as u64);
                     w.extend(clauses);
-                    let outgoing = self.world.handler_effects.get(&key).cloned().unwrap_or_default();
+                    let outgoing = self
+                        .world
+                        .handler_effects
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_default();
                     w.push(self.enc.ty(&Type::Row(outgoing)));
                     self.moves(key, &mut w);
                     X_HANDLE
