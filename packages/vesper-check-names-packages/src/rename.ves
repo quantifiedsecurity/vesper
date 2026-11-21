@@ -8,6 +8,7 @@
 
 use @vesper/ast::{
     Ast,
+    Lit,
     AdtNode,
     ArgNode,
     AssocBindNode,
@@ -46,6 +47,9 @@ use @vesper-std/arena::{
 use self::state::{
     St,
     at32,
+    at64,
+    at8,
+    const_flags,
     emit,
     err,
     hi,
@@ -178,6 +182,17 @@ fn resolve(inout s: St, n: u32, start: u32, end: u32, ns: u8) -> u32 {
 // `Renamer::type_name`: a path name `Head::rest` or a plain type or
 // effect name. Returns the new name (or `n`).
 fn type_name(inout s: St, n: u32, start: u32, end: u32) -> u32 {
+    let len = sym_len(in s, n);
+    let cut = sym_path_split(in s, n);
+    // A value enum member `E::M` (own `const$E::M` or imported).
+    if cut < len {
+        match s.names.get(n) {
+            Option::Some(v) => {
+                return lo(v);
+            },
+            Option::None => {},
+        }
+    }
     if is_qualified(in s, n) {
         let q = qualified(inout s, s.cur, n, start, end);
         if q == none() {
@@ -186,8 +201,6 @@ fn type_name(inout s: St, n: u32, start: u32, end: u32) -> u32 {
         }
         return q;
     }
-    let len = sym_len(in s, n);
-    let cut = sym_path_split(in s, n);
     let head = if cut >= len {
         n
     } else {
@@ -223,6 +236,23 @@ fn value_name(inout s: St, n: u32, start: u32, end: u32) -> u32 {
         n
     } else {
         t
+    }
+}
+
+// A new literal node of the constant `name`'s value, or `ast_none()` when
+// it has none.
+fn literal_of(in s: St, inout a: Ast, name: u32) -> u32 {
+    match s.lit_row.get(name) {
+        Option::Some(r) => {
+            let i = w(r);
+            let v = Lit {
+                kind: at8(in s.cl_kind, i),
+                neg: at8(in s.cl_neg, i) != 0,
+                bits: at64(in s.cl_bits, i)
+            };
+            a.lits.alloc(v).raw()
+        },
+        Option::None => ast_none(),
     }
 }
 
@@ -384,19 +414,41 @@ fn pattern(inout s: St, inout a: Ast, p: u32) {
         }
     } else if n.kind == 5 {
         let g = tr(inout s, in a, n.a);
-        let x = type_name(inout s, g, n.start, n.end);
+        // A constant (own or imported) names its function.
+        let local = match s.names.get(g) {
+            Option::Some(v) => lo(v),
+            Option::None => none(),
+        };
+        let x = if local != none() && (const_flags(inout s, local) & 2) != 0 {
+            local
+        } else {
+            type_name(inout s, g, n.start, n.end)
+        };
         if x != g {
             n.a = back(inout s, inout a, x);
         }
         let nf = list_len(in a, n.b);
-        let mut i: u64 = 0;
-        loop {
-            if inc(i) >= wrapping_add(nf, 1) {
-                break;
+        let l = if nf == 0 && n.c == 0 {
+            literal_of(in s, inout a, x)
+        } else {
+            ast_none()
+        };
+        if l != ast_none() {
+            // A field-less pattern of a literal constant is the literal.
+            n.kind = 3;
+            n.a = l;
+            n.b = ast_none();
+            n.c = ast_none();
+        } else {
+            let mut i: u64 = 0;
+            loop {
+                if inc(i) >= wrapping_add(nf, 1) {
+                    break;
+                }
+                let c = list_at(in a, n.b, inc(i));
+                pattern(inout s, inout a, c);
+                i = wrapping_add(i, 2);
             }
-            let c = list_at(in a, n.b, inc(i));
-            pattern(inout s, inout a, c);
-            i = wrapping_add(i, 2);
         }
     }
     n.start = sh(in s, n.start);
@@ -500,6 +552,9 @@ fn expr(inout s: St, inout a: Ast, e: u32) {
     if e == ast_none() {
         return;
     }
+    if s.made.contains_key(e) {
+        return;
+    }
     let mut n = expr_at(in a, e);
     if revisit(inout s.seen_expr, e) {
         n.start = wrapping_sub(n.start, s.shift);
@@ -508,9 +563,46 @@ fn expr(inout s: St, inout a: Ast, e: u32) {
     let k = n.kind;
     if k == 2 {
         let g = tr(inout s, in a, n.a);
+        let written = (const_flags(inout s, g) & 1) != 0;
         let x = value_name(inout s, g, n.start, n.end);
         if x != g {
             n.a = back(inout s, inout a, x);
+        }
+        // An imported constant or a path to one is a call of its function,
+        // as the lowering makes a module's own (empty callee span); an
+        // untyped value enum member is its literal.
+        let l = if !written && s.untyped.contains_key(x) {
+            literal_of(in s, inout a, x)
+        } else {
+            ast_none()
+        };
+        if l != ast_none() {
+            n.kind = 1;
+            n.a = l;
+            n.b = ast_none();
+            n.c = ast_none();
+        } else if !written && (const_flags(inout s, x) & 2) != 0 {
+            let at = sh(in s, n.start);
+            let callee = a
+                .exprs
+                .alloc(
+                ExprNode {
+                    kind: 2,
+                    start: at,
+                    end: at,
+                    a: n.a,
+                    b: ast_none(),
+                    c: ast_none(),
+                    d: ast_none(),
+                    e: ast_none()
+                }
+            )
+                .raw();
+            s.made.insert(callee, 1);
+            n.kind = 6;
+            n.a = callee;
+            n.b = 0;
+            n.c = 0;
         }
     } else if k == 3 {
         exprs(inout s, inout a, n.a);
