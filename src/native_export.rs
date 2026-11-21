@@ -1246,7 +1246,7 @@ fn compile_exports<M: Module>(
     let mut program = crate::ffi_lowering::drops::lower_world(world);
     crate::integer_widths::lower_bit_builtin_calls(world, &mut program);
     if optimize {
-        crate::ir_opt::optimize(world, &mut program)?;
+        crate::ir_opt_policy::optimize(world, &mut program)?;
         crate::ir_inline::inline(world, &mut program, &crate::ir_inline::Budget::default());
     } else {
         crate::ir_opt::fip_reuse_pass(world, &mut program)?;

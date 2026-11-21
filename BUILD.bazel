@@ -222,6 +222,13 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        # SH4 lane 5 (#1279): the native optimizer policy against
+        # ir_opt::optimize on the same corpus. Anchored globs.
+        "test/optimizer_budget": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # @vesper-std/fs, process and env (#1125): drivers over the packages
         # and their .vsys imports.
         "test/std_env": [":files"],
@@ -553,6 +560,8 @@ vesper_crate(
         "test/self_host_check_core_typing": "long",
         "test/self_host_check_core_typing_exprs": "long",
         "test/self_host_check_fip": "long",
+        # The optimizer policy (#1279) optimizes every corpus world three times.
+        "test/optimizer_budget": "long",
     },
 )
 

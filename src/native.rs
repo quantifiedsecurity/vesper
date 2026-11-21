@@ -1078,7 +1078,7 @@ fn compile_entry<M: Module>(
     crate::integer_widths::lower_bit_builtin_calls(world, &mut program);
     let mut inlined_into = BTreeMap::new();
     if optimize {
-        crate::ir_opt::optimize(world, &mut program)?;
+        crate::ir_opt_policy::optimize(world, &mut program)?;
         // Executable objects inline too (#959). The decision depends only on
         // the world, never on the observer or instrument hooks, so a
         // verified build stays byte-identical to the plain one and the
