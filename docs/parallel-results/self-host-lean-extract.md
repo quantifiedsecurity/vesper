@@ -92,8 +92,10 @@ words once.
 No file under `src/verified_codegen/**`, `src/ir.rs`, `ir_opt`, `lean/**`,
 `bootstrap/**` or `packages/vesper-compiler/**` changes, and no Stage 1
 re-lock was run: the diff is a new package, a new test, this report and
-`BUILD.bazel` data. The bootstrap-stage1 workflow runs on the branch before
-merging (result in the PR).
+`BUILD.bazel` data. The bootstrap-stage1 workflow (`bootstrap/run.sh stage1
+--reproduce --outcome` against `bootstrap/stage1.lock`) passed on the branch
+(run 44887193178, 956db66); the later commits touch only the package, its
+test, `BUILD.bazel` data and this report, plus merges of `main`.
 
 ## Compiler gaps
 
