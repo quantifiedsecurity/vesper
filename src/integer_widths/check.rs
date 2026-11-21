@@ -327,8 +327,10 @@ impl Checker<'_> {
                 .get(&(x.span.start, x.span.end))
                 .and_then(IntegerKind::from_type)
         })?;
-        let (alo, ahi) = self.operand_bounds(a, env)?;
-        let (blo, bhi) = self.operand_bounds(b, env)?;
+        // An empty interval (contradictory guards, unreachable code) has no
+        // endpoints to compute with.
+        let (alo, ahi) = self.operand_bounds(a, env).filter(|(lo, hi)| lo <= hi)?;
+        let (blo, bhi) = self.operand_bounds(b, env).filter(|(lo, hi)| lo <= hi)?;
         let corners = |f: fn(i128, i128) -> Option<i128>| {
             let values = [(alo, blo), (alo, bhi), (ahi, blo), (ahi, bhi)]
                 .map(|(x, y)| f(x, y).filter(|v| *v >= kind.min() && *v <= kind.max()));

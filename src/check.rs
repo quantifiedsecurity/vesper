@@ -448,6 +448,7 @@ impl World {
 
         let mut diagnostics;
         let mut option_tries;
+        let mut integer_nots: BTreeSet<(usize, usize)>;
         let mut types;
         let mut for_plans;
         let mut iteration = 0usize;
@@ -506,8 +507,10 @@ impl World {
                 option_tries: tries,
                 types: checked_types,
                 for_sequences: plans,
+                integer_nots: nots,
                 ..
             } = c;
+            integer_nots = nots;
             option_tries = tries;
             types = checked_types;
             for_plans = plans;
@@ -559,6 +562,17 @@ impl World {
             let desugared = try_option::desugar(&single, &option_tries, after);
             if let Some(Item::Function(desugared_fn)) = desugared.items.into_iter().next() {
                 return self.check_isolated_item(&desugared_fn);
+            }
+        }
+        if !integer_nots.is_empty() {
+            // Check the complements `!` on integers means instead.
+            let single = Module {
+                items: vec![Item::Function(Box::new(func_norm.clone()))],
+                ..Module::default()
+            };
+            let rewritten = integer_widths_rules::complement_nots(&single, &integer_nots);
+            if let Some(Item::Function(rewritten_fn)) = rewritten.items.into_iter().next() {
+                return self.check_isolated_item(&rewritten_fn);
             }
         }
         let after = func_norm

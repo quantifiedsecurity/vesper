@@ -291,3 +291,37 @@ fn integer_not_misuse_is_rejected() {
         "!x",
     );
 }
+
+#[test]
+fn isolated_checking_rewrites_integer_not() {
+    // `!z & 63` is a pure guard only once `!` is `~`: the isolated checker
+    // (expected-error tests) must agree with the full one.
+    let source = "fn f(n: u64) -> u64 { let z: u64 = 0; if n < (!z & 63) { 1 << n } else { 0 } }
+fn main() -> u64 { f(3) }";
+    let c = accepted(source);
+    let p = parser::parse(source);
+    for item in &p.module.items {
+        if let vesper::ast::Item::Function(f) = item {
+            assert_eq!(
+                c.world.check_isolated_item(f),
+                vec![],
+                "isolated check of {}",
+                f.name
+            );
+        }
+    }
+}
+
+#[test]
+fn contradictory_guards_do_not_crash_the_checker() {
+    // `d` has the empty range `1..=0` in the unreachable branch.
+    for body in [
+        "if d > 0 && d < 1 { n >> (n / d) } else { 0 }",
+        "if d > 5 && d < 3 { n >> (d * 2) } else { 0 }",
+        "if d > 0 && d < 1 { n / (d - 1) } else { 0 }",
+    ] {
+        let source =
+            format!("fn f(n: u64, d: u64) -> u64 {{ {body} }}\nfn main() -> u64 {{ f(1, 2) }}");
+        let _ = checked(&source);
+    }
+}
