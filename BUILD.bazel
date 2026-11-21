@@ -203,6 +203,11 @@ vesper_crate(
             "packages/**",
             "tests/fixtures/**",
         ]),
+        "test/self_host_check_core_typing_exprs": glob([
+            "examples/**",
+            "packages/**",
+            "tests/fixtures/**",
+        ]),
         # SH2 lane 8 (#1180): @vesper/check-effects against capability_effects.
         "test/self_host_check_effects": glob([
             "examples/**",
@@ -541,6 +546,7 @@ vesper_crate(
         "test/self_host_check_names_packages": "long",
         # The core typing differential (#1179) checks every corpus world.
         "test/self_host_check_core_typing": "long",
+        "test/self_host_check_core_typing_exprs": "long",
         # The capability-effect differential (#1180): corpus, fixtures, mutants.
         "test/self_host_check_effects": "long",
         "test/self_host_check_fip": "long",
