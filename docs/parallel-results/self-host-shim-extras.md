@@ -85,9 +85,9 @@ so each host checks the same objects:
 
 Lane 1's harness is unchanged and passes: `header` (exports, header and
 `.vsys` name the same 125 functions), `checked_family`, `lend`, `pilot`, and
-`crates/vesper-codegen-swap-test`. The hybrid compiler's generated binding
-`crates/vesper-hybrid/port/codegen.rs` lists every symbol of the library,
-so it gains the 14 new names; the committed file equals what
+`crates/vesper-codegen-swap-test`. The hybrid compiler's generated bindings
+`crates/vesper-hybrid/port/codegen.rs` and `port/codegen_export.rs` list
+every symbol of the library, so they gain the 14 new names; the committed file equals what
 `vesper build --lib --rust-binding` generates for the current source.
 
 ## Stage 1 guard
