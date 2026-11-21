@@ -287,5 +287,8 @@ fn pilot_module_runs_from_vesper() {
         .and_then(|l| l.split(' ').next())
         .and_then(|n| n.parse().ok())
         .unwrap_or_else(|| panic!("no bounds-hoist report in {stderr:?}"));
-    assert!(hoisted > 0, "the Vesper bounds-hoist module hoisted no program");
+    assert!(
+        hoisted > 0,
+        "the Vesper bounds-hoist module hoisted no program"
+    );
 }

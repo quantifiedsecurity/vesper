@@ -122,8 +122,7 @@ fn timing() {
     if !speed() {
         return;
     }
-    let identity =
-        Package::load("packages/vesper-place-ir").entry("place_ir_words", true);
+    let identity = Package::load("packages/vesper-place-ir").entry("place_ir_words", true);
     let programs: Vec<&Program> = corpus::programs(1).into_iter().map(|(_, p)| p).collect();
     let inputs: Vec<(Vec<u8>, ir_words::Pool)> = programs
         .iter()
@@ -151,9 +150,7 @@ fn timing() {
         &mut || {
             time(|| {
                 for p in &programs {
-                    std::hint::black_box(ir_words::through_vesper(None, p, |i| {
-                        entry().words(i)
-                    }));
+                    std::hint::black_box(ir_words::through_vesper(None, p, |i| entry().words(i)));
                 }
             })
         },
