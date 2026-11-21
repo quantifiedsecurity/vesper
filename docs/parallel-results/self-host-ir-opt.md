@@ -70,9 +70,10 @@ the candidate type filter removed, 14 of 111 inputs (`IR_OPT_STEP=6`)
 differ.
 
 Run time: about 9 minutes per mode for every input in the port-compiler
-profile, nearly all in Rust's egglog. The test runs every 12th corpus input by
-default (`IR_OPT_STEP`, 1 for all; the `@fip` cases always run), so it
-fits the CI test timeout next to the other long SH3 differentials.
+profile, nearly all in Rust's egglog. The test runs every 24th corpus input by
+default (`IR_OPT_STEP`, 1 for all; the `@fip` cases always run), and Bazel
+gives it the `eternal` size: CI builds tests unoptimized, where every 12th
+input took 34 minutes.
 
 ## Numbers
 

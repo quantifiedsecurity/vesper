@@ -45,7 +45,7 @@ fn entry() -> &'static Entry {
     E.get_or_init(|| package().entry("ir_opt_entry", true))
 }
 
-/// Every `n`-th corpus input (`IR_OPT_STEP`, default 12): Rust's egglog
+/// Every `n`-th corpus input (`IR_OPT_STEP`, default 24): Rust's egglog
 /// takes most of the time (about 9 minutes for the whole corpus in the
 /// port-compiler profile, much longer in a debug build), so the default
 /// runs a slice; `IR_OPT_STEP=1` runs every input (the report's numbers).
@@ -55,7 +55,7 @@ fn step() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(12)
+        .unwrap_or(24)
 }
 
 /// One input of the pass.
