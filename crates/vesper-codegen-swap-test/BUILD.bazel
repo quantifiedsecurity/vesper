@@ -8,7 +8,14 @@ vesper_crate(
     extra_compile_data = ["//:files"],
     extra_test_data = [
         "//:files",
+        # SH4 lane 11 (#1285): the numeric hook's package has its own
+        # BUILD file, so //:files leaves it out.
+        "//packages/vesper-codegen-numeric:files",
         "//packages/vesper-cranelift:files",
     ],
-    test_timeouts = {"test/self_host_codegen_swap": "long"},
+    test_timeouts = {
+        "test/self_host_codegen_swap": "long",
+        # SH4 lane 11 (#1285): the vector differential, 1,340 builds.
+        "test/self_host_codegen_numeric_vector": "long",
+    },
 )

@@ -8,10 +8,6 @@
 //! and with the Vesper hook, with the optimizer on and off; every function's
 //! CLIF text, the object bytes and the JIT result must be equal
 //! (tests/common/clif_diff.rs).
-#[path = "../../../tests/common/clif_diff.rs"]
-mod clif_diff;
-
-use clif_diff::*;
 use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 use vesper::codegen_swap::{self, CodegenHooks, INSTRUCTION, Lent};
@@ -21,6 +17,7 @@ use vesper::native::WordFunction;
 use vesper::vector::{
     BinOp, CmpOp, Conv, Elem, Intrinsic, MaskOp, ReduceOp, Shape, ShiftOp, UnaryOp, VectorOp,
 };
+use vesper_codegen_swap_test::*;
 
 /// Package files in assembly order after `@vesper/cranelift` (shim gap 4:
 /// a package cannot import a `.vsys` library through the JIT harness).
