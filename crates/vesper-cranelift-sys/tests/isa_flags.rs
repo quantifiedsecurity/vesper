@@ -11,7 +11,14 @@ fn riscv_e_flags(flags: &str) -> Result<u32, String> {
     // SAFETY: every pointer is a live buffer of the given length; each
     // handle is consumed once.
     unsafe {
-        let m = vcl_module_new(t.as_ptr(), t.len(), flags.as_ptr(), flags.len(), n.as_ptr(), n.len());
+        let m = vcl_module_new(
+            t.as_ptr(),
+            t.len(),
+            flags.as_ptr(),
+            flags.len(),
+            n.as_ptr(),
+            n.len(),
+        );
         if m.is_null() {
             let mut e = vec![0u8; 256];
             let len = vcl_new_error(e.as_mut_ptr(), e.len()) as usize;

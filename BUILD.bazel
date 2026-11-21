@@ -589,6 +589,9 @@ vesper_crate(
         "test/hybrid_layout": "long",
         "test/hybrid_ir_check": "long",
         "test/self_host_place_ir": "long",
+        # SH4 lane 14 (#1288): 22 Cranelift image builds and the package's
+        # JIT compile before the comparisons; 5-8 minutes unoptimized.
+        "test/self_host_freestanding": "eternal",
         "test/self_host_check_harness": "long",
         # The tensor types differential (#1186) JIT-compiles the port and
         # replays mutants and the corpus.

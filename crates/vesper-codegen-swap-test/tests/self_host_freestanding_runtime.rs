@@ -365,22 +365,28 @@ fn matrix() -> Vec<(String, runtime::RuntimeSpec)> {
     let tables: [(&[&str], &[usize]); 2] = [
         (&[], &[]),
         (
-            &["integer overflow", "index out of bounds", "true", "unhandled Fail"],
+            &[
+                "integer overflow",
+                "index out of bounds",
+                "true",
+                "unhandled Fail",
+            ],
             &[0, 1, 1, 0, 2, 3],
         ),
     ];
     let mut out = Vec::new();
     for target in FreestandingTarget::ALL {
-        for uart in uarts.clone() {
+        for uart in uarts {
             for kind in kinds {
                 for fail in &fails {
                     for (t, (messages, entries)) in tables.iter().enumerate() {
-                        let label = format!("{target} {uart:?} {kind:?} fail={:?} table={t}", fail
-                            .as_ref()
-                            .map(|f| f.instances.len()));
+                        let label = format!(
+                            "{target} {uart:?} {kind:?} fail={:?} table={t}",
+                            fail.as_ref().map(|f| f.instances.len())
+                        );
                         out.push((
                             label,
-                            spec(target, uart.clone(), kind, fail.clone(), messages, entries),
+                            spec(target, uart, kind, fail.clone(), messages, entries),
                         ));
                     }
                 }
@@ -396,7 +402,10 @@ fn runtime_objects_are_byte_identical() {
     for (label, spec) in &specs {
         compare(label, spec);
     }
-    eprintln!("{} runtime specs: objects, CLIF and traps equal", specs.len());
+    eprintln!(
+        "{} runtime specs: objects, CLIF and traps equal",
+        specs.len()
+    );
 }
 
 fn world(source: &str) -> check::World {
@@ -441,7 +450,11 @@ fn image_spec(image: &FreestandingImage) -> runtime::RuntimeSpec {
         .1;
     // The last abort site is the unknown tag's ("unhandled Fail").
     instances.pop();
-    let fails: Vec<Option<FailEntry>> = if image.traps.iter().any(|s| s.function == runtime::MAIN_SYMBOL) {
+    let fails: Vec<Option<FailEntry>> = if image
+        .traps
+        .iter()
+        .any(|s| s.function == runtime::MAIN_SYMBOL)
+    {
         (1..=16)
             .map(|w| {
                 Some(FailEntry {
