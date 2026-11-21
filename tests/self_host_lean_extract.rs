@@ -257,6 +257,21 @@ fn mutants() -> Vec<(String, World)> {
             "unspellable name",
             with_adt(base, "A«B", false, vec![u8_()]),
         ),
+        // Rust checks the declaration's name before its field types.
+        (
+            "unspellable name and i128 field",
+            with_adt(base, "A«B", false, vec![named("i128", vec![])]),
+        ),
+        ("unspellable enum and u128 field", {
+            let mut w = with_adt(base, "E«", true, vec![named("u128", vec![])]);
+            w.adts.get_mut("E«").unwrap().variants[0].name = "V»".into();
+            w
+        }),
+        ("unspellable variant and u128 field", {
+            let mut w = with_adt(base, "Ev", true, vec![named("u128", vec![])]);
+            w.adts.get_mut("Ev").unwrap().variants[0].name = "V»".into();
+            w
+        }),
         (
             "unspellable field type",
             with_adt(base, "Ok", false, vec![named("T\u{202e}", vec![])]),
@@ -288,7 +303,7 @@ fn mutants_match_rust() {
         "lean head: {} mutants, {refused} refused by Rust, {bad} differ",
         mutants().len()
     );
-    assert!(refused >= 5);
+    assert!(refused >= 9);
     assert_eq!(bad, 0);
 }
 

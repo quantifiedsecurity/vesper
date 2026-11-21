@@ -320,12 +320,49 @@ fn field_binders(inout b: B, in t: Types, in wd: World, fa: u32, fc: u32) {
     }
 }
 
-// The fields' type errors, in field order.
-fn check_fields(inout b: B, in t: Types, in wd: World, a: Adt) {
-    for vi in 0..w(a.vn) {
-        let variant = wd.variant(add(w(a.va), vi));
+// The ADT's identifier and type errors in the order `extract_report`
+// meets them: the generic names, then (for a recursive structure, whose
+// getters come first) the self type and the getters' field names and
+// types, then the declaration's name, constructor names, field names and
+// field types.
+fn check_adt(inout b: B, in t: Types, in wd: World, a: Adt, rec: bool) {
+    for i in 0..w(a.gn) {
+        let g = wd.generic(add(w(a.ga), i));
+        if !g.row {
+            b.check(g.name, in "identifier");
+        }
+    }
+    if rec {
+        for i in 0..w(a.gn) {
+            let g = wd.generic(add(w(a.ga), i));
+            if !g.row {
+                b.check(g.name, in "name");
+            }
+        }
+        b.check(a.name, in "name");
+        b.check(a.name, in "identifier");
+        let variant = wd.variant(w(a.va));
         for fi in 0..w(variant.fc) {
             let f = wd.field(add(w(variant.fa), fi));
+            b.check(a.name, in "identifier");
+            b.check(f.name, in "identifier");
+            ty_check(inout b, in t, f.ty, wd.box_active);
+        }
+    }
+    b.check(a.name, in "name");
+    for vi in 0..w(a.vn) {
+        let variant = wd.variant(add(w(a.va), vi));
+        if a.is_enum {
+            b.check(variant.name, in "identifier");
+        }
+        for fi in 0..w(variant.fc) {
+            let f = wd.field(add(w(variant.fa), fi));
+            if a.is_enum || rec {
+                let s = b.joined(in "f", f.name, in "");
+                b.check(s, in "identifier");
+            } else {
+                b.check(f.name, in "identifier");
+            }
             ty_check(inout b, in t, f.ty, wd.box_active);
         }
     }
@@ -445,8 +482,9 @@ pub fn adt_groups(inout b: B, in t: Types, in wd: World) -> u64 {
     for c in 0..s.ends.len() {
         let z = u64_at(in s.ends, c);
         for k in a..z {
-            let adt = wd.adt(u32_at(in g.adts, w(u32_at(in s.out, k))));
-            check_fields(inout b, in t, in wd, adt);
+            let v = u32_at(in s.out, k);
+            let adt = wd.adt(u32_at(in g.adts, w(v)));
+            check_adt(inout b, in t, in wd, adt, is_rec(in rec, v));
         }
         b.w(D_MUTUAL_TYPES);
         b.w(wrapping_sub(z, a));

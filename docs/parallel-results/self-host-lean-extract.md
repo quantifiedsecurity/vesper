@@ -57,13 +57,13 @@ extraction succeeds.
 | Test | Cases | Differences |
 |---|--:|--:|
 | `head_matches_rust_on_the_corpus` | 296 worlds, 2,592 ADTs, 400 effects, 23,114 lines | 0 bytes |
-| `mutants_match_rust` | 8 mutants, 6 refused by Rust | 0 bytes |
+| `mutants_match_rust` | 11 mutants, 9 refused by Rust | 0 bytes |
 | `unoptimized_jit_agrees` | every 7th world | 0 |
 | `head_is_a_prefix_of_the_full_module` | 209 of 296 worlds extract in full | 0 |
 
 No corpus world is refused in the head, so the refusals come from mutants:
 `i128` and `u128` fields, a row field, an effectful function field, an ADT
-name and a field type name Lean cannot spell (`A«B`, `T\u{202e}`). Two more
+name and a field type name Lean cannot spell (`A«B`, `T\u{202e}`), and three that pair a bad name with a bad field type, since Rust checks names first. Two more
 mutants cover type shapes the corpus rarely has: function fields with
 `inout`, `in` and `sink` parameters and zero parameters, `Result`
 argument order, `TiledSeq`, nested tuples, `_` and integer literal types.
