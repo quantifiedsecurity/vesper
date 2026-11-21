@@ -174,13 +174,12 @@ kind test to existing name checks and at most two tokens of lookahead at a
    names are still keywords to the highlighter (SH2 lane 3 gap 4).
 7. **128-bit literals on the anvil JIT, wasm and Lean.** They refuse
    `WideInt` (and other 128-bit values) as before.
-8. **Native code reads 128-bit tuple and array elements wrong.** A local
-   `[i128; 3] = [1, 2, 5]` reads back wrong on the native JIT, whatever the
-   values, so this does not come from the new literals. A constant table of
-   `i128`/`u128` is no longer encoded as read-only data, because that
-   encoding wrote one word per element and dropped the high word. The
-   evaluator reads such tables right (`wide_tables_keep_both_words`).
-
+8. **128-bit constant tables are not read-only data.** A constant table of
+   `i128`/`u128` is not encoded as read-only data, because that encoding
+   wrote one word per element and dropped the high word; it is built like
+   any other aggregate. Native reads of 128-bit elements were fixed by
+   #1297 (#1270), and `wide_tables_keep_both_words` checks the evaluator and
+   the JIT.
 9. **The Lean arithmetic oracle model still says "parse range".**
    `lean/ArithmeticOracle.lean` classes a literal past `u64::MAX` as
    `literalParseRange` (E0002). The parser now accepts it and the checker
