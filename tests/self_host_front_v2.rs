@@ -674,6 +674,8 @@ fn edge_cases_and_limits_match_the_rust_parser() {
         "fn f() { handle E in { 0 } with { return x => x } handle l: E in {} with {} handle(1); handle; handle self::m::E in {} with {} }",
         "fn f() { g(sink S { a }, inout self.x, sink 1, sink \"s\", sink match x { _ => 1 }, sink if a { b } else { c }, inout !x, sink { 1 }) }",
         "use m::{effect, handle as h, sink}; fn f() { m::effect(); E::handle(); }",
+        // 128-bit scalars are type arguments, not rows.
+        "fn f(x: Option[u128]) -> Seq[i128] { g[u128, i128](x) }",
         // `handle` before a capitalized name in an import list starts no name.
         "use m::{A, handle\n    B, C}; use m::{x as handle Y};",
         // Literals past u64::MAX (#1244).
