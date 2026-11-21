@@ -122,8 +122,9 @@ lane is the whole build with the family swapped, which needs part 2.
 
 No file under `src/verified_codegen/**`, `src/ir.rs`, `ir_opt`, `lean/**`,
 `bootstrap/**` or `packages/vesper-compiler/**` changed, and no Rust file
-changed at all. The bootstrap-stage1 workflow run on this branch is linked
-from the PR.
+changed at all. The bootstrap-stage1 workflow passed on this branch at
+`377b04f` ([run 193](https://github.com/robot-head/vesper/actions/runs/44862580217)):
+the Stage 1 digests equal `bootstrap/stage1.lock`.
 
 ## Left
 
