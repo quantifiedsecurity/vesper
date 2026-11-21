@@ -5140,7 +5140,10 @@ impl Checker<'_> {
         }
         for (name, b) in &outer.bindings {
             if free.contains(name) {
-                if self.mode(&b.ty) != Mode::Copy || b.pass != Pass::Sink {
+                // A `copy` value read through an `in` borrow is stable for
+                // the whole handler, so its snapshot is a plain copy
+                // (§ handler state threading; SH5 lane 6, #1329).
+                if self.mode(&b.ty) != Mode::Copy || !matches!(b.pass, Pass::Sink | Pass::In) {
                     self.error("E0404",format!("handler clause capture '{name}' must be owned copy; thread unique resources through state"),span.clone());
                 }
                 clause_env.bindings.insert(name.clone(), b.clone());
