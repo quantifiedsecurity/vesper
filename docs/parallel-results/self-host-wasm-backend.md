@@ -46,7 +46,11 @@ the part the backend uses", so it is not ported. The harness wraps the
 port's core module and WIT text with the same calls (`wrap` in the test) and
 compares the result with the Rust component byte for byte. When the swap
 lands, wrapping stays a Rust call behind the hook (or a `.vsys` extern, as
-the prompt allows). Porting it would be its own lane.
+the prompt allows). The owner's call (2026-11-21): keep it in Rust for now.
+**Candidate SH5 lane:** port the part of wit-component and wit-parser the
+backend uses (parsing the program WIT and the four WASI/Beacon packages,
+embedding the component-type section, encoding the component), compared
+byte for byte with the Rust components this harness already checks.
 
 ### Not ported yet (part 2)
 
@@ -158,4 +162,4 @@ no swap point. The [Bootstrap Stage 1 run on this branch](https://github.com/rob
 - The swap: the hybrid module `wasm_backend` and its `wasm` hook. It waits
   for lane 1's first PR (#1275, `src/codegen_swap.rs`), which has not opened
   yet. The SH4 scoreboard row comes with the swap.
-- Speed work if the timing above is not at parity.
+- Candidate SH5 lane: component wrapping (wit-component and wit-parser).
