@@ -37,6 +37,19 @@ pub use PortEncoded as vesper__ebpf__insn__Encoded;
 pub use PortEthWire as vesper__ebpf__wire__EthIpv4TcpWire;
 pub use PortInsn as vesper__ebpf__insn__Insn;
 pub use PortOperand as vesper__ebpf__insn__Operand;
+pub use PortVerifierWord as vesper__ebpf__verifier__R;
+
+/// The port verifier's register or stack-slot word: Rust only holds these
+/// inside the reused verifier pools and never reads them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortVerifierWord {
+    pub tag: u64,
+    pub x: u64,
+    pub y: u64,
+    pub z: u64,
+    pub off: i64,
+    pub var: crate::scalar::Scalar,
+}
 
 /// `insn::Operand` with a register number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -720,6 +733,14 @@ pub(crate) fn verify(
         ]);
         text.extend_from_slice(k.name.as_bytes());
     }
+    thread_local! {
+        // The verifier's record pools, reused between runs on this thread.
+        static POOLS: std::cell::RefCell<Option<ffi::vesper__ebpf__verifier__Pools>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let mut pools = POOLS
+        .with(|p| p.borrow_mut().take())
+        .unwrap_or_else(ffi::verifier_new_pools);
     let out = ffi::verifier_verify(
         &prog.insns,
         prog.prog_type,
@@ -731,7 +752,9 @@ pub(crate) fn verify(
         policy.max_insns_processed,
         policy.max_states_per_insn as u64,
         policy.widen_loops,
+        &mut pools,
     );
+    POOLS.with(|p| *p.borrow_mut() = Some(pools));
     let out = out.as_ref();
     let w = out.words().to_vec();
     match w[0] {

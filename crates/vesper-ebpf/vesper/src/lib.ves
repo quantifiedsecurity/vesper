@@ -115,7 +115,9 @@ use self::callgraph::{
     check_stack
 };
 use self::verifier::{
+    new_pools,
     Outcome,
+    Pools,
     verify_program
 };
 use self::wire::{
@@ -386,6 +388,10 @@ pub fn callgraph_check_stack(
 
 // verifier.rs
 
+pub fn verifier_new_pools() -> Pools {
+    new_pools()
+}
+
 pub fn verifier_verify(
     in slots: Slice[RawInsn],
     ptype: ProgramType,
@@ -396,7 +402,8 @@ pub fn verifier_verify(
     in text: Slice[u8],
     max_insns: u64,
     max_states: u64,
-    widen_loops: bool
+    widen_loops: bool,
+    inout pools: Pools
 ) -> Outcome {
     verify_program(
         in slots,
@@ -408,7 +415,8 @@ pub fn verifier_verify(
         in text,
         max_insns,
         max_states,
-        widen_loops
+        widen_loops,
+        inout pools
     )
 }
 

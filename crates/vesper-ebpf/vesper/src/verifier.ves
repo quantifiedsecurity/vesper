@@ -1209,12 +1209,12 @@ fn state_includes(
         }
         for i in 0..eleven {
             let li = gw(in ows, link_at(f, i));
-            let ci = gw(in cws, link_at(f, i));
-            for j in wrapping_add(i, 1)..eleven {
-                let lo = li != 0 && li == gw(in ows, link_at(f, j));
-                let lc = ci != 0 && ci == gw(in cws, link_at(f, j));
-                if lo && !lc {
-                    return false;
+            if li != 0 {
+                let ci = gw(in cws, link_at(f, i));
+                for j in wrapping_add(i, 1)..eleven {
+                    if li == gw(in ows, link_at(f, j)) && (ci == 0 || ci != gw(in cws, link_at(f, j))) {
+                        return false;
+                    }
                 }
             }
         }
@@ -4021,14 +4021,12 @@ fn rec_ws_end(in v: V, rid: u64) -> u64 {
     wrapping_add(sq(in v.rec_ws, rid), sq(in v.rec_nws, rid))
 }
 
-// `cur` included in record `rid`.
+// `cur` included in record `rid`. `v.cpk` holds `cur` packed.
 fn rec_includes(inout v: V, rid: u64, in cur: St) -> bool {
     let a = sq(in v.rec_rs, rid);
     let b = rec_rs_end(in v, rid);
     let c = sq(in v.rec_ws, rid);
     let d = rec_ws_end(in v, rid);
-    v.cpk.clear();
-    pack_regs(inout v.cpk, in cur);
     state_includes(
         inout v.ids,
         in v.prs[a..b],
@@ -4038,14 +4036,12 @@ fn rec_includes(inout v: V, rid: u64, in cur: St) -> bool {
     )
 }
 
-// Record `rid` included in `cur`.
+// Record `rid` included in `cur`. `v.cpk` holds `cur` packed.
 fn includes_rec(inout v: V, rid: u64, in cur: St) -> bool {
     let a = sq(in v.rec_rs, rid);
     let b = rec_rs_end(in v, rid);
     let c = sq(in v.rec_ws, rid);
     let d = rec_ws_end(in v, rid);
-    v.cpk.clear();
-    pack_regs(inout v.cpk, in cur);
     state_includes(
         inout v.ids,
         in v.cpk.as_slice(),
@@ -4055,13 +4051,12 @@ fn includes_rec(inout v: V, rid: u64, in cur: St) -> bool {
     )
 }
 
-fn rec_iter_depths_differ(inout v: V, rid: u64, in cur: St) -> bool {
+// `v.cpk` holds `cur` packed.
+fn rec_iter_depths_differ(in v: V, rid: u64, in cur: St) -> bool {
     let a = sq(in v.rec_rs, rid);
     let b = rec_rs_end(in v, rid);
     let c = sq(in v.rec_ws, rid);
     let d = rec_ws_end(in v, rid);
-    v.cpk.clear();
-    pack_regs(inout v.cpk, in cur);
     iter_depths_differ(in v.prs[a..b], in v.pws[c..d], in v.cpk.as_slice(), in cur.ws.as_slice())
 }
 
@@ -4121,9 +4116,19 @@ fn rec_widen(inout v: V, rid: u64, inout cur: St) -> bool {
 }
 
 // (pruned, new parent)
+// Packs `st` into `v.cpk` for the record comparisons.
+fn pack_cur(inout v: V, in st: St) {
+    v.cpk.clear();
+    pack_regs(inout v.cpk, in st);
+}
+
 fn checkpoint(inout v: V, inout st: St, pc: u64, parent: u64) -> (bool, u64) eff [Fail[VErr]] {
     let mut widen_from = none();
     let mut rid = sq(in v.ex_head, pc);
+    let packed = rid != none();
+    if packed {
+        pack_cur(inout v, in st);
+    }
     loop {
         if rid == none() {
             break;
@@ -4142,7 +4147,7 @@ fn checkpoint(inout v: V, inout st: St, pc: u64, parent: u64) -> (bool, u64) eff
             }
             // the same state again, but an iterator advanced in between: a
             // bounded loop, not an infinite one
-            if includes_rec(inout v, rid, in st) && !rec_iter_depths_differ(inout v, rid, in st) {
+            if includes_rec(inout v, rid, in st) && !rec_iter_depths_differ(in v, rid, in st) {
                 fail(
                     inout v,
                     pc,
@@ -4160,7 +4165,11 @@ fn checkpoint(inout v: V, inout st: St, pc: u64, parent: u64) -> (bool, u64) eff
         }
         rid = sq(in v.rec_next, rid);
     }
-    if widen_from != none() && rec_widen(inout v, widen_from, inout st) {
+    let widened = widen_from != none() && rec_widen(inout v, widen_from, inout st);
+    if widen_from != none() {
+        pack_cur(inout v, in st);
+    }
+    if widened {
         v.widenings = wrapping_add(v.widenings, 1);
         let mut r = sq(in v.ex_head, pc);
         loop {
@@ -4185,7 +4194,11 @@ fn checkpoint(inout v: V, inout st: St, pc: u64, parent: u64) -> (bool, u64) eff
         v.rec_rs.push(v.prs.len());
         v.rec_ws.push(v.pws.len());
         v.rec_nws.push(st.ws.len());
-        pack_regs(inout v.prs, in st);
+        if packed {
+            v.prs.extend(in v.cpk.as_slice());
+        } else {
+            pack_regs(inout v.prs, in st);
+        }
         v.pws.extend(in st.ws.as_slice());
         if count == 0 {
             v.ex_head.try_set(pc, id);
@@ -4503,6 +4516,79 @@ fn simple_outcome(rule: Str, msg: Str) -> Outcome {
     }
 }
 
+// The verifier's record and worklist pools, kept by the caller between
+// runs so that their buffers are reused instead of regrown.
+pub struct Pools {
+    prs: ChunkSeq[R],
+    cpk: ChunkSeq[R],
+    wrs: ChunkSeq[R],
+    pws: ChunkSeq[u64],
+    wws: ChunkSeq[u64],
+    rec_next: ChunkSeq[u64],
+    rec_branches: ChunkSeq[u64],
+    rec_parent: ChunkSeq[u64],
+    rec_rs: ChunkSeq[u64],
+    rec_ws: ChunkSeq[u64],
+    rec_nws: ChunkSeq[u64]
+}
+
+pub fn new_pools() -> Pools {
+    Pools {
+        prs: ChunkSeq::new[R](),
+        cpk: ChunkSeq::new[R](),
+        wrs: ChunkSeq::new[R](),
+        pws: ChunkSeq::new[u64](),
+        wws: ChunkSeq::new[u64](),
+        rec_next: ChunkSeq::new[u64](),
+        rec_branches: ChunkSeq::new[u64](),
+        rec_parent: ChunkSeq::new[u64](),
+        rec_rs: ChunkSeq::new[u64](),
+        rec_ws: ChunkSeq::new[u64](),
+        rec_nws: ChunkSeq::new[u64]()
+    }
+}
+
+// Moves the pools into `v`, emptied.
+fn take_pools(inout v: V, inout p: Pools) {
+    swap(inout v.prs, inout p.prs);
+    v.prs.clear();
+    swap(inout v.cpk, inout p.cpk);
+    v.cpk.clear();
+    swap(inout v.wrs, inout p.wrs);
+    v.wrs.clear();
+    swap(inout v.pws, inout p.pws);
+    v.pws.clear();
+    swap(inout v.wws, inout p.wws);
+    v.wws.clear();
+    swap(inout v.rec_next, inout p.rec_next);
+    v.rec_next.clear();
+    swap(inout v.rec_branches, inout p.rec_branches);
+    v.rec_branches.clear();
+    swap(inout v.rec_parent, inout p.rec_parent);
+    v.rec_parent.clear();
+    swap(inout v.rec_rs, inout p.rec_rs);
+    v.rec_rs.clear();
+    swap(inout v.rec_ws, inout p.rec_ws);
+    v.rec_ws.clear();
+    swap(inout v.rec_nws, inout p.rec_nws);
+    v.rec_nws.clear();
+}
+
+// Hands the pools back to the caller.
+fn give_pools(inout v: V, inout p: Pools) {
+    swap(inout v.prs, inout p.prs);
+    swap(inout v.cpk, inout p.cpk);
+    swap(inout v.wrs, inout p.wrs);
+    swap(inout v.pws, inout p.pws);
+    swap(inout v.wws, inout p.wws);
+    swap(inout v.rec_next, inout p.rec_next);
+    swap(inout v.rec_branches, inout p.rec_branches);
+    swap(inout v.rec_parent, inout p.rec_parent);
+    swap(inout v.rec_rs, inout p.rec_rs);
+    swap(inout v.rec_ws, inout p.rec_ws);
+    swap(inout v.rec_nws, inout p.rec_nws);
+}
+
 fn verify_one(
     in slots: Slice[RawInsn],
     ptype: ProgramType,
@@ -4513,7 +4599,8 @@ fn verify_one(
     in text: Slice[u8],
     max_insns: u64,
     max_states: u64,
-    widen: bool
+    widen: bool,
+    inout pools: Pools
 ) -> Outcome {
     let mut decoded: ChunkSeq[Insn] = ChunkSeq::new[Insn]();
     let derr: u64 = handle Fail[DecodeError] in {
@@ -4600,6 +4687,7 @@ fn verify_one(
         msg: ChunkSeq::new[u8](),
         rule: ChunkSeq::new[u8]()
     };
+    take_pools(inout v, inout pools);
     let res: u64 = handle Fail[VErr] in {
         check_cfg(inout v);
         let nk = shr(v.kf.len(), 2);
@@ -4616,6 +4704,8 @@ fn verify_one(
         return x => x,
         raise(e, k) => e.insn,
     };
+    let nrec = v.rec_next.len();
+    give_pools(inout v, inout pools);
     let mut w: ChunkSeq[u64] = ChunkSeq::new[u64]();
     if res != wrapping_sub(none(), 1) {
         w.push(1);
@@ -4629,7 +4719,7 @@ fn verify_one(
     }
     w.push(0);
     w.push(v.processed);
-    w.push(v.rec_next.len());
+    w.push(nrec);
     w.push(v.paths);
     w.push(v.pruned);
     w.push(v.widenings);
@@ -4662,7 +4752,8 @@ pub fn verify_program(
     in text: Slice[u8],
     max_insns: u64,
     max_states: u64,
-    widen_loops: bool
+    widen_loops: bool,
+    inout pools: Pools
 ) -> Outcome {
     if !widen_loops {
         return verify_one(
@@ -4675,7 +4766,8 @@ pub fn verify_program(
             in text,
             max_insns,
             max_states,
-            false
+            false,
+            inout pools
         );
     }
     let first = verify_one(
@@ -4688,7 +4780,8 @@ pub fn verify_program(
         in text,
         max_insns,
         max_states,
-        true
+        true,
+        inout pools
     );
     if sq(in first.words, 0) == 0 || first.widenings == 0 {
         return first;
@@ -4703,7 +4796,8 @@ pub fn verify_program(
         in text,
         max_insns,
         max_states,
-        false
+        false,
+        inout pools
     );
     if sq(in second.words, 0) == 0 {
         return second;
