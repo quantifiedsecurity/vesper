@@ -495,6 +495,8 @@ impl World {
                 loop_borrows: vec![],
                 view_sources: vec![],
                 result_ranges: Default::default(),
+                total_operands: 0,
+                integer_nots: BTreeSet::new(),
             };
             c.function_with_literal_typing(&func_norm);
             let Checker {
@@ -846,6 +848,7 @@ pub(crate) fn check_core(
     let mut diagnostics = vec![];
     let mut iteration = 0;
     let mut option_tries: BTreeSet<(usize, usize)>;
+    let mut integer_nots: BTreeSet<(usize, usize)>;
     let mut for_plans: BTreeMap<(usize, usize), for_sequences::Plan>;
     loop {
         iteration += 1;
@@ -891,6 +894,8 @@ pub(crate) fn check_core(
             loop_borrows: vec![],
             view_sources: vec![],
             result_ranges: Default::default(),
+            total_operands: 0,
+            integer_nots: BTreeSet::new(),
         };
         c.declarations();
         for f in world.functions.values() {
@@ -911,8 +916,10 @@ pub(crate) fn check_core(
             resolved: trait_calls,
             option_tries: tries,
             for_sequences: plans,
+            integer_nots: nots,
             ..
         } = c;
+        integer_nots = nots;
         option_tries = tries;
         for_plans = plans;
         resolved = trait_calls;
@@ -960,6 +967,13 @@ pub(crate) fn check_core(
             .unwrap_or(0)
             + 1;
         return check_core(&try_option::desugar(module, &option_tries, after), traits);
+    }
+    if !integer_nots.is_empty() {
+        // Check the complements `!` on integers means instead.
+        return check_core(
+            &integer_widths_rules::complement_nots(module, &integer_nots),
+            traits,
+        );
     }
     // Field paths through sequence elements and calls that borrow two
     // elements of one sequence mean element views (§13): check those
@@ -1091,6 +1105,13 @@ struct Checker<'a> {
     view_sources: Vec<(Place, String, Span)>,
     /// Result-range summaries of called functions ([`call_facts`]).
     result_ranges: std::cell::RefCell<call_facts::ResultRanges>,
+    /// Nonzero while a shift amount or a divisor is checked: its `+`, `-`
+    /// and `*` may be proven in range by range facts
+    /// ([`crate::integer_widths`] check rules).
+    total_operands: usize,
+    /// Spans of prefix `!` on an integer operand: the bitwise complement,
+    /// rewritten to `~` and checked again.
+    integer_nots: BTreeSet<(usize, usize)>,
 }
 impl Checker<'_> {
     fn error(&mut self, code: &str, msg: impl Into<String>, span: Span) {
@@ -2121,6 +2142,8 @@ impl Checker<'_> {
                 if op == "~" {
                     self.check_complement(&t, e.span.clone());
                     t
+                } else if op == "!" && self.integer_not(&t, e.span.clone()) {
+                    t
                 } else if op == "!" {
                     self.expect_type(&Type::named("bool"), &t, e.span.clone());
                     Type::named("bool")
@@ -2164,6 +2187,7 @@ impl Checker<'_> {
                 let left_fact = self.integer_fact(l, env);
                 let left_bounds = self.integer_bounds(l, env);
                 let left_index = Self::loop_index(l, env);
+                let left_operand = self.total_operand_bounds(l, env);
                 let right_goal = if goal != Type::Infer {
                     goal
                 } else if float_math_rules::float_literal_tree(l) {
@@ -2191,6 +2215,8 @@ impl Checker<'_> {
                         self.merge(env, &before, &after, e.span.clone());
                     }
                     b
+                } else if matches!(op.as_str(), "/" | "%") {
+                    self.divisor(r, env, &right_goal)
                 } else {
                     self.expr_expected(r, env, Usage::Own, &right_goal)
                 };
@@ -2234,13 +2260,18 @@ impl Checker<'_> {
                         e.span.clone(),
                     );
                 }
-                if matches!(op.as_str(), "/" | "%") && integer(&common) && !self.nonzero(r, env) {
+                if matches!(op.as_str(), "/" | "%")
+                    && integer(&common)
+                    && !self.nonzero(r, env)
+                    && !self.nonzero_divisor(r, env)
+                {
                     self.primitive_failure(env, e.span.clone());
                 }
                 if let Some(kind) = crate::numeric::IntegerKind::from_type(&common)
                     && crate::numeric::may_overflow(op, kind)
                     && !self.in_range(op, kind, left_fact, self.integer_fact(r, env))
                     && !Self::quotient_in_range(op, kind, left_bounds, self.integer_bounds(r, env))
+                    && !self.total_operation(op, kind, left_operand, r, env)
                     && !((left_index || Self::loop_index(r, env))
                         && Self::bounds_in_range(
                             op,
