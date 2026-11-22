@@ -6171,21 +6171,7 @@ impl<M: Module> Codegen<'_, '_, M> {
                     self.expr(base)?
                 };
                 let index = self.expr(index)?;
-                let valid = self
-                    .b
-                    .ins()
-                    .icmp_imm(IntCC::UnsignedLessThan, index, fs.len() as i64);
-                let good = self.b.create_block();
-                let bad = self.b.create_block();
-                self.branch(valid, good, &[], bad, &[]);
-                self.b.switch_to_block(bad);
-                if self.world.partial_ops.contains(&(e.span.start, e.span.end)) {
-                    self.primitive_failure("IndexOutOfBounds")?;
-                    self.jump(good, &[]);
-                } else {
-                    self.b.ins().trap(ir::TrapCode::unwrap_user(2));
-                }
-                self.b.switch_to_block(good);
+                self.index_check(&e.span, index, fs.len() as u64)?;
                 let f = fs.first().ok_or("index into empty tuple")?;
                 let offset = self.b.ins().imul_imm(index, f.layout.size as i64);
                 let address = self.b.ins().iadd(ptr, offset);
