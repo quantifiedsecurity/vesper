@@ -346,27 +346,37 @@ pub fn type_hash(t: &Type) -> u64 {
 /// Whether the decoder can read every literal of `t` (a sign and a 64-bit
 /// magnitude until 128-bit integers land, SH2 lane 2).
 pub fn encodable(t: &Type) -> bool {
+    encodable_with(t, false)
+}
+
+/// [`encodable`], and with `wide` also `i128` and `u128` (#1174), which
+/// `@vesper/check-layout` lays out as two words (SH5 lane 6, #1329). The
+/// other Vesper checkers do not handle them yet: Rust answers for them.
+pub fn encodable_with(t: &Type, wide: bool) -> bool {
+    let all = |ts: &[Type]| ts.iter().all(|t| encodable_with(t, wide));
     match t {
         Type::IntLiteral(n) => n.unsigned_abs() <= u64::MAX as u128,
-        // `i128` and `u128` (#1174) are not in the check-data format yet:
-        // Rust answers for them.
-        Type::Named(n, _) if vesper::numeric::is_wide_name(n) => false,
-        Type::Named(_, a) | Type::Tuple(a) => a.iter().all(encodable),
+        Type::Named(n, _) if !wide && vesper::numeric::is_wide_name(n) => false,
+        Type::Named(_, a) | Type::Tuple(a) => all(a),
         Type::Function {
             params,
             result,
             effects,
             ..
         } => {
-            params.iter().all(|(_, t)| encodable(t)) && encodable(result) && row_encodable(effects)
+            params.iter().all(|(_, t)| encodable_with(t, wide))
+                && encodable_with(result, wide)
+                && row_encodable(effects, wide)
         }
-        Type::Row(e) => row_encodable(e),
+        Type::Row(e) => row_encodable(e, wide),
         Type::Infer => true,
     }
 }
 
-fn row_encodable(e: &Effects) -> bool {
-    e.instances.iter().all(|i| i.args.iter().all(encodable))
+fn row_encodable(e: &Effects, wide: bool) -> bool {
+    e.instances
+        .iter()
+        .all(|i| i.args.iter().all(|t| encodable_with(t, wide)))
 }
 
 // ------------------------------------------------------------------ layout
@@ -411,12 +421,12 @@ pub fn reachable_adts<'w>(w: &'w World, ty: &Type) -> BTreeSet<&'w str> {
 /// `None` when a literal cannot be encoded.
 pub fn layout_input(w: &World, ty: &Type) -> Option<Vec<u8>> {
     let adts = reachable_adts(w, ty);
-    if !encodable(ty)
+    if !encodable_with(ty, true)
         || adts.iter().any(|a| {
             w.adts[*a]
                 .variants
                 .iter()
-                .any(|v| v.fields.iter().any(|f| !encodable(&f.ty)))
+                .any(|v| v.fields.iter().any(|f| !encodable_with(&f.ty, true)))
         })
     {
         return None;
@@ -1096,8 +1106,9 @@ impl WorldLog {
         }
     }
 
-    /// Whether every field type of ADT `name` can be encoded (memoized with
-    /// its record).
+    /// Whether every field type of ADT `name` can be encoded, `i128` and
+    /// `u128` included (memoized with its record). An IR part also passes
+    /// `program_encodable`, which refuses wide fields.
     fn adt_record(&mut self, w: &World, name: &str) -> bool {
         if let Some(r) = self.adts.get(name) {
             return r.is_some();
@@ -1106,7 +1117,7 @@ impl WorldLog {
         let ok = a
             .variants
             .iter()
-            .all(|v| v.fields.iter().all(|f| encodable(&f.ty)));
+            .all(|v| v.fields.iter().all(|f| encodable_with(&f.ty, true)));
         let record = ok.then(|| {
             let mut out = vec![];
             self.enc.adt(a, &mut out);
@@ -1228,7 +1239,9 @@ impl WorldLog {
             // swap interned since go first.
             return self.part(w, cur, Adts::Only(&BTreeSet::new()), false, |_| vec![i]);
         }
-        if !encodable(ty) {
+        // Layout answers for `i128`/`u128` too (#1329); the IR check's
+        // parts stay narrow through `program_encodable`.
+        if !encodable_with(ty, true) {
             return None;
         }
         let adts = reachable_adts(w, ty);
