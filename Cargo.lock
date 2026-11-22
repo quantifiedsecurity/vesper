@@ -6880,6 +6880,7 @@ dependencies = [
  "vesper-ffi",
  "vesper-fmt-seed",
  "vesper-grammar-seed",
+ "vesper-highlight-seed",
  "vesper-loom-admission",
  "vesper-loom-audit-seed",
  "vesper-loom-calculus-seed",
@@ -6890,6 +6891,7 @@ dependencies = [
  "vesper-semver-seed",
  "vesper-serde-seed",
  "vesper-simd",
+ "vesper-span-seed",
 ]
 
 [[package]]
