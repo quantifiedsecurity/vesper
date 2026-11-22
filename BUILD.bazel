@@ -533,6 +533,9 @@ vesper_crate(
         ],
         # @vesper-std/fs, process and env (#1125): drivers over the packages
         # and their .vsys imports.
+        # @vesper-std/cpu (audit gap G4): a driver over the package and its
+        # .vsys import.
+        "test/std_cpu": [":files"],
         "test/std_env": [":files"],
         "test/std_fs": [":files"],
         "test/std_process": [":files"],
