@@ -6004,6 +6004,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "vesper-bench",
+ "vesper-blake3-sys",
  "vesper-loom-cas",
  "vesper-port-abi",
  "vesper-port-harness",
