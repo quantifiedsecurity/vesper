@@ -415,6 +415,9 @@ pub(super) fn fixtures() -> Vec<PathBuf> {
                     // SH4 lane 15 (#1289): the wasm backend port uses `use`
                     // (#880) and `pub const`.
                     || path.ends_with("packages/vesper-wasm-backend")
+                    // SH5 lane 17 (#1340): the LSP features package exports
+                    // with `pub fn` and imports with `use` (#880).
+                    || path.ends_with("packages/vesper-lsp-features")
                     // SH5 lane 16 (#1339): the LSP and memo packages export
                     // with `pub fn` and import with `use` (#880).
                     || path.ends_with("packages/vesper-lsp")
