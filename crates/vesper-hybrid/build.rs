@@ -24,6 +24,12 @@ const MODULES: &[(&str, &str, &str)] = &[
     // SH5 lane 10 (#1333): both checker swaps in one library over one
     // shared world, with word answers.
     ("hybrid_checks", "modules/checks", "port/checks.rs"),
+    // SH2 lane 10 (#1182): the stack-bound report.
+    (
+        "hybrid_stack_bound",
+        "modules/stack_bound",
+        "port/stack_bound.rs",
+    ),
     // SH4 lane 1 (#1275): the census lowering family, emitted through
     // lent Cranelift handles.
     ("hybrid_codegen", "modules/codegen", "port/codegen.rs"),
@@ -91,6 +97,14 @@ const DIVERGENT_SHARED_LAYOUT_EDIT: (&str, &str) = (
 #[cfg(feature = "divergent-ir-check")]
 const DIVERGENT_IR_CHECK_EDIT: (&str, &str) = (
     "    ir_check_words(in input)\n",
+    "    divergent_words(in input)\n",
+);
+
+/// The stack-bound divergence check: every graph is rejected as malformed
+/// (`divergent_words` in modules/stack_bound), so every report differs.
+#[cfg(feature = "divergent-stack-bound")]
+const DIVERGENT_STACK_BOUND_EDIT: (&str, &str) = (
+    "    stack_bound_words(in input)\n",
     "    divergent_words(in input)\n",
 );
 
@@ -196,6 +210,12 @@ fn main() {
                 DIVERGENT_SHARED_IR_CHECK_EDIT.0,
                 DIVERGENT_SHARED_IR_CHECK_EDIT.1,
             )
+        } else {
+            port
+        };
+        #[cfg(feature = "divergent-stack-bound")]
+        let port = if *library == "hybrid_stack_bound" {
+            port.edit(DIVERGENT_STACK_BOUND_EDIT.0, DIVERGENT_STACK_BOUND_EDIT.1)
         } else {
             port
         };
