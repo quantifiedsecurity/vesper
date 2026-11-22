@@ -1477,7 +1477,7 @@ fn define_instances_observed_with_trace<M: Module>(
         let own_abi = abi.of(key);
         ctx.func.signature = signature_with_abi(m, world, &f, pass_trace, own_abi)?;
         let mut fbctx = FunctionBuilderContext::new();
-        {
+        let wide_divisions = {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
@@ -1587,6 +1587,7 @@ fn define_instances_observed_with_trace<M: Module>(
                 forced_call_vars: None,
                 discard_slot: None,
                 element_writebacks: vec![],
+                wide_divisions: vec![],
             };
             c.set_location(f.span.start);
             // Function-value parameters bound to top-level functions by
@@ -1646,7 +1647,9 @@ fn define_instances_observed_with_trace<M: Module>(
             )?;
             c.b.seal_all_blocks();
             c.b.finalize();
-        }
+            c.wide_divisions
+        };
+        wide_native::fuse_wide_divisions(&mut ctx.func, &wide_divisions);
         // A hook error at an infallible layout helper (#1275).
         crate::codegen_swap::take_error()?;
         if let Some(rewrite) = instrument.as_mut() {
@@ -2634,6 +2637,9 @@ struct Codegen<'a, 'b, M: Module> {
     /// through a word of scratch: (scratch, element address, element type),
     /// written back when the call or place primitive that borrows them ends.
     element_writebacks: Vec<(ir::Value, ir::Value, Type)>,
+    /// The 128-bit divisions emitted so far, for
+    /// [`wide_native::fuse_wide_divisions`] once the function is built.
+    wide_divisions: Vec<wide_native::WideDivision>,
 }
 /// The most place re-entries one hook request may make
 /// ([`Codegen::walk_instruction`]).
