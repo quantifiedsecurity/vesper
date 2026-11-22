@@ -808,8 +808,16 @@ fn vx_emit(call: u64, inout b: Builder, in m: Module, i: u32, e: u32, lanes: u32
                 joined.push(wrapping_u8(j));
             }
             for c in 0..(n_chunks >> 1) {
-                let lo = ins_unary(inout b, UN_FVDEMOTE, vx_chunk(in a.as_slice(), wrapping_mul(c, 2)));
-                let hi = ins_unary(inout b, UN_FVDEMOTE, vx_chunk(in a.as_slice(), wrapping_add(wrapping_mul(c, 2), 1)));
+                let lo = ins_unary(
+                    inout b,
+                    UN_FVDEMOTE,
+                    vx_chunk(in a.as_slice(), wrapping_mul(c, 2))
+                );
+                let hi = ins_unary(
+                    inout b,
+                    UN_FVDEMOTE,
+                    vx_chunk(in a.as_slice(), wrapping_add(wrapping_mul(c, 2), 1))
+                );
                 let lo = vx_bitcast(inout b, chunk_ty(E_U8), lo);
                 let hi = vx_bitcast(inout b, chunk_ty(E_U8), hi);
                 let both = ins_shuffle(inout b, lo, hi, in joined.as_slice());

@@ -120,7 +120,9 @@ pub fn rt_entry(inout b: Builder, seal: bool) -> Block eff [Ffi[Cranelift]] {
 
 // `declare_func_in_func` then `call`; the call's instruction is the
 // builder's last, so `inst_result(inout b, 0)` reads its result.
-pub fn rt_call(inout b: Builder, inout m: Module, f: FuncId, in args: Slice[u32]) eff [Ffi[Cranelift]] {
+pub fn rt_call(inout b: Builder, inout m: Module, f: FuncId, in args: Slice[u32]) eff [
+    Ffi[Cranelift]
+] {
     let r = import_function(inout b, inout m, f);
     ins_call(inout b, r, in args);
 }

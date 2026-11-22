@@ -186,7 +186,13 @@ fn r_store_payload(
     let mut words = ChunkSeq::with_capacity[u32](4);
     if aggregate {
         for i in 0..r_words_of(size) {
-            let w = ins_load(inout b, rty(RT_I64), RF_PLAIN, value, wrapping_i32(wrapping_mul(i, 8)));
+            let w = ins_load(
+                inout b,
+                rty(RT_I64),
+                RF_PLAIN,
+                value,
+                wrapping_i32(wrapping_mul(i, 8))
+            );
             words.push(w.id);
         }
     } else {

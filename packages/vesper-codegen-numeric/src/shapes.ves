@@ -10,7 +10,6 @@
 // This file needs no Cranelift handle: tests/self_host_codegen_numeric.rs
 // checks it on its own and compares `vector_decisions` with the Rust API.
 
-
 // Elem, in `Elem::ALL` order.
 pub const E_U8: u32 = 0;
 const E_U32: u32 = 1;
