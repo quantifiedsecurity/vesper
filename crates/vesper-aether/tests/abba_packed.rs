@@ -115,7 +115,10 @@ impl BenchCase for Arm {
 fn both_builds_compute_the_same_workload() {
     let (mut a, mut b) = (arm(rust_workload), arm(vesper_workload));
     for _ in 0..3 {
-        assert_eq!(rust_workload(&mut a.1, &mut a.2), vesper_workload(&mut b.1, &mut b.2));
+        assert_eq!(
+            rust_workload(&mut a.1, &mut a.2),
+            vesper_workload(&mut b.1, &mut b.2)
+        );
     }
 }
 

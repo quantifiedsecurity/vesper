@@ -54,8 +54,5 @@ const DIVERGENT_EDITS: &[(&str, &str)] = &[
         "        if have && last > i {",
     ),
     // packed: a used descriptor counts as available.
-    (
-        "        if !avail || used {",
-        "        if !avail {",
-    ),
+    ("        if !avail || used {", "        if !avail {"),
 ];
