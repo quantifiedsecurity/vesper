@@ -2735,6 +2735,13 @@ impl<M: Module> Codegen<'_, '_, M> {
         if !flush || !is_float_type(ty) {
             return v;
         }
+        // SH4 swap point (#1285): the `numeric` hook may emit the flush.
+        if let Some(r) = self.swap_numeric(
+            crate::codegen_swap::numeric::FLOAT_FLUSH,
+            &[crate::codegen_swap::word(v)],
+        ) {
+            return r;
+        }
         let magnitude = self.b.ins().fabs(v);
         let smallest = if ty == types::F32 {
             self.b.ins().f32const(f32::MIN_POSITIVE)
@@ -7171,6 +7178,16 @@ impl<M: Module> Codegen<'_, '_, M> {
             return Err("native parallel_for data is not one word".into());
         }
         let n = self.expr(&args[1].expr)?;
+        // SH4 swap point (#1285): the `numeric` hook may emit the runtime
+        // call (`codegen_swap::numeric::PARALLEL_FOR`).
+        let words = [
+            u64::from(fun.as_u32()),
+            crate::codegen_swap::word(data),
+            crate::codegen_swap::word(n),
+        ];
+        if let Some(v) = self.swap_numeric(crate::codegen_swap::numeric::PARALLEL_FOR, &words) {
+            return Ok(Some(v));
+        }
         let pointer = self.b.ins().func_addr(types::I64, fun);
         let mut runtime = self.m.make_signature();
         runtime.params.extend([word, word, word]);
@@ -7220,8 +7237,16 @@ impl<M: Module> Codegen<'_, '_, M> {
         let flags = ir::MemFlags::trusted();
         // `Atomic { cell }` -> sequence header `{len, cap, data}` -> element.
         let receiver = self.expr(&args[0].expr)?;
-        let handle = self.b.ins().load(types::I64, flags, receiver, 0);
-        let data = self.b.ins().load(types::I64, flags, handle, 16);
+        // SH4 swap point (#1285): the `numeric` hook may emit the element
+        // address and the operation (`codegen_swap::numeric::ATOMIC_*`).
+        use crate::codegen_swap::{numeric as n, word};
+        let data = match self.swap_numeric(n::ATOMIC_CELL, &[word(receiver)]) {
+            Some(data) => data,
+            None => {
+                let handle = self.b.ins().load(types::I64, flags, receiver, 0);
+                self.b.ins().load(types::I64, flags, handle, 16)
+            }
+        };
         let mut operands = vec![];
         for a in &args[1..1 + op.values()] {
             let v = self.expr(&a.expr)?;
@@ -7240,6 +7265,30 @@ impl<M: Module> Codegen<'_, '_, M> {
                 c.b.ins().uextend(types::I64, v)
             }
         };
+        let swap_op = match op {
+            A::Load => Some(n::ATOMIC_LOAD),
+            A::Store => Some(n::ATOMIC_STORE),
+            A::Swap => Some(n::ATOMIC_SWAP),
+            A::FetchAdd => Some(n::ATOMIC_ADD),
+            A::FetchSub => Some(n::ATOMIC_SUB),
+            A::FetchAnd => Some(n::ATOMIC_AND),
+            A::FetchOr => Some(n::ATOMIC_OR),
+            A::FetchXor => Some(n::ATOMIC_XOR),
+            // The Cranelift shim has no `atomic_cas` yet.
+            A::CompareExchange => None,
+        };
+        if let Some(code) = swap_op {
+            let mut words = vec![
+                code,
+                crate::codegen_swap::ty_code(narrow),
+                u64::from(signed),
+                word(data),
+            ];
+            words.extend(operands.iter().map(|v| word(*v)));
+            if let Some(v) = self.swap_numeric(n::ATOMIC, &words) {
+                return Ok(v);
+            }
+        }
         let rmw = match op {
             A::Load => {
                 let v = self.b.ins().atomic_load(narrow, flags, data);
