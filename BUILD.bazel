@@ -1167,8 +1167,8 @@ vesper_package(
     deps = [":check_data_package"],
 )
 
-# The IR optimizer for the hybrid compiler's ir_opt module (SH3 lane 9,
-# #1248).
+# The e-graph and the optimizers for the hybrid compiler's ir_opt (SH3
+# lane 9, #1248) and optimize (SH3 lane 10, #1249) modules.
 vesper_package(
     name = "egraph_package",
     srcs = glob(["packages/vesper-egraph/src/**/*.ves"]),
@@ -1185,6 +1185,19 @@ vesper_package(
         ":check_data_package",
         ":egraph_package",
         ":place_ir_package",
+    ],
+)
+
+vesper_package(
+    name = "optimize_package",
+    srcs = glob(["packages/vesper-optimize/src/**/*.ves"]),
+    manifest = "packages/vesper-optimize/Loom.toml",
+    visibility = ["//visibility:public"],
+    deps = [
+        ":ast_package",
+        ":egraph_package",
+        ":std_arena_package",
+        ":std_intern_package",
     ],
 )
 
