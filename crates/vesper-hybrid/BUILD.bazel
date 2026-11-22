@@ -60,9 +60,11 @@ vesper_hybrid(
             "//:codegen_base_package",
             "//packages/vesper-cranelift:cranelift_package",
         ],
-        # The export glue (#1286) emits through the Cranelift shim too.
+        # The export planner and glue (#1286); the glue emits through the
+        # Cranelift shim too.
         "hybrid_codegen_export": [
             "//:codegen_export_glue_package",
+            "//:codegen_export_package",
             "//packages/vesper-cranelift:cranelift_package",
         ],
         "hybrid_ir_check": [
